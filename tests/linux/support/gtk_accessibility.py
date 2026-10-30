@@ -231,10 +231,10 @@ def record_shortcut(pid, title, chord, send_key, timeout=15):
     """Record through the focused GTK button and real desktop key delivery.
 
     This is settings input, not trusted source input or global registration.
-    Esc cancels recording; the explicit reset action restores the default Esc.
+    Esc is recorded by Dismiss; it cancels recording for the other actions.
     """
     deadline = time.monotonic() + timeout
-    name = "恢复默认：" + title if chord == "Esc" else "设置：" + title
+    name = "设置：" + title
     while time.monotonic() < deadline:
         node = named(pid, name)
         if node is not None:
@@ -250,15 +250,16 @@ def record_shortcut(pid, title, chord, send_key, timeout=15):
     else:
         raise AssertionError("shortcut recorder was not accessible: " + name)
     assert Atspi.Component.grab_focus(node.get_component_iface()), name
-    assert Atspi.Action.do_action(node.get_action_iface(), 0), name
-    if chord == "Esc":
-        return node
+    action = node.get_action_iface()
+    assert time.monotonic() < deadline, "shortcut recorder action exhausted its interaction budget"
+    assert Atspi.Action.do_action(action, 0), name
     while time.monotonic() < deadline:
-        if focused(node) and node.get_description() == "按下快捷键…":
+        if focused(node) and node.get_description() == "按下按键…":
             break
         time.sleep(0.05)
     else:
         raise AssertionError("shortcut recorder did not take focus: " + title)
+    assert time.monotonic() < deadline, "shortcut recording exhausted its interaction budget"
     send_key(
         chord.replace("Ctrl", "ctrl")
         .replace("Shift", "shift")

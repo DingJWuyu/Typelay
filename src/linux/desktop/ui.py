@@ -3148,6 +3148,13 @@ class TranslationSettings:
 
 
 class Settings:
+    shortcut_defaults = {
+        "acceptShortcut": "Tab",
+        "exitShortcut": "Esc",
+        "wakeShortcut": "Ctrl+Shift+F9",
+        "directShortcut": "Ctrl+Shift+F10",
+        "pauseShortcut": "",
+    }
     function_keys = tuple(
         f"{prefix}F{number}" for prefix in ("", "Ctrl+") for number in range(1, 25)
     )
@@ -3462,6 +3469,7 @@ class Settings:
         )
         self.search.get_accessible().set_name(self.tr("搜索设置", "Search settings"))
         self.filter_settings()
+        self.render_shortcut_page()
         self.tutorial.render()
 
     def schedule_autosave(self):
@@ -3487,7 +3495,116 @@ class Settings:
         if hasattr(self, "applications"):
             self.applications.update()
 
+    def shortcut_snapshot(self):
+        return tuple(self.draft_value(key) for key in self.shortcut_defaults)
+
+    def retire_shortcut_page(self, *_):
+        self.shortcut_page_epoch = object()
+        self.shortcut_reset_signature = None
+        for key in self.shortcut_defaults:
+            self.controls[key].cancel()
+        self.render_draft()
+
+    def render_shortcut_page(self):
+        if not hasattr(self, "shortcut_rows"):
+            return
+        feedback = self.shortcut_feedback
+        if feedback is not None:
+            key, snapshot, raw, shown = feedback
+            translated = self.localizer.shortcut_text(raw)
+            if self.message.get_text() == shown and shown != translated:
+                self.shortcut_feedback = (key, snapshot, raw, translated)
+                self.message.set_text(translated)
+        for key in self.shortcut_defaults:
+            self.controls[key].get_accessible().set_name(
+                self.tr("设置：", "Setting: ") + self.control_labels[key].get_text()
+            )
+            self.controls[key].set_messages(
+                self.tr("未设置", "None"), self.tr("按下按键…", "Press keys…")
+            )
+            context = self.control_labels[key].get_style_context()
+            dim = (
+                key in ("wakeShortcut", "directShortcut")
+                and (self.value or {}).get("mode") != "OnDemand"
+            )
+            (context.add_class if dim else context.remove_class)("shortcut-dim")
+        values = self.shortcut_snapshot()
+        signature = (
+            self.shortcut_page_epoch,
+            id(self.value),
+            values,
+            self.pending_draft,
+            self.draft_messages is not None,
+        )
+        if signature == self.shortcut_reset_signature:
+            return
+        self.shortcut_reset_signature = signature
+        if self.shortcut_reset is not None:
+            self.shortcut_header.remove(self.shortcut_reset)
+        button = Gtk.Button(label=self.tr("恢复默认", "Restore defaults"))
+        button.get_accessible().set_name(button.get_label())
+        button.set_margin_end(28)
+        button.set_margin_top(14)
+        button.set_valign(Gtk.Align.CENTER)
+        button.set_sensitive(
+            self.value is not None
+            and self.draft_messages is not None
+            and self.pending_draft is None
+            and values != tuple(self.shortcut_defaults.values())
+        )
+        self.shortcut_reset = button
+        button.connect(
+            "clicked", self.restore_shortcuts, self.shortcut_page_epoch, self.value, values
+        )
+        self.shortcut_header.pack_end(button, False, False, 0)
+        button.show()
+
+    def restore_shortcuts(self, button, epoch, baseline, values):
+        if (
+            button is not self.shortcut_reset
+            or epoch is not self.shortcut_page_epoch
+            or baseline is not self.value
+            or values != self.shortcut_snapshot()
+            or not button.get_mapped()
+            or not button.is_sensitive()
+            or not self.window.is_active()
+            or self.pages.get_visible_child_name() != "shortcuts"
+            or self.pending_draft is not None
+        ):
+            return
+        if self.auto_save_source:
+            GLib.source_remove(self.auto_save_source)
+            self.auto_save_source = None
+        self.shortcut_confirmation = None
+        self.shortcut_last_edit = None
+        self.shortcut_feedback = None
+        for key, default in self.shortcut_defaults.items():
+            self.controls[key].cancel()
+            self.controls[key].set_text(default)
+        for key in self.shortcut_defaults:
+            self.draft_changed(key, schedule=False)
+        if self.dirty_controls:
+            self.schedule_autosave()
+
     def render_footer(self):
+        # Reuse the same error label and confirmation peers. A shortcut error
+        # belongs to its current row; away from the page recovery stays visible.
+        inline = None
+        feedback = getattr(self, "shortcut_feedback", None)
+        if feedback is not None and self.pages.get_visible_child_name() == "shortcuts":
+            key, snapshot, _raw, shown = feedback
+            if snapshot == self.shortcut_snapshot() and self.message.get_text() == shown:
+                inline = self.shortcut_rows.get(key)
+        destination = inline or self.footer
+        for widget in (self.message, self.shortcut_buttons):
+            parent = widget.get_parent()
+            if parent is not destination:
+                parent.remove(widget)
+                destination.pack_start(widget, False, False, 0)
+        for issue in getattr(self, "shortcut_rows", {}).values():
+            issue.set_visible(issue is inline)
+        context = self.message.get_style_context()
+        (context.add_class if inline else context.remove_class)("shortcut-warning")
         # The footer is no-show-all: showing a retry button alone does not map
         # its intermediate box. Expose that box only for actual recovery actions.
         self.shortcut_buttons.set_visible(
@@ -3497,7 +3614,9 @@ class Settings:
             )
         )
         self.message.set_visible(bool(self.message.get_text()))
-        self.footer.set_visible(bool(self.message.get_text()) or self.draft_notice.get_visible())
+        self.footer.set_visible(
+            (bool(self.message.get_text()) and inline is None) or self.draft_notice.get_visible()
+        )
 
     def feedback_changed(self, *_):
         self.settings_feedback_owned = False
@@ -3589,6 +3708,7 @@ class Settings:
             self.pending_draft is None
             and not (translation and (translation.pending or translation.saving))
         )
+        self.render_shortcut_page()
         self.render_footer()
 
     def render_guidance(self, value):
@@ -3780,6 +3900,8 @@ class Settings:
             "pauseShortcut",
         ):
             self.shortcut_confirmation = None
+            if schedule:
+                self.shortcut_last_edit = key
         value = self.draft_value(key)
         baseline = self.value.get(key) or ""
         if self.same_draft_value(key, value, baseline) and self.same_draft_value(
@@ -3875,6 +3997,10 @@ class Settings:
                         ("pause", "pauseShortcut"),
                     )
                 }
+                feedback_key = self.shortcut_last_edit
+                feedback_values = tuple(
+                    shortcuts[key.removesuffix("Shortcut")] for key in self.shortcut_defaults
+                )
                 response = await self.host.ask(
                     "saveSettingsDraft",
                     {
@@ -3896,6 +4022,16 @@ class Settings:
                     if isinstance(response, dict) and response.get("confirmationRequired") is True
                     else None
                 )
+                failure = (
+                    response["message"]
+                    if isinstance(response, dict) and isinstance(response.get("message"), str)
+                    else self.draft_messages["invalidMessage"]
+                )
+                self.shortcut_feedback = (
+                    (feedback_key, feedback_values, failure, self.localizer.shortcut_text(failure))
+                    if not saved and self.shortcut_snapshot() == feedback_values
+                    else None
+                )
                 if saved:
                     for key, value in draft.items():
                         if self.same_draft_value(key, self.draft_value(key), value):
@@ -3903,9 +4039,7 @@ class Settings:
                     self.configure(self.value)
                 self.report_save_result(
                     saved,
-                    response["message"]
-                    if isinstance(response, dict) and isinstance(response.get("message"), str)
-                    else self.draft_messages["invalidMessage"],
+                    self.localizer.shortcut_text(failure),
                 )
         except (OSError, ValueError, EOFError, TimeoutError):
             if self.pending_draft is identity:

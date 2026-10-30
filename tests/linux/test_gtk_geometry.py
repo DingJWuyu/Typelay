@@ -1232,6 +1232,23 @@ class GtkReentryGeometryTests(unittest.TestCase):
             "overlayControls": {"fixture-expand": button},
         }
         self.assertIsNone(expand_click_point(actual, evidence, (1280, 800), 200))
+        # CI558 mapped Expand at a valid parent point before GTK allocated its
+        # real button. In-bounds coordinates do not make a 1x1 placeholder ready.
+        for width, height in ((1, 1), (36, 1), (1, 26)):
+            with self.subTest(width=width, height=height):
+                pending = {
+                    **actual,
+                    "overlayControls": {
+                        "fixture-expand": {
+                            **button,
+                            "x": 794,
+                            "y": 100,
+                            "width": width,
+                            "height": height,
+                        }
+                    },
+                }
+                self.assertIsNone(expand_click_point(pending, evidence, (1280, 800), 200))
         allocated = {
             **actual,
             "observedAtMs": 102,

@@ -459,6 +459,13 @@ def build(
     translation_grid = Gtk.Grid()
     owner.page_boxes["language"].pack_start(translation_grid, False, False, 0)
 
+    owner.shortcut_rows = {}
+    owner.shortcut_header = owner.page_headings["shortcuts"].get_parent()
+    owner.shortcut_reset = None
+    owner.shortcut_reset_signature = None
+    owner.shortcut_page_epoch = object()
+    owner.shortcut_last_edit = None
+    owner.shortcut_feedback = None
     for chinese, english, keys in (
         (
             "当前翻译会话",
@@ -485,32 +492,25 @@ def build(
         for key, chinese, english in keys:
             recorder = ShortcutRecorder(
                 lambda value, name=key: owner.draft_changed(name),
-                session=key in ("acceptShortcut", "exitShortcut"),
+                binding=key,
             )
             recorder.set_sensitive(False)
             actions = Gtk.Box(spacing=6)
             actions.pack_start(recorder, False, False, 0)
-            reset = Gtk.Button(label="↺")
-            reset.get_accessible().set_name("恢复默认：" + chinese)
-            defaults = {
-                "wakeShortcut": "Ctrl+Shift+F9",
-                "directShortcut": "Ctrl+Shift+F10",
-                "acceptShortcut": "Tab",
-                "exitShortcut": "Esc",
-                "pauseShortcut": "",
-            }
-
-            def restore(_button, name=key, control=recorder):
-                control.cancel()
-                control.set_text(defaults[name])
-                owner.draft_changed(name)
-
-            reset.connect("clicked", restore)
-            actions.pack_end(reset, False, False, 0)
             setting(shortcuts, key, chinese, english, actions)
             actions.get_accessible().set_name(chinese + "快捷键操作")
             recorder.get_accessible().set_name("设置：" + chinese)
             owner.controls[key] = recorder
+            issue = style(box(8), "shortcut-warning")
+            issue.set_no_show_all(True)
+            issue.set_margin_start(14)
+            issue.set_margin_end(14)
+            issue.set_margin_bottom(12)
+            shortcuts.pack_start(issue, False, False, 0)
+            owner.shortcut_rows[key] = issue
+    owner.pages.connect("notify::visible-child-name", owner.retire_shortcut_page)
+    owner.window.connect("unmap", owner.retire_shortcut_page)
+    owner.window.connect("map", owner.retire_shortcut_page)
     owner.shortcut_scope = label(muted=True)
     owner.page_boxes["shortcuts"].pack_start(owner.shortcut_scope, False, False, 0)
     owner.page_boxes["shortcuts"].pack_start(owner.acceptance_description, False, False, 0)

@@ -43,7 +43,7 @@ public sealed partial class NativeSourceControllerTests
             var editor = RuntimeDescendants(overlay).OfType<TextBox>().Single();
             editor.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left)
             {
-                RoutedEvent = UIElement.PreviewMouseLeftButtonDownEvent,
+                RoutedEvent = Mouse.PreviewMouseDownEvent,
                 Source = editor
             });
             Assert.True(editor.IsKeyboardFocused);

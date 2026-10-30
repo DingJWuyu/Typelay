@@ -14,7 +14,11 @@ internal sealed partial class SettingsWindow
     private void GeneralVisibilityChanged(object sender, DependencyPropertyChangedEventArgs args)
     {
         if (!IsVisible)
+        {
             _generalPageHidden = true;
+            _generalModeVisibility++;
+            RetireGeneralModeThumb();
+        }
         else if (_generalPageHidden && _page == "general")
             Refresh(); // A direct Hide/Show also creates new controls, never revives old peers.
     }
@@ -26,6 +30,8 @@ internal sealed partial class SettingsWindow
         _generalPageHidden = false;
         IsVisibleChanged -= GeneralVisibilityChanged;
         IsVisibleChanged += GeneralVisibilityChanged;
+        SizeChanged -= GeneralModeWindowSizeChanged;
+        SizeChanged += GeneralModeWindowSizeChanged;
         bool CurrentPage() => IsVisible && !_generalPageHidden && ReferenceEquals(page, _pageIdentity)
             && _page == "general" && !_emergencyShutdown && _closeDialog is null;
         bool CanChange() => CurrentPage() && consent is null;
@@ -102,10 +108,7 @@ internal sealed partial class SettingsWindow
             choice.Checked += async (_, _) =>
             {
                 if (CanChange())
-                    await SaveAsync(_settings.Value with
-                    {
-                        Mode = mode
-                    }, callerCurrent: CanChange);
+                    await ChangeGeneralModeAsync(mode, CanChange);
             };
             modeChoices.Add(choice);
             modes.Children.Add(choice);
@@ -123,8 +126,11 @@ internal sealed partial class SettingsWindow
             if (next.Focus())
                 next.IsChecked = true;
         };
-        var track = UiTheme.Border(modes, 8, "SettingsControlFill", 2);
+        var track = UiTheme.Border(GeneralModeSurface(modes, modeChoices, CurrentPage), 8, "SettingsControlFill", 2);
         track.BorderThickness = new(0);
+        track.Height = 28;
+        track.VerticalAlignment = VerticalAlignment.Center;
+        AutomationProperties.SetAutomationId(track, "GeneralModeTrack");
         Row(UiTheme.L("工作模式", "Mode"), "", track);
         var startup = UiTheme.Toggle(UiTheme.L("登录时启动", "Open at login"), () => _settings.Value.Startup,
             async value =>
@@ -252,13 +258,14 @@ internal sealed partial class SettingsWindow
       <Setter Property="Height" Value="24"/><Setter Property="MinHeight" Value="24"/><Setter Property="MinWidth" Value="56"/>
       <Setter Property="Padding" Value="12,0"/><Setter Property="FontSize" Value="12"/><Setter Property="FontWeight" Value="Medium"/>
       <Setter Property="Foreground" Value="{DynamicResource Muted}"/><Setter Property="FontFamily" Value="{DynamicResource UiFont}"/>
+      <Setter Property="Background" Value="Transparent"/>
       <Setter Property="Cursor" Value="Hand"/><Setter Property="FocusVisualStyle" Value="{x:Null}"/>
       <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="RadioButton">
         <Border x:Name="surface" CornerRadius="6" Background="Transparent" Padding="{TemplateBinding Padding}" BorderThickness="0.5" BorderBrush="Transparent">
           <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
         </Border>
         <ControlTemplate.Triggers>
-          <Trigger Property="IsChecked" Value="True"><Setter TargetName="surface" Property="Background" Value="{DynamicResource SettingsLanguageThumb}"/><Setter Property="Foreground" Value="{DynamicResource Text}"/></Trigger>
+          <Trigger Property="IsChecked" Value="True"><Setter Property="Foreground" Value="{DynamicResource Text}"/></Trigger>
           <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="surface" Property="BorderBrush" Value="{DynamicResource SettingsLink}"/></Trigger>
           <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger>
         </ControlTemplate.Triggers>

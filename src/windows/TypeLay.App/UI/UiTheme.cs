@@ -252,6 +252,18 @@ internal static partial class UiTheme
             ("SettingsControlHoverColor", dark ? "#26FFFFFF" : "#24141413"),
             ("SettingsControlLineColor", dark ? "#26FFFFFF" : "#29141413") })
             r[key] = (Color)ColorConverter.ConvertFromString(color);
+        // The General mode thumb is decorative; the actual RadioButtons own input.
+        r["SettingsModeThumbEdge"] = Brush(dark ? "#0FFFFFFF" : "#0F141413");
+        var modeShadow = new System.Windows.Media.Effects.DropShadowEffect
+        {
+            Color = dark ? Colors.Black : Color.FromRgb(20, 20, 19),
+            BlurRadius = 2,
+            ShadowDepth = 1,
+            Direction = 270,
+            Opacity = dark ? .3 : .06
+        };
+        modeShadow.Freeze();
+        r["SettingsModeThumbShadow"] = modeShadow;
         r["Panel"] = Brush(card);
         r["Panel2"] = Brush(dark ? "#383733" : "#F1F0EB");
         r["Window"] = Brush(window);

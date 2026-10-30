@@ -2241,7 +2241,14 @@ def expand_click_point(actual, evidence, dimensions, now):
     if not clickable_control(actual, name, evidence["renderReturnedAtMonoMs"], dimensions):
         return None
     control = actual["overlayControls"][name]
-    if not control.get("enabled") or control.get("scale") != actual["scale"]:
+    if (
+        not control.get("enabled")
+        or control.get("scale") != actual["scale"]
+        or control["width"] <= 1
+        or control["height"] <= 1
+    ):
+        # A newly mapped GTK widget can still have its initial 1x1 allocation
+        # at an in-bounds position. Do not freeze that placeholder as a hit point.
         return None
     return click_point(
         actual,
@@ -2300,7 +2307,11 @@ def check_expand(client, source, generation, runtime, state, initial, nested, di
     def allocated_button():
         actual = state()
         point = expand_click_point(actual, evidence, dimensions, now_ms())
-        return (actual, point) if ready.exists() and actual.get("candidate") and point else None
+        return (
+            (actual, point)
+            if ready.exists() and (actual.get("candidate") or {}).get("text") == long_text and point
+            else None
+        )
 
     actual, point = wait_for(allocated_button, "real expand button/current geometry missing")
     evidence["beforeClick"] = observe_click_geometry(actual)

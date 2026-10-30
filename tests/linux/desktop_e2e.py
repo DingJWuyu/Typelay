@@ -6510,21 +6510,65 @@ def run(arguments):
                         stderr=sys.stderr,
                     )
                     try:
+                        clipboard_observations = {"first": None, "last": None}
 
                         def clipboard_window():
-                            assert clipboard_process.poll() is None
-                            matches = [
+                            exit_code = clipboard_process.poll()
+                            observation = {
+                                "childExited": exit_code is not None,
+                                "exitCode": exit_code,
+                            }
+                            if clipboard_observations["first"] is None:
+                                clipboard_observations["first"] = observation
+                            clipboard_observations["last"] = observation
+                            assert exit_code is None
+                            owned_windows = [
                                 item
                                 for item in contents(request("Windows"), "Windows")
                                 if item.get("pid") == clipboard_process.pid
-                                and item.get("title") == "TypeLay GTK contract fixture"
                             ]
+                            matches = [
+                                item
+                                for item in owned_windows
+                                if item.get("title") == "TypeLay GTK contract fixture"
+                            ]
+                            observation.update(
+                                ownedCount=len(owned_windows),
+                                expectedTitleCount=len(matches),
+                                owned=[
+                                    {
+                                        "expectedTitle": item.get("title")
+                                        == "TypeLay GTK contract fixture",
+                                        "appIdCategory": "unset"
+                                        if item.get("app_id") is None
+                                        else "fixture"
+                                        if item.get("app_id") == "gtk-fixture"
+                                        else "other",
+                                        "mapped": item.get("mapped")
+                                        if isinstance(item.get("mapped"), bool)
+                                        else None,
+                                        "layoutAvailable": isinstance(item.get("layout"), dict),
+                                    }
+                                    for item in owned_windows[:8]
+                                ],
+                            )
                             assert len(matches) <= 1, "ambiguous owned clipboard window"
                             return matches[0] if matches else None
 
-                        fixture_window = wait_for(
-                            clipboard_window, "owned clipboard GTK fixture did not map"
-                        )
+                        try:
+                            fixture_window = wait_for(
+                                clipboard_window, "owned clipboard GTK fixture did not map"
+                            )
+                        finally:
+                            try:
+                                (arguments.output / f"clipboard-window-{index}.json").write_text(
+                                    json.dumps(clipboard_observations, indent=2)
+                                )
+                            except OSError:
+                                print(
+                                    "Clipboard window diagnostic could not be written",
+                                    file=sys.stderr,
+                                )
                         request({"Action": {"FocusWindow": {"id": fixture_window["id"]}}})
 
                         def clipboard_field():

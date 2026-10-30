@@ -239,6 +239,56 @@ static void candidate_natural_paint(GdkFrameClock *clock, gpointer data) {
     frames->paint_map = frames->map_generation;
     frames->paint_buffer = frames->buffer_sequence;
 }
+/* Inspect only the existing scrollbar CSS/allocations in the original eight
+ * natural frames. No measurement, resize, phase request or extra frame. */
+static JsonArray *candidate_css_edges(const GtkBorder *edges) {
+    JsonArray *values = json_array_new();
+    json_array_add_int_element(values, edges->top);
+    json_array_add_int_element(values, edges->right);
+    json_array_add_int_element(values, edges->bottom);
+    json_array_add_int_element(values, edges->left);
+    return values;
+}
+static JsonObject *candidate_scrollbar_layout(GtkWidget *scroll) {
+    JsonObject *value = json_object_new();
+    GtkWidget *widget = gtk_scrolled_window_get_vscrollbar(GTK_SCROLLED_WINDOW(scroll));
+    json_object_set_boolean_member(value, "overlayScrolling",
+        gtk_scrolled_window_get_overlay_scrolling(GTK_SCROLLED_WINDOW(scroll)));
+    JsonArray *nodes = json_array_new();
+    json_object_set_array_member(value, "nodes", nodes);
+    const char *names[] = {"scrollbar", "range", "trough", "slider"};
+    for (guint index = 0; index < G_N_ELEMENTS(names); index++) {
+        if (!widget || g_strcmp0(gtk_widget_get_css_name(widget), names[index]) != 0) {
+            json_array_add_null_element(nodes);
+            widget = NULL;
+            continue;
+        }
+        JsonObject *node = json_object_new();
+        json_object_set_string_member(node, "node", names[index]);
+        json_object_set_int_member(node, "instance", language_instance(G_OBJECT(widget)));
+        json_object_set_boolean_member(node, "mapped", gtk_widget_get_mapped(widget));
+        json_object_set_boolean_member(node, "childVisible", gtk_widget_get_child_visible(widget));
+        json_object_set_int_member(node, "state", gtk_widget_get_state_flags(widget));
+        json_object_set_int_member(node, "width", gtk_widget_get_width(widget));
+        json_object_set_int_member(node, "height", gtk_widget_get_height(widget));
+        json_object_set_boolean_member(node, "overlayIndicator", gtk_widget_has_css_class(widget, "overlay-indicator"));
+        json_object_set_boolean_member(node, "hovering", gtk_widget_has_css_class(widget, "hovering"));
+        json_object_set_boolean_member(node, "dragging", gtk_widget_has_css_class(widget, "dragging"));
+        GtkBorder border, padding, margin;
+        G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+        GtkStyleContext *style = gtk_widget_get_style_context(widget);
+        gtk_style_context_get_border(style, &border);
+        gtk_style_context_get_padding(style, &padding);
+        gtk_style_context_get_margin(style, &margin);
+        G_GNUC_END_IGNORE_DEPRECATIONS
+        json_object_set_array_member(node, "borderTRBL", candidate_css_edges(&border));
+        json_object_set_array_member(node, "paddingTRBL", candidate_css_edges(&padding));
+        json_object_set_array_member(node, "marginTRBL", candidate_css_edges(&margin));
+        json_array_add_object_element(nodes, node);
+        widget = gtk_widget_get_first_child(widget);
+    }
+    return value;
+}
 static void candidate_natural_after_paint(GdkFrameClock *clock, gpointer data) {
     GtkWidget *widget = data;
     CandidateFrames *frames = g_object_get_data(G_OBJECT(widget), "fixture-candidate-natural-frames");
@@ -266,6 +316,7 @@ static void candidate_natural_after_paint(GdkFrameClock *clock, gpointer data) {
         gtk_widget_get_size_request(scroll, &requested_width, &requested_height);
         json_object_set_int_member(value, "scrollHeight", gtk_widget_get_height(scroll));
         json_object_set_int_member(value, "scrollRequestedHeight", requested_height);
+        json_object_set_object_member(value, "scrollbarLayout", candidate_scrollbar_layout(scroll));
     }
     GdkRGBA foreground;
 #if GTK_CHECK_VERSION(4, 10, 0)

@@ -646,6 +646,7 @@ internal sealed partial class SettingsWindow : Window
         string? focusedToggle = Keyboard.FocusedElement is Control focused && focused.IsDescendantOf(this)
             ? AutomationProperties.GetName(focused) : null;
         RetireModelPage();
+        RetireGeneralModeThumb();
         _pageIdentity = new object();
         ClearSearchLocation();
         _searchTargets.Clear();
@@ -843,6 +844,16 @@ internal sealed partial class SettingsWindow : Window
         RefreshDraftBar();
         bool IsCurrentSubmission() => callerCurrent?.Invoke() != false && (draftSubmission is null || draftSubmission == _draftSubmissionGeneration);
         string page = _page;
+        object? navigation = _pageNavigation;
+        bool outcomeVisible = IsVisible, updateEntered = false;
+        void OutcomeVisibilityChanged(object sender, DependencyPropertyChangedEventArgs args)
+        {
+            if (!IsVisible)
+                outcomeVisible = false;
+        }
+        bool CanReportOutcome() => outcomeVisible && IsVisible && !_emergencyShutdown && _closeDialog is null
+            && _page == page && ReferenceEquals(navigation, _pageNavigation);
+        IsVisibleChanged += OutcomeVisibilityChanged;
         string? focusedSetting = Keyboard.FocusedElement is Control focused && focused.IsDescendantOf(_content)
             ? AutomationProperties.GetName(focused) : null;
         bool waiting = false, restoreFocus = IsActive;
@@ -874,34 +885,47 @@ internal sealed partial class SettingsWindow : Window
             }
             bool prepared = await preparation;
             EnableContent(); // Refresh must rebuild enabled, focusable controls.
+            // A background settings notification can retire the initiating
+            // controls. Report the conflict in the same visible navigation,
+            // without reviving that control's permission to write.
+            if (prepared && !ReferenceEquals(expected, _settings.Value))
+            {
+                if (CanReportOutcome())
+                {
+                    _settingsError = "设置已更新，请检查当前值后重试。";
+                    Refresh();
+                }
+                return false;
+            }
             if (!IsCurrentSubmission())
                 return false;
             if (!prepared)
             {
-                _settingsError = "练习窗口尚未确认停止，设置未保存。请关闭练习窗口后再试。";
-                Refresh();
-                return false;
-            }
-            if (!ReferenceEquals(expected, _settings.Value))
-            {
-                _settingsError = "设置已更新，请检查当前值后重试。";
-                Refresh();
+                if (CanReportOutcome())
+                {
+                    _settingsError = "练习窗口尚未确认停止，设置未保存。请关闭练习窗口后再试。";
+                    Refresh();
+                }
                 return false;
             }
             _settingsError = null;
+            updateEntered = true;
             _settings.Update(expectedRevision, value);
             UiTheme.Apply(_settings.Value);
             return true;
         }
         catch (SettingsConflictException) when (_settings.Revision == expectedRevision)
         {
-            _settingsError = UiTheme.L("设置已更新，请检查当前值后重试。", "Settings changed. Review the current values and retry.");
-            RefreshDraftBar();
+            if (CanReportOutcome())
+            {
+                _settingsError = UiTheme.L("设置已更新，请检查当前值后重试。", "Settings changed. Review the current values and retry.");
+                RefreshDraftBar();
+            }
         }
         catch (ArgumentException) when (_settings.Revision == expectedRevision)
         {
             EnableContent();
-            if (!IsCurrentSubmission())
+            if (!IsCurrentSubmission() || !CanReportOutcome())
                 return false;
             _settingsError = !ModelCatalog.IsSupportedSetting(value.Source, value.Target)
                 ? "请选择支持的源语言和目标语言。"
@@ -911,7 +935,7 @@ internal sealed partial class SettingsWindow : Window
         catch (SettingsPersistenceException) when (_settings.Revision == expectedRevision)
         {
             EnableContent();
-            if (!IsCurrentSubmission())
+            if (!IsCurrentSubmission() || !CanReportOutcome())
                 return false;
             _settingsError = "请检查当前用户目录与组织策略。";
             SetSaveIssue(false, current: () => ReferenceEquals(expected, _settings.Value)
@@ -928,9 +952,12 @@ internal sealed partial class SettingsWindow : Window
         catch (Exception error) when (error is not OutOfMemoryException)
         {
             EnableContent();
-            if (!IsCurrentSubmission())
-                return false;
-            bool committed = _settings.Revision > expectedRevision && !_settings.HasChanges(value);
+            // Update can commit, notify this window (rebuilding its controls),
+            // then encounter a failing observer. That is a known commit, not a
+            // new permission or a reason to silently lose the outcome notice.
+            bool committed = updateEntered && _settings.Revision == expectedRevision + 1 && !_settings.HasChanges(value);
+            if (!CanReportOutcome() || !IsCurrentSubmission() && !committed)
+                return committed;
             _settingsError = null;
             _draftFeedback = committed ? "已保存，请重新打开设置确认当前状态。" : SettingsDraftPresentation.UnknownSaveMessage;
             SetSaveIssue(true, committed, page: page);
@@ -939,6 +966,7 @@ internal sealed partial class SettingsWindow : Window
         }
         finally
         {
+            IsVisibleChanged -= OutcomeVisibilityChanged;
             EnableContent();
             _savingSettings = false;
             RefreshDraftBar();

@@ -41,7 +41,12 @@ protected:
         ++paints;
         if (!armed) return;
         armed = false;
-        QTimer::singleShot(0, this, [this] { if (observed) observed(); });
+        QTimer::singleShot(0, this, [this] {
+            // A completed observer may install its successor synchronously.
+            // Keep this invocation's callable alive until it returns.
+            const auto callback = observed;
+            if (callback) callback();
+        });
     }
     void inputMethodEvent(QInputMethodEvent *event) override {
         ++inputMethodEvents;
@@ -400,6 +405,9 @@ int main(int argc, char **argv) {
             {"pixels", editor->font().pixelSize()}, {"visible", editor->isVisible()}, {"runs", runs}});
         if (runs.isEmpty()) { save(false); app.exit(4); return; }
         if (++scene == regions.size()) {
+            // Preserve the two completed baseline paints if the independent
+            // display experiment fails. This is not completed experiment evidence.
+            if (!save(false)) { app.exit(5); return; }
             experiment = std::make_unique<DisplayExperiment>(card, editor, first, displayObservations,
                 [&](bool complete) { app.exit(save(complete) && complete ? 0 : 5); });
             return;

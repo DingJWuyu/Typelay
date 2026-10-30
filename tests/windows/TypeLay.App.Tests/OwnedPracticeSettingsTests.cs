@@ -159,6 +159,158 @@ public sealed class OwnedPracticeSettingsTests(WpfDesktopFixture desktop)
     });
 
     [Theory]
+    [InlineData(false, "navigation")]
+    [InlineData(false, "hide-show")]
+    [InlineData(true, "navigation")]
+    [InlineData(true, "hide-show")]
+    public Task RetiredNavigationCannotReceiveAnOldSaveOutcome(bool observerFailure, string retirement) => desktop.RunAsync(async () =>
+    {
+        using var fixture = new SettingsFixture();
+        var acknowledgement = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Window.ShowPage();
+        fixture.Window.UpdateLayout();
+        long revision = fixture.Settings.Revision;
+        void Retire()
+        {
+            if (retirement == "navigation")
+            {
+                fixture.Window.ShowPage("about");
+                fixture.Window.ShowPage("general");
+            }
+            else
+            {
+                fixture.Window.Hide();
+                fixture.Window.Show();
+            }
+        }
+        try
+        {
+            if (observerFailure)
+            {
+                fixture.Settings.Changed += () =>
+                {
+                    Retire();
+                    throw new IOException("controlled notification failure after the commit");
+                };
+                var enable = Assert.Single(Descendants(fixture.Window).OfType<CheckBox>(),
+                    control => AutomationProperties.GetAutomationId(control) == "GeneralEnable");
+                var peer = UIElementAutomationPeer.CreatePeerForElement(enable);
+                Assert.IsAssignableFrom<IToggleProvider>(peer.GetPattern(PatternInterface.Toggle)).Toggle();
+                Assert.False(new SettingsStore(fixture.Path).Value.Enabled);
+            }
+            else
+            {
+                fixture.Window.PrepareSettingsChange = _ => acknowledgement.Task;
+                var mode = Assert.Single(Descendants(fixture.Window).OfType<RadioButton>(),
+                    control => AutomationProperties.GetAutomationId(control) == "GeneralMode_OnDemand");
+                var peer = UIElementAutomationPeer.CreatePeerForElement(mode);
+                Assert.IsAssignableFrom<ISelectionItemProvider>(peer.GetPattern(PatternInterface.SelectionItem)).Select();
+                fixture.Settings.Update(fixture.Settings.Value with
+                {
+                    Target = "zh"
+                });
+                Retire();
+                string external = File.ReadAllText(fixture.Path);
+                acknowledgement.SetResult(true);
+                await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+                Assert.Equal(external, File.ReadAllText(fixture.Path));
+                Assert.Equal(WorkMode.Automatic, new SettingsStore(fixture.Path).Value.Mode);
+            }
+            fixture.Window.UpdateLayout();
+            Assert.Equal(revision + 1, fixture.Settings.Revision);
+            Assert.DoesNotContain(Descendants(fixture.Window).OfType<TextBlock>(), text => text.IsVisible &&
+                (text.Text.Contains("设置已更新", StringComparison.Ordinal)
+                || text.Text == "已保存，请重新打开设置确认当前状态。"
+                || text.Text == SettingsDraftPresentation.UnknownSaveMessage));
+            Assert.DoesNotContain(Descendants(fixture.Window).OfType<FrameworkElement>(),
+                control => control.IsVisible && AutomationProperties.GetAutomationId(control) == "SettingsSaveBanner");
+        }
+        finally
+        {
+            acknowledgement.TrySetResult(false);
+            await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        }
+    });
+
+    [Theory]
+    [InlineData(false, "navigation")]
+    [InlineData(false, "hide-show")]
+    [InlineData(true, "navigation")]
+    [InlineData(true, "hide-show")]
+    public Task AnAcceptedModeSaveCannotPublishLateRefusalOrIoFailureIntoAnotherNavigation(bool persistenceFailure, string retirement) => desktop.RunAsync(async () =>
+    {
+        using var fixture = new SettingsFixture();
+        var acknowledgement = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Window.PrepareSettingsChange = _ => acknowledgement.Task;
+        fixture.Window.ShowPage();
+        fixture.Window.UpdateLayout();
+        string before = File.ReadAllText(fixture.Path);
+        long revision = fixture.Settings.Revision;
+        var mode = Assert.Single(Descendants(fixture.Window).OfType<RadioButton>(),
+            control => AutomationProperties.GetAutomationId(control) == "GeneralMode_OnDemand");
+        var peer = UIElementAutomationPeer.CreatePeerForElement(mode);
+        Assert.IsAssignableFrom<ISelectionItemProvider>(peer.GetPattern(PatternInterface.SelectionItem)).Select();
+        try
+        {
+            if (persistenceFailure)
+                Directory.CreateDirectory(fixture.Path + ".tmp");
+            if (retirement == "navigation")
+            {
+                fixture.Window.ShowPage("about");
+                fixture.Window.ShowPage("general");
+            }
+            else
+            {
+                fixture.Window.Hide();
+                fixture.Window.Show();
+            }
+            acknowledgement.SetResult(persistenceFailure);
+            await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+            fixture.Window.UpdateLayout();
+            Assert.Equal(before, File.ReadAllText(fixture.Path));
+            Assert.Equal(revision, fixture.Settings.Revision);
+            Assert.DoesNotContain(Descendants(fixture.Window).OfType<TextBlock>(), text => text.IsVisible &&
+                (text.Text.Contains("设置未保存", StringComparison.Ordinal)
+                || text.Text == "请检查当前用户目录与组织策略。"));
+            Assert.DoesNotContain(Descendants(fixture.Window).OfType<FrameworkElement>(),
+                control => control.IsVisible && AutomationProperties.GetAutomationId(control) == "SettingsSaveBanner");
+        }
+        finally
+        {
+            acknowledgement.TrySetResult(false);
+            await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        }
+    });
+
+    [Fact]
+    public Task APreparationFailureCannotClaimAnExternalMatchingSaveAsItsOwnCommit() => desktop.RunAsync(() =>
+    {
+        using var fixture = new SettingsFixture();
+        fixture.Window.ShowPage();
+        fixture.Window.UpdateLayout();
+        long revision = fixture.Settings.Revision;
+        fixture.Window.PrepareSettingsChange = proposed =>
+        {
+            fixture.Settings.Update(proposed);
+            return Task.FromException<bool>(new InvalidOperationException("controlled failure before this save enters Update"));
+        };
+        var mode = Assert.Single(Descendants(fixture.Window).OfType<RadioButton>(),
+            control => AutomationProperties.GetAutomationId(control) == "GeneralMode_OnDemand");
+        var peer = UIElementAutomationPeer.CreatePeerForElement(mode);
+        Assert.IsAssignableFrom<ISelectionItemProvider>(peer.GetPattern(PatternInterface.SelectionItem)).Select();
+        fixture.Window.UpdateLayout();
+        Assert.Equal(revision + 1, fixture.Settings.Revision);
+        Assert.Equal(WorkMode.OnDemand, new SettingsStore(fixture.Path).Value.Mode);
+        Assert.Contains(Descendants(fixture.Window).OfType<TextBlock>(),
+            text => text.IsVisible && text.Text == SettingsDraftPresentation.UnknownSaveMessage);
+        Assert.DoesNotContain(Descendants(fixture.Window).OfType<TextBlock>(),
+            text => text.IsVisible && text.Text == "已保存，请重新打开设置确认当前状态。");
+        var banner = Assert.Single(Descendants(fixture.Window).OfType<Border>(),
+            control => AutomationProperties.GetAutomationId(control) == "SettingsSaveBanner");
+        Assert.Equal("查看", Assert.Single(Descendants(banner).OfType<Button>()).Content);
+    });
+
+    [Theory]
     [InlineData(SettingsDraftCloseChoice.KeepEditing)]
     [InlineData(SettingsDraftCloseChoice.Discard)]
     public Task PendingDraftSaveRespectsTheCloseChoiceBeforeRetirementCompletes(SettingsDraftCloseChoice choice) => desktop.RunAsync(async () =>

@@ -71,7 +71,7 @@ public sealed partial class NativeSourceControllerTests
             // this routed setup is not claimed as a physical mouse handoff.
             editor.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left)
             {
-                RoutedEvent = UIElement.PreviewMouseLeftButtonDownEvent,
+                RoutedEvent = Mouse.PreviewMouseDownEvent,
                 Source = editor
             });
             Assert.True(editor.IsKeyboardFocused);

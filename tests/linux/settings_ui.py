@@ -44,6 +44,9 @@ def main():
     parser.add_argument("--applications-only", action="store_true")
     parser.add_argument("--applications-empty-only", action="store_true")
     parser.add_argument("--toast-only", action="store_true")
+    parser.add_argument("--shortcuts-reset-only", action="store_true")
+    parser.add_argument("--shortcuts-only", action="store_true")
+    parser.add_argument("--shortcuts-recording-only", action="store_true")
     options = parser.parse_args()
     assert Gtk.init_check([])[0], "GTK display unavailable"
     options.output.mkdir(parents=True, exist_ok=True)
@@ -56,7 +59,8 @@ def main():
         (directory / "config/settings.json").write_text(
             json.dumps(
                 {
-                    "UiLanguage": "zh-CN",
+                    "UiLanguage": "en" if options.shortcuts_only else "zh-CN",
+                    **({"Theme": "light"} if options.shortcuts_only else {}),
                     "OnboardingComplete": True,
                     "Startup": False,
                     **(
@@ -142,6 +146,7 @@ def main():
         ipc_trace = deque(maxlen=512)
 
         class ObservedLink(Link):
+            draft_submissions = 0
             hold_operation = None
             held_id = None
             held_frame = None
@@ -150,6 +155,8 @@ def main():
             # original request deadlines; never log content or replay a request.
             async def ask(self, operation, *args, **kwargs):
                 started = time.monotonic()
+                if operation == "saveSettingsDraft":
+                    self.draft_submissions += 1
                 if operation == self.hold_operation:
                     self.held_id = self.sequence + 1
                     self.hold_operation = None
@@ -270,6 +277,347 @@ def main():
             width, height = surface.window.get_size()
             Gdk.pixbuf_get_from_window(window, 0, 0, width, height).savev(
                 str(options.output / (name + ".png")), "png", [], []
+            )
+
+        async def exercise_shortcut_reset():
+            surface.sidebar.select_row(surface.nav_rows["shortcuts"])
+            surface.window.present()
+            await settle(
+                lambda: surface.window.is_active()
+                and not surface.pages.get_transition_running()
+                and surface.controls["wakeShortcut"].get_mapped()
+                and surface.controls["wakeShortcut"].is_sensitive()
+                and not jobs
+            )
+            header = surface.page_headings["shortcuts"].get_parent()
+
+            def reset_button():
+                matches = [
+                    item
+                    for item in header.get_children()
+                    if isinstance(item, Gtk.Button)
+                    and item.get_label() == "恢复默认"
+                    and item.get_mapped()
+                ]
+                assert len(matches) == 1, (
+                    "shortcuts page lacks its unique Restore defaults header action"
+                )
+                return matches[0]
+
+            assert not reset_button().is_sensitive(), "default shortcuts exposed a redundant reset"
+            customized = {
+                "acceptShortcut": (Gdk.KEY_F7, Gdk.ModifierType.CONTROL_MASK, "Ctrl+F7"),
+                "exitShortcut": (Gdk.KEY_F8, Gdk.ModifierType.CONTROL_MASK, "Ctrl+F8"),
+                "wakeShortcut": (Gdk.KEY_F5, Gdk.ModifierType.CONTROL_MASK, "Ctrl+F5"),
+                "directShortcut": (Gdk.KEY_F6, Gdk.ModifierType.CONTROL_MASK, "Ctrl+F6"),
+                "pauseShortcut": (Gdk.KEY_F11, Gdk.ModifierType.CONTROL_MASK, "Ctrl+F11"),
+            }
+            for name, (keyval, modifiers, expected) in customized.items():
+                recorder = surface.controls[name]
+                assert recorder.get_mapped() and recorder.is_sensitive()
+                recorder.clicked()
+                assert recorder.has_focus() and recorder.recording
+                event = Gdk.Event.new(Gdk.EventType.KEY_PRESS)
+                event.window = recorder.get_window()
+                event.keyval, event.state = keyval, modifiers
+                recorder.emit("key-press-event", event)
+                await settle(
+                    lambda: state.get(name) == expected and not jobs and not surface.dirty_controls
+                )
+            previous = json.loads((directory / "config/settings.json").read_text())
+            before = host.draft_submissions
+            reset = reset_button()
+            assert reset.is_sensitive()
+            reset.grab_focus()
+            reset.clicked()
+            defaults = {
+                "acceptShortcut": "Tab",
+                "exitShortcut": "Esc",
+                "wakeShortcut": "Ctrl+Shift+F9",
+                "directShortcut": "Ctrl+Shift+F10",
+                "pauseShortcut": "",
+            }
+            await settle(
+                lambda: all(state.get(key) == value for key, value in defaults.items())
+                and not surface.dirty_controls
+                and not jobs
+            )
+            after = host.draft_submissions
+            assert after == before + 1, (
+                "whole-page reset did not use one existing settings transaction"
+            )
+            saved = json.loads((directory / "config/settings.json").read_text())
+            fields = {key[0].upper() + key[1:] for key in defaults}
+            assert {key: value for key, value in saved.items() if key not in fields} == {
+                key: value for key, value in previous.items() if key not in fields
+            }, "shortcut reset changed unrelated preferences"
+            assert not reset_button().is_sensitive()
+            print(
+                "SHORTCUT RESET PASS: five public recorders, one atomic default restore", flush=True
+            )
+
+        async def exercise_shortcut_recording():
+            surface.sidebar.select_row(surface.nav_rows["shortcuts"])
+            surface.window.present()
+            await settle(
+                lambda: surface.window.is_active()
+                and not surface.pages.get_transition_running()
+                and not jobs
+                and surface.controls["pauseShortcut"].is_sensitive()
+            )
+            pause = surface.controls["pauseShortcut"]
+            problems = []
+            pause.clicked()
+            assert pause.recording and pause.has_focus()
+            pause.clicked()
+            if pause.recording:
+                problems.append("clicking the same keycap again did not cancel recording")
+                event = Gdk.Event.new(Gdk.EventType.KEY_PRESS)
+                event.window, event.keyval, event.state = pause.get_window(), Gdk.KEY_Escape, 0
+                pause.emit("key-press-event", event)
+            assert not pause.recording
+            pause.clicked()
+            event = Gdk.Event.new(Gdk.EventType.KEY_PRESS)
+            event.window, event.keyval, event.state = (
+                pause.get_window(),
+                Gdk.KEY_F11,
+                Gdk.ModifierType.CONTROL_MASK,
+            )
+            pause.emit("key-press-event", event)
+            await settle(lambda: state["pauseShortcut"] == "Ctrl+F11" and not jobs)
+            before = (directory / "config/settings.json").read_bytes()
+            submissions = host.draft_submissions
+            pause.clicked()
+            event = Gdk.Event.new(Gdk.EventType.KEY_PRESS)
+            event.window, event.keyval, event.state = (
+                pause.get_window(),
+                Gdk.KEY_Delete,
+                Gdk.ModifierType.CONTROL_MASK,
+            )
+            pause.emit("key-press-event", event)
+            await settle(lambda: host.draft_submissions == submissions + 1 and not jobs)
+            if (directory / "config/settings.json").read_bytes() != before:
+                problems.append("Ctrl+Delete cleared the saved pause shortcut")
+            if pause.get_text() != "Ctrl+Delete":
+                problems.append("modified Delete did not reach ordinary chord validation")
+            submissions = host.draft_submissions
+            pause.clicked()
+            event = Gdk.Event.new(Gdk.EventType.KEY_PRESS)
+            event.window, event.keyval, event.state = (
+                pause.get_window(),
+                Gdk.KEY_Escape,
+                Gdk.ModifierType.CONTROL_MASK,
+            )
+            pause.emit("key-press-event", event)
+            if pause.get_text() != "Ctrl+Esc":
+                problems.append("modified Escape canceled instead of validating the chord")
+            else:
+                await settle(lambda: host.draft_submissions == submissions + 1 and not jobs)
+                assert (directory / "config/settings.json").read_bytes() == before
+            print("SHORTCUT RECORDING OBSERVATIONS", problems, flush=True)
+            assert not problems, problems
+            # Leave no failed draft behind for the following complete page flow.
+            pause.clicked()
+            event = Gdk.Event.new(Gdk.EventType.KEY_PRESS)
+            event.window, event.keyval, event.state = pause.get_window(), Gdk.KEY_Delete, 0
+            pause.emit("key-press-event", event)
+            await settle(
+                lambda: state["pauseShortcut"] == "" and not jobs and not surface.dirty_controls
+            )
+            print("SHORTCUT RECORDING PASS", flush=True)
+
+        async def exercise_shortcuts():
+            surface.sidebar.select_row(surface.nav_rows["shortcuts"])
+            surface.window.present()
+            await settle(
+                lambda: surface.window.is_active()
+                and not jobs
+                and not surface.pages.get_transition_running()
+                and surface.controls["pauseShortcut"].is_sensitive()
+            )
+            # This invocation starts English before the real async messages arrive.
+            assert state["uiLanguage"] == "en" and state["theme"] == "light"
+            for key, title in {
+                "acceptShortcut": "Accept translation",
+                "exitShortcut": "Dismiss translation",
+                "wakeShortcut": "Show translation",
+                "directShortcut": "Translate and replace",
+                "pauseShortcut": "Pause / resume TypeLay",
+            }.items():
+                assert surface.control_labels[key].get_text() == title
+                assert surface.controls[key].get_accessible().get_name() == "Setting: " + title
+            assert surface.shortcut_scope.get_text().startswith("Accept defaults to Tab")
+            settings_path = directory / "config/settings.json"
+
+            def reset_button():
+                title = "Restore defaults" if state["uiLanguage"] == "en" else "恢复默认"
+                matches = [
+                    item
+                    for item in surface.page_headings["shortcuts"].get_parent().get_children()
+                    if isinstance(item, Gtk.Button)
+                    and item.get_label() == title
+                    and item.get_mapped()
+                ]
+                assert len(matches) == 1
+                return matches[0]
+
+            async def record(name, keyval, modifiers=Gdk.ModifierType(0), *, saved=None):
+                recorder = surface.controls[name]
+                assert recorder.get_mapped() and recorder.is_sensitive()
+                before = host.draft_submissions
+                recorder.clicked()
+                assert recorder.recording and recorder.has_focus()
+                event = Gdk.Event.new(Gdk.EventType.KEY_PRESS)
+                event.window, event.keyval, event.state = recorder.get_window(), keyval, modifiers
+                recorder.emit("key-press-event", event)
+                await settle(
+                    lambda: host.draft_submissions == before + 1
+                    and surface.pending_draft is None
+                    and not jobs
+                )
+                if saved is not None:
+                    assert state[name] == saved and name not in surface.dirty_controls
+                return recorder
+
+            async def no_stale_save(button):
+                before, calls = settings_path.read_bytes(), host.draft_submissions
+                button.clicked()
+                # The existing autosave debounce is 250ms; observe it without
+                # changing any production timeout or source-input deadline.
+                await asyncio.sleep(0.35)
+                await paint(surface.window)
+                assert settings_path.read_bytes() == before and host.draft_submissions == calls
+
+            async def picture(name):
+                await paint(surface.window)
+                capture("shortcuts-" + name)
+
+            await picture("en-light-default")
+            for recorder in (surface.controls[key] for key in surface.shortcut_defaults):
+                assert recorder.get_allocation().height == 26, (
+                    f"keycap height {recorder.get_allocated_height()} differs from prototype 26"
+                )
+            pause = surface.controls["pauseShortcut"]
+            assert pause.get_label() == "None"
+            pause.clicked()
+            assert pause.get_label() == "Press keys…"
+            await picture("en-light-recording")
+            event = Gdk.Event.new(Gdk.EventType.KEY_PRESS)
+            event.window, event.keyval, event.state = (
+                pause.get_window(),
+                Gdk.KEY_Escape,
+                Gdk.ModifierType(0),
+            )
+            before = settings_path.read_bytes()
+            pause.emit("key-press-event", event)
+            await asyncio.sleep(0.35)
+            assert not pause.recording and settings_path.read_bytes() == before
+
+            ctrl = Gdk.ModifierType.CONTROL_MASK
+            await record("pauseShortcut", Gdk.KEY_F11, ctrl, saved="Ctrl+F11")
+            await record("pauseShortcut", Gdk.KEY_Delete, saved="")
+            await record("exitShortcut", Gdk.KEY_F8, ctrl, saved="Ctrl+F8")
+            await record("exitShortcut", Gdk.KEY_Escape, saved="Esc")
+            await record("wakeShortcut", Gdk.KEY_F5, ctrl, saved="Ctrl+F5")
+            old_reset = reset_button()
+            await record("directShortcut", Gdk.KEY_F6, ctrl, saved="Ctrl+F6")
+            await no_stale_save(old_reset)
+            old_reset = reset_button()
+            surface.sidebar.select_row(surface.nav_rows["about"])
+            await settle(lambda: not surface.pages.get_transition_running())
+            await no_stale_save(old_reset)
+            surface.sidebar.select_row(surface.nav_rows["shortcuts"])
+            await settle(lambda: not surface.pages.get_transition_running())
+            await no_stale_save(old_reset)
+            assert reset_button() is not old_reset
+            old_reset = reset_button()
+            surface.dismiss()
+            await settle(lambda: not surface.window.get_visible())
+            surface.show()
+            surface.sidebar.select_row(surface.nav_rows["shortcuts"])
+            await settle(
+                lambda: surface.window.is_active() and not surface.pages.get_transition_running()
+            )
+            await no_stale_save(old_reset)
+
+            # Same file failure seam as ordinary settings: retain the five-key
+            # draft, leave the committed profile unchanged, then real Retry.
+            before = settings_path.read_bytes()
+            blocker = settings_path.with_suffix(".json.tmp")
+            blocker.mkdir()
+            try:
+                reset_button().clicked()
+                await settle(
+                    lambda: surface.pending_draft is None
+                    and not jobs
+                    and surface.save_button.get_mapped()
+                    and bool(surface.dirty_controls)
+                )
+                assert settings_path.read_bytes() == before
+                assert not reset_button().is_sensitive()
+                await picture("en-light-save-failed")
+            finally:
+                blocker.rmdir()
+            surface.save_button.clicked()
+            await settle(lambda: not jobs and not surface.dirty_controls)
+            assert state["wakeShortcut"] == "Ctrl+Shift+F9"
+            assert state["directShortcut"] == "Ctrl+Shift+F10"
+
+            before = settings_path.read_bytes()
+            await record("wakeShortcut", Gdk.KEY_F10, ctrl | Gdk.ModifierType.SHIFT_MASK)
+            assert settings_path.read_bytes() == before
+            assert surface.message.get_parent() is surface.shortcut_rows["wakeShortcut"]
+            assert surface.message.get_mapped() and "must differ" in surface.message.get_text()
+            await picture("en-light-duplicate")
+            surface.sidebar.select_row(surface.nav_rows["about"])
+            await settle(lambda: not surface.pages.get_transition_running())
+            assert surface.message.get_parent() is surface.footer and surface.message.get_mapped()
+            surface.sidebar.select_row(surface.nav_rows["shortcuts"])
+            await settle(lambda: not surface.pages.get_transition_running())
+            assert surface.message.get_parent() is surface.shortcut_rows["wakeShortcut"]
+            reset_button().clicked()
+            await settle(lambda: not surface.dirty_controls and not jobs)
+
+            await record("wakeShortcut", Gdk.KEY_c, ctrl)
+            assert surface.shortcut_confirmation is not None
+            assert "may conflict" in surface.message.get_text()
+            old_force, old_keep = surface.force_shortcuts, surface.edit_shortcuts
+            await picture("en-light-conflict")
+            await record("wakeShortcut", Gdk.KEY_v, ctrl)
+            await no_stale_save(old_force)
+            await no_stale_save(old_keep)
+            assert surface.shortcut_confirmation["wake"] == "Ctrl+V"
+            surface.force_shortcuts.clicked()
+            await settle(
+                lambda: state["wakeShortcut"] == "Ctrl+V"
+                and not jobs
+                and not surface.dirty_controls
+            )
+            reset_button().clicked()
+            await settle(
+                lambda: state["wakeShortcut"] == "Ctrl+Shift+F9"
+                and not jobs
+                and not surface.dirty_controls
+            )
+
+            for language in ("en", "zh-CN"):
+                for theme in ("light", "dark"):
+                    assert (
+                        await host.ask("settingsPatch", {"uiLanguage": language, "theme": theme})
+                        is True
+                    )
+                    await settle(
+                        lambda: state["uiLanguage"] == language
+                        and state["theme"] == theme
+                        and not jobs
+                    )
+                    assert not reset_button().is_sensitive()
+                    await picture(
+                        ("en" if language == "en" else "zh") + "-" + theme + "-default-final"
+                    )
+            print(
+                "SHORTCUT PAGE PASS: cold English, key geometry, pause clear, real Esc, reset failure/retry, old peers, inline duplicate/conflict and bilingual themes",
+                flush=True,
             )
 
         async def exercise_toast():
@@ -1038,6 +1386,16 @@ def main():
                 )
                 print("APPLICATIONS EMPTY PASS", flush=True)
                 return
+            if options.shortcuts_recording_only:
+                await exercise_shortcut_recording()
+                return
+            if options.shortcuts_only:
+                await exercise_shortcut_recording()
+                await exercise_shortcuts()
+                return
+            if options.shortcuts_reset_only:
+                await exercise_shortcut_reset()
+                return
             if options.toast_only:
                 await exercise_toast()
                 return
@@ -1730,10 +2088,13 @@ def main():
             # Exercise the real focused recorder signal, not a global key hook.
             recorder = surface.controls["pauseShortcut"]
             assert recorder.get_accessible().get_name() == "设置：暂停 / 恢复 TypeLay"
-            assert recorder.get_accessible().get_description() == recorder.get_label()
+            assert recorder.get_accessible().get_description() == (recorder.get_text() or "未设置")
             surface.pages.set_visible_child_name("shortcuts")
+            await settle(
+                lambda: recorder.get_mapped() and not surface.pages.get_transition_running()
+            )
             recorder.clicked()
-            assert recorder.get_accessible().get_description() == "按下快捷键…"
+            assert recorder.get_accessible().get_description() == "按下按键…"
             assert recorder.recording
             event = Gdk.Event.new(Gdk.EventType.KEY_PRESS)
             event.keyval = Gdk.KEY_F11

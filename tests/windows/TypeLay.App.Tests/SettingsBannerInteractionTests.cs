@@ -192,7 +192,12 @@ public sealed partial class TranslationSettingsTests
         using var scene = new SettingsScene(new(UiLanguage: language, Theme: theme, Motion: "reduce"));
         scene.Window.ShowPage();
         Directory.CreateDirectory(scene.PathToSettings + ".tmp");
-        ToggleSetting(scene.Window, "启用 TypeLay");
+        scene.Window.UpdateLayout();
+        var enable = Assert.Single(Descendants(scene.Window).OfType<CheckBox>(),
+            control => AutomationProperties.GetAutomationId(control) == "GeneralEnable");
+        Assert.Equal(language == "en" ? "Enable TypeLay" : "启用 TypeLay", AutomationProperties.GetName(enable));
+        var peer = UIElementAutomationPeer.CreatePeerForElement(enable);
+        Assert.IsAssignableFrom<IToggleProvider>(peer.GetPattern(PatternInterface.Toggle)).Toggle();
         await Dispatcher.Yield(DispatcherPriority.ContextIdle);
         var save = SettingsBanner(scene.Window, "SettingsSaveBanner");
         var model = SettingsBanner(scene.Window, "SettingsModelBanner");

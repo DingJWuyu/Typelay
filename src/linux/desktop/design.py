@@ -132,8 +132,13 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface .translation-preview { font-family: 'TypeLay Serif 15', 'Noto Serif SC', serif; }
 .typelay-surface .swatch { border: 2px solid transparent; border-radius: 50%; min-width: 18px; min-height: 18px; padding: 0; margin: 3px; }
 .typelay-surface .swatch:checked { border-color: #141413; box-shadow: 0 0 0 2px #fff; }
-.typelay-surface .keycap { background: rgba(20,20,19,.08); border: 0; border-bottom: 1px solid rgba(20,20,19,.16); min-width: 110px; font-size: 12px; }
-.typelay-surface .keycap.recording { background: rgba(217,119,87,.14); color: @accent_ink; border: 1px solid @accent; }
+.typelay-surface .keycap { background: rgba(20,20,19,.08); border: 0; border-bottom: 1px solid rgba(20,20,19,.16); min-width: 72px; min-height: 25px; padding: 0 10px; margin: 0; border-radius: 7px; font-size: 12.5px; font-weight: 500; }
+.typelay-surface .keycap.empty { color: #74726c; }
+.typelay-surface.settings-dark .keycap.empty { color: #9a988f; }
+.typelay-surface .shortcut-warning { color: #a5670e; font-size: 12px; }
+.typelay-surface.settings-dark .shortcut-warning { color: #dda14e; }
+.typelay-surface .shortcut-dim { color: #99978f; }
+.typelay-surface .keycap.recording { background: rgba(217,119,87,.14); color: @accent_ink; border: 0; border-bottom: 1px solid transparent; box-shadow: inset 0 0 0 1.5px @accent; }
 .typelay-surface .preview-canvas { padding: 24px; background: linear-gradient(135deg,#e9dfcf,#dfe5d6); border-radius: 12px; min-height: 140px; }
 .typelay-surface .preview-overlay { background: rgba(251,250,247,.94); border: 1px solid rgba(20,20,19,.1); border-radius: 18px; padding: 13px 14px 9px; box-shadow: 0 8px 24px rgba(20,20,19,.1); }
 .typelay-surface .translation-preview { font-size: 15px; }
@@ -594,12 +599,13 @@ class Segments(Gtk.Box):
 class ShortcutRecorder(Gtk.Button):
     """A focused key recorder, never a global hook or a source-field key sink."""
 
-    def __init__(self, changed, *, session=False):
+    def __init__(self, changed, *, binding):
         super().__init__()
         self.value = ""
         self.recording = False
         self.changed = changed
-        self.session = session
+        self.binding = binding
+        self.empty_text, self.prompt_text = "未设置", "按下按键…"
         style(self, "keycap")
         self.connect("clicked", self.start)
         # GTK buttons expose no separate label child through ATK once named.
@@ -610,6 +616,7 @@ class ShortcutRecorder(Gtk.Button):
         )
         self.connect("key-press-event", self.key)
         self.connect("focus-out-event", lambda *_: self.cancel())
+        self.connect("unmap", lambda *_: self.cancel())
         self.set_text("")
 
     def get_text(self):
@@ -617,12 +624,44 @@ class ShortcutRecorder(Gtk.Button):
 
     def set_text(self, value):
         self.value = value or ""
-        if not self.recording:
-            self.set_label(self.value or "未设置")
+        self.render()
+
+    def set_messages(self, empty, prompt):
+        self.empty_text, self.prompt_text = empty, prompt
+        self.render()
+
+    def render(self):
+        context = self.get_style_context()
+        (context.add_class if not self.value and not self.recording else context.remove_class)(
+            "empty"
+        )
+        pretty = "".join(
+            {"Ctrl": "⌃", "Alt": "⌥", "Shift": "⇧", "Super": "⌘"}.get(part, part)
+            for part in self.value.split("+")
+        )
+        self.set_label(self.prompt_text if self.recording else pretty or self.empty_text)
+        self.set_tooltip_text(self.value or self.empty_text)
+        self.get_accessible().set_description(
+            self.prompt_text if self.recording else self.value or self.empty_text
+        )
+
+    def current(self):
+        window = self.get_toplevel()
+        return (
+            self.get_mapped()
+            and self.is_sensitive()
+            and isinstance(window, Gtk.Window)
+            and window.is_active()
+        )
 
     def start(self, *_):
+        if not self.current():
+            return
+        if self.recording:
+            self.cancel()
+            return
         self.recording = True
-        self.set_label("按下快捷键…")
+        self.render()
         style(self, "recording")
         self.grab_focus()
 
@@ -633,7 +672,7 @@ class ShortcutRecorder(Gtk.Button):
         return False
 
     def key(self, _widget, event):
-        if not self.recording:
+        if not self.recording or not self.current() or not self.has_focus():
             return False
         name = Gdk.keyval_name(event.keyval)
         if name in (
@@ -649,13 +688,19 @@ class ShortcutRecorder(Gtk.Button):
             "Meta_R",
         ):
             return True
-        if name == "Escape":
+        state = event.state
+        no_modifiers = not state & (
+            Gdk.ModifierType.CONTROL_MASK
+            | Gdk.ModifierType.MOD1_MASK
+            | Gdk.ModifierType.SHIFT_MASK
+            | Gdk.ModifierType.SUPER_MASK
+        )
+        if no_modifiers and name == "Escape" and self.binding != "exitShortcut":
             self.cancel()
             return True
-        if name in ("BackSpace", "Delete") and not self.session:
+        if no_modifiers and name in ("BackSpace", "Delete") and self.binding == "pauseShortcut":
             value = ""
         else:
-            state = event.state
             pieces = [
                 title
                 for mask, title in (
@@ -666,7 +711,9 @@ class ShortcutRecorder(Gtk.Button):
                 )
                 if state & mask
             ]
-            key = {"ISO_Left_Tab": "Tab", "space": "Space", "Return": "Enter"}.get(name, name)
+            key = {"ISO_Left_Tab": "Tab", "Escape": "Esc", "space": "Space", "Return": "Enter"}.get(
+                name, name
+            )
             if key and len(key) == 1:
                 key = key.upper()
             value = "+".join([*pieces, key]) if key else ""

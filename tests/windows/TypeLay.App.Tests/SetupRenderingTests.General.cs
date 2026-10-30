@@ -37,6 +37,12 @@ public sealed partial class SetupRenderingTests
         var hero = GeneralElement<Grid>(scene.Window, "SettingsRow_general_enable");
         Assert.Equal(72, hero.ActualHeight + hero.Margin.Top + hero.Margin.Bottom);
         var mode = GeneralElement<RadioButton>(scene.Window, "GeneralMode_Automatic");
+        var track = GeneralElement<Border>(scene.Window, "GeneralModeTrack");
+        var modeRow = GeneralElement<Grid>(scene.Window, "SettingsRow_general_mode");
+        Assert.Equal(28, track.ActualHeight);
+        Assert.Equal(44, modeRow.ActualHeight);
+        Assert.Equal(8, track.TranslatePoint(new Point(), modeRow).Y);
+        Assert.Equal(System.Windows.Media.Colors.Transparent, Assert.IsType<System.Windows.Media.SolidColorBrush>(mode.Background).Color);
         Assert.Equal(24, mode.ActualHeight);
         Assert.Equal(12, mode.FontSize);
         Assert.Equal(FontWeights.Medium, mode.FontWeight);
@@ -99,7 +105,7 @@ public sealed partial class SetupRenderingTests
     [Theory]
     [InlineData("navigate")]
     [InlineData("hide")]
-    public Task GeneralPendingSaveRetiresWithItsPageAndCurrentControlsStillSave(string retirement) => desktop.RunAsync(async () =>
+    public Task GeneralAcceptedModeSaveCompletesAfterNavigationWithoutRevivingOldControls(string retirement) => desktop.RunAsync(async () =>
     {
         await using var scene = new GeneralScene("zh-CN", "light");
         var ack = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -125,7 +131,8 @@ public sealed partial class SetupRenderingTests
             Assert.NotSame(oldChoice, GeneralElement<RadioButton>(scene.Window, "GeneralMode_OnDemand"));
             ack.SetResult(true);
             await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
-            Assert.Equal(scene.Before, File.ReadAllText(scene.Path));
+            Assert.Equal(WorkMode.OnDemand, WindowsRuntime.CreateSettings(scene.Path).Value.Mode);
+            string committed = File.ReadAllText(scene.Path);
             try
             {
                 old.Select();
@@ -134,10 +141,10 @@ public sealed partial class SetupRenderingTests
             catch (ElementNotEnabledException) { }
             oldChoice.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ToggleButton.CheckedEvent));
             Assert.Equal(1, preparations);
-            Assert.Equal(scene.Before, File.ReadAllText(scene.Path));
+            Assert.Equal(committed, File.ReadAllText(scene.Path));
             scene.Window.PrepareSettingsChange = _ => Task.FromResult(true);
-            GeneralSelection(GeneralElement<RadioButton>(scene.Window, "GeneralMode_OnDemand")).Select();
-            Assert.Equal(WorkMode.OnDemand, WindowsRuntime.CreateSettings(scene.Path).Value.Mode);
+            GeneralSelection(GeneralElement<RadioButton>(scene.Window, "GeneralMode_Automatic")).Select();
+            Assert.Equal(WorkMode.Automatic, WindowsRuntime.CreateSettings(scene.Path).Value.Mode);
             GeneralToggle(GeneralElement<CheckBox>(scene.Window, "GeneralEnable")).Toggle();
             Assert.False(WindowsRuntime.CreateSettings(scene.Path).Value.Enabled);
             Assert.Equal("已暂停", GeneralElement<TextBlock>(scene.Window, "GeneralTranslationStatus").Text);

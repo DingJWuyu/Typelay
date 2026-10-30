@@ -729,11 +729,11 @@ public sealed partial class SetupRenderingTests(WpfDesktopFixture desktop)
             start.ArgumentList.Add(JsonSerializer.Serialize(selected));
             if (exactPackages)
                 start.ArgumentList.Add(JsonSerializer.Serialize(selected.Select(id => new
-        {
-            id = "argos-" + id.Replace('_', '-'),
-            version = "1.9",
-            directions = new[] { id }
-        })));
+                {
+                    id = "argos-" + id.Replace('_', '-'),
+                    version = "1.9",
+                    directions = new[] { id }
+                })));
             return new ChildProcess(start);
         });
     }

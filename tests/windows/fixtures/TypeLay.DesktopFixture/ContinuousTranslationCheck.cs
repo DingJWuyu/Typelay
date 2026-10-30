@@ -633,10 +633,14 @@ internal static partial class ContinuousTranslationCheck
             int beforeSecondWake = broker.Captures;
             wakeAttempts++;
             SendDirectShortcut(out secondWakeInputs, result.CleanupErrors, 0x78);
-            await UntilAsync(() => FreshSource(beforeSecondWake, 2) && ReadyPresentation(), cancellation);
+            await UntilAsync(() => FreshSource(beforeSecondWake, 2) && ReadyPresentation()
+                && controller.ShortcutStatus.Contains("当前输入框的直接替换快捷键已就绪。", StringComparison.Ordinal), cancellation);
             result.Stage = "ordinary-source-control-exit";
-            // One complete software chord immediately after real ready UI. Never
-            // wait for a private lease/ACK, renew the deadline or retry the press.
+            // This fixed stock Edit publishes source-control and direct readiness
+            // together from the same normal capture. Use its existing public cue,
+            // not visible translation alone or a private lease/ACK. Preserve one
+            // complete chord, the original freshness limit and operation deadline.
+            // This does not prove exit availability during the visible-preview gap.
             SendOrdinaryControlShortcut(0x42, out sourceExitInputs, result.CleanupErrors);
             await UntilAsync(() => N.Focused() == (root, field) && !overlay.IsVisible, cancellation);
             int afterSourceExit = broker.Captures;

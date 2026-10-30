@@ -333,6 +333,40 @@ class Localizer:
             return ENGLISH[value]
         return "\n".join(ENGLISH.get(line, line) for line in value.split("\n"))
 
+    def shortcut_text(self, value):
+        if self.text("取消") == "取消":
+            return value
+        result = self.text(value)
+        # Only fixed host-owned shortcut chrome; retain canonical key strings.
+        for chinese, english in (
+            (
+                "唤醒与直接替换请使用 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24 的组合，也支持 Shift+功能键，暂不支持 F12；两个快捷键不能相同。",
+                "Use Ctrl / Alt (optionally Shift) with a letter, digit or F1-F24 for wake and direct replacement. Shift+function keys are also supported, except F12. The two shortcuts must differ.",
+            ),
+            (
+                "接受与退出请选择有效且不同的主键。",
+                "Choose valid, different base keys for accept and dismiss.",
+            ),
+            (
+                "暂停/恢复请留空，或使用 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24 的组合，也支持 Shift+功能键，暂不支持 F12。",
+                "Leave pause/resume empty or use Ctrl / Alt (optionally Shift) with a letter, digit or F1-F24. Shift+function keys are also supported, except F12.",
+            ),
+            (
+                "唤醒、直接替换、接受与退出，以及暂停/恢复不能使用相同的快捷键组合。草稿仍保留。",
+                "Wake, direct replacement, accept, dismiss and pause/resume must use different shortcuts. Your edit is retained.",
+            ),
+            (
+                " 可能与应用常用编辑或窗口操作冲突；这不是对当前应用的检测结果。",
+                " may conflict with common editing or window commands; this is not a scan of the current app.",
+            ),
+            (
+                "可以继续编辑，或强制保存这组快捷键。保存不保证启用，也不会绕过原输入框的安全检查。",
+                "Keep editing or save this shortcut set anyway. Saving does not guarantee availability or bypass source-field safety checks.",
+            ),
+        ):
+            result = result.replace(chinese, english)
+        return result
+
     def model_text(self, value):
         language = (self.settings() or {}).get("uiLanguage", "system")
         english = (

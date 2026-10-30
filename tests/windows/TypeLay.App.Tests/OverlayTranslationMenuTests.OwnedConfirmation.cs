@@ -18,9 +18,9 @@ namespace TypeLay.App.Tests;
 
 public sealed partial class OverlayTranslationMenuTests
 {
-    // Expected RED on the existing implementation: the real More mouse-down
-    // retires owned editing before Keep can preserve an editable local draft.
-    // This public vertical scenario has not yet been run on Windows.
+    // CI558 reached the owned editor and its real draft/Undo, then the original
+    // exact-hit More input did not produce Click. Its internal focus/reader
+    // cause is not yet established by that run; this same full chain must pass.
     [Fact]
     public Task OwnedKeepPreservesTheSameEditorUndoAndReturnsThroughAFreshSourceBinding() => desktop.RunAsync(async () =>
     {
@@ -101,7 +101,7 @@ public sealed partial class OverlayTranslationMenuTests
             var more = Descendants(overlay).OfType<Button>().Single(button =>
                 AutomationProperties.GetName(button) == "更多翻译操作");
             using (var action = ActionDeadline())
-                await ClickMouse(more, Button.ClickEvent, "owned-confirmation-more", action.Token);
+                await ObserveOwnedMoreClick(overlay, editor, more, draft, action.Token);
             var menu = Assert.IsAssignableFrom<ContextMenu>(more.ContextMenu);
             Assert.True(menu.IsOpen);
             var regenerate = MoreItem(menu, "MoreRegenerate");
@@ -216,6 +216,71 @@ public sealed partial class OverlayTranslationMenuTests
         if (failure is not null)
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
     });
+
+    private static async Task ObserveOwnedMoreClick(OverlayWindow overlay, TextBox editor,
+        Button more, string draft, CancellationToken cancellation)
+    {
+        // Observe only this original real click. No focus/activation, new input,
+        // delayed deadline or interpretation of arbitrary source text is added.
+        var events = new List<object>();
+        int order = 0, dropped = 0;
+        void Observe(string kind, IInputElement? next = null)
+        {
+            if (events.Count == 16)
+            {
+                dropped++;
+                return;
+            }
+            events.Add(new
+            {
+                order = ++order,
+                kind,
+                visible = overlay.IsVisible,
+                editorFocused = editor.IsKeyboardFocused,
+                moreFocused = more.IsKeyboardFocused,
+                editorReadOnly = editor.IsReadOnly,
+                editor.CanUndo,
+                draftUnchanged = editor.Text == draft,
+                nextFocus = next is null ? "none" : ReferenceEquals(next, more) ? "more"
+                    : ReferenceEquals(next, editor) ? "editor" : "other"
+            });
+        }
+        MouseButtonEventHandler down = (_, e) => { if (e.ChangedButton == MouseButton.Left) Observe("more-down"); };
+        MouseButtonEventHandler up = (_, e) => { if (e.ChangedButton == MouseButton.Left) Observe("more-up"); };
+        RoutedEventHandler click = (_, _) => Observe("more-click");
+        KeyboardFocusChangedEventHandler focus = (_, e) => Observe("editor-focus-left", e.NewFocus);
+        DependencyPropertyChangedEventHandler visible = (_, _) => Observe("overlay-visible-changed");
+        more.AddHandler(Mouse.PreviewMouseDownEvent, down, true);
+        more.AddHandler(Mouse.PreviewMouseUpEvent, up, true);
+        more.Click += click;
+        editor.LostKeyboardFocus += focus;
+        overlay.IsVisibleChanged += visible;
+        try
+        {
+            Observe("before-more");
+            await ClickMouse(more, Button.ClickEvent, "owned-confirmation-more", cancellation);
+        }
+        finally
+        {
+            more.RemoveHandler(Mouse.PreviewMouseDownEvent, down);
+            more.RemoveHandler(Mouse.PreviewMouseUpEvent, up);
+            more.Click -= click;
+            editor.LostKeyboardFocus -= focus;
+            overlay.IsVisibleChanged -= visible;
+            try
+            {
+                Observe("after-original-action");
+                TestContext.Current.TestOutputHelper?.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    operation = "owned-confirmation-more-events",
+                    events,
+                    dropped,
+                    cancellationRequested = cancellation.IsCancellationRequested
+                }));
+            }
+            catch { /* Keep the original click failure, if any. */ }
+        }
+    }
 
     private static async Task ClickOwnedConfirmationEditor(TextBox editor, OverlayWindow overlay,
         Action verifySource, CancellationToken cancellation)
