@@ -4,6 +4,7 @@
 #include <QTextBoundaryFinder>
 #include <QTextCharFormat>
 #include <QTextDocument>
+#include <limits>
 
 // Display-only formatting of the owned overlay document.
 // Only complete Unicode grapheme clusters receive a family override. Other
@@ -24,12 +25,14 @@ public:
     }
 protected:
     void highlightBlock(const QString &text) override {
-        if (family_.isEmpty()) return;
+        // setFormat uses int offsets; reject an unrepresentable block before
+        // converting the boundary API's qsizetype (including its -1 sentinel).
+        if (family_.isEmpty() || text.size() > std::numeric_limits<int>::max()) return;
         struct Cluster { int start, end; char32_t base; bool emoji; };
         QList<Cluster> clusters;
         QTextBoundaryFinder boundaries(QTextBoundaryFinder::Grapheme, text);
-        for (int start = 0, end = boundaries.toNextBoundary(); end >= 0;
-             start = end, end = boundaries.toNextBoundary()) {
+        for (int start = 0, end = static_cast<int>(boundaries.toNextBoundary()); end >= 0;
+             start = end, end = static_cast<int>(boundaries.toNextBoundary())) {
             char32_t base = 0;
             bool emoji = false;
             for (char32_t cp : text.mid(start, end - start).toUcs4()) {

@@ -137,6 +137,8 @@ internal sealed partial class SettingsWindow
         if (!IsVisible)
         {
             _appearancePageHidden = true;
+            _appearanceVisibility++;
+            RetireAppearanceTileRings();
             _appearanceSizeCommit = null;
         }
         else if (_appearancePageHidden && _page == "appearance")
@@ -149,6 +151,8 @@ internal sealed partial class SettingsWindow
         _appearancePageHidden = false;
         IsVisibleChanged -= AppearanceVisibilityChanged;
         IsVisibleChanged += AppearanceVisibilityChanged;
+        SizeChanged -= AppearanceWindowSizeChanged;
+        SizeChanged += AppearanceWindowSizeChanged;
         bool CurrentPage() => IsVisible && !_appearancePageHidden && ReferenceEquals(page, _pageIdentity)
             && _page == "appearance" && !_emergencyShutdown && _closeDialog is null;
         // The current control authorizes entry. Once accepted, an ordinary
@@ -161,6 +165,7 @@ internal sealed partial class SettingsWindow
         AutomationProperties.SetAutomationId(_group!, "AppearanceColorGroup");
         var themes = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(0, 8, 0, 8) };
         var themeChoices = new List<RadioButton>();
+        var tiles = new Dictionary<string, Control>();
         foreach (var (value, zh, en) in new[] { ("system", "自动", "Auto"), ("light", "浅色", "Light"), ("dark", "深色", "Dark") })
         {
             var choice = new RadioButton
@@ -176,10 +181,8 @@ internal sealed partial class SettingsWindow
             choice.SetResourceReference(StyleProperty, "SettingsThemeChoice");
             AutomationProperties.SetName(choice, UiTheme.L(zh, en));
             AutomationProperties.SetAutomationId(choice, "AppearanceTheme_" + value);
-            choice.Checked += async (_, _) => await SaveAppearanceAsync(_settings.Value with
-            {
-                Theme = value
-            });
+            choice.Checked += async (_, _) => await ChangeAppearanceTileAsync("theme", value, CurrentPage);
+            tiles.Add("theme:" + value, choice);
             themeChoices.Add(choice);
             themes.Children.Add(choice);
         }
@@ -255,10 +258,8 @@ internal sealed partial class SettingsWindow
             label.HorizontalAlignment = HorizontalAlignment.Center;
             Grid.SetRow(label, 2);
             body.Children.Add(label);
-            var font = UiTheme.Button("", async () => await SaveAppearanceAsync(_settings.Value with
-            {
-                Font = value
-            }));
+            var font = UiTheme.Button("", async () => await ChangeAppearanceTileAsync("font", value, CurrentPage));
+            tiles.Add("font:" + value, font);
             font.Content = body;
             font.Tag = selected ? "selected" : "";
             font.Margin = new(0, 0, value == "system" ? 0 : 14, 0);
@@ -342,6 +343,8 @@ internal sealed partial class SettingsWindow
             {
                 Motion = value
             })));
+
+        _appearanceTileRings = new(this, themes, fonts, tiles, CurrentPage);
 
         ComboBox Choice((string Value, string Label)[] choices, string selected, string id, string name, Action<string> save)
         {

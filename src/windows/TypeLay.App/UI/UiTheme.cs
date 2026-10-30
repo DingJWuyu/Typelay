@@ -236,6 +236,16 @@ internal static partial class UiTheme
         };
         modeShadow.Freeze();
         r["SettingsModeThumbShadow"] = modeShadow;
+        r["AppearanceTileSoft"] = Brush((preferences.Accent switch
+        {
+            "ocean" => "#21",
+            "sage" => "#26",
+            "graphite" => "#29",
+            _ => "#24"
+        }) + accent.Item1[1..]);
+        var tileDrop = new SolidColorBrush(Color.FromArgb((byte)Math.Round(modeShadow.Opacity * 255), modeShadow.Color.R, modeShadow.Color.G, modeShadow.Color.B));
+        tileDrop.Freeze();
+        r["AppearanceTileDrop"] = tileDrop;
         r["AppearanceSceneryBase"] = Brush(dark ? "#171614" : "#ECE6DB");
         r["AppearanceWarmColor"] = Brush(dark ? "#66A05032" : "#61D97757").Color;
         r["AppearanceGreenColor"] = Brush(dark ? "#73465F46" : "#668AA078").Color;

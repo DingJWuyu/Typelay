@@ -15,6 +15,7 @@
   <ItemGroup>
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/KeyboardHook.Browser.cs" Link="Product/KeyboardHook.Browser.cs" />
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/KeyboardHook.OwnedPractice.cs" Link="Product/KeyboardHook.OwnedPractice.cs" />
+    <Compile Include="../../../../src/windows/TypeLay.App/Windows/KeyboardHook.LocalDraft.cs" Link="Product/KeyboardHook.LocalDraft.cs" />
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/KeyboardHook.cs" Link="Product/KeyboardHook.cs" />
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/KeyboardHook.Wake.cs" Link="Product/KeyboardHook.Wake.cs" />
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/KeyboardHook.SourceGlossary.cs" Link="Product/KeyboardHook.SourceGlossary.cs" />

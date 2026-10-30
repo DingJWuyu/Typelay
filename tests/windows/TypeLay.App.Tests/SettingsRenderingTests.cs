@@ -1662,13 +1662,15 @@ public sealed partial class SettingsRenderingTests(WpfDesktopFixture desktop, IT
         }
     }
 
-    private void Render(Window window, string name)
+    private void Render(Window window, string name, bool clientOnly = false)
     {
         Stage($"render:{name}");
         var root = (FrameworkElement)window.Content;
         // The root's visual offset includes its margin. Use the window's entire
         // canvas so rounded borders and shadows are not clipped by the capture.
-        var image = new RenderTargetBitmap((int)Math.Ceiling(window.ActualWidth), (int)Math.Ceiling(window.ActualHeight), 96, 96, PixelFormats.Pbgra32);
+        // Native dialog screenshots explicitly capture their painted client surface.
+        var canvas = clientOnly ? root : (FrameworkElement)window;
+        var image = new RenderTargetBitmap((int)Math.Ceiling(canvas.ActualWidth), (int)Math.Ceiling(canvas.ActualHeight), 96, 96, PixelFormats.Pbgra32);
         image.Render(root);
         var encoder = new PngBitmapEncoder();
         encoder.Frames.Add(BitmapFrame.Create(image));

@@ -1,7 +1,7 @@
 """Wayland status-notifier quick panel; settings remain owned by the shared host."""
 
 import gi
-from design import Segments, Toast, app_icon, apply_theme, box, label, style
+from design import Segments, Toast, app_icon, apply_theme, box, label, reduced_motion, style
 from model_status import activity_status, model_notice, set_status_tone
 from status_notifier import StatusNotifier
 
@@ -32,6 +32,11 @@ class Tray:
         self.feedback_status = {"revision": 0, "code": None, "delivery": "none"}
         self.availability_changed = availability_changed
         self.window = Gtk.Window(title="TypeLay")
+        gtk_settings = self.window.get_settings()
+        motion_watch = gtk_settings.connect(
+            "notify::gtk-enable-animations", lambda *_: self.refresh()
+        )
+        self.window.connect("destroy", lambda *_: gtk_settings.disconnect(motion_watch))
         style(self.window, "quick-panel")
         visual = self.window.get_screen().get_rgba_visual()
         if visual:
@@ -282,7 +287,9 @@ class Tray:
             self.style_title.set_text("Tone" if english else "风格")
             self.status.set_label(state)
             self.style_provider = apply_theme(self.window, self.value, self.style_provider)
-            self.toast.set_transition_duration(0 if self.value.get("reduceMotion") else 200)
+            self.toast.set_transition_duration(
+                0 if reduced_motion(self.window, self.value) else 200
+            )
             self.indicator.update(enabled, "TypeLay · " + state)
             self.model.show()
             self.operation.set_visible(bool(self.operation.get_text()))

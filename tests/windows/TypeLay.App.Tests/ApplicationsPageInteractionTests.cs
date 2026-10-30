@@ -270,6 +270,10 @@ public sealed partial class SettingsRenderingTests
         Assert.Equal(44, ApplicationElement(scene.Window, "ApplicationRow_writer").ActualHeight);
         var style = Assert.IsType<ComboBox>(ApplicationElement(scene.Window, "ApplicationStyle_writer"));
         Assert.Equal(5, style.Items.Count);
+        Assert.Equal(24, style.ActualHeight);
+        Assert.Equal(12, style.FontSize);
+        Assert.Equal(FontWeights.Medium, style.FontWeight);
+        Assert.Equal(new Thickness(10, 0, 28, 0), style.Padding);
         Assert.Equal(language == "en" ? "App tone writer" : "应用风格 writer", AutomationProperties.GetName(style));
         Assert.Equal(language == "en" ? "Enable in writer" : "在 writer 中启用", AutomationProperties.GetName(ApplicationElement(scene.Window, "ApplicationEnabled_writer")));
         Assert.False(style.IsEnabled);
@@ -299,14 +303,26 @@ public sealed partial class SettingsRenderingTests
             var summary = ApplicationElement(scene.Window, "SettingsRow_apps_" + connection);
             var dot = Assert.Single(Descendants(summary).OfType<System.Windows.Shapes.Ellipse>());
             Assert.True(dot.IsVisible);
+            Assert.Equal(7, dot.ActualWidth);
+            Assert.Equal(7, dot.ActualHeight);
+            var primary = ApplicationButton(scene.Window, connection == "desktop" ? "ApplicationSupport_desktop-text_Refresh" : "ApplicationConnectionPrimary_browser");
+            AssertApplicationActionSize(primary);
             Assert.Equal(Assert.IsType<System.Windows.Media.SolidColorBrush>(scene.Window.FindResource("Tertiary")).Color,
                 Assert.IsType<System.Windows.Media.SolidColorBrush>(dot.Fill).Color);
         }
         Render(scene.Window, $"settings-applications-{language}-{theme}-{width}.png");
         ApplicationRemovalDialog(scene.Window, "writer", dialog =>
         {
-            Render(dialog, $"application-remove-{language}-{theme}-{width}.png");
+            Assert.Same(ApplicationButton(dialog, "ApplicationRemovalCancel"), System.Windows.Input.Keyboard.FocusedElement);
+            Render(dialog, $"application-remove-{language}-{theme}-{width}.png", clientOnly: true);
             InvokeApplicationButton(ApplicationButton(dialog, "ApplicationRemovalCancel"));
+        });
+        Assert.Equal(before, File.ReadAllText(scene.Path));
+        ApplicationDialogAction(scene.Window, () => InvokeApplicationButton(ApplicationButton(scene.Window, "ApplicationAdd")), "ApplicationPicker", dialog =>
+        {
+            Assert.Same(ApplicationElement(dialog, "ApplicationPickerSearch"), System.Windows.Input.Keyboard.FocusedElement);
+            Render(dialog, $"application-picker-{language}-{theme}-{width}.png", clientOnly: true);
+            InvokeApplicationButton(ApplicationButton(dialog, "ApplicationPickerCancel"));
         });
         Assert.Equal(before, File.ReadAllText(scene.Path));
         var search = Assert.IsType<TextBox>(ApplicationElement(scene.Window, "ApplicationSearch"));
@@ -338,6 +354,14 @@ public sealed partial class SettingsRenderingTests
         Assert.Equal(before, File.ReadAllText(scene.Path));
         Assert.DoesNotContain(Descendants(scene.Window).OfType<TextBlock>(), block => block.IsVisible && block.Text == "已安装");
     });
+
+    private static void AssertApplicationActionSize(Button button)
+    {
+        Assert.Equal(26, button.ActualHeight);
+        Assert.Equal(12.5, button.FontSize);
+        Assert.Equal(FontWeights.Medium, button.FontWeight);
+        Assert.Equal(new Thickness(12, 0, 12, 0), button.Padding);
+    }
 
     private static FrameworkElement ApplicationElement(DependencyObject root, string id)
     {
@@ -404,6 +428,16 @@ public sealed partial class SettingsRenderingTests
                 Assert.Equal(18, title.FontSize);
                 Assert.Equal(FontWeights.Medium, title.FontWeight);
                 Assert.Equal(UiTheme.DisplayFontForSize(18), title.FontFamily);
+                var surface = Assert.IsType<Border>(dialog.Content);
+                Assert.Equal("ApplicationDialogSurface", AutomationProperties.GetAutomationId(surface));
+                Assert.Equal(id == "ApplicationPicker" ? 320 : 340, surface.ActualWidth);
+                Assert.Equal(new Thickness(22), surface.Padding);
+                Assert.True(dialog.ActualWidth >= surface.ActualWidth);
+                Assert.Same(dialog.Background, surface.Background);
+                Assert.Equal(255, Assert.IsType<System.Windows.Media.SolidColorBrush>(surface.Background).Color.A);
+                foreach (var button in Descendants(dialog).OfType<Button>().Where(button => AutomationProperties.GetAutomationId(button) is
+                    "ApplicationPickerBrowse" or "ApplicationPickerCancel" or "ApplicationRemovalCancel" or "ApplicationRemovalConfirm"))
+                    AssertApplicationActionSize(button);
                 interact(dialog);
             }
             catch (Exception error) { failure = error; dialog?.Close(); }

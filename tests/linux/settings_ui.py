@@ -1,7 +1,8 @@
 """Exercise the real native settings widgets against an isolated production host.
 
-No model, desktop input or user settings are used. This verifies presentation
-and settings persistence, not translation quality or source-field writeback.
+No model or user settings are used. The appearance drag uses XTest only in
+its owned settings window. This verifies presentation and settings persistence,
+not physical input, translation quality or source-field writeback.
 """
 
 import argparse
@@ -42,6 +43,8 @@ def main(arguments=None):
     parser.add_argument("--toast-only", action="store_true")
     parser.add_argument("--shortcuts-reset-only", action="store_true")
     parser.add_argument("--shortcuts-only", action="store_true")
+    parser.add_argument("--appearance-only", action="store_true")
+    parser.add_argument("--appearance-retired-only", action="store_true")
     parser.add_argument("--shortcuts-recording-only", action="store_true")
     options = parser.parse_args(arguments)
     if options.package:
@@ -187,14 +190,18 @@ def main(arguments=None):
 
         class ObservedLink(Link):
             draft_submissions = 0
+            patch_submissions = 0
             hold_operation = None
             held_id = None
             held_frame = None
+            held_reply_received = None
 
             # Diagnostic metadata only. Preserve the real transport, replies and
             # original request deadlines; never log content or replay a request.
             async def ask(self, operation, *args, **kwargs):
                 started = time.monotonic()
+                if operation == "settingsPatch":
+                    self.patch_submissions += 1
                 if operation == "saveSettingsDraft":
                     self.draft_submissions += 1
                 if operation == self.hold_operation:
@@ -237,6 +244,8 @@ def main(arguments=None):
                     if self.held_id is not None and frame.get("reply") == self.held_id:
                         self.held_frame = frame
                         self.held_id = None
+                        if self.held_reply_received is not None:
+                            self.held_reply_received.set()
                         return
                     return super().receive(frame)
                 finally:
@@ -317,6 +326,638 @@ def main(arguments=None):
             width, height = surface.window.get_size()
             Gdk.pixbuf_get_from_window(window, 0, 0, width, height).savev(
                 str(options.output / (name + ".png")), "png", [], []
+            )
+
+        async def exercise_appearance_retired():
+            surface.sidebar.select_row(surface.nav_rows["appearance"])
+            surface.window.present()
+            await settle(
+                lambda: surface.window.is_active()
+                and not surface.pages.get_transition_running()
+                and not jobs
+            )
+            motion = surface.controls["motion"]
+            assert motion.get_mapped() and motion.is_sensitive()
+            motion.set_active_id("full")
+            await settle(lambda: state["motion"] == "full" and not jobs)
+            surface.sidebar.select_row(surface.nav_rows["general"])
+            await settle(lambda: not surface.pages.get_transition_running() and not jobs)
+            assert not motion.get_mapped()
+            before = (directory / "config/settings.json").read_bytes()
+            count = host.patch_submissions
+            motion.set_active_id("reduce")
+            await settle()
+            assert host.patch_submissions == count, (
+                "hidden Appearance peer submitted a new preference"
+            )
+            assert (directory / "config/settings.json").read_bytes() == before
+            print("APPEARANCE RETIRED PASS: hidden-page signal made zero requests", flush=True)
+
+        async def exercise_appearance():
+            surface.sidebar.select_row(surface.nav_rows["appearance"])
+            surface.window.present()
+            await settle(
+                lambda: surface.window.is_active()
+                and not surface.pages.get_transition_running()
+                and not jobs
+            )
+            motion = surface.controls.get("motion")
+            assert isinstance(motion, Gtk.ComboBoxText), (
+                "Appearance lacks the System / Full / Reduced motion selector"
+            )
+            assert [row[1] for row in motion.get_model()] == ["system", "full", "reduce"]
+            assert motion.is_sensitive()
+            scroll = surface.page_scrolls["appearance"]
+            adjustment = scroll.get_vadjustment()
+            adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
+            await paint(surface.window)
+            position = motion.translate_coordinates(scroll, 0, 0)
+            assert position is not None and 0 <= position[0] and 0 <= position[1]
+            assert position[0] + motion.get_allocated_width() <= scroll.get_allocated_width()
+            assert position[1] + motion.get_allocated_height() <= scroll.get_allocated_height()
+            for mode in ("full", "reduce", "system", "full"):
+                motion.set_active_id(mode)
+                await settle(
+                    lambda: state.get("motion") == mode
+                    and not surface.pending_settings
+                    and not jobs
+                )
+                saved = json.loads((directory / "config/settings.json").read_text())
+                assert saved["Motion"] == mode
+                assert state["reduceMotion"] is (mode == "reduce")
+            surface.dismiss()
+            await settle(lambda: not surface.window.get_visible())
+            surface.show()
+            surface.sidebar.select_row(surface.nav_rows["appearance"])
+            await settle(
+                lambda: surface.window.is_active()
+                and not surface.pages.get_transition_running()
+                and not jobs
+            )
+            assert motion.get_active_id() == "full"
+            assert await host.ask("settingsPatch", {"uiLanguage": "en"}) is True
+            await settle(lambda: state["uiLanguage"] == "en" and not jobs)
+            assert [row[0] for row in motion.get_model()] == ["Match system", "Full", "Reduced"]
+            print(
+                "APPEARANCE MOTION CHOICES PASS: three real persisted modes, reopen and English labels",
+                flush=True,
+            )
+
+            # Public GTK controls and real host persistence at both supported
+            # size bounds. Scrolling uses the page's native adjustment.
+            async def reveal(widget):
+                point = widget.translate_coordinates(scroll, 0, 0)
+                assert point is not None and widget.get_mapped() and widget.is_sensitive()
+                adjustment.set_value(
+                    adjustment.get_value()
+                    + point[1]
+                    - (scroll.get_allocated_height() - widget.get_allocated_height()) / 2
+                )
+                await paint(surface.window)
+                point = widget.translate_coordinates(scroll, 0, 0)
+                assert point is not None and point[0] >= 0 and point[1] >= 0
+                assert point[0] + widget.get_allocated_width() <= scroll.get_allocated_width()
+                assert point[1] + widget.get_allocated_height() <= scroll.get_allocated_height()
+
+            async def select(key, value):
+                if key in surface.preference_options:
+                    control = surface.preference_options[key][value]
+                    await reveal(control)
+                    control.set_active(True)
+                else:
+                    control = surface.controls[key]
+                    await reveal(control)
+                    if isinstance(control, Gtk.Scale):
+                        control.set_value(value)
+                    elif isinstance(control, Gtk.Switch):
+                        control.set_active(value)
+                    else:
+                        control.set_active_id(value)
+                await settle(
+                    lambda: state.get(key) == value and not jobs and not surface.pending_settings
+                )
+
+            await select("theme", "light")
+            for key in ("theme", "font"):
+                for identity, art in surface.preference_art[key].items():
+                    assert (art.get_allocated_width(), art.get_allocated_height()) == (76, 50), (
+                        key,
+                        identity,
+                        (art.get_allocated_width(), art.get_allocated_height()),
+                    )
+            assert surface.preview_canvas.get_allocated_height() == 188
+            assert surface.preview_source.get_allocated_height() == 42
+            size = surface.controls["textSize"]
+            assert size.get_allocated_width() == 150
+            assert not size.get_draw_value()
+            for color in ("clay", "ocean", "sage", "iris", "graphite"):
+                await select("accent", color)
+                saved = json.loads((directory / "config/settings.json").read_text())
+                assert saved["Accent"] == color
+            await select("accent", "clay")
+            system_family = Pango.FontDescription.from_string(
+                surface.window.get_settings().get_property("gtk-font-name")
+            ).get_family()
+            for choice in ("claude", "sans", "system"):
+                await select("font", choice)
+                for bound in (13, 19):
+                    await select("textSize", bound)
+                    await paint(surface.window)
+                    layout = surface.preview_text.get_layout()
+                    canvas = surface.preview_canvas
+                    bubble = surface.preview_overlay
+                    position = bubble.translate_coordinates(canvas, 0, 0)
+                    assert position is not None
+                    widths = (canvas.get_allocated_width(), bubble.get_allocated_width())
+                    heights = (canvas.get_allocated_height(), bubble.get_allocated_height())
+                    line_extents = [
+                        (line.get_pixel_extents()[0].height, line.get_pixel_extents()[1].height)
+                        for line in layout.get_lines_readonly()
+                    ]
+                    print(
+                        "APPEARANCE PREVIEW",
+                        choice,
+                        bound,
+                        {
+                            "position": position,
+                            "widths": widths,
+                            "heights": heights,
+                            "label": (
+                                surface.preview_text.get_allocated_width(),
+                                surface.preview_text.get_allocated_height(),
+                            ),
+                            "lines": line_extents,
+                        },
+                        flush=True,
+                    )
+                    assert widths[1] == min(330, widths[0] - 80), "preview exceeded its CSS width"
+                    assert position[0] + widths[1] == widths[0] - 40
+                    # Canonical CSS itself totals 108.9px at two 19px lines:
+                    # 2*19*1.55 + padding(13+8) + gap9 + fixed key20.
+                    # Its bottom80/188px canvas permits one rounded borderless
+                    # shell pixel above the canvas, never clipped text ink.
+                    assert position[1] >= -1, "preview exceeded canonical top rounding"
+                    preview_bar = bubble.get_children()[-1]
+                    preview_key = next(
+                        child
+                        for child in preview_bar.get_children()
+                        if isinstance(child, Gtk.Label) and child.get_text() == "Tab"
+                    )
+                    assert preview_bar.get_allocated_height() == 20
+                    assert preview_key.get_allocated_height() == 20
+                    assert (
+                        heights[1] == surface.preview_text.get_allocated_height() + 13 + 8 + 9 + 20
+                    )
+                    assert abs(layout.get_pixel_size()[1] - len(line_extents) * bound * 1.55) <= 1
+                    text_position = surface.preview_text.translate_coordinates(canvas, 0, 0)
+                    assert text_position is not None
+                    _layout_x, layout_y = surface.preview_text.get_layout_offsets()
+                    ink, _logical = layout.get_pixel_extents()
+                    # GtkLabel reports layout offsets in widget->window,
+                    # while translate_coordinates above is label-local.
+                    ink_top = (
+                        text_position[1]
+                        + layout_y
+                        - surface.preview_text.get_allocation().y
+                        + ink.y
+                    )
+                    assert 0 <= ink_top and ink_top + ink.height <= heights[0]
+                    print(
+                        "APPEARANCE PREVIEW CHROME",
+                        {
+                            "bar": preview_bar.get_allocated_height(),
+                            "key": preview_key.get_allocated_height(),
+                            "ink": (ink_top, ink.height),
+                        },
+                        flush=True,
+                    )
+                    assert position[1] + heights[1] == heights[0] - 80
+                    assert heights[0] == 188 and surface.preview_source.get_allocated_height() == 42
+                    assert layout.get_unknown_glyphs_count() == 0
+                    description = surface.preview_text.get_style_context().get_font(
+                        Gtk.StateFlags.NORMAL
+                    )
+                    expected = (
+                        f"TypeLay Serif {bound}"
+                        if choice == "claude"
+                        else "Inter"
+                        if choice == "sans"
+                        else system_family
+                    )
+                    assert expected in description.get_family(), (choice, description.to_string())
+                    assert round(description.get_size() / Pango.SCALE * 96 / 72, 3) == bound
+                    if choice != "system":
+                        # get_run_readonly returns borrowed data. Keep every
+                        # owning boxed wrapper alive while reading its font.
+                        iterator = layout.get_iter()
+                        run = iterator.get_run_readonly()
+                        assert run is not None
+                        item = run.item
+                        analysis = item.analysis
+                        actual = analysis.font
+                        assert not actual.get_face().is_synthesized()
+                        face = json.loads(actual.serialize().get_data())
+                        bundle = json.loads(
+                            (Path(os.environ["TYPELAY_UI_FONT_ROOT"]) / "manifest.json").read_text()
+                        )["files"]
+                        assert any(item.get("sha256") == face["checksum"] for item in bundle)
+                    adjustment.set_value(0)
+                    await paint(surface.window)
+                    capture(f"appearance-font-{choice}-{bound}")
+            await select("font", "claude")
+            await select("textSize", 13)
+            await reveal(size)
+
+            # One actual owned XTest drag, not set_value or a release-only
+            # signal. Observe two values while button 1 remains down and the
+            # first real Host ACK is held. No source-input authority is inferred.
+            import ctypes
+            from contextlib import ExitStack
+
+            from support.xtest import prepare_xtest
+
+            gi.require_version("GdkX11", "3.0")
+            from gi.repository import GdkX11
+
+            window = surface.window
+            native = window.get_window()
+            assert isinstance(native, GdkX11.X11Window)
+            xid = native.get_xid()
+            range_window = size.get_window()
+            sx, sy = size.translate_coordinates(window, 0, 0)
+            rectangle = size.get_range_rect()
+            slider_start, slider_end = size.get_slider_range()
+            # GTK3's CSS gadget getter subtracts the windowless owner's
+            # allocation, despite GtkRange's older window-coordinate docstring.
+            # Convert the actual widget-local trough through this owned window.
+            assert not size.get_has_window()
+            half = (slider_end - slider_start) / 2
+            start = slider_start + half
+            finish = rectangle.x + rectangle.width - half
+            middle = (start + finish) / 2
+            y = rectangle.y + rectangle.height // 2
+            assert rectangle.x <= start < middle < finish <= rectangle.x + rectangle.width
+            range_origin = range_window.get_origin()
+            origin = native.get_origin()
+            assert range_origin[0] and origin[0]
+            ox, oy = origin[1] + sx, origin[2] + sy
+            frozen = (
+                sx,
+                sy,
+                size.get_allocated_width(),
+                size.get_allocated_height(),
+                rectangle.x,
+                rectangle.y,
+                rectangle.width,
+                rectangle.height,
+            )
+            pointer = window.get_display().get_default_seat().get_pointer()
+            retired = False
+            deadline = time.monotonic() + 8
+            last_point = None
+
+            def retire(*_args):
+                nonlocal retired
+                retired = True
+
+            def check_owner(*_args):
+                if not window.is_active() or surface.pages.get_visible_child_name() != "appearance":
+                    retire()
+
+            watchers = [
+                (size, size.connect("unmap", retire)),
+                (window, window.connect("notify::is-active", check_owner)),
+                (surface.pages, surface.pages.connect("notify::visible-child-name", check_owner)),
+            ]
+
+            def current(*, hit=False):
+                assert not retired and surface.window is window and window.get_window() == native
+                assert native.get_xid() == xid and window.is_active()
+                assert surface.pages.get_visible_child_name() == "appearance"
+                assert (
+                    surface.controls["textSize"] is size
+                    and size.get_mapped()
+                    and size.is_sensitive()
+                )
+                assert size.get_window() == range_window and native.get_origin() == origin
+                assert range_window.get_origin() == range_origin
+                rect = size.get_range_rect()
+                assert (
+                    *size.translate_coordinates(window, 0, 0),
+                    size.get_allocated_width(),
+                    size.get_allocated_height(),
+                    rect.x,
+                    rect.y,
+                    rect.width,
+                    rect.height,
+                ) == frozen
+                clip = size.translate_coordinates(scroll, 0, 0)
+                assert clip and clip[0] >= 0 and clip[1] >= 0
+                assert clip[0] + frozen[2] <= scroll.get_allocated_width()
+                assert clip[1] + frozen[3] <= scroll.get_allocated_height()
+                if hit:
+                    assert last_point is not None
+                    _screen, px, py = pointer.get_position()
+                    assert (px, py) == last_point
+                    hit_window, _hx, _hy = pointer.get_window_at_position()
+                    assert hit_window is not None and hit_window.get_effective_toplevel() == native
+                    # Resolve the public GDK hit window to its registered GTK
+                    # widget without delivering this observation event.
+                    event = Gdk.Event.new(Gdk.EventType.MOTION_NOTIFY)
+                    event.window = hit_window
+                    assert Gtk.get_event_widget(event) is size
+                assert time.monotonic() < deadline, "owned drag interaction budget expired"
+
+            events = []
+            press_signal = size.connect(
+                "button-press-event", lambda *_: events.append("down") or False
+            )
+            release_signal = size.connect(
+                "button-release-event", lambda *_: events.append("up") or False
+            )
+            observations = []
+            with ExitStack() as stack:
+                x11, xtst, display = prepare_xtest(stack)
+                xtst.XTestFakeMotionEvent.argtypes = [
+                    ctypes.c_void_p,
+                    ctypes.c_int,
+                    ctypes.c_int,
+                    ctypes.c_int,
+                    ctypes.c_ulong,
+                ]
+                xtst.XTestFakeMotionEvent.restype = ctypes.c_int
+                xtst.XTestFakeButtonEvent.argtypes = [
+                    ctypes.c_void_p,
+                    ctypes.c_uint,
+                    ctypes.c_int,
+                    ctypes.c_ulong,
+                ]
+                xtst.XTestFakeButtonEvent.restype = ctypes.c_int
+
+                def move(x):
+                    nonlocal last_point
+                    current(hit=last_point is not None)
+                    target = (round(ox + x), oy + y)
+                    assert ox <= target[0] < ox + frozen[2]
+                    assert oy <= target[1] < oy + frozen[3]
+                    assert xtst.XTestFakeMotionEvent(display, -1, *target, 0)
+                    last_point = target
+                    x11.XSync(display, 0)
+                    current(hit=True)
+
+                held_reply = asyncio.Event()
+                final_value = asyncio.Event()
+                host.held_reply_received = held_reply
+                value_wait_signal = size.connect(
+                    "value-changed",
+                    lambda item: final_value.set() if item.get_value() == 19 else None,
+                )
+                down = False
+                try:
+                    move(start)
+                    current(hit=True)
+                    assert xtst.XTestFakeButtonEvent(display, 1, 1, 0)
+                    down = True
+                    x11.XSync(display, 0)
+                    await settle(lambda: events == ["down"])
+                    host.hold_operation = "settingsPatch"
+                    async with asyncio.timeout(0.4):
+                        move(middle)
+                        # The GLib loop's 1ms resolution makes a 1ms poll
+                        # continuously ready, starving GDK's lower-priority
+                        # compressed motion flush. Await the real receipt.
+                        if host.held_frame is None:
+                            await held_reply.wait()
+                        assert host.held_frame is not None
+                        assert size.get_value() == 16 and events == ["down"], {
+                            "value": size.get_value(),
+                            "events": events,
+                            "roundDigits": size.get_round_digits(),
+                            "stepIncrement": size.get_adjustment().get_step_increment(),
+                        }
+                        await paint(surface.window)
+                        observations.append(
+                            (
+                                int(size.get_value()),
+                                surface.preview_text.get_style_context()
+                                .get_font(Gtk.StateFlags.NORMAL)
+                                .get_size(),
+                            )
+                        )
+                        move(finish)
+                        if size.get_value() != 19:
+                            await final_value.wait()
+                        assert size.get_value() == 19
+                        await paint(surface.window)
+                        observations.append(
+                            (
+                                int(size.get_value()),
+                                surface.preview_text.get_style_context()
+                                .get_font(Gtk.StateFlags.NORMAL)
+                                .get_size(),
+                            )
+                        )
+                        assert events == ["down"] and surface.pending_settings["textSize"] == 19
+                        assert [
+                            round(font / Pango.SCALE * 96 / 72, 3) for _, font in observations
+                        ] == [16, 19], observations
+                        frame, host.held_frame = host.held_frame, None
+                        Link.receive(host, frame)
+                    current(hit=True)
+                    assert xtst.XTestFakeButtonEvent(display, 1, 0, 0)
+                    down = False
+                    x11.XSync(display, 0)
+                    await settle(
+                        lambda: events == ["down", "up"]
+                        and not jobs
+                        and not surface.pending_settings
+                    )
+                    assert state["textSize"] == 19
+                    assert (
+                        json.loads((directory / "config/settings.json").read_text())["TextSize"]
+                        == 19
+                    )
+                    assert (
+                        round(
+                            surface.preview_text.get_style_context()
+                            .get_font(Gtk.StateFlags.NORMAL)
+                            .get_size()
+                            / Pango.SCALE
+                            * 96
+                            / 72,
+                            3,
+                        )
+                        == 19
+                    )
+                    print(
+                        "APPEARANCE DRAG PASS",
+                        {
+                            "events": events,
+                            "samples": observations,
+                            "range": (rectangle.x, rectangle.width),
+                            "slider": (slider_start, slider_end),
+                        },
+                        flush=True,
+                    )
+                finally:
+                    if down:
+                        xtst.XTestFakeButtonEvent(display, 1, 0, 0)
+                        x11.XSync(display, 0)
+                    host.held_reply_received = None
+                    size.disconnect(value_wait_signal)
+                    host.hold_operation = None
+                    host.held_id = None
+                    if host.held_frame is not None:
+                        frame, host.held_frame = host.held_frame, None
+                        Link.receive(host, frame)
+                    for widget, signal in watchers:
+                        widget.disconnect(signal)
+                    size.disconnect(press_signal)
+                    size.disconnect(release_signal)
+            await select("textSize", 15)
+            await select("reduceTransparency", True)
+            assert surface.window.get_style_context().has_class("reduce-transparency")
+            opaque = surface.preview_overlay.get_style_context().get_background_color(
+                Gtk.StateFlags.NORMAL
+            )
+            assert opaque.alpha == 1, opaque.to_string()
+            await select("reduceTransparency", False)
+            assert not surface.window.get_style_context().has_class("reduce-transparency")
+
+            # Only this isolated GTK process is changed. The OS preference is
+            # restored in finally; no desktop setting or other process is edited.
+            gtk_settings = surface.window.get_settings()
+            prior_animations = gtk_settings.get_property("gtk-enable-animations")
+            try:
+                for mode in ("system", "full", "reduce"):
+                    await select("motion", mode)
+                    for enabled in (False, True):
+                        count = host.patch_submissions
+                        gtk_settings.set_property("gtk-enable-animations", enabled)
+                        await paint(surface.window)
+                        reduced = mode == "reduce" or mode == "system" and not enabled
+                        assert (
+                            surface.window.get_style_context().has_class("reduce-motion") is reduced
+                        )
+                        assert surface.pages.get_transition_duration() == (0 if reduced else 200)
+                        assert surface.toast.get_transition_duration() == (0 if reduced else 200)
+                        assert surface.tutorial.steps.get_transition_duration() == (
+                            0 if reduced else 320
+                        )
+                        assert host.patch_submissions == count, "OS notify saved a preference"
+                        print("MOTION EFFECTIVE", mode, enabled, reduced, flush=True)
+            finally:
+                gtk_settings.set_property("gtk-enable-animations", prior_animations)
+            print(
+                "MOTION MAPPING PASS; native Full/OS-false frame override is a separate contract",
+                flush=True,
+            )
+
+            # An already admitted ordinary preference completes after navigation;
+            # the page gate must not cancel or repeat its real transaction.
+            await select("motion", "system")
+            await reveal(motion)
+            host.hold_operation = "settingsPatch"
+            motion.set_active_id("full")
+            async with asyncio.timeout(0.4):
+                while host.held_frame is None:
+                    await asyncio.sleep(0.001)
+            assert host.held_frame["data"] is True
+            surface.sidebar.select_row(surface.nav_rows["general"])
+            frame, host.held_frame = host.held_frame, None
+            Link.receive(host, frame)
+            await settle(lambda: not jobs and not surface.pending_settings)
+            assert state["motion"] == "full"
+            assert json.loads((directory / "config/settings.json").read_text())["Motion"] == "full"
+            count = host.patch_submissions
+            before = (directory / "config/settings.json").read_bytes()
+            motion.set_active_id("reduce")
+            await settle()
+            assert (
+                host.patch_submissions == count
+                and (directory / "config/settings.json").read_bytes() == before
+            )
+            surface.dismiss()
+            await settle(lambda: not surface.window.get_visible())
+            surface.preference_options["font"]["sans"].set_active(True)
+            await settle()
+            assert (
+                host.patch_submissions == count
+                and (directory / "config/settings.json").read_bytes() == before
+            )
+            surface.show()
+            surface.sidebar.select_row(surface.nav_rows["appearance"])
+            await settle(
+                lambda: surface.window.is_active()
+                and not surface.pages.get_transition_running()
+                and not jobs
+            )
+            assert surface.controls["motion"].get_active_id() == "full"
+            assert surface.preference_options["font"]["claude"].get_active()
+
+            # Real file failure restores the committed control without claiming
+            # a draft. Repeating the explicit current choice after repair saves.
+            blocker = directory / "config/settings.json.tmp"
+            blocker.mkdir()
+            try:
+                await reveal(motion)
+                motion.set_active_id("reduce")
+                await settle(lambda: not jobs and not surface.pending_settings)
+                assert (directory / "config/settings.json").read_bytes() == before
+                assert motion.get_active_id() == "full"
+                assert surface.message.get_mapped()
+                assert surface.message.get_text().startswith("Not saved."), (
+                    surface.message.get_text()
+                )
+                capture("appearance-save-failed-en")
+                await reveal(size)
+                size.set_value(19)
+                assert (
+                    round(
+                        surface.preview_text.get_style_context()
+                        .get_font(Gtk.StateFlags.NORMAL)
+                        .get_size()
+                        / Pango.SCALE
+                        * 96
+                        / 72,
+                        3,
+                    )
+                    == 19
+                )
+                await settle(lambda: not jobs and not surface.pending_settings)
+                assert size.get_value() == 15
+                assert (
+                    round(
+                        surface.preview_text.get_style_context()
+                        .get_font(Gtk.StateFlags.NORMAL)
+                        .get_size()
+                        / Pango.SCALE
+                        * 96
+                        / 72,
+                        3,
+                    )
+                    == 15
+                )
+                assert (directory / "config/settings.json").read_bytes() == before
+            finally:
+                blocker.rmdir()
+            await select("motion", "reduce")
+            assert not surface.message.get_text()
+            await select("motion", "system")
+            for language in ("en", "zh-CN"):
+                await select("uiLanguage", language)
+                for theme in ("light", "dark"):
+                    await select("theme", theme)
+                    adjustment.set_value(0)
+                    await paint(surface.window)
+                    capture(f"appearance-{language}-{theme}-top")
+                    adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
+                    await paint(surface.window)
+                    await reveal(motion)
+                    capture(f"appearance-{language}-{theme}-controls")
+            print(
+                "APPEARANCE PAGE PASS: real controls/fonts/bounds, mapping/notify, admitted-save and retired signals, failure/recovery, bilingual themes",
+                flush=True,
             )
 
         async def exercise_shortcut_reset():
@@ -1427,6 +2068,12 @@ def main(arguments=None):
                 )
                 print("APPLICATIONS EMPTY PASS", flush=True)
                 return
+            if options.appearance_retired_only:
+                await exercise_appearance_retired()
+                return
+            if options.appearance_only:
+                await exercise_appearance()
+                return
             if options.shortcuts_recording_only:
                 await exercise_shortcut_recording()
                 return
@@ -1829,8 +2476,12 @@ def main(arguments=None):
             await settle(lambda: not source_picker.popover.get_visible())
             surface.window.present()
             await settle(lambda: surface.window.is_active())
-            surface.controls["reduceMotion"].set_active(True)
-            await settle(lambda: state.get("reduceMotion") is True)
+            surface.sidebar.select_row(surface.nav_rows["appearance"])
+            await settle(lambda: not surface.pages.get_transition_running())
+            surface.controls["motion"].set_active_id("reduce")
+            await settle(
+                lambda: state.get("motion") == "reduce" and state.get("reduceMotion") is True
+            )
             surface.controls["textSize"].set_value(18)
             await settle(lambda: state.get("textSize") == 18)
             assert await host.ask("togglePause") is True

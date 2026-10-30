@@ -87,8 +87,10 @@ public sealed partial class SetupRenderingTests
             Assert.Equal(50, art.ActualHeight);
             var choice = GeneralElement<RadioButton>(scene.Window, "AppearanceTheme_" + value);
             var ring = Assert.IsType<Border>(choice.Template.FindName("selection", choice));
-            Assert.Equal(new Thickness(2.5), ring.BorderThickness);
-            Assert.Equal(value == theme, ring.IsVisible);
+            Assert.True(ring.IsVisible);
+            Assert.Equal(new Thickness(value == theme ? 2.5 : .5), ring.BorderThickness);
+            Assert.Equal(new Thickness(value == theme ? -2.5 : -.5), ring.Margin);
+            Assert.Same(scene.Window.FindResource(value == theme ? "Accent" : "SettingsControlLine"), ring.BorderBrush);
             Assert.DoesNotContain(Descendants(choice).OfType<TextBlock>(), text => text.Text == "✓");
         }
         foreach (string value in new[] { "claude", "sans", "system" })
@@ -98,7 +100,10 @@ public sealed partial class SetupRenderingTests
             Assert.Equal(50, art.ActualHeight);
             Assert.Equal(new CornerRadius(9), art.CornerRadius);
             var button = GeneralElement<Button>(scene.Window, "AppearanceFont_" + value);
-            Assert.Equal(value == "claude", Assert.IsType<Border>(button.Template.FindName("selection", button)).IsVisible);
+            var ring = Assert.IsType<Border>(button.Template.FindName("selection", button));
+            Assert.True(ring.IsVisible);
+            Assert.Equal(new Thickness(value == "claude" ? 2.5 : .5), ring.BorderThickness);
+            Assert.Same(scene.Window.FindResource(value == "claude" ? "Accent" : "SettingsControlLine"), ring.BorderBrush);
         }
         var accent = GeneralElement<Button>(scene.Window, "AppearanceAccent_clay");
         Assert.Equal(20, accent.ActualWidth);
@@ -155,6 +160,12 @@ public sealed partial class SetupRenderingTests
             Assert.IsAssignableFrom<IRangeValueProvider>(peer.GetPattern(PatternInterface.RangeValue)).SetValue(size);
             Assert.Equal(size, WindowsRuntime.CreateSettings(scene.Path).Value.TextSize);
         }
+        var preview = GeneralElement<Border>(scene.Window, "AppearancePreview");
+        preview.BringIntoView();
+        await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+        AssertWithinViewport(scene.Window, preview);
+        Assert.Equal(19, GeneralElement<TextBlock>(scene.Window, "AppearanceTranslationPreview").FontSize);
+        RenderTray(scene.Window, "appearance-prototype-zh-CN-light-claude19.png");
         await SelectAppearanceOption(scene.Window, "AppearanceInterfaceLanguage", "English");
         Assert.Equal("en", WindowsRuntime.CreateSettings(scene.Path).Value.UiLanguage);
         Assert.Equal("Reduce transparency", AutomationProperties.GetName(GeneralElement<CheckBox>(scene.Window, "AppearanceTransparency")));

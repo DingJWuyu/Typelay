@@ -7,7 +7,14 @@ from pathlib import Path
 
 import gi
 from application_support import BROWSER_MANAGEMENT_URIS
-from design import Segments, ShortcutRecorder, apply_theme
+from design import (
+    Segments,
+    ShortcutRecorder,
+    apply_theme,
+    css_font_family,
+    motion_preference,
+    reduced_motion,
+)
 from design import row as design_row
 from model_status import activity_status, model_notice, set_status_tone
 
@@ -276,12 +283,7 @@ class Tutorial:
             self.local_note.set_text(
                 tr("翻译全部在这台电脑上完成", "Everything is translated on this computer")
             )
-            mode = value.get("motion", "reduce" if value.get("reduceMotion") else "system")
-            reduced = (
-                mode == "reduce"
-                or mode == "system"
-                and not self.window.get_settings().get_property("gtk-enable-animations")
-            )
+            reduced = reduced_motion(self.window, value)
             self.steps.set_transition_duration(0 if reduced else 320)
             for key, chinese, english in (
                 ("source", "源语言", "From"),
@@ -3222,7 +3224,29 @@ class Settings:
             LanguagePicker,
         )
 
+    def update_appearance_preview(self):
+        if not hasattr(self, "preview_text"):
+            return
+        preferences = dict(self.value or {})
+        # Only this display sample follows an admitted in-flight slider value.
+        # The real save queue remains authoritative; old ACKs cannot replace a
+        # newer pending value, and failure restores the committed projection.
+        if "textSize" in self.pending_settings:
+            preferences["textSize"] = self.pending_settings["textSize"]
+        size = max(13, min(19, preferences.get("textSize", 15)))
+        signature = (css_font_family(preferences, "content", size=size), size)
+        if getattr(self, "preview_signature", None) == signature:
+            return
+        self.preview_signature = signature
+        leading = Pango.AttrList()
+        leading.insert(Pango.attr_line_height_new_absolute(round(size * 1.55 * Pango.SCALE)))
+        self.preview_text.set_attributes(leading)
+        self.preview_style_provider.load_from_data(
+            (f"* {{ font-family: {signature[0]}; font-size: {size}px; }}").encode()
+        )
+
     def update_palette(self, *_):
+        self.update_appearance_preview()
         preferences = self.value or {}
         gtk_settings = self.window.get_settings()
         signature = tuple(
@@ -3233,6 +3257,7 @@ class Settings:
                 "font",
                 "textSize",
                 "reduceMotion",
+                "motion",
                 "reduceTransparency",
                 "uiLanguage",
                 "source",
@@ -3242,12 +3267,18 @@ class Settings:
             gtk_settings.get_property("gtk-theme-name"),
             gtk_settings.get_property("gtk-application-prefer-dark-theme"),
             gtk_settings.get_property("gtk-font-name"),
+            gtk_settings.get_property("gtk-enable-animations"),
         )
         if getattr(self, "palette_signature", None) == signature:
             return
         self.palette_signature = signature
         self.style_provider = apply_theme(self.window, preferences, self.style_provider)
+        if hasattr(self, "pages"):
+            reduced = reduced_motion(self.window, preferences)
+            self.pages.set_transition_duration(0 if reduced else 200)
+            self.toast.set_transition_duration(0 if reduced else 200)
         if hasattr(self, "tutorial"):
+            self.tutorial.render()
             self.tutorial.style_provider = apply_theme(
                 self.tutorial.window, preferences, self.tutorial.style_provider
             )
@@ -3431,6 +3462,17 @@ class Settings:
                         self.localized_languages(self.language_choices[key]),
                         self.value[key],
                     )
+            for identity, chinese, english in (
+                ("system", "跟随系统", "Match system"),
+                ("full", "完整", "Full"),
+                ("reduce", "减少", "Reduced"),
+            ):
+                for item in self.controls["motion"].get_model():
+                    if item[1] == identity:
+                        item[0] = self.tr(chinese, english)
+            for item in self.controls["uiLanguage"].get_model():
+                if item[1] == "system":
+                    item[0] = self.tr("跟随系统", "Match system")
             for control in (
                 self.translation.scope,
                 self.application_support.selector,
@@ -3449,6 +3491,32 @@ class Settings:
         )
         for setter, chinese, translated in self.localized:
             setter(translated if english else chinese)
+        for key in ("textSize", "uiLanguage", "reduceTransparency", "motion"):
+            self.controls[key].get_accessible().set_name(
+                self.tr("设置：", "Setting: ") + self.control_labels[key].get_text()
+            )
+        for key, choices in {
+            "theme": (
+                ("system", "自动", "Auto"),
+                ("light", "浅色", "Light"),
+                ("dark", "深色", "Dark"),
+            ),
+            "font": (
+                ("claude", "Claude", "Claude"),
+                ("sans", "无衬线", "Sans"),
+                ("system", "系统", "System"),
+            ),
+        }.items():
+            for identity, chinese, translated in choices:
+                option = self.preference_options[key][identity]
+                option.get_child().get_children()[-1].set_text(self.tr(chinese, translated))
+                option.get_accessible().set_name(
+                    self.tr("外观：", "Appearance: ") + self.tr(chinese, translated)
+                )
+        for identity, button in self.preference_options["accent"].items():
+            button.get_accessible().set_name(
+                self.tr("强调色：", "Accent color: ") + identity.title()
+            )
         self.window.set_title("TypeLay Settings" if english else "TypeLay 设置")
         self.search.set_placeholder_text("Search" if english else "搜索")
         self.application_support.render_preparation()
@@ -3757,6 +3825,7 @@ class Settings:
             "pauseShortcut": "",
         }
         value = {**defaults, **value}
+        value["motion"] = motion_preference(value)
         first = self.value is None
         direction_changed = first or any(
             self.value[key] != value[key] for key in ("source", "target")
@@ -3782,8 +3851,6 @@ class Settings:
                     widget.set_text(value[key])
         finally:
             self.configuring = False
-        self.pages.set_transition_duration(0 if value["reduceMotion"] else 200)
-        self.toast.set_transition_duration(0 if value["reduceMotion"] else 200)
         self.update_palette()
         self.localize()
         shortcut = value.get("pauseShortcut")
@@ -3918,10 +3985,51 @@ class Settings:
     def same_draft_value(_key, left, right):
         return left == right
 
-    def change_control(self, key, value):
+    def change_control(self, key, value, *, widget=None):
         if self.configuring or self.value is None or value is None:
             return
+        if key in {
+            "theme",
+            "accent",
+            "font",
+            "textSize",
+            "uiLanguage",
+            "reduceTransparency",
+            "motion",
+        }:
+            options = self.preference_options.get(key)
+            current = options.get(value) if options else self.controls.get(key)
+            if not (
+                widget is current
+                and widget is not None
+                and widget.get_mapped()
+                and widget.is_sensitive()
+                and self.window.is_active()
+                and self.pages.get_visible_child_name() == "appearance"
+            ):
+                # Reject only a new hidden/retired control event. A preference
+                # already admitted to save_control still completes normally.
+                # Restore this control from the committed/pending projection,
+                # without dispatching another request or changing page/focus.
+                displayed = self.pending_settings.get(key, self.value[key])
+                self.configuring = True
+                try:
+                    if options:
+                        options[displayed].set_active(True)
+                    else:
+                        control = self.controls[key]
+                        if isinstance(control, Gtk.Switch):
+                            control.set_active(displayed)
+                        elif isinstance(control, Gtk.Scale):
+                            control.set_value(displayed)
+                        else:
+                            control.set_active_id(displayed)
+                finally:
+                    self.configuring = False
+                return
         self.pending_settings[key] = value
+        if key == "textSize":
+            self.update_appearance_preview()
         self.render_language_swap()
         self.tasks(self.save_control(key, value))
 

@@ -23,17 +23,20 @@ internal static partial class UiTheme
         <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="RadioButton">
           <Grid Width="76">
             <Grid.RowDefinitions><RowDefinition Height="50"/><RowDefinition Height="7"/><RowDefinition Height="12"/></Grid.RowDefinitions>
-            <Border x:Name="selectionSoft" Margin="-5" CornerRadius="14" BorderThickness="2.5" BorderBrush="{DynamicResource AccentSoft}" Visibility="Hidden" IsHitTestVisible="False"/>
-            <Border x:Name="selection" Margin="-2.5" CornerRadius="11.5" BorderThickness="2.5" BorderBrush="{DynamicResource Accent}" Visibility="Hidden" IsHitTestVisible="False"/>
-            <Border x:Name="art" CornerRadius="9" BorderThickness="0.5" BorderBrush="{DynamicResource SettingsControlLine}" Effect="{DynamicResource SettingsModeThumbShadow}"><ContentPresenter Margin="-0.5"/></Border>
+            <Border x:Name="edge" Margin="-0.5" CornerRadius="9.5" BorderThickness="0.5" BorderBrush="{DynamicResource SettingsModeThumbEdge}" IsHitTestVisible="False"/>
+            <Border x:Name="selectionSoft" CornerRadius="9" Background="{DynamicResource AppearanceTileDrop}" IsHitTestVisible="False"><Border.RenderTransform><TranslateTransform Y="1"/></Border.RenderTransform><Border.Effect><BlurEffect Radius="2" KernelType="Gaussian"/></Border.Effect></Border>
+            <Border x:Name="selection" Margin="-0.5" CornerRadius="9.5" BorderThickness="0.5" BorderBrush="{DynamicResource SettingsControlLine}" IsHitTestVisible="False"/>
+            <Border CornerRadius="9"><ContentPresenter/></Border>
             <TextBlock Grid.Row="2" Text="{TemplateBinding Tag}" Foreground="{TemplateBinding Foreground}" FontSize="12" FontWeight="Medium" LineHeight="12" LineStackingStrategy="BlockLineHeight" HorizontalAlignment="Center"/>
             <Border x:Name="focus" Grid.RowSpan="3" BorderBrush="Transparent" BorderThickness="1" CornerRadius="10" Margin="-6" IsHitTestVisible="False"/>
           </Grid>
           <ControlTemplate.Triggers>
             <Trigger Property="IsChecked" Value="True">
               <Setter Property="Foreground" Value="{DynamicResource Text}"/>
-              <Setter TargetName="selectionSoft" Property="Visibility" Value="Visible"/><Setter TargetName="selection" Property="Visibility" Value="Visible"/>
-              <Setter TargetName="art" Property="Effect" Value="{x:Null}"/><Setter TargetName="art" Property="BorderBrush" Value="Transparent"/>
+              <Setter TargetName="selection" Property="Margin" Value="-2.5"/><Setter TargetName="selection" Property="CornerRadius" Value="11.5"/><Setter TargetName="selection" Property="BorderThickness" Value="2.5"/><Setter TargetName="selection" Property="BorderBrush" Value="{DynamicResource Accent}"/>
+              <Setter TargetName="selectionSoft" Property="Margin" Value="-5"/><Setter TargetName="selectionSoft" Property="CornerRadius" Value="14"/><Setter TargetName="selectionSoft" Property="Background" Value="{DynamicResource AppearanceTileSoft}"/><Setter TargetName="selectionSoft" Property="Effect" Value="{x:Null}"/>
+              <Setter TargetName="selectionSoft" Property="RenderTransform"><Setter.Value><TranslateTransform Y="0"/></Setter.Value></Setter>
+              <Setter TargetName="edge" Property="Visibility" Value="Hidden"/>
             </Trigger>
             <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="focus" Property="BorderBrush" Value="{DynamicResource Text}"/></Trigger>
             <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger>
@@ -48,15 +51,19 @@ internal static partial class UiTheme
         <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
           <Grid>
             <Grid.RowDefinitions><RowDefinition Height="50"/><RowDefinition Height="19"/></Grid.RowDefinitions>
-            <Border x:Name="selectionSoft" Margin="-5" CornerRadius="14" BorderThickness="2.5" BorderBrush="{DynamicResource AccentSoft}" Visibility="Hidden" IsHitTestVisible="False"/>
-            <Border x:Name="selection" Margin="-2.5" CornerRadius="11.5" BorderThickness="2.5" BorderBrush="{DynamicResource Accent}" Visibility="Hidden" IsHitTestVisible="False"/>
-            <Border x:Name="artShadow" CornerRadius="9" Background="{DynamicResource AppearancePaper}" Effect="{DynamicResource SettingsModeThumbShadow}" IsHitTestVisible="False"/>
+            <Border x:Name="edge" Margin="-0.5" CornerRadius="9.5" BorderThickness="0.5" BorderBrush="{DynamicResource SettingsModeThumbEdge}" IsHitTestVisible="False"/>
+            <Border x:Name="selectionSoft" CornerRadius="9" Background="{DynamicResource AppearanceTileDrop}" IsHitTestVisible="False"><Border.RenderTransform><TranslateTransform Y="1"/></Border.RenderTransform><Border.Effect><BlurEffect Radius="2" KernelType="Gaussian"/></Border.Effect></Border>
+            <Border x:Name="selection" Margin="-0.5" CornerRadius="9.5" BorderThickness="0.5" BorderBrush="{DynamicResource SettingsControlLine}" IsHitTestVisible="False"/>
             <ContentPresenter Grid.RowSpan="2"/>
-            <Border x:Name="art" CornerRadius="9" BorderThickness="0.5" BorderBrush="{DynamicResource SettingsControlLine}" IsHitTestVisible="False"/>
             <Border x:Name="focus" Grid.RowSpan="2" BorderBrush="Transparent" BorderThickness="1" CornerRadius="10" Margin="-6" IsHitTestVisible="False"/>
           </Grid>
           <ControlTemplate.Triggers>
-            <Trigger Property="Tag" Value="selected"><Setter TargetName="artShadow" Property="Effect" Value="{x:Null}"/><Setter TargetName="selectionSoft" Property="Visibility" Value="Visible"/><Setter TargetName="selection" Property="Visibility" Value="Visible"/><Setter TargetName="art" Property="BorderBrush" Value="Transparent"/></Trigger>
+            <Trigger Property="Tag" Value="selected">
+              <Setter TargetName="selection" Property="Margin" Value="-2.5"/><Setter TargetName="selection" Property="CornerRadius" Value="11.5"/><Setter TargetName="selection" Property="BorderThickness" Value="2.5"/><Setter TargetName="selection" Property="BorderBrush" Value="{DynamicResource Accent}"/>
+              <Setter TargetName="selectionSoft" Property="Margin" Value="-5"/><Setter TargetName="selectionSoft" Property="CornerRadius" Value="14"/><Setter TargetName="selectionSoft" Property="Background" Value="{DynamicResource AppearanceTileSoft}"/><Setter TargetName="selectionSoft" Property="Effect" Value="{x:Null}"/>
+              <Setter TargetName="selectionSoft" Property="RenderTransform"><Setter.Value><TranslateTransform Y="0"/></Setter.Value></Setter>
+              <Setter TargetName="edge" Property="Visibility" Value="Hidden"/>
+            </Trigger>
             <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="focus" Property="BorderBrush" Value="{DynamicResource Text}"/></Trigger>
             <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger>
           </ControlTemplate.Triggers>

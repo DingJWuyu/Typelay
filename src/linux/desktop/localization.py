@@ -8,6 +8,8 @@ Unknown diagnostics remain verbatim rather than being guessed or rewritten.
 from gi.repository import GLib, Gtk
 
 ENGLISH = {
+    "上次设置操作结果未确认，请打开设置检查。": "The last settings change could not be confirmed. Open Settings to check.",
+    "未保存，已恢复原设置。请检查语言方向或系统权限。": "Not saved. The previous settings were restored. Check the language direction or system permissions.",
     "取消": "Cancel",
     "继续": "Continue",
     "关闭": "Close",

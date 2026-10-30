@@ -649,6 +649,7 @@ internal sealed partial class SettingsWindow : Window
             ? AutomationProperties.GetName(focused) : null;
         RetireModelPage();
         RetireGeneralModeThumb();
+        RetireAppearanceTileRings();
         _appearanceSizeCommit = null;
         _pageIdentity = new object();
         ClearSearchLocation();

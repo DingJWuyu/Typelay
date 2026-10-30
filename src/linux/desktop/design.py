@@ -121,17 +121,28 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface.settings-dark .glossary-heading, .typelay-surface.settings-dark .glossary-scope, .typelay-surface.settings-dark button.glossary-action, .typelay-surface.settings-dark .glossary-empty { color: #b5b3ab; }
 .typelay-surface.settings-dark .glossary-table row, .typelay-surface.settings-dark .glossary-listbar { box-shadow: inset 0 1px rgba(255,255,255,.08); }
 .typelay-surface.settings-dark .glossary-table row:hover, .typelay-surface.settings-dark button.glossary-action:hover { background: rgba(255,255,255,.05); }
-.typelay-surface .tile { border: 2px solid transparent; background: transparent; box-shadow: none; padding: 4px; }
-.typelay-surface .tile:checked { border-color: @accent; }
-.typelay-surface .tile-art { border-radius: 9px; min-width: 68px; min-height: 44px; border: 1px solid rgba(20,20,19,.16); }
+.typelay-surface button.tile { border: 0; background: transparent; box-shadow: none; padding: 0; margin: 0; min-width: 0; min-height: 0; color: #5c5b56; font-size: 12px; font-weight: 500; }
+.typelay-surface button.tile, .typelay-surface button.tile label { text-shadow: none; }
+.typelay-surface button.tile:hover { background: transparent; }
+.typelay-surface button.tile:checked { color: #141413; }
+.typelay-surface .tile-art { border-radius: 9px; min-width: 76px; min-height: 50px; padding: 0; margin: 0; border: 0; box-shadow: 0 0 0 .5px rgba(20,20,19,.16), 0 1px 2px rgba(20,20,19,.06); }
+.typelay-surface button.tile:checked .tile-art { box-shadow: 0 0 0 2.5px @accent, 0 0 0 5px alpha(@accent,__ART_SOFT_ALPHA__); }
 .typelay-surface .tile-system { background: linear-gradient(to right, #f1e3d3 50%, #2a221d 50%); }
 .typelay-surface .tile-light { background: linear-gradient(135deg, #f1e3d3, #dfe5d6); }
 .typelay-surface .tile-dark { background: linear-gradient(135deg, #3b2a22, #1e2620); }
-.typelay-surface .font-art { font-size: 20px; font-weight: 500; background: #faf9f5; }
-.typelay-surface .serif { font-family: 'TypeLay Serif 20', 'Noto Serif SC', serif; }
+.typelay-surface .theme-miniature { background: rgba(255,255,255,.88); border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+.typelay-surface .theme-miniature-dark { background: rgba(50,49,46,.95); }
+.typelay-surface .theme-miniature-system { background: linear-gradient(to right, rgba(255,255,255,.9) 50%, rgba(50,49,46,.95) 50%); }
+.typelay-surface .theme-miniature-bar { background: @accent; border-radius: 2px; }
+.typelay-surface .font-art { font-size: 20px; font-weight: 500; background: #faf9f5; color: #141413; }
 .typelay-surface .translation-preview { font-family: 'TypeLay Serif 15', 'Noto Serif SC', serif; }
-.typelay-surface .swatch { border: 2px solid transparent; border-radius: 50%; min-width: 18px; min-height: 18px; padding: 0; margin: 3px; }
-.typelay-surface .swatch:checked { border-color: #141413; box-shadow: 0 0 0 2px #fff; }
+.typelay-surface button.swatch { border: 0; border-radius: 50%; min-width: 20px; min-height: 20px; padding: 0; margin: 4px 0; box-shadow: inset 0 0 0 .5px rgba(0,0,0,.15); }
+.typelay-surface .translation-size { padding: 0; margin: 0; }
+.typelay-surface .translation-size trough { min-height: 4px; border: 0; border-radius: 2px; background: rgba(20,20,19,.14); }
+.typelay-surface .translation-size highlight { min-height: 4px; border: 0; border-radius: 2px; background: @accent; }
+.typelay-surface .translation-size slider { min-width: 20px; min-height: 20px; padding: 0; border: 0; margin: -8px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3), 0 0 0 .5px rgba(0,0,0,.08); }
+.typelay-surface .size-small { font-size: 11px; font-weight: 500; color: #74726c; }
+.typelay-surface .size-large { font-size: 17px; font-weight: 500; color: #74726c; }
 .typelay-surface .keycap { background: rgba(20,20,19,.08); border: 0; border-bottom: 1px solid rgba(20,20,19,.16); min-width: 72px; min-height: 25px; padding: 0 10px; margin: 0; border-radius: 7px; font-size: 12.5px; font-weight: 500; }
 .typelay-surface .keycap.empty { color: #74726c; }
 .typelay-surface.settings-dark .keycap.empty { color: #9a988f; }
@@ -139,10 +150,14 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface.settings-dark .shortcut-warning { color: #dda14e; }
 .typelay-surface .shortcut-dim { color: #99978f; }
 .typelay-surface .keycap.recording { background: rgba(217,119,87,.14); color: @accent_ink; border: 0; border-bottom: 1px solid transparent; box-shadow: inset 0 0 0 1.5px @accent; }
-.typelay-surface .preview-canvas { padding: 24px; background: linear-gradient(135deg,#e9dfcf,#dfe5d6); border-radius: 12px; min-height: 140px; }
-.typelay-surface .preview-overlay { background: rgba(251,250,247,.94); border: 1px solid rgba(20,20,19,.1); border-radius: 18px; padding: 13px 14px 9px; box-shadow: 0 8px 24px rgba(20,20,19,.1); }
+.typelay-surface .preview-canvas { padding: 0; background: linear-gradient(135deg,#e9dfcf,#dfe5d6); border-radius: 12px; min-height: 188px; }
+.typelay-surface .preview-overlay { background: rgba(251,250,247,.94); border: 0; border-radius: 18px; padding: 13px 12px 8px 14px; box-shadow: 0 24px 64px rgba(20,20,19,.18), 0 4px 12px rgba(20,20,19,.08), inset 0 0 0 .5px rgba(255,255,255,.75), 0 0 0 .5px rgba(20,20,19,.1); }
 .typelay-surface .translation-preview { font-size: 15px; }
-.typelay-surface .preview-source { background: #fff; padding: 10px 16px; border-radius: 21px; font-family: 'Noto Serif SC',serif; }
+.typelay-surface .preview-source { background: #fff; padding: 0 16px; min-height: 42px; font-size: 15px; border-radius: 21px; font-weight: 400; }
+.typelay-surface .preview-bar label { font-size: 12px; font-weight: 500; color: #5c5b56; }
+.typelay-surface.reduce-transparency .preview-overlay { background: #fbfaf7; }
+.typelay-surface .preview-dot { background: @accent; min-width: 7px; min-height: 7px; border-radius: 50%; margin: 0; }
+.typelay-surface .preview-bar .preview-key { border: 0; min-width: 10px; min-height: 20px; border-radius: 5px; padding: 0 6px; background: rgba(20,20,19,.08); box-shadow: inset 0 -1px 0 rgba(20,20,19,.16); color: #5c5b56; font-size: 11px; }
 .typelay-surface .settings-footer { padding: 8px 28px 12px; }
 .typelay-surface .toast { background: #fbfaf7; color: #141413; border: 1px solid rgba(20,20,19,.12); border-radius: 999px; padding: 9px 10px 9px 16px; font-size: 13px; font-weight: 500; box-shadow: 0 6px 18px rgba(20,20,19,.16); }
 .typelay-surface .toast button { background: transparent; color: @accent_ink; border: 0; box-shadow: none; min-height: 24px; padding: 0 9px; }
@@ -226,13 +241,21 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface.settings-dark button, .typelay-surface.settings-dark entry { background: #3a3936; color: #f4f3ee; border-color: rgba(255,255,255,.15); }
 .typelay-surface.settings-dark button:hover { background: #44433f; }
 .typelay-surface.settings-dark .flat, .typelay-surface.settings-dark .tile { background: transparent; border-color: transparent; }
-.typelay-surface.settings-dark .tile:checked { border-color: @accent; }
+.typelay-surface.settings-dark button.tile:checked { color: #f4f3ee; }
+.typelay-surface.settings-dark button.tile { color: #b5b3ab; background: transparent; }
+.typelay-surface.settings-dark button.tile:hover { background: transparent; }
+.typelay-surface.settings-dark button.tile:checked { color: #f4f3ee; }
+.typelay-surface.settings-dark .translation-size trough { background: rgba(255,255,255,.15); }
+.typelay-surface.settings-dark .size-small, .typelay-surface.settings-dark .size-large { color: #9a988f; }
 .typelay-surface.settings-dark .segments, .typelay-surface.settings-dark .keycap { background: rgba(255,255,255,.09); }
 .typelay-surface.settings-dark .segments button { background: transparent; }
 .typelay-surface.settings-dark .segments button:checked { background: #3a3936; }
-.typelay-surface.settings-dark .font-art { background: #1f1e1c; }
+.typelay-surface.settings-dark .font-art { background: #1f1e1c; color: #f4f3ee; }
 .typelay-surface.settings-dark .preview-canvas { background: linear-gradient(135deg,#3b2a22,#1e2620); }
-.typelay-surface.settings-dark .preview-overlay { background: #2c2b28; border-color: rgba(255,255,255,.1); }
+.typelay-surface.settings-dark .preview-overlay { background: rgba(44,43,40,.94); box-shadow: 0 28px 70px rgba(0,0,0,.5), 0 4px 14px rgba(0,0,0,.3), inset 0 0 0 .5px rgba(255,255,255,.1), 0 0 0 .5px rgba(0,0,0,.5); }
+.typelay-surface.settings-dark.reduce-transparency .preview-overlay { background: #2c2b28; }
+.typelay-surface.settings-dark .preview-bar label { color: #b5b3ab; }
+.typelay-surface.settings-dark .preview-bar .preview-key { background: rgba(255,255,255,.09); box-shadow: inset 0 -1px 0 rgba(255,255,255,.15); color: #b5b3ab; }
 .typelay-surface.settings-dark .preview-source, .typelay-surface.settings-dark textview, .typelay-surface.settings-dark textview text { background: #2f2e2b; color: #f4f3ee; }
 .typelay-surface.settings-dark .settings-warning { color: #e5ad55; }
 .typelay-surface.settings-dark .quick-card { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.08); }
@@ -463,6 +486,22 @@ def css_font_family(preferences, role="display", *, size=15, weight=400):
     )
 
 
+def motion_preference(preferences):
+    value = preferences.get("motion")
+    return (
+        value
+        if value in ("system", "full", "reduce")
+        else ("reduce" if preferences.get("reduceMotion") else "system")
+    )
+
+
+def reduced_motion(window, preferences):
+    mode = motion_preference(preferences)
+    return mode == "reduce" or (
+        mode == "system" and not window.get_settings().get_property("gtk-enable-animations")
+    )
+
+
 def apply_theme(window, preferences, provider=None):
     register_fonts()
     context = window.get_style_context()
@@ -479,11 +518,12 @@ def apply_theme(window, preferences, provider=None):
         and (color.red * 0.2126 + color.green * 0.7152 + color.blue * 0.0722) < 0.5
     )
     (context.add_class if dark else context.remove_class)("settings-dark")
-    for key, name in (
-        ("reduceMotion", "reduce-motion"),
-        ("reduceTransparency", "reduce-transparency"),
-    ):
-        (context.add_class if preferences.get(key) else context.remove_class)(name)
+    (context.add_class if reduced_motion(window, preferences) else context.remove_class)(
+        "reduce-motion"
+    )
+    (context.add_class if preferences.get("reduceTransparency") else context.remove_class)(
+        "reduce-transparency"
+    )
     accent, ink, dark_ink = ACCENTS.get(preferences.get("accent"), ACCENTS["clay"])
     strong = {
         "clay": "#b5552f",
@@ -518,7 +558,18 @@ def apply_theme(window, preferences, provider=None):
         for name, size in display_roles.items()
     )
     # The font chooser previews each advertised family, not the saved choice.
-    font_sample = css_font_family({**preferences, "font": "claude"}, size=20, weight=500)
+    font_samples = "".join(
+        f"\n.typelay-surface .font-art.font-{choice} {{ font-family: "
+        + css_font_family({**preferences, "font": choice}, size=20, weight=500)
+        + "; }"
+        for choice in ("claude", "sans", "system")
+    )
+    size_samples = "".join(
+        f"\n.typelay-surface .size-{name} {{ font-family: "
+        + css_font_family(preferences, "content", size=size, weight=500)
+        + "; }"
+        for name, size in (("small", 11), ("large", 17))
+    )
     endonym_css = "".join(
         f"\n.typelay-surface .language-endonym-{language} {{ font-family: "
         + css_font_family(
@@ -537,6 +588,11 @@ def apply_theme(window, preferences, provider=None):
     # this exact owner, then remove its provider when that owner is destroyed.
     rules = (
         CSS.replace(
+            "__ART_SOFT_ALPHA__",
+            {"ocean": ".13", "sage": ".15", "graphite": ".16"}.get(
+                preferences.get("accent"), ".14"
+            ),
+        ).replace(
             "__GLOSSARY_SCOPE_ARROWS__",
             (Path(__file__).parent / "icons/settings-scope-arrows.svg").resolve().as_uri(),
         )
@@ -545,7 +601,11 @@ def apply_theme(window, preferences, provider=None):
         + f"\n.typelay-surface.tutorial .tutorial-foot button.suggested-action {{ background: {strong}; }}"
         + f"\n.typelay-surface .glossary-term {{ font-family: {glossary_font}; }}"
         + display_css
-        + f"\n.typelay-surface .font-art.serif {{ font-family: {font_sample}; }}"
+        + font_samples
+        + size_samples
+        + "\n.typelay-surface .preview-source { font-family: "
+        + css_font_family(preferences, "content", size=15)
+        + "; }"
         + f"\n.typelay-surface .translation-preview, .typelay-surface .translation-content, .typelay-surface .translation-content text {{ font-family: {content_font}; font-size: {content_size}px; font-weight: 400; }}"
     ).replace(".typelay-surface", ".typelay-surface." + scope)
     rules = rules.replace("@accent_ink", "@" + scope + "-ink").replace(

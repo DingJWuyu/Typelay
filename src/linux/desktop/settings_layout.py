@@ -51,6 +51,9 @@ def build(
     owner.dark_settings = None
     owner.window.connect("delete-event", owner.dismiss)
     owner.window.connect("style-updated", owner.update_palette)
+    gtk_settings = owner.window.get_settings()
+    motion_watch = gtk_settings.connect("notify::gtk-enable-animations", owner.update_palette)
+    owner.window.connect("destroy", lambda *_: gtk_settings.disconnect(motion_watch))
     owner.localized = []
     owner.search_entries = []
     owner.search_generation = object()
@@ -206,7 +209,8 @@ def build(
     def switch(key):
         widget = Gtk.Switch()
         widget.connect(
-            "notify::active", lambda item, _property: owner.change_control(key, item.get_active())
+            "notify::active",
+            lambda item, _property: owner.change_control(key, item.get_active(), widget=item),
         )
         return widget
 
@@ -214,7 +218,9 @@ def build(
         widget = Gtk.ComboBoxText()
         for value, title in choices:
             widget.append(value, title)
-        widget.connect("changed", lambda item: owner.change_control(key, item.get_active_id()))
+        widget.connect(
+            "changed", lambda item: owner.change_control(key, item.get_active_id(), widget=item)
+        )
         return widget
 
     hero = card("general")
@@ -279,27 +285,85 @@ def build(
         0,
     )
 
-    canvas = style(box(14), "preview-canvas")
+    canvas = Gtk.Overlay()
+    canvas.add(style(Gtk.Box(), "preview-canvas"))
+    owner.preview_canvas = canvas
     sample = style(box(9), "preview-overlay")
-    sample.set_halign(Gtk.Align.END)
-    sample.set_size_request(330, -1)
+    owner.preview_overlay = sample
+    # get-child-position below owns the right edge and exact CSS width.
+    # END would shrink that allocation again to this font's natural width.
+    sample.set_halign(Gtk.Align.FILL)
+    sample.set_valign(Gtk.Align.END)
     owner.preview_text = style(
         label("Could we go over the details tomorrow afternoon?"), "translation-preview"
     )
-    owner.preview_text.set_max_width_chars(36)
+    # Wrapping follows the allocated CSS pixel width, not a font-relative
+    # natural width which could grow beyond the prototype's 330 px ceiling.
+    owner.preview_text.set_max_width_chars(-1)
+    owner.preview_style_provider = Gtk.CssProvider()
+    owner.preview_text.get_style_context().add_provider(
+        owner.preview_style_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1
+    )
     sample.pack_start(owner.preview_text, False, False, 0)
-    sample.pack_start(
-        label("●  Auto → EN                         Tab  接受", muted=True), False, False, 0
-    )
-    canvas.pack_start(sample, False, False, 0)
-    canvas.pack_start(
-        style(label("我们明天下午再聊细节，可以吗？"), "preview-source"), False, False, 0
-    )
+    preview_bar = style(Gtk.Box(spacing=7), "preview-bar")
+    preview_dot = style(Gtk.Box(), "preview-dot")
+    preview_dot.set_valign(Gtk.Align.CENTER)
+    preview_bar.pack_start(preview_dot, False, False, 0)
+    preview_bar.pack_start(label("Auto → EN", muted=True), False, False, 0)
+    preview_bar.pack_start(Gtk.Box(), True, True, 0)
+    preview_key = style(label("Tab", wrap=False), "preview-key")
+    preview_key.set_xalign(0.5)
+    preview_bar.pack_start(preview_key, False, False, 0)
+    accept_preview = label("接受", muted=True)
+    owner.localized.append((accept_preview.set_text, "接受", "Accept"))
+    preview_bar.pack_start(accept_preview, False, False, 0)
+    # CSS's 12px/1 bar and 11px/1 key use absolute line boxes, rather than
+    # inheriting the selected system family's larger natural line metrics.
+    # The key's 20px shell supplies the row height; glyphs remain unscaled.
+    for caption in preview_bar.get_children():
+        if isinstance(caption, Gtk.Label):
+            leading = Pango.AttrList()
+            leading.insert(
+                Pango.attr_line_height_new_absolute(
+                    (11 if caption is preview_key else 12) * Pango.SCALE
+                )
+            )
+            caption.set_attributes(leading)
+            caption.set_valign(Gtk.Align.CENTER)
+    sample.pack_start(preview_bar, False, False, 0)
+
+    def position_preview(overlay, child, allocation):
+        if child is not sample:
+            return False
+        width = min(330, max(1, overlay.get_allocated_width() - 80))
+        # GtkOverlay otherwise uses natural width/height. Measure this one
+        # wrapped child at its actual width; never change requests in allocation.
+        height = child.get_preferred_height_for_width(width)[1]
+        allocation.x = overlay.get_allocated_width() - 40 - width
+        allocation.y = overlay.get_allocated_height() - 80 - height
+        allocation.width = width
+        allocation.height = height
+        return True
+
+    canvas.connect("get-child-position", position_preview)
+    canvas.add_overlay(sample)
+    canvas.set_overlay_pass_through(sample, True)
+    source_preview = style(label("我们明天下午再聊细节，可以吗？"), "preview-source")
+    owner.preview_source = source_preview
+    source_preview.set_margin_start(28)
+    source_preview.set_margin_end(28)
+    source_preview.set_margin_bottom(26)
+    source_preview.set_halign(Gtk.Align.FILL)
+    source_preview.set_valign(Gtk.Align.END)
+    canvas.add_overlay(source_preview)
+    canvas.set_overlay_pass_through(source_preview, True)
     owner.page_boxes["appearance"].pack_start(canvas, False, False, 0)
     visual = card("appearance")
 
+    owner.preference_art = {}
+
     def tiles(key, choices, font=False):
-        line = Gtk.Box(spacing=8)
+        line = Gtk.Box(spacing=14)
         options = {}
         grouped = None
         for identity, title in choices:
@@ -307,21 +371,36 @@ def build(
             grouped = option
             option.set_mode(False)
             style(option, "tile")
-            sample = box(6)
-            art = style(
-                Gtk.Label(label="Aa 文" if font else "▰"),
-                "tile-art",
-                "font-art" if font else "tile-" + identity,
-            )
-            if identity == "claude":
-                style(art, "serif")
+            sample = box(7)
+            if font:
+                art = style(Gtk.Label(label="Aa 文"), "tile-art", "font-art", "font-" + identity)
+            else:
+                art = Gtk.Overlay()
+                art.add(style(Gtk.Box(), "tile-art", "tile-" + identity))
+                miniature = style(Gtk.Box(), "theme-miniature", "theme-miniature-" + identity)
+                miniature.set_halign(Gtk.Align.START)
+                miniature.set_valign(Gtk.Align.END)
+                miniature.set_margin_start(12)
+                miniature.set_margin_bottom(9)
+                miniature.set_size_request(52, 20)
+                art.add_overlay(miniature)
+                art.set_overlay_pass_through(miniature, True)
+                bar = style(Gtk.Box(), "theme-miniature-bar")
+                bar.set_halign(Gtk.Align.START)
+                bar.set_valign(Gtk.Align.END)
+                bar.set_margin_start(18)
+                bar.set_margin_bottom(17)
+                bar.set_size_request(30, 4)
+                art.add_overlay(bar)
+                art.set_overlay_pass_through(bar, True)
+            owner.preference_art.setdefault(key, {})[identity] = art
             sample.pack_start(art, False, False, 0)
             sample.pack_start(Gtk.Label(label=title), False, False, 0)
             option.add(sample)
             option.get_accessible().set_name(key + ": " + title)
             option.connect(
                 "toggled",
-                lambda item, value=identity: owner.change_control(key, value)
+                lambda item, value=identity: owner.change_control(key, value, widget=item)
                 if item.get_active()
                 else None,
             )
@@ -331,13 +410,13 @@ def build(
         return line
 
     theme_row, caption = row(
-        "主题", tiles("theme", [("system", "自动"), ("light", "浅色"), ("dark", "深色")])
+        "外观", tiles("theme", [("system", "自动"), ("light", "浅色"), ("dark", "深色")])
     )
     owner.theme_options = owner.preference_options["theme"]
     visual.pack_start(theme_row, False, False, 0)
-    owner.register_search_setting("appearance", "theme", "主题", "Theme", theme_row)
-    owner.localized.append((caption.set_text, "主题", "Theme"))
-    swatches = Gtk.Box(spacing=3)
+    owner.register_search_setting("appearance", "theme", "外观", "Appearance", theme_row)
+    owner.localized.append((caption.set_text, "外观", "Appearance"))
+    swatches = Gtk.Box(spacing=9)
     grouped = None
     owner.preference_options["accent"] = {}
     for identity, colors in ACCENTS.items():
@@ -347,37 +426,56 @@ def build(
         style(choice, "swatch")
         choice.get_accessible().set_name("强调色：" + identity)
         provider = Gtk.CssProvider()
-        provider.load_from_data(f"button {{ background: {colors[0]}; }}".encode())
+        provider.load_from_data(
+            (
+                f"button {{ background: {colors[0]}; }}"
+                f"button:checked {{ box-shadow: 0 0 0 2px #fff, 0 0 0 4px {colors[0]}; }}"
+                f".settings-dark button:checked {{ box-shadow: 0 0 0 2px #2f2e2b, 0 0 0 4px {colors[0]}; }}"
+            ).encode()
+        )
         choice.get_style_context().add_provider(
             provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1
         )
         choice.connect(
             "toggled",
-            lambda item, value=identity: owner.change_control("accent", value)
+            lambda item, value=identity: owner.change_control("accent", value, widget=item)
             if item.get_active()
             else None,
         )
         owner.preference_options["accent"][identity] = choice
         swatches.pack_start(choice, False, False, 0)
     widget, caption = row("强调色", swatches)
-    owner.localized.append((caption.set_text, "强调色", "Accent colour"))
+    owner.localized.append((caption.set_text, "强调色", "Accent color"))
     visual.pack_start(widget, False, False, 0)
-    owner.register_search_setting("appearance", "accent", "强调色", "Accent colour", widget)
+    owner.register_search_setting("appearance", "accent", "强调色", "Accent color", widget)
     typography = card("appearance")
     widget, caption = row(
-        "译文字体",
+        "字体",
         tiles("font", [("claude", "Claude"), ("sans", "无衬线"), ("system", "系统")], font=True),
     )
-    owner.localized.append((caption.set_text, "译文字体", "Translation font"))
+    owner.localized.append((caption.set_text, "字体", "Font"))
     typography.pack_start(widget, False, False, 0)
-    owner.register_search_setting("appearance", "font", "译文字体", "Translation font", widget)
+    owner.register_search_setting("appearance", "font", "字体", "Font", widget)
     size = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 13, 19, 1)
     size.set_digits(0)
-    size.set_size_request(180, -1)
+    size.set_draw_value(False)
+    # Hiding GTK's value label resets rounding; keep the prototype's step=1
+    # for pointer drags as well as keyboard increments.
+    size.set_round_digits(0)
+    style(size, "translation-size")
+    size.set_size_request(150, -1)
     size.connect(
-        "value-changed", lambda item: owner.change_control("textSize", int(item.get_value()))
+        "value-changed",
+        lambda item: owner.change_control("textSize", int(item.get_value()), widget=item),
     )
-    setting(typography, "textSize", "译文字号", "Translation size", size)
+    size_row = Gtk.Box(spacing=10)
+    size_row.pack_start(style(label("A", wrap=False), "size-small"), False, False, 0)
+    size_row.pack_start(size, False, False, 0)
+    size_row.pack_start(style(label("A", wrap=False), "size-large"), False, False, 0)
+    setting(typography, "textSize", "译文字号", "Translation size", size_row)
+    owner.controls["textSize"] = size
+    size.get_accessible().set_name("设置：译文字号")
+    size.get_accessible().set_description("即时保存")
     setting(
         typography,
         "uiLanguage",
@@ -392,11 +490,17 @@ def build(
     setting(
         accessibility,
         "reduceTransparency",
-        "减少透明度",
+        "降低透明度",
         "Reduce transparency",
         switch("reduceTransparency"),
     )
-    setting(accessibility, "reduceMotion", "减少动效", "Reduce motion", switch("reduceMotion"))
+    setting(
+        accessibility,
+        "motion",
+        "动态效果",
+        "Motion",
+        combo("motion", [("system", "跟随系统"), ("full", "完整"), ("reduce", "减少")]),
+    )
 
     owner.model_notices = {}
     for page_name in owner.page_boxes:
