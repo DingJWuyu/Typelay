@@ -53,11 +53,26 @@ internal sealed class CaptureTrace(CaptureTrace.Request owner, long atMs) : IDis
         private int _started, _droppedCount;
         private bool _closed;
         private ResponseStream? _response;
+        private long? _requestAdmittedAtMs, _responseWriteStartedAtMs;
         private static readonly JsonSerializerOptions Json = new()
         {
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase
         };
+
+        // Program supplies these only for an opted-in Wake. Keep platform clock
+        // reads out of this request's portable construction and lifecycle.
+        public void ObserveRequestAdmission(long atMs)
+        {
+            if (!_closed)
+                _requestAdmittedAtMs ??= atMs;
+        }
+
+        public void ObserveResponseWriteStart(long atMs)
+        {
+            if (!_closed && _requestAdmittedAtMs is not null)
+                _responseWriteStartedAtMs ??= atMs;
+        }
 
         public Stream ObserveResponse(Stream output, Func<long>? nowMs = null)
         {
@@ -101,6 +116,8 @@ internal sealed class CaptureTrace(CaptureTrace.Request owner, long atMs) : IDis
                         stages = sample.Stages,
                         responseCompletedAtMs,
                         droppedCount = _droppedCount,
+                        requestAdmittedAtMs = _requestAdmittedAtMs,
+                        responseWriteStartedAtMs = _responseWriteStartedAtMs,
                         // This threshold filters diagnostics, never response delivery
                         // or the independent 150 ms input-observation qualification.
                         responseDelivery = _response?.ReadSlowDelivery(responseCompletedAtMs)

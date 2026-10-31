@@ -508,8 +508,11 @@ public sealed partial class OverlayTranslationMenuTests
         nint? firstMiss = null, readyHit = null;
         int observations = 0;
         long nonce = Interlocked.Increment(ref _ownedEditorMouseNonce);
-        Assert.InRange(nonce, 1L, (long)uint.MaxValue);
-        nuint extraInfo = checked((nuint)(0x544c000000000000UL | (ulong)nonce));
+        // Keep the full tag below bit 31 rather than relying on SendInput's upper
+        // 32 bits surviving to GetMessageExtraInfo. The per-process nonce never
+        // wraps, and dispatch still compares the entire returned value.
+        Assert.InRange(nonce, 1L, (long)ushort.MaxValue);
+        nuint extraInfo = checked((nuint)(0x544c0000UL | (ulong)nonce));
         var dispatchedUp = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         bool sentPair = false, matchingUpObserved = false;
         int upMessageCount = 0;

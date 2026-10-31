@@ -268,7 +268,12 @@ def wait_for(predicate, description, timeout=15, *, poll_interval=0.05):
 
 def select_session_keys(paths, host_pid, accept, exit_key, send_key):
     """Record real session keys and observe each instant-save acknowledgement."""
-    from support.gtk_accessibility import Atspi, named, record_shortcut, select_settings_page
+    from support.gtk_accessibility import (
+        Atspi,
+        record_shortcut,
+        select_settings_page,
+        visible_named,
+    )
 
     select_settings_page(host_pid, "快捷键")
     for title, field, chord in (
@@ -279,22 +284,45 @@ def select_session_keys(paths, host_pid, accept, exit_key, send_key):
             continue
         before = paths.settings.read_bytes()
         record_shortcut(host_pid, title, chord, send_key)
-        if chord in ("F1", "F5", "F11", "F12", "Ctrl+F4"):
-            force = wait_for(
-                lambda: (node := named(host_pid, "仍然使用"))
-                and node.get_state_set().contains(Atspi.StateType.SHOWING)
-                and node,
-                "shortcut risk confirmation was unavailable",
+        deadline = time.monotonic() + 15
+
+        def saved():
+            return (
+                json.loads(paths.settings.read_text()).get(field) == chord
+                and (snapshot := control(paths, "status"))
+                and snapshot["setup"]["settingsDraft"] is False
             )
+
+        # The host validates the complete group. Changing F24 still needs
+        # confirmation when the already-saved accept key is F1; do not duplicate
+        # that policy using only the key currently being recorded.
+        outcome = wait_for(
+            lambda: True
+            if saved()
+            else visible_named(host_pid, "仍然使用", role=Atspi.Role.PUSH_BUTTON),
+            "production settings neither saved nor requested shortcut confirmation: " + title,
+            timeout=deadline - time.monotonic(),
+        )
+        if outcome is not True:
+            force = outcome
             assert paths.settings.read_bytes() == before, (
                 "risk warning silently persisted shortcuts"
             )
+            force.clear_cache()
+            assert all(
+                force.get_state_set().contains(state)
+                for state in (
+                    Atspi.StateType.SHOWING,
+                    Atspi.StateType.ENABLED,
+                    Atspi.StateType.SENSITIVE,
+                )
+            )
+            assert time.monotonic() < deadline, "shortcut confirmation deadline expired"
             assert Atspi.Action.do_action(force.get_action_iface(), 0)
         wait_for(
-            lambda: json.loads(paths.settings.read_text()).get(field) == chord
-            and (snapshot := control(paths, "status"))
-            and snapshot["setup"]["settingsDraft"] is False,
+            saved,
             "production settings did not confirm the recorded session key: " + title,
+            timeout=deadline - time.monotonic(),
         )
     saved = json.loads(paths.settings.read_text())
     assert (saved["AcceptShortcut"], saved["ExitShortcut"]) == (accept, exit_key)
@@ -7605,7 +7633,33 @@ def run(arguments):
                             "practice settings refresh changed the source selection",
                         )
                         assert control(paths, "settings") is True
-                        select_language(process.pid, "源语言", "en")
+                        language_restore_deadline = time.monotonic() + 15
+                        assert any(
+                            window.get("id") == selected_settings["id"]
+                            and window.get("pid") == process.pid
+                            and window.get("title") == "TypeLay 设置"
+                            for window in contents(request("Windows"), "Windows")
+                        ), "practice language restore lost its original settings window"
+                        # As on the first settings visit, this is an explicit
+                        # window switch, not tokenless IPC activation evidence.
+                        request({"Action": {"FocusWindow": {"id": selected_settings["id"]}}})
+                        wait_for(
+                            lambda: any(
+                                window.get("id") == selected_settings["id"]
+                                and window.get("pid") == process.pid
+                                and window.get("title") == "TypeLay 设置"
+                                and window.get("is_focused") is True
+                                for window in contents(request("Windows"), "Windows")
+                            ),
+                            "settings did not gain focus for practice language restore",
+                            timeout=language_restore_deadline - time.monotonic(),
+                        )
+                        select_language(
+                            process.pid,
+                            "源语言",
+                            "en",
+                            timeout=language_restore_deadline - time.monotonic(),
+                        )
                         wait_for(
                             lambda: json.loads(paths.settings.read_text())["Source"] == "en",
                             "restoring the source language did not save",

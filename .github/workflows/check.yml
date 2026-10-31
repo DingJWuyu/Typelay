@@ -847,6 +847,7 @@ jobs:
           python tests/linux/test_startup_diagnostics.py -v
           python tests/linux/test_desktop_scope_results.py -v
           python tests/linux/test_desktop_acceptance_observation.py -v
+          python tests/linux/test_session_key_settings.py -v
           python tests/linux/test_setup_scope_data.py -v
           python tests/linux/test_practice_session.py -v
           python tests/linux/test_fcitx_session_source.py -v

@@ -35,6 +35,9 @@ internal static class Program
                     return 3;
                 last = request.Id;
                 using var captureTrace = CaptureTrace.BeginRequest(Environment.GetEnvironmentVariable("TYPELAY_TRACE"));
+                bool traceWake = captureTrace is not null && request.Op == "capture-wake";
+                if (traceWake)
+                    captureTrace!.ObserveRequestAdmission(WindowsInterruptClock.NowMs);
                 BrokerResponse response;
                 string? returnReason = null, returnErrorType = null, diagnosticErrorType = null;
                 UiaInputProvider.ReturnForegroundFacts? returnForeground = null;
@@ -72,6 +75,8 @@ internal static class Program
                     ? captureTrace.ObserveResponse(output) : output;
                 // This serial MTA already waits for each response. Console stdout
                 // implements async writes by scheduling synchronous work elsewhere.
+                if (traceWake)
+                    captureTrace!.ObserveResponseWriteStart(WindowsInterruptClock.NowMs);
                 Wire.Write(responseOutput, response);
                 // Complete the original response before diagnostic disk I/O. This
                 // synchronous flush can still delay the next request, not renew it.

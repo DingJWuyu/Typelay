@@ -447,6 +447,8 @@ internal sealed class UiaInputProvider : IDisposable
         if (focused is null || root == 0)
             return Reject("no-focused-element");
         AutomationElement element = focused;
+        if (trace is not null && request.WakeOrigin is not null)
+            trace.Stage("wake-field-validation");
         if (!WakeElementCurrent(request, element))
             return Reject("wake-field-changed");
         // Raw and managed providers must refer to the same element, captured in the same MTA.

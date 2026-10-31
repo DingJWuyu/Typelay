@@ -973,6 +973,7 @@ def check_language_retention_refusal(
             "target": [{"code": "en", "label": "English"}, {"code": "ja", "label": "日本語"}],
         },
     }
+    record_selector_focus = True
 
     def click(name, field=False, actual=None):
         if name == trigger and not field:
@@ -987,7 +988,17 @@ def check_language_retention_refusal(
         point = click_point(
             actual, (item["x"] + item["width"] / 2, item["y"] + item["height"] / 2), dimensions
         )
-        click_once(nested, point, {})
+        phase = {}
+        if name == control and not field and "languageSelectorClick" not in evidence:
+            phase = evidence["languageSelectorClick"] = {
+                "control": name,
+                "instance": item.get("instance"),
+                "observedAtMonoMs": actual.get("observedAtMs"),
+                "bounds": {key: item.get(key) for key in ("x", "y", "width", "height")},
+                "point": point,
+                "expiresAtMs": initial_render["expiresAtMs"],
+            }
+        click_once(nested, point, phase)
 
     def controls():
         return state().get("overlayControls", {})
@@ -995,6 +1006,28 @@ def check_language_retention_refusal(
     def detached_menu():
         actual = state()
         selected = actual.get("overlayControls", {}).get(control, {})
+        # Keep only the first selector's initial detach polls, not later renewals.
+        # The X command receipt is not proof that GTK dispatched its input.
+        phase = evidence.get("languageSelectorClick")
+        if phase is not None and record_selector_focus:
+            observation = {
+                "observedAtMonoMs": actual.get("observedAtMs"),
+                "sourceFocused": actual["firstEntry"]["focused"],
+                "sourceImeFlags": (actual["firstEntry"].get("ime") or {}).get("flags"),
+                "imeClear": actual["imeClear"],
+                "control": {
+                    key: selected.get(key)
+                    for key in (
+                        "instance",
+                        "visible",
+                        "buttonFocused",
+                        "popupVisible",
+                        "popupFocused",
+                    )
+                },
+            }
+            phase.setdefault("firstFocusObservation", observation)
+            phase["lastFocusObservation"] = observation
         return (
             language_control_focused(selected)
             and not actual["firstEntry"]["focused"]
@@ -1035,6 +1068,7 @@ def check_language_retention_refusal(
     assert now_ms() <= initial_render["expiresAtMs"], "initial language lease expired before click"
     click(control, actual=shown)
     wait_for(detached_menu, "source did not detach under exact language control focus")
+    record_selector_focus = False
     # Repaint transport 2 retains host session 9, without changing source IME authority.
     retained_render = evidence["retentionRenewal"] = {}
     assert render_preview(

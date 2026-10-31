@@ -711,7 +711,22 @@ static void control_map_observation(GtkWidget *widget, ControlPaint *paint, gboo
     GdkSurface *surface = gtk_native_get_surface(native);
     GdkFrameClock *clock = paint->clock ? paint->clock : gtk_widget_get_frame_clock(widget);
     GSignalInvocationHint *hint = clock ? g_signal_get_invocation_hint(clock) : NULL;
+    GSignalInvocationHint *surface_hint = surface ? g_signal_get_invocation_hint(surface) : NULL;
+    GSignalInvocationHint *popup_hint = g_signal_get_invocation_hint(popup);
+    GtkWidget *parent = gtk_widget_get_parent(popup);
+    GtkRoot *root = gtk_widget_get_root(popup);
     JsonObject *value = json_object_new();
+    const guint versions[][3] = {
+        {gtk_get_major_version(), gtk_get_minor_version(), gtk_get_micro_version()},
+        {GTK_MAJOR_VERSION, GTK_MINOR_VERSION, GTK_MICRO_VERSION}
+    };
+    const char *version_names[] = {"gtkRuntimeVersion", "gtkBuildVersion"};
+    for (guint i = 0; i < G_N_ELEMENTS(versions); i++) {
+        JsonArray *version = json_array_new();
+        for (guint part = 0; part < G_N_ELEMENTS(versions[i]); part++)
+            json_array_add_int_element(version, versions[i][part]);
+        json_object_set_array_member(value, version_names[i], version);
+    }
     json_object_set_int_member(value, "atMonoMs", g_get_monotonic_time() / 1000);
     json_object_set_int_member(value, "mapGeneration", paint->map_generation);
     json_object_set_int_member(value, "control", language_instance(G_OBJECT(widget)));
@@ -723,6 +738,17 @@ static void control_map_observation(GtkWidget *widget, ControlPaint *paint, gboo
     json_object_set_int_member(value, "observedPaintFrame", paint->paint_frame);
     json_object_set_boolean_member(value, "insideClockLayout", hint
         && hint->signal_id == g_signal_lookup("layout", GDK_TYPE_FRAME_CLOCK));
+    /* Innermost signal contexts, not direct callers or mutually exclusive
+     * causes. A false value cannot exclude an outer/nested emission. */
+    json_object_set_boolean_member(value, "insideSurfaceLayout", surface_hint
+        && surface_hint->signal_id == g_signal_lookup("layout", GDK_TYPE_SURFACE));
+    json_object_set_boolean_member(value, "insideSurfaceMappedNotify", surface_hint
+        && surface_hint->signal_id == g_signal_lookup("notify", G_TYPE_OBJECT)
+        && surface_hint->detail == g_quark_from_static_string("mapped"));
+    json_object_set_boolean_member(value, "insidePopoverHide", popup_hint
+        && popup_hint->signal_id == g_signal_lookup("hide", GTK_TYPE_WIDGET));
+    json_object_set_boolean_member(value, "parentMapped", parent && gtk_widget_get_mapped(parent));
+    json_object_set_boolean_member(value, "rootMapped", root && gtk_widget_get_mapped(GTK_WIDGET(root)));
     json_object_set_boolean_member(value, "controlMapped", gtk_widget_get_mapped(widget));
     json_object_set_boolean_member(value, "controlVisible", gtk_widget_get_visible(widget));
     json_object_set_boolean_member(value, "popupMapped", gtk_widget_get_mapped(popup));

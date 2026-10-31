@@ -5,15 +5,10 @@
 ## 基线与证据边界
 
 - `S` = [设置、托盘、首次设置原型](TypeLay_Tray_Settings_Prototype.html)；`O` = [浮层与练习原型](TypeLay_UIUX_Prototype.html)；字体、材质、动效同时遵守[设计系统](system/README.md)。下文行号对应当前文件，函数/元素名是稳定定位入口。
-- 当前已发布基线为 `work/linux-usability` 的 `ee7f249f2ff03504bbdd26287012855da0c5ecf5`，CI568双端已终态。Windows App1405执行/1401通过/4失败：普通owned首鼠标、普通source确认返回、Appearance retarget、sheet hide后重开；窄owned、PromptTab及tap16项本轮实际通过，不据单轮绿解释旧原因。真实sheet中帧截图仍未见sheet，稳态组合和行为通过不等入场像素验收。Linux严格构建已通过，托盘/三面真实进度/快捷键/Firefox/隔离GTK事务等子项通过，仍有八场真实桌面失败。双端Index生命周期12项实际通过；Windows Browser正式8场首次全过，含术语真实新源退休，Hy15场通过。Notepad五可执行通过、两项原可信物理输入not-run；continuous普通源启动EM_SETSEL在原100ms内超时。CP28已审新并集及受影响编译通过、尚未发布，不把局部通过或编译称整端1:1；owned Replace仍未实现。
-- 实际看过：WPF CI543 八页中文浅深色 920 图、托盘浅深与保存错误图、浮层 idle/preview/edit/长文；GTK 八页中文浅色、英文和托盘浅深；浏览器菜单/长文浅深与 CI543 preview；GTK3 实际合作浮层。GTK 的深色/英文组使用 sage、sans、18，而浅色默认组为 clay、Claude、15，不能据这些图直接判定配色或换行差异。
-- 尚未完成逐张复核：WPF 同偏好八页英文全集；最终同偏好的八页浅深/中英全集；有效 GTK 四步教程图；当前字体候选的完整 GTK3/GTK4/Qt6 状态图。`gtk-cjk/tutorial.png` 被 About 遮挡；CI543 GTK4 `failure.png` 没有可见浮层，Qt `failure.png` 被灰色遮罩覆盖，都不构成相应界面像素证据。
-- 图片根目录：`artifacts/ui-rebuild/ci543/windows/test-results/rendering/`（下文 `W图`）；`artifacts/ui-rebuild/gtk-cjk/`（`L图`，owner 正在更新）；`artifacts/ui-rebuild/browser/`（`B图`，旧五字体阶段）。本次实际看过的页面缩略联图保存在 `artifacts/ui-rebuild/parity-review/`，只用于定位，不替代原尺寸验收。
-- 原型 canonical 26 张图及 `state.json` 已在 `artifacts/ui-rebuild/prototype-canonical/` 生成。本次已看八页浅色、托盘浅深与四步浅色的结构；其余状态已读 HTML/CSS/事件代码。两个主题的 `document.fonts` 均为 0，Google CSS 未加载，因此这些图只作结构/几何参考，不证明官方字体或逐像素一致。原型字体回退必须继续明确标注。
-
-CI556 已恢复中英实际图；本轮已读语言页英文深色、About英文深色、术语编辑英文浅色和More英文深色，所见产品chrome为英文。搜索结果/定位/空态的中英浅深12图已恢复，但未逐张完成像素审查。
-
-2026-10-30 环境替换后，上述旧本地图片/候选目录不可读，不能用路径文字冒充当前原件。已提交源码重新 clone，CI artifact 按 SHA 恢复；未提交 S08/S09/O05 候选按现役基线重建并重新验收。历史已观察结论不自动证明新实现通过。
+- 本批恢复与最后已取终态CI的基线为 `work/linux-usability` 的 `94c1c2f9ac3665985dbe4d7493f2b6b156a8c200`，[CI570](https://github.com/DingJWuyu/Typelay/actions/runs/41085150084) 双端主检查已终态失败；共享与双端 Index 生命周期成功。Windows App执行1422/通过1413/失败9，五个owned首鼠标失败有fixture标签高位失配原件，另FirstWake两例、Appearance中帧与Onboarding目标窗口active未闭。Browser前三场实际通过，首红在第四场按需设置入口；Notepad五可执行通过、两可信物理输入未运行。Linux六场失败为Settings、Tutorial、GIMP、GTK3、GTK4、Qt末段设置确认，各自精确边界见[开发状态](../engineering/development-state.md)。局部通过不等整端1:1。
+- 本次恢复可读的是CI570 Windows早期与完整artifact、Linux早期与桌面小诊断artifact和终态job日志。Linux完整artifact超过工具大小上限，未取得。现役问题必须据当前原件定位，不继承旧head通过或旧根因。
+- 2026-10-30执行环境替换后，旧本地截图、canonical原型图、未提交候选与工具目录丢失。下表保留仍约束产品关闭条件的已观察结论，但不表示旧原件在当前环境仍可读、已重审或能证明新实现通过；不再列失效本地路径。需要的S08/S09/O05等候选从已提交基线重建并重新验收。
+- 仍须对最终同偏好八页浅深/中英全集、有效GTK四步教程、GTK3/GTK4/Qt6完整状态逐张复核。此前GTK深色/英文组与浅色默认组偏好不同，不能直接比较配色和换行；此前canonical原型的Google字体未加载，只能作结构/几何参考，不能作官方字体或逐像素证据。
 
 ### 保留的产品约束
 

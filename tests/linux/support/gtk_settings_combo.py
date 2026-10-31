@@ -28,7 +28,10 @@ class SettingsComboMenu:
             self.states(node)
             role = node.get_role()
             if role in (Atspi.Role.VIEWPORT, Atspi.Role.SCROLL_PANE, Atspi.Role.FRAME):
-                assert self.contains(self.rectangle(node), area), "settings combo is clipped"
+                clip = self.rectangle(node)
+                assert self.contains(clip, area), (
+                    f"settings combo is clipped: role={role}, clip={clip}, target={area}"
+                )
             if role == Atspi.Role.FRAME:
                 assert node.get_name() == "TypeLay 设置"
                 assert self.states(node).contains(Atspi.StateType.ACTIVE)

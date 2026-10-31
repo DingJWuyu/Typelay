@@ -525,7 +525,11 @@ internal static partial class BrowserCooperationCheck
                 // its own picker; the real App/model continues running while mode changes.
                 await PrepareInputAsync(cdp!, windows!, "", "", selectSource: false, ct);
                 await WaitPreviewAsync(cdp!, ct);
-                await cdp!.ClickOverlaySettingsAsync(ct);
+                try
+                {
+                    await cdp!.ClickOverlaySettingsAsync(ct);
+                }
+                finally { mode.OverlayMenuObservation = cdp!.LastOverlayMenuObservation; }
                 commandSettings = await SetOnDemandAsync(app!.Process, data, ct);
                 await FocusPageAsync(cdp, windows!, ct);
             });

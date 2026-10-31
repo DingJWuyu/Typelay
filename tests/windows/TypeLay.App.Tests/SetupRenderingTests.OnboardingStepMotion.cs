@@ -319,7 +319,7 @@ public sealed partial class SetupRenderingTests
             {
                 try
                 {
-                    Console.WriteLine("Onboarding show lifecycle: " + JsonSerializer.Serialize(new
+                    TestContext.Current.TestOutputHelper?.WriteLine("Onboarding show lifecycle: " + JsonSerializer.Serialize(new
                     {
                         phases,
                         diagnosticFailed

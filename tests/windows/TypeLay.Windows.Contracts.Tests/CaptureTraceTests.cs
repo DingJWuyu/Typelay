@@ -38,6 +38,29 @@ public sealed class CaptureTraceTests
     }
 
     [Fact]
+    public void WakeTimingIsPublishedOnlyAfterTheOriginalResponseCompletes()
+    {
+        InDirectory(path =>
+        {
+            using var request = CaptureTrace.BeginRequest(path);
+            Assert.NotNull(request);
+            request.ObserveRequestAdmission(100);
+            using (var capture = request.Start(110))
+                capture!.Result("observed-native");
+            request.ObserveResponseWriteStart(130);
+            Assert.False(File.Exists(path + ".broker.jsonl"));
+            request.Flush(145);
+            using var sample = JsonDocument.Parse(Assert.Single(File.ReadAllLines(path + ".broker.jsonl")));
+            var root = sample.RootElement;
+            Assert.Equal(100, root.GetProperty("requestAdmittedAtMs").GetInt64());
+            Assert.Equal(110, root.GetProperty("atMs").GetInt64());
+            Assert.Equal(130, root.GetProperty("responseWriteStartedAtMs").GetInt64());
+            Assert.Equal(145, root.GetProperty("responseCompletedAtMs").GetInt64());
+            Assert.False(root.TryGetProperty("responseDelivery", out _));
+        });
+    }
+
+    [Fact]
     public void WriteRequestRetainsAtMostItsTwoCaptureSamples()
     {
         InDirectory(path =>
@@ -68,8 +91,11 @@ public sealed class CaptureTraceTests
         {
             using (var failedResponse = CaptureTrace.BeginRequest(path))
             {
-                using var capture = failedResponse!.Start(100);
-                // No response flush: disposal drops this request's sample.
+                Assert.NotNull(failedResponse);
+                failedResponse.ObserveRequestAdmission(90);
+                using var capture = failedResponse.Start(100);
+                failedResponse.ObserveResponseWriteStart(110);
+                // No response flush: disposal drops this request's sample and timing.
             }
             Assert.False(File.Exists(path + ".broker.jsonl"));
             using (var unavailableResponse = CaptureTrace.BeginRequest(path))
@@ -82,6 +108,8 @@ public sealed class CaptureTraceTests
             using var sample = JsonDocument.Parse(Assert.Single(File.ReadAllLines(path + ".broker.jsonl")));
             Assert.Equal(200, sample.RootElement.GetProperty("atMs").GetInt64());
             Assert.Equal("exception", sample.RootElement.GetProperty("result").GetString());
+            Assert.False(sample.RootElement.TryGetProperty("requestAdmittedAtMs", out _));
+            Assert.False(sample.RootElement.TryGetProperty("responseWriteStartedAtMs", out _));
         });
     }
 
