@@ -1899,7 +1899,15 @@ private:
             expand->setVisible(expanded_ || editorHeight >= collapsedHeight);
         card_->setFixedWidth(width);
         card_->layout()->activate();
-        card_->adjustSize();
+        card_->ensurePolished();
+        auto *layout = card_->layout();
+        // The child card already has its final width. adjustSize() instead
+        // evaluates wrapped labels at the layout's preferred hint width.
+        const int height = layout->hasHeightForWidth() ? layout->totalHeightForWidth(width) : -1;
+        if (height >= 0) {
+            layout->activate();
+            card_->resize(width, height);
+        } else card_->adjustSize();
         if (skeleton_) { skeleton_->setGeometry(editor_->viewport()->rect()); skeleton_->raise(); }
         const auto bounds = geometry(overlayTarget_).value("bounds").toObject();
         const int x = qBound(0, int(integer(bounds, "x") + integer(bounds, "width")) - width, qMax(0, top->width() - width));

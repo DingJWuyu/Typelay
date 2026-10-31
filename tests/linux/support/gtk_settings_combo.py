@@ -16,22 +16,32 @@ from gi.repository import Atspi  # noqa: E402
 class SettingsComboMenu:
     """One explicit opening, with a single optional menu-item action."""
 
-    def __init__(self, pid, combo, deadline):
+    def __init__(self, pid, combo, deadline, *, calibrated_viewport_clip=None):
         self.pid, self.combo, self.deadline = pid, combo, deadline
         self.item_actions = 0
         self.original_name = combo.get_name()
         assert combo.get_role() == Atspi.Role.COMBO_BOX and self.shown(combo)
         area, node, seen = self.rectangle(combo), combo.get_parent(), {combo}
+        path, calibrated = [(combo, Atspi.Role.COMBO_BOX)], None
         for _ in range(24):
             assert node is not None and node.get_process_id() == pid and node not in seen
             seen.add(node)
             self.states(node)
             role = node.get_role()
+            path.append((node, role))
             if role in (Atspi.Role.VIEWPORT, Atspi.Role.SCROLL_PANE, Atspi.Role.FRAME):
                 clip = self.rectangle(node)
-                assert self.contains(clip, area), (
-                    f"settings combo is clipped: role={role}, clip={clip}, target={area}"
-                )
+                if (
+                    role == Atspi.Role.VIEWPORT
+                    and clip[:2] == (-(2**31), -(2**31))
+                    and calibrated_viewport_clip is not None
+                ):
+                    assert calibrated is None, "multiple settings viewports need calibration"
+                    calibrated = (node, clip)
+                else:
+                    assert self.contains(clip, area), (
+                        f"settings combo is clipped: role={role}, clip={clip}, target={area}"
+                    )
             if role == Atspi.Role.FRAME:
                 assert node.get_name() == "TypeLay 设置"
                 assert self.states(node).contains(Atspi.StateType.ACTIVE)
@@ -40,11 +50,49 @@ class SettingsComboMenu:
             node = node.get_parent()
         else:
             raise AssertionError("settings combo exceeds bounded owner ancestry")
+        if calibrated is not None:
+            # The sole Apps consumer proves this exact viewport using its initial
+            # direct-pair calibration. Freeze the complete owner chain first;
+            # this is not a general rectangle fallback or a coordinate retry.
+            assert time.monotonic() < self.deadline, "settings combo calibration expired"
+            clip = calibrated_viewport_clip(*calibrated)
+            assert clip is not None and self.contains(clip, area), (
+                "settings combo has no current calibrated viewport clip"
+            )
         self.initial = Atspi.Selection.get_selected_child(combo.get_selection_iface(), 0)
         assert self.initial is not None and self.initial.get_name() == self.original_name
         action = combo.get_action_iface()
         assert Atspi.Action.get_n_actions(action) == 1
         assert Atspi.Action.get_action_name(action, 0) == "press"
+        if calibrated is not None:
+            assert time.monotonic() < self.deadline, "settings combo calibration expired"
+            area = self.rectangle(combo)
+            for ancestor, role in path[1:]:
+                if role not in (Atspi.Role.VIEWPORT, Atspi.Role.SCROLL_PANE, Atspi.Role.FRAME):
+                    continue
+                clip = self.rectangle(ancestor)
+                if role == Atspi.Role.VIEWPORT and clip[:2] == (-(2**31), -(2**31)):
+                    assert ancestor == calibrated[0], "settings viewport changed"
+                    clip = calibrated_viewport_clip(ancestor, clip)
+                assert clip is not None and self.contains(clip, area), (
+                    "settings combo clipped while reading its opening action"
+                )
+            # Proof and Action-interface queries can dispatch GTK callbacks. Close
+            # those observations with the same frozen peer/ancestry, never a new
+            # name lookup. This still cannot make remote AT-SPI calls atomic.
+            for index, (ancestor, role) in enumerate(path):
+                states = self.states(ancestor)
+                assert ancestor.get_process_id() == pid and ancestor.get_role() == role
+                assert not states.contains(Atspi.StateType.DEFUNCT)
+                if role in (Atspi.Role.SCROLL_PANE, Atspi.Role.FRAME):
+                    assert states.contains(Atspi.StateType.SHOWING)
+                if index + 1 < len(path):
+                    assert ancestor.get_parent() == path[index + 1][0], (
+                        "settings combo owner ancestry changed during calibration"
+                    )
+            assert combo.get_name() == self.original_name and self.shown(combo)
+            assert self.frame.get_name() == "TypeLay 设置"
+            assert self.states(self.frame).contains(Atspi.StateType.ACTIVE)
         assert time.monotonic() < self.deadline, "settings combo opening deadline expired"
         assert Atspi.Action.do_action(action, 0)
         self.menu = combo.get_child_at_index(0)

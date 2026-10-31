@@ -230,6 +230,73 @@ def settings_viewport_from_pane(initial, current):
     return pane
 
 
+def settings_scroll_snapshot(pid, viewport):
+    from gi.repository import Atspi
+
+    clip_roles = {
+        Atspi.Role.VIEWPORT: "viewport",
+        Atspi.Role.SCROLL_PANE: "scroll-pane",
+        Atspi.Role.FRAME: "frame",
+    }
+    # Only the fixed application-support page's direct native pair
+    # is eligible. Keep the actual proxies, not names as identity.
+    path, states = [], []
+    ancestor = viewport
+    for _ in range(16):
+        if ancestor is None:
+            return None
+        ancestor.clear_cache()
+        owner_pid, role = ancestor.get_process_id(), ancestor.get_role()
+        if owner_pid != pid:
+            return None
+        path.append((ancestor, owner_pid, clip_roles.get(role, role)))
+        states.append(ancestor.get_state_set())
+        if role == Atspi.Role.FRAME:
+            break
+        ancestor = ancestor.get_parent()
+    else:
+        return None
+    if (
+        len(path) < 3
+        or path[0][2] != "viewport"
+        or path[1][2] != "scroll-pane"
+        or path[1][0].get_name() not in ("设置页：应用", "设置页：本地模型")
+        or path[-1][0].get_name() != "TypeLay 设置"
+    ):
+        return None
+    snapshot = {
+        "pid": pid,
+        "ancestry": tuple(path),
+        "showing": tuple(states[index].contains(Atspi.StateType.SHOWING) for index in (1, -1)),
+        "alive": not any(state.contains(Atspi.StateType.DEFUNCT) for state in states),
+    }
+    for name, index in (("viewport", 0), ("pane", 1), ("frame", -1)):
+        rect = Atspi.Component.get_extents(
+            path[index][0].get_component_iface(), Atspi.CoordType.SCREEN
+        )
+        snapshot[name] = (rect.x, rect.y, rect.width, rect.height)
+    return snapshot
+
+
+def open_settings_combo(pid, combo, deadline, initial_calibration):
+    """Open the Apps connection selector using its existing scroll calibration."""
+    from support.gtk_settings_combo import SettingsComboMenu
+
+    def calibrated_viewport_clip(viewport, raw):
+        measured = settings_scroll_snapshot(pid, viewport)
+        if (
+            measured is None
+            or measured["viewport"] != raw
+            or measured["ancestry"][1][0].get_name() != "设置页：应用"
+        ):
+            return None
+        return settings_viewport_from_pane(initial_calibration, measured)
+
+    return SettingsComboMenu(
+        pid, combo, deadline, calibrated_viewport_clip=calibrated_viewport_clip
+    )
+
+
 def settings_text_visible_point(character, clips):
     """Use the actual text/caret position only inside every known visible clip."""
     if len(character) != 4 or not clips:
@@ -4668,7 +4735,6 @@ def run(arguments):
                 settings_page_row,
                 text,
             )
-            from support.gtk_settings_combo import SettingsComboMenu
 
             settings_window = wait_for(
                 lambda: next(
@@ -4708,48 +4774,6 @@ def run(arguments):
                 Atspi.Role.FRAME: "frame",
             }
 
-            def settings_scroll_snapshot(viewport):
-                # Only the fixed application-support page's direct native pair
-                # is eligible. Keep the actual proxies, not names as identity.
-                path, states = [], []
-                ancestor = viewport
-                for _ in range(16):
-                    if ancestor is None:
-                        return None
-                    ancestor.clear_cache()
-                    pid, role = ancestor.get_process_id(), ancestor.get_role()
-                    if pid != process.pid:
-                        return None
-                    path.append((ancestor, pid, clip_roles.get(role, role)))
-                    states.append(ancestor.get_state_set())
-                    if role == Atspi.Role.FRAME:
-                        break
-                    ancestor = ancestor.get_parent()
-                else:
-                    return None
-                if (
-                    len(path) < 3
-                    or path[0][2] != "viewport"
-                    or path[1][2] != "scroll-pane"
-                    or path[1][0].get_name() not in ("设置页：应用", "设置页：本地模型")
-                    or path[-1][0].get_name() != "TypeLay 设置"
-                ):
-                    return None
-                snapshot = {
-                    "pid": process.pid,
-                    "ancestry": tuple(path),
-                    "showing": tuple(
-                        states[index].contains(Atspi.StateType.SHOWING) for index in (1, -1)
-                    ),
-                    "alive": not any(state.contains(Atspi.StateType.DEFUNCT) for state in states),
-                }
-                for key, index in (("viewport", 0), ("pane", 1), ("frame", -1)):
-                    rect = Atspi.Component.get_extents(
-                        path[index][0].get_component_iface(), Atspi.CoordType.SCREEN
-                    )
-                    snapshot[key] = (rect.x, rect.y, rect.width, rect.height)
-                return snapshot
-
             def settings_control(name, timeout=15, *, role=None):
                 return wait_for(
                     lambda: named(process.pid, name)
@@ -4782,7 +4806,7 @@ def run(arguments):
                     ancestor = ancestor.get_parent()
                 else:
                     raise AssertionError("initial settings viewport exceeds its bounded ancestry")
-                measured = settings_scroll_snapshot(ancestor)
+                measured = settings_scroll_snapshot(process.pid, ancestor)
                 assert measured is not None and measured["alive"]
                 assert measured["showing"] == (True, True)
                 assert measured["viewport"] == measured["pane"], (
@@ -4960,7 +4984,7 @@ def run(arguments):
                             last_scroll_check["clipping"].append(observation)
                             clip_bounds = (clip.x, clip.y, clip.width, clip.height)
                             if role == Atspi.Role.VIEWPORT and clip_bounds[:2] == (-(2**31),) * 2:
-                                measured = settings_scroll_snapshot(ancestor)
+                                measured = settings_scroll_snapshot(process.pid, ancestor)
                                 initial = settings_scroll_calibration
                                 # Record only this gate's existing geometry and
                                 # identity comparisons, not accessible text or
@@ -6612,7 +6636,9 @@ def run(arguments):
                 )
                 # Native GTK menu selection is public MenuShell selection,
                 # not keyboard focus on the non-focusable outer ComboBox.
-                opening = SettingsComboMenu(process.pid, selector, selection_deadline)
+                opening = open_settings_combo(
+                    process.pid, selector, selection_deadline, settings_scroll_calibration
+                )
                 assert opening.select(chromium["title"])
                 assert opening.item_actions == 1
                 selected = Atspi.Selection.get_selected_child(selector.get_selection_iface(), 0)

@@ -1272,16 +1272,23 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                 // No second WM_GETTEXT, replacement timeout or inferred success.
                 try
                 {
+                    long failedAtMs = WindowsInterruptClock.NowMs;
                     bool exited = child!.Process.HasExited;
                     uint thread = N.GetWindowThreadProcessId(field, out uint process);
                     bool owned = process == (uint)child.Process.Id && N.GetAncestor(field, 2) == root;
                     var gui = new N.GuiThreadInfo { Size = (uint)Marshal.SizeOf<N.GuiThreadInfo>() };
                     bool? guiRead = !exited && owned && thread != 0 ? N.GetGUIThreadInfo(thread, ref gui) : null;
                     int? guiError = guiRead == false ? Marshal.GetLastPInvokeError() : null;
+                    var acceptance = System.Text.Json.JsonSerializer.SerializeToElement(
+                        host.AcceptanceDiagnostics(first.Lease, first.Permit));
                     TestContext.Current.TestOutputHelper?.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
                     {
                         operation = "owned-source-read-failed",
                         afterFailure = true,
+                        failedAtMs,
+                        // Keep the exact existing post-ACK record before this
+                        // owned child's teardown deletes its trace directory.
+                        sourceInstall = ReadInstallTrace(acceptance),
                         nativeOperation = error.Operation is "ReadText" or "Send" ? error.Operation : "unknown",
                         error.MessageId,
                         error.Win32Error,

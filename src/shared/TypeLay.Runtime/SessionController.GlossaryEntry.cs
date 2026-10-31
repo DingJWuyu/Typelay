@@ -113,10 +113,10 @@ public sealed partial class SessionController
         long WindowEpoch, long Until);
     private EditorGlossaryHandoff? _editorGlossaryHandoff;
 
-    // An empty ordinary read cannot confirm anything. Only the already
+    // An obsolete ordinary read cannot confirm anything. Only the already
     // pending, bounded source-to-editor transfer may discard that obsolete
     // result; its separate fresh recheck still owns glossary availability.
-    private bool PendingEditorHandoffOwnsEmptyRead(InputContext request, EditorGlossaryHandoff? handoff) =>
+    private bool PendingEditorHandoffOwnsOrdinaryRead(InputContext request, EditorGlossaryHandoff? handoff) =>
         handoff is not null && ReferenceEquals(_editorGlossaryHandoff, handoff)
         && handoff.Observation.SourceEpoch is >= 0 and < long.MaxValue
         && request.BoundTarget == handoff.Token.Target

@@ -7,6 +7,7 @@ not physical input, translation quality or source-field writeback.
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import socket
@@ -20,15 +21,134 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def pixbuf_observation(image):
+    """Describe actual pixels, excluding row padding; this is not visual acceptance."""
+    width, height = image.get_width(), image.get_height()
+    channels, stride = image.get_n_channels(), image.get_rowstride()
+    assert width > 0 and height > 0 and image.get_bits_per_sample() == 8
+    assert channels == (4 if image.get_has_alpha() else 3)
+    pixels = image.get_pixels()
+    packed = b"".join(pixels[y * stride : y * stride + width * channels] for y in range(height))
+    assert len(packed) == width * height * channels
+    if channels == 3:
+        rgba = bytearray(width * height * 4)
+        for channel in range(3):
+            rgba[channel::4] = packed[channel::3]
+        rgba[3::4] = b"\xff" * (width * height)
+    else:
+        rgba = packed
+    alpha = rgba[3::4]
+    return {
+        "width": width,
+        "height": height,
+        "channels": channels,
+        "rowstride": stride,
+        "hasAlpha": image.get_has_alpha(),
+        "rgbaSha256": hashlib.sha256(rgba).hexdigest(),
+        "alphaMin": min(alpha),
+        "alphaMax": max(alpha),
+        "nontransparentPixels": sum(value != 0 for value in alpha),
+        "rgbHasNonzero": any(rgba[0::4]) or any(rgba[1::4]) or any(rgba[2::4]),
+    }
+
+
+async def capture_owned_niri(output, title, *, deadline, observation):
+    """One diagnostic of the runner's private output, never a desktop fallback."""
+    import stat
+
+    child = None
+    end = min(deadline, time.monotonic() + 2)
+    # The query and child share one budget, including a short kill/reap reserve.
+    work_end = end - 0.25
+    observation.update(status="unavailable", startedAtMonoMs=int(time.monotonic() * 1000))
+    try:
+        from niri import contents, request_many
+
+        observation["stage"] = "owned-runtime"
+        runtime = (output / "runtime").resolve(strict=True)
+        assert not (output / "runtime").is_symlink()
+        info = runtime.stat()
+        assert info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) & 0o077 == 0
+        assert Path(os.environ["XDG_RUNTIME_DIR"]).resolve(strict=True) == runtime
+        assert os.environ.get("GDK_BACKEND") == "wayland"
+        assert "WAYLAND_SOCKET" not in os.environ  # No inherited-fd endpoint override.
+        wayland = os.environ["WAYLAND_DISPLAY"]
+        assert wayland and Path(wayland).name == wayland
+        for path in (Path(os.environ["NIRI_SOCKET"]), runtime / wayland):
+            assert not path.is_symlink() and path.resolve(strict=True).parent == runtime
+            info = path.stat()
+            assert stat.S_ISSOCK(info.st_mode) and info.st_uid == os.getuid()
+        observation["stage"] = "owned-window"
+        remaining = work_end - time.monotonic()
+        assert remaining > 0
+        replies = await asyncio.to_thread(
+            request_many, ("Windows", "Outputs"), min(0.25, remaining)
+        )
+        windows, outputs = contents(replies[0], "Windows"), contents(replies[1], "Outputs")
+        assert set(outputs) == {"winit"} and outputs["winit"]["name"] == "winit"
+        assert windows and all(window.get("pid") == os.getpid() for window in windows)
+        matches = [window for window in windows if window.get("title") == title]
+        assert len(matches) == 1 and matches[0].get("is_focused")
+        window = matches[0]
+        observation.update(
+            pid=window["pid"],
+            title=title,
+            windowId=window["id"],
+            output="winit",
+            identityObservedAtMonoMs=int(time.monotonic() * 1000),
+        )
+        destination = output / "shortcuts-first-compositor.png"
+        assert not destination.exists(), "preserve an earlier compositor diagnostic"
+        remaining = work_end - time.monotonic()
+        assert remaining > 0
+        observation["stage"] = "grim"
+        # Obtain the owned handle synchronously, before any cancellable await.
+        # Keep the existing outer process group; never create another session.
+        child = subprocess.Popen(
+            ["grim", "-o", "winit", str(destination)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        observation["grimPid"] = child.pid
+        code = await asyncio.to_thread(child.wait, max(0, work_end - time.monotonic()))
+        observation["exitCode"] = code
+        if code == 0 and destination.is_file() and destination.stat().st_size > 0:
+            observation.update(status="written-not-reviewed", file=destination.name)
+        else:
+            observation["failure"] = "grim-did-not-produce-an-image"
+    except asyncio.CancelledError:
+        observation["status"] = "cancelled"
+        raise
+    except Exception as error:
+        observation["failure"] = type(error).__name__
+    finally:
+        if child is not None:
+            if child.poll() is None:
+                try:
+                    child.kill()
+                except ProcessLookupError:
+                    pass  # It exited between poll and the owned-pid signal.
+                except OSError as error:
+                    observation["cleanupFailure"] = type(error).__name__
+            try:
+                await asyncio.shield(asyncio.to_thread(child.wait, max(0, end - time.monotonic())))
+                observation["childReaped"] = True
+            except Exception as error:
+                observation["childReaped"] = False
+                observation["cleanupFailure"] = type(error).__name__
+        observation["finishedAtMonoMs"] = int(time.monotonic() * 1000)
+
+
 def main(arguments=None):
     import gi
 
     gi.require_version("Gtk", "3.0")
     gi.require_version("Gdk", "3.0")
+    gi.require_version("GdkPixbuf", "2.0")
     from types import SimpleNamespace
 
     from gi.events import GLibEventLoop
-    from gi.repository import Gdk, GLib, Gtk, Pango
+    from gi.repository import Gdk, GdkPixbuf, GLib, Gtk, Pango
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dotnet", type=Path)
@@ -44,12 +164,15 @@ def main(arguments=None):
     parser.add_argument("--about-only", action="store_true")
     parser.add_argument("--shortcuts-reset-only", action="store_true")
     parser.add_argument("--shortcuts-only", action="store_true")
+    parser.add_argument("--owned-niri-capture", action="store_true")
     parser.add_argument("--appearance-only", action="store_true")
     parser.add_argument("--appearance-entry-only", action="store_true")
     parser.add_argument("--appearance-slider-only", action="store_true")
     parser.add_argument("--appearance-retired-only", action="store_true")
     parser.add_argument("--shortcuts-recording-only", action="store_true")
     options = parser.parse_args(arguments)
+    if options.owned_niri_capture and not options.package:
+        parser.error("--owned-niri-capture is only for the isolated package shortcuts scope")
     if options.package:
         if options.dotnet or options.host or not options.shortcuts_only:
             parser.error(
@@ -98,7 +221,7 @@ def main(arguments=None):
             assert name in sources, f"missing production module identity: {name}"
         (options.output / "package-modules.json").write_text(json.dumps(sources, indent=2))
 
-    async def run():
+    async def run(*, deadline=None):
         temporary = tempfile.TemporaryDirectory(prefix="typelay-settings-ui-")
         directory = Path(temporary.name)
         (directory / "config").mkdir()
@@ -327,9 +450,9 @@ def main(arguments=None):
         def capture(name):
             window = surface.window.get_window()
             width, height = surface.window.get_size()
-            Gdk.pixbuf_get_from_window(window, 0, 0, width, height).savev(
-                str(options.output / (name + ".png")), "png", [], []
-            )
+            image = Gdk.pixbuf_get_from_window(window, 0, 0, width, height)
+            saved = image.savev(str(options.output / (name + ".png")), "png", [], [])
+            return image, saved
 
         async def choose_visible_appearance(key, value):
             control = (
@@ -1828,9 +1951,56 @@ def main(arguments=None):
                 await paint(surface.window)
                 assert settings_path.read_bytes() == before and host.draft_submissions == calls
 
+            first_picture = True
+
             async def picture(name):
+                nonlocal first_picture
                 await paint(surface.window)
-                capture("shortcuts-" + name)
+                started = int(time.monotonic() * 1000)
+                image, saved = capture("shortcuts-" + name)
+                if not (first_picture and options.owned_niri_capture):
+                    return
+                first_picture = False
+                observation = {
+                    "schema": 1,
+                    "sameFrame": False,
+                    "note": "Client pixbuf and compositor output are separate sequential observations.",
+                    "pixbufStartedAtMonoMs": started,
+                    "pixbufSavedAtMonoMs": int(time.monotonic() * 1000),
+                    "saveReturned": bool(saved),
+                    "gtkVersion": [
+                        Gtk.get_major_version(),
+                        Gtk.get_minor_version(),
+                        Gtk.get_micro_version(),
+                    ],
+                    "compositor": {},
+                }
+                try:
+                    try:
+                        observation["pixbuf"] = pixbuf_observation(image)
+                        readback = GdkPixbuf.Pixbuf.new_from_file(
+                            str(options.output / ("shortcuts-" + name + ".png"))
+                        )
+                        observation["pngReadback"] = pixbuf_observation(readback)
+                        observation["sameSavedPixels"] = all(
+                            observation["pixbuf"][key] == observation["pngReadback"][key]
+                            for key in ("width", "height", "rgbaSha256")
+                        )
+                    except Exception as error:
+                        observation["pixbufObservationFailure"] = type(error).__name__
+                    await capture_owned_niri(
+                        options.output,
+                        surface.window.get_title(),
+                        deadline=deadline,
+                        observation=observation["compositor"],
+                    )
+                finally:
+                    try:
+                        (options.output / "shortcuts-capture-observation.json").write_text(
+                            json.dumps(observation, indent=2) + "\n"
+                        )
+                    except OSError as error:
+                        print("SHORTCUT CAPTURE DIAGNOSTIC UNAVAILABLE: " + type(error).__name__)
 
             await picture("en-light-default")
             for recorder in (surface.controls[key] for key in surface.shortcut_defaults):
@@ -3705,7 +3875,11 @@ def main(arguments=None):
         ) as runner:
             # CI's independent owned-niri scope has a 40s outer budget.
             # Reserve its final portion for the existing host/window cleanup.
-            runner.run(asyncio.wait_for(run(), 30) if options.package else run())
+            runner.run(
+                asyncio.wait_for(run(deadline=time.monotonic() + 30), 30)
+                if options.package
+                else run()
+            )
     except KeyboardInterrupt:
         if options.package:
             raise

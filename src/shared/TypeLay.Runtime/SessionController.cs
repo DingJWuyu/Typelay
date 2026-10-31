@@ -926,7 +926,7 @@ public sealed partial class SessionController : IDisposable
                 && request.BoundTarget == editingSource.Target
                 && configurationRevision == _configurationRevision && connectionId == _hook.ConnectionId
                 && request.SessionShortcuts?.Generation == _hook.CommandGeneration
-                && (request.ForegroundEpoch == _hook.ForegroundEpoch || PendingEditorHandoffOwnsEmptyRead(request, pendingEditorHandoff))
+                && (request.ForegroundEpoch == _hook.ForegroundEpoch || PendingEditorHandoffOwnsOrdinaryRead(request, pendingEditorHandoff))
                 && contentEpoch == _hook.ContentEpoch
                 && _hook.Ready && _broker.Available && _hook.GetFocus(editingSource.Target) == FocusMember.Overlay)
             {
@@ -978,6 +978,26 @@ public sealed partial class SessionController : IDisposable
                     } != basis)
                     StopSession("manual-observation-changed");
                 _manualObservation = null;
+            }
+            // The ordinary read may observe the newly focused editor before
+            // its pending handoff performs its own fresh source recheck. Do not
+            // replace that handoff's frozen basis with an equivalent observation.
+            // This read grants nothing; the original bounded recheck still runs.
+            if (result.Focus == FocusMember.Overlay && !result.ForegroundExpired
+                && result.OwnedSource is null && result.FencedPracticeRead is null
+                && result.UserEpoch == _hook.UserEpoch && result.ForegroundEpoch == _hook.ForegroundEpoch
+                && contentEpoch == _hook.ContentEpoch
+                && PendingEditorHandoffOwnsOrdinaryRead(request, pendingEditorHandoff)
+                && pendingEditorHandoff is { Source: var editorBasis } && snapshot.IsUsable
+                && snapshot.Target == editorBasis.Target && snapshot.Text == editorBasis.Text
+                && snapshot.InputEpoch == editorBasis.InputEpoch && snapshot.Selection == editorBasis.Selection
+                && snapshot.TranslationScope == editorBasis.TranslationScope && snapshot.Multiline == editorBasis.Multiline
+                && _settings.NormalizeStyleApplication(result.Application) == pendingEditorHandoff.Observation.Application)
+            {
+                captureExit = "editor-handoff-owns-read";
+                RevokeInput("editing-translation");
+                _permitUntil = 0;
+                return;
             }
             if (_editTransitionUntil > now && result.Focus == FocusMember.Source
                 && _session.State == SessionState.EditingTranslation)

@@ -230,6 +230,87 @@ def disconnect_completed(application, observed_receipts):
     )
 
 
+def activate_settings_detail(pid, node, *, deadline):
+    """Open this GIMP action's real detail ancestor, never activate a hidden child."""
+    from support.gtk_accessibility import Atspi, focus_settings_control, scroll_settings_control
+
+    name = node.get_name()
+    assert node.get_role() == Atspi.Role.PUSH_BUTTON
+    path = []
+    peer = node
+    for _ in range(24):
+        assert peer is not None and all(peer != item for item, _ in path)
+        peer.clear_cache()
+        assert peer.get_process_id() == pid
+        assert not peer.get_state_set().contains(Atspi.StateType.DEFUNCT)
+        role = peer.get_role()
+        path.append((peer, role))
+        if role == Atspi.Role.FRAME:
+            break
+        peer = peer.get_parent()
+    else:
+        raise AssertionError("GIMP settings detail ancestry exceeds its bound")
+    frame = path[-1][0]
+    matches = [
+        peer
+        for peer, role in path[1:-1]
+        if role == Atspi.Role.TOGGLE_BUTTON and peer.get_name() == "查看详情"
+    ]
+    assert len(matches) == 1, "GIMP action has no unique real detail expander"
+    details = matches[0]
+
+    def current():
+        assert time.monotonic() < deadline, "public action exhausted its interaction budget"
+        for peer, role in path:
+            peer.clear_cache()
+            assert peer.get_process_id() == pid and peer.get_role() == role
+            assert not peer.get_state_set().contains(Atspi.StateType.DEFUNCT)
+        for (child, _), (parent, _) in zip(path, path[1:]):
+            assert child.get_parent() == parent, "GIMP settings detail peer was replaced"
+        assert node.get_name() == name and details.get_name() == "查看详情"
+        assert frame.get_name() == "TypeLay 设置"
+        assert frame.get_state_set().contains(Atspi.StateType.ACTIVE)
+        states = details.get_state_set()
+        assert all(
+            states.contains(state)
+            for state in (
+                Atspi.StateType.EXPANDABLE,
+                Atspi.StateType.SENSITIVE,
+                Atspi.StateType.ENABLED,
+            )
+        )
+        return states.contains(Atspi.StateType.EXPANDED)
+
+    if not current():
+        # Opening the visible expander is a separate public user action, not
+        # permission to focus/click its collapsed secondary child or replace it.
+        scroll_settings_control(pid, details, deadline=deadline)
+        current()
+        focus_settings_control(pid, details, timeout=deadline - time.monotonic())
+        if not current():
+            interface = details.get_action_iface()
+            assert time.monotonic() < deadline
+            assert interface and Atspi.Action.do_action(interface, 0), "查看详情"
+            while not current():
+                time.sleep(0.05)
+
+    assert current(), "GIMP settings detail collapsed during navigation"
+    scroll_settings_control(pid, node, deadline=deadline)
+    assert current(), "GIMP settings detail collapsed during navigation"
+    focus_settings_control(pid, node, timeout=deadline - time.monotonic())
+    assert current(), "GIMP settings detail collapsed before its action"
+    area = Atspi.Component.get_extents(node.get_component_iface(), Atspi.CoordType.SCREEN)
+    assert (area.width, area.height) != (1, 1), (
+        "GIMP detail action still has degenerate geometry: "
+        f"target={(area.x, area.y, area.width, area.height)}"
+    )
+    assert current(), "GIMP settings detail changed during its final geometry observation"
+    interface = node.get_action_iface()
+    assert time.monotonic() < deadline, "public action exhausted its interaction budget"
+    assert interface and Atspi.Action.do_action(interface, 0), name
+    return node
+
+
 def run_gimp(
     arguments,
     paths,
@@ -255,7 +336,6 @@ def run_gimp(
         focus_settings_control,
         focused,
         named,
-        scroll_settings_control,
         select_settings_page,
         text,
         visible_named,
@@ -329,10 +409,8 @@ def run_gimp(
         )
         if pid == host_pid:
             if apps_detail:
-                # Navigate the existing owned Apps scrollbar before attempting
-                # focus; do not activate a clipped details action. The original
-                # focus/ancestry/full-clip check and shared 15 seconds remain.
-                scroll_settings_control(pid, node, deadline=deadline)
+                assert dialog_title is None
+                return activate_settings_detail(pid, node, deadline=deadline)
             focus_settings_control(pid, node, timeout=deadline - time.monotonic())
         else:
             if not showing(node):

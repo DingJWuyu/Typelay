@@ -857,7 +857,9 @@ jobs:
           python tests/linux/test_gtk_accessibility_bounds.py -v
           python tests/linux/test_gtk_settings_scroll.py -v
           python tests/linux/test_gtk_settings_focus.py -v
+          python tests/linux/test_gtk_settings_combo.py -v
           python tests/linux/test_gtk_shortcut_input.py -v
+          python tests/linux/test_settings_capture.py -v
           python tests/linux/test_ordinary_desktop_lifecycle.py -v
           python tests/linux/test_gtk_preview_contract.py -v
           python tests/linux/test_qt_candidate_observation.py -v

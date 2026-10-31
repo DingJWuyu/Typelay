@@ -2822,6 +2822,7 @@ def inside_settings_ui(arguments):
             "--package",
             str(arguments.package),
             "--shortcuts-only",
+            "--owned-niri-capture",
             "--output",
             str(arguments.output),
         ],
