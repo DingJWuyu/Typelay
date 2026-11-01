@@ -22,6 +22,10 @@ internal sealed partial class OverlayWindow
     private bool _localDraftPrompt, _localDraftRestoring;
     private Key? _localDraftPromptKey;
     private object? _localDraftPressedPrompt;
+    private Button? _localDraftPressedButton;
+    private KeyboardHook.LocalDraftPress? _localDraftReplacePress;
+    private uint? _localDraftReplaceUp;
+    private bool _localDraftReplacing;
     private Button? _localDraftKeep, _localDraftReplace;
     private TranslationStyle _localDraftTone;
     private sealed record LocalDraftTab(OwnedLocalDraft Opening, KeyboardHook.LocalDraftPress Press, TextBox Editor, string Draft);
@@ -75,6 +79,8 @@ internal sealed partial class OverlayWindow
     private bool LocalPromptCurrent(object? prompt) => prompt is not null && ReferenceEquals(_regenerateConfirmation, prompt)
         && _localDraftPrompt && _regeneratePrompt is not null && LocalDraftCurrent() && !_localDraftReturning
         && _editor.Text == _regenerateDraft && !EditingComposition && Native.GetForegroundWindow() == _hwnd;
+    internal bool LocalDraftReplaceFocused(OwnedLocalRegenerateConfirmation confirmation) => LocalPromptCurrent(confirmation)
+        && ReferenceEquals(_ownedLocalOpening, confirmation.Opening) && ReferenceEquals(Keyboard.FocusedElement, _localDraftReplace);
     private bool IsLocalPromptButton(IInputElement? focus) => focus is not null
         && (ReferenceEquals(focus, _localDraftKeep) || ReferenceEquals(focus, _localDraftReplace));
     private bool PreserveLocalDraftPromptFocus(IInputElement? focus) => LocalPromptCurrent(_regenerateConfirmation)
@@ -118,6 +124,11 @@ internal sealed partial class OverlayWindow
             if (_localDraftTab is { } pending)
                 RetireLocalDraft(pending.Opening);
         }
+        AddHandler(Keyboard.GotKeyboardFocusEvent, new KeyboardFocusChangedEventHandler((_, e) =>
+        {
+            if (_localDraftPrompt && _regenerateConfirmation is OwnedLocalRegenerateConfirmation confirmation)
+                _ownedEditorHost?.LocalDraftRegenerateFocus(confirmation, ReferenceEquals(e.NewFocus, _localDraftReplace));
+        }), true);
         _editor.GotKeyboardFocus += (_, _) =>
         {
             if (_ownedLocalOpening is { } opening)
@@ -171,20 +182,35 @@ internal sealed partial class OverlayWindow
                 if (!action && !tab)
                     return;
                 e.Handled = true;
-                if (EditingComposition || !LocalPromptCurrent(_regenerateConfirmation) || !IsLocalPromptButton(Keyboard.FocusedElement))
+                if (_localDraftReplacing || EditingComposition || !LocalPromptCurrent(_regenerateConfirmation) || !IsLocalPromptButton(Keyboard.FocusedElement))
                     return;
                 if (e.IsRepeat)
                     return;
                 if (tab && Keyboard.Modifiers is ModifierKeys.None or ModifierKeys.Shift)
                 {
-                    // Replace remains unavailable in this first vertical slice.
-                    _localDraftKeep!.Focus();
+                    var next = ReferenceEquals(Keyboard.FocusedElement, _localDraftKeep) ? _localDraftReplace! : _localDraftKeep!;
+                    if (!next.Focus() || !next.IsKeyboardFocused)
+                        RetireLocalDraft(opening);
                     return;
                 }
                 if (action && Keyboard.Modifiers == ModifierKeys.None)
                 {
                     _localDraftPromptKey = e.Key;
                     _localDraftPressedPrompt = _regenerateConfirmation;
+                    _localDraftPressedButton = Keyboard.FocusedElement as Button;
+                    _localDraftReplacePress = null;
+                    _localDraftReplaceUp = null;
+                    if (e.Key is Key.Enter or Key.Space && ReferenceEquals(_localDraftPressedButton, _localDraftReplace)
+                        && _regenerateConfirmation is OwnedLocalRegenerateConfirmation confirmation)
+                    {
+                        var replaceMessage = ComponentDispatcher.CurrentKeyboardMessage;
+                        long replaceBits = replaceMessage.lParam.ToInt64();
+                        uint replaceKey = (uint)KeyInterop.VirtualKeyFromKey(e.Key), replaceScan = (uint)(replaceBits >> 16) & 255;
+                        if (replaceMessage.hwnd == _hwnd && replaceMessage.message == 0x100 && replaceMessage.wParam == (nint)replaceKey
+                            && replaceScan != 0 && (replaceBits & 0xe0000000L) == 0)
+                            _localDraftReplacePress = _ownedEditorHost?.CaptureLocalDraftReplacePress(confirmation,
+                                unchecked((uint)replaceMessage.time), replaceKey, replaceScan, (replaceBits & 0x01000000) != 0);
+                    }
                 }
                 return;
             }
@@ -238,11 +264,32 @@ internal sealed partial class OverlayWindow
                 return;
             e.Handled = true;
             object? prompt = _localDraftPressedPrompt;
+            var pressedButton = _localDraftPressedButton;
             _localDraftPromptKey = null;
             _localDraftPressedPrompt = null;
-            if (!EditingComposition && Keyboard.Modifiers == ModifierKeys.None && LocalPromptCurrent(prompt)
-                && ReferenceEquals(Keyboard.FocusedElement, _localDraftKeep))
+            _localDraftPressedButton = null;
+            if (_localDraftReplacing || EditingComposition || Keyboard.Modifiers != ModifierKeys.None || !LocalPromptCurrent(prompt)
+                || !ReferenceEquals(Keyboard.FocusedElement, pressedButton))
+            {
+                _localDraftReplacePress = null;
+                return;
+            }
+            if (e.Key == Key.Escape || ReferenceEquals(pressedButton, _localDraftKeep))
                 KeepLocalDraft(prompt!);
+            else if (prompt is OwnedLocalRegenerateConfirmation confirmation && _localDraftReplacePress?.Key is { } key)
+            {
+                var message = ComponentDispatcher.CurrentKeyboardMessage;
+                long bits = message.lParam.ToInt64();
+                if (message.hwnd == _hwnd && message.message == 0x101 && message.wParam == (nint)key.VirtualKey
+                    && (uint)(bits >> 16 & 255) == key.ScanCode && ((bits & 0x01000000) != 0) == key.Extended
+                    && (bits & 0xe0000000L) == 0xc0000000L)
+                {
+                    _localDraftReplaceUp = unchecked((uint)message.time);
+                    ReplaceLocalDraft(confirmation);
+                }
+            }
+            _localDraftReplacePress = null;
+            _localDraftReplaceUp = null;
         };
     }
 
@@ -351,13 +398,26 @@ internal sealed partial class OverlayWindow
         if (!ReferenceEquals(_ownedLocalOpening, opening) || !LocalDraftCurrent() || EditingComposition || menu.Reopened)
             return;
         DismissRegenerateConfirmation(reposition: false);
-        object prompt = new();
+        var prompt = _ownedEditorHost?.BeginLocalDraftRegenerate(opening);
+        if (prompt is null)
+            return;
         _regenerateConfirmation = prompt;
         _regenerateDraft = _editor.Text;
         _localDraftPrompt = true;
         var keep = _localDraftKeep = UiTheme.Button(UiTheme.L("保留", "Keep"), () => KeepLocalDraft(prompt));
-        var replace = _localDraftReplace = UiTheme.Button(UiTheme.L("替换", "Replace"), () => { }, primary: true);
-        replace.IsEnabled = false; // Replace is a subsequent action-specific vertical slice.
+        var replace = _localDraftReplace = UiTheme.Button(UiTheme.L("替换", "Replace"), () => ReplaceLocalDraft(prompt), primary: true);
+        replace.PreviewMouseLeftButtonDown += (_, e) =>
+        {
+            _localDraftReplacePress = null;
+            _localDraftReplaceUp = null;
+            if (!_localDraftReplacing && e.ClickCount == 1 && LocalPromptCurrent(prompt) && Keyboard.Modifiers == ModifierKeys.None)
+                _localDraftReplacePress = _ownedEditorHost?.CaptureLocalDraftReplacePress(prompt, unchecked((uint)e.Timestamp));
+        };
+        replace.PreviewMouseLeftButtonUp += (_, e) =>
+        {
+            if (_localDraftReplacePress is { Mouse: not null } && LocalDraftReplaceFocused(prompt))
+                _localDraftReplaceUp = unchecked((uint)e.Timestamp);
+        };
         AutomationProperties.SetAutomationId(keep, "RegenerateKeep");
         AutomationProperties.SetAutomationId(replace, "RegenerateReplace");
         _regeneratePrompt = CreateRegenerateSheet(keep, replace);
@@ -392,6 +452,12 @@ internal sealed partial class OverlayWindow
 
     private void ResetLocalDraftPrompt()
     {
+        if (_regenerateConfirmation is OwnedLocalRegenerateConfirmation confirmation)
+            _ownedEditorHost?.CancelLocalDraftRegenerate(confirmation);
+        _localDraftReplacing = false;
+        _localDraftReplacePress = null;
+        _localDraftReplaceUp = null;
+        _localDraftPressedButton = null;
         _localDraftPrompt = false;
         _localDraftPromptKey = null;
         _localDraftPressedPrompt = null;
@@ -400,9 +466,14 @@ internal sealed partial class OverlayWindow
 
     private void KeepLocalDraft(object prompt)
     {
-        if (!LocalPromptCurrent(prompt) || !ReferenceEquals(Keyboard.FocusedElement, _localDraftKeep))
+        if (_localDraftReplacing || !LocalPromptCurrent(prompt) || !IsLocalPromptButton(Keyboard.FocusedElement))
             return;
         var opening = _ownedLocalOpening!;
+        // A click on Keep also passed through the local mouse observer. End
+        // this prompt's unaccepted Replace gesture before restoring editor focus;
+        // the existing strict Tab departure/focus checks remain unchanged.
+        if (prompt is OwnedLocalRegenerateConfirmation confirmation)
+            _ownedEditorHost?.CancelLocalDraftRegenerate(confirmation);
         _localDraftRestoring = true;
         bool focused;
         try
@@ -422,6 +493,20 @@ internal sealed partial class OverlayWindow
         DismissRegenerateConfirmation(reposition: false);
         PositionLocalDraft();
         _ownedEditorHost?.SetLocalDraftEditorFocus(opening, true);
+    }
+
+    private void ReplaceLocalDraft(OwnedLocalRegenerateConfirmation confirmation)
+    {
+        var press = _localDraftReplacePress;
+        var up = _localDraftReplaceUp;
+        _localDraftReplacePress = null;
+        _localDraftReplaceUp = null;
+        if (_localDraftReplacing || press is null || up is null || !LocalDraftReplaceFocused(confirmation))
+            return;
+        _localDraftReplacing = true;
+        if (_ownedEditorHost?.BeginLocalDraftReplace(confirmation, press, up.Value) != true
+            && ReferenceEquals(_regenerateConfirmation, confirmation))
+            _localDraftReplacing = false; // A refused gesture leaves this exact prompt and draft untouched.
     }
 
     private void PositionLocalDraft()
@@ -453,8 +538,27 @@ internal sealed partial class OverlayWindow
         SetPlacement((x, y, width, height), body, body, 18);
     }
 
-    internal bool ArmLocalDraftDeparture(OwnedLocalDraft opening)
+    internal bool ArmLocalDraftDeparture(OwnedLocalDraft opening, OwnedLocalRegenerateConfirmation? confirmation = null)
     {
+        if (confirmation is not null)
+        {
+            if (!_localDraftReplacing || !LocalDraftReplaceFocused(confirmation))
+                return false;
+            bool focused;
+            _localDraftRestoring = true;
+            try
+            {
+                focused = _editor.Focus();
+            }
+            finally { _localDraftRestoring = false; }
+            if (!focused || !_editor.IsKeyboardFocused || !LocalPromptCurrent(confirmation))
+                return false;
+            // Only this prompt returns to its existing editor. No text/Undo
+            // changes, source activation, or synthetic acceptance are performed.
+            _localDraftPrompt = false;
+            DismissRegenerateConfirmation(reposition: false);
+            PositionLocalDraft();
+        }
         if (!LocalDraftEditorFocused(opening))
             return false;
         _localDraftReturning = true;

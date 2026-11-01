@@ -15,10 +15,15 @@ public sealed class OwnedLocalDraft
 }
 public sealed class OwnedLocalDraftReturnRequest
 {
-    internal OwnedLocalDraftReturnRequest(OwnedLocalDraft opening, long pressedAtMs)
+    internal OwnedLocalDraftReturnRequest(OwnedLocalDraft opening, long pressedAtMs, bool replacesDraft = false)
     {
         Opening = opening;
         PressedAtMs = pressedAtMs;
+        ReplacesDraft = replacesDraft;
+    }
+    public bool ReplacesDraft
+    {
+        get;
     }
     public Guid Id { get; } = Guid.NewGuid();
     public OwnedLocalDraft Opening
@@ -30,6 +35,16 @@ public sealed class OwnedLocalDraftReturnRequest
         get;
     }
     public long ExpiresAtMs => checked(PressedAtMs + 500);
+}
+// A confirmation names this local draft only. It is not an acceptance permit.
+public sealed class OwnedLocalRegenerateConfirmation
+{
+    internal OwnedLocalRegenerateConfirmation(OwnedLocalDraft opening) => Opening = opening;
+    public Guid Id { get; } = Guid.NewGuid();
+    public OwnedLocalDraft Opening
+    {
+        get;
+    }
 }
 // A fixed-peer source-arrival receipt, not a source observation or old return.
 public sealed record OwnedLocalDraftReturn(Guid Opening, Guid Intent, OwnedPracticeBinding Binding,
@@ -46,6 +61,7 @@ public sealed partial class SessionController
         public long SettingsRevision { get; } = settingsRevision;
         public long Generation = generation;
         public string Draft = draft;
+        public OwnedLocalRegenerateConfirmation? Confirmation;
         public OwnedLocalDraftReturnRequest? Return;
         public OwnedLocalDraftReturn? Receipt;
         public OwnedSourceEvidence? Fresh;
@@ -53,6 +69,15 @@ public sealed partial class SessionController
         public bool CoreConfirmed;
     }
     private LocalDraftIntent? _ownedLocalDraft;
+    private sealed class LocalRegenerate(LocalDraftIntent intent, OwnedPracticeBinding binding, long generation)
+    {
+        public LocalDraftIntent Intent { get; } = intent;
+        public OwnedPracticeBinding Binding { get; } = binding;
+        public long Generation = generation;
+        public long ReadyAt;
+        public bool Ready, Started;
+    }
+    private LocalRegenerate? _ownedLocalRegenerate;
     private (LocalDraftIntent Intent, AutomaticPracticeProgress Progress)? _rotatingOwnedLocalReturn;
 
     // Only the acceptance-only paint callback may cross this synchronous
@@ -109,15 +134,139 @@ public sealed partial class SessionController
         && _hook.Ready && _broker.Available && opening.Binding.ConnectionId == _hook.ConnectionId
         && AutomaticPracticeProgress is { } progress && progress.RunId == opening.Binding.RunId
         && progress.CommandGeneration == _hook.CommandGeneration
-        && (intent.CoreConfirmed ? _session.State == SessionState.EditedTranslationPending
-            : _session.DormantEditIsCurrent(intent.Edit));
+        && LocalDraftReturnWithinDeadline(intent)
+        && (intent.CoreConfirmed ? LocalDraftCoreReturnCurrent(intent) : _session.DormantEditIsCurrent(intent.Edit));
+
+    private bool LocalDraftReturnWithinDeadline(LocalDraftIntent intent) => intent.Return is not { ReplacesDraft: true } request
+        || _loop.NowMs >= request.PressedAtMs && _loop.NowMs < request.ExpiresAtMs;
+
+    private bool LocalDraftCoreReturnCurrent(LocalDraftIntent intent) => _session.Revision == _automaticEditRevision
+        && _session.Current?.Target == intent.Opening.Binding.Target
+        && (intent.Return?.ReplacesDraft == true
+            ? _session.State == SessionState.NoSession && _session.Candidate.Length == 0
+            : _session.State == SessionState.EditedTranslationPending && _session.Candidate == intent.Draft);
 
     public bool ChangeOwnedLocalDraft(OwnedLocalDraft opening, string text)
     {
         if (!OwnedLocalDraftCurrent(opening) || _ownedLocalDraft is not { Return: null } intent
             || !_session.ChangeDormantDraft(intent.Edit, text))
             return false;
+        intent.Confirmation = null;
         intent.Draft = text;
+        return true;
+    }
+
+    public OwnedLocalRegenerateConfirmation? BeginOwnedLocalRegenerateConfirmation(OwnedLocalDraft opening)
+    {
+        if (!OwnedLocalDraftCurrent(opening) || _ownedLocalDraft is not { Return: null } intent
+            || _overlay.EditingComposition)
+            return null;
+        return intent.Confirmation = new(opening);
+    }
+
+    public bool OwnedLocalRegenerateConfirmationCurrent(OwnedLocalRegenerateConfirmation confirmation) =>
+        OwnedLocalDraftCurrent(confirmation.Opening) && _ownedLocalDraft is { Return: null } intent
+        && ReferenceEquals(intent.Confirmation, confirmation) && !_overlay.EditingComposition;
+
+    public void CancelOwnedLocalRegenerateConfirmation(OwnedLocalRegenerateConfirmation confirmation)
+    {
+        if (ReferenceEquals(_ownedLocalDraft?.Confirmation, confirmation))
+            _ownedLocalDraft.Confirmation = null;
+    }
+
+    public OwnedLocalDraftReturnRequest? PrepareOwnedLocalRegenerate(OwnedLocalRegenerateConfirmation confirmation, long pressedAtMs)
+    {
+        if (!OwnedLocalRegenerateConfirmationCurrent(confirmation)
+            || _loop.NowMs < pressedAtMs || _loop.NowMs - pressedAtMs >= 500 || pressedAtMs > long.MaxValue - 500)
+            return null;
+        var intent = _ownedLocalDraft!;
+        intent.Confirmation = null;
+        return intent.Return = new(confirmation.Opening, pressedAtMs, replacesDraft: true);
+    }
+
+    // Called only after the host has installed the new reader. Binding alone
+    // cannot start a read while that reader is still sealed.
+    public bool CompleteOwnedLocalRegenerate(OwnedLocalDraftReturnRequest request, OwnedPracticeBinding binding)
+    {
+        if (_ownedLocalRegenerate is not { Ready: false, Started: false } pending
+            || !ReferenceEquals(pending.Intent.Return, request) || pending.Binding != binding)
+            return false;
+        if (!OwnedLocalRegenerateCurrent(pending))
+        {
+            StopSession("owned-local-regenerate-reader-refused");
+            return false;
+        }
+        pending.ReadyAt = _loop.NowMs;
+        pending.Ready = true;
+        _nextCapture = 0;
+        return true;
+    }
+
+    private bool OwnedLocalRegenerateCurrent(LocalRegenerate pending) => !_disposed
+        && ReferenceEquals(_ownedLocalRegenerate, pending) && ReferenceEquals(_ownedPractice, pending.Binding)
+        && pending.Generation == _generation && pending.Intent.Configuration == _configurationRevision
+        && pending.Intent.SettingsRevision == _settings.Revision && AutomaticPracticeIsCurrent(pending.Binding)
+        && _session.DormantReturnFamilyIsCurrent(pending.Intent.Edit) && LocalDraftSourceCurrent(pending.Intent)
+        && pending.Intent.Return is { ReplacesDraft: true } request
+        && _loop.NowMs >= request.PressedAtMs && _loop.NowMs < request.ExpiresAtMs
+        && LocalDraftCoreReturnCurrent(pending.Intent)
+        && !_overlay.EditingComposition;
+
+    private bool TickOwnedLocalRegenerate()
+    {
+        if (_ownedLocalRegenerate is not { } pending)
+            return false;
+        if (!OwnedLocalRegenerateCurrent(pending))
+            StopSession("owned-local-regenerate-retired");
+        else if (pending.Ready && !pending.Started && !_capturing && !_writing && _loop.NowMs >= _nextCapture)
+        {
+            _nextCapture = _loop.NowMs + 35;
+            _ = Capture();
+        }
+        return true;
+    }
+
+    private bool ObserveOwnedLocalRegenerateCapture(InputCapture capture, InputContext request, long now)
+    {
+        if (_ownedLocalRegenerate is not { } pending)
+            return false;
+        if (!pending.Ready || pending.Started || !OwnedLocalRegenerateCurrent(pending)
+            || request.PracticeRead != pending.Binding || capture.ForegroundExpired
+            || capture.Focus != FocusMember.Source || capture.Snapshot is not { } source
+            || _session.Current is not { } basis || source with
+            {
+                ObservedAtMs = basis.ObservedAtMs,
+                Bounds = basis.Bounds
+            } != basis
+            || WriteSafety.CheckSnapshot(source, now) != Denial.None || source.ObservedAtMs < pending.ReadyAt
+            || capture.OwnedSource is not { ContextAdvanced: false } evidence || evidence.Binding != pending.Binding
+            || evidence.ObservedAtMs != source.ObservedAtMs || capture.UserEpoch != _hook.UserEpoch
+            || request.SourceUserEpoch != _hook.SourceUserEpoch || capture.ForegroundEpoch != _hook.ForegroundEpoch
+            || capture.SessionShortcuts is not { SourceReady: true } ack || ack.Target != pending.Binding.Target
+            || ack.Generation != pending.Binding.CommandGeneration || ack.Bindings != CurrentSessionBindings)
+        {
+            StopSession("owned-local-regenerate-source-refused");
+            return true;
+        }
+        // Consume before a synchronous revoke callback can re-enter. Neither
+        // the click nor the return receipt is an observation or a write grant.
+        pending.Started = true;
+        pending.Generation = ++_generation;
+        RevokeInput("owned-local-regenerate");
+        if (!OwnedLocalRegenerateCurrent(pending))
+        {
+            if (ReferenceEquals(_ownedLocalRegenerate, pending))
+                StopSession("owned-local-regenerate-callback-retired");
+            return true;
+        }
+        _ownedLocalRegenerate = null;
+        _permitUntil = 0;
+        _statusOverride = null;
+        _sessionShortcuts = ack;
+        _session.Observe(source, FocusMember.Source, now);
+        _session.Retranslate(now); // Full current source/scope, never the old manual seed.
+        _nextCapture = 0;
+        Render();
         return true;
     }
 
@@ -256,7 +405,9 @@ public sealed partial class SessionController
             || capture.UserEpoch != _hook.UserEpoch || capture.ForegroundEpoch != _hook.ForegroundEpoch
             || capture.SessionShortcuts is not { SourceReady: true } ack || ack.Target != binding.Target
             || ack.Generation != binding.CommandGeneration || ack.Bindings != CurrentSessionBindings
-            || !_session.ConfirmDormantSourceReturn(intent.Edit, source, now))
+            || !(intent.Return?.ReplacesDraft == true
+                ? _session.ConfirmDormantRegenerateReturn(intent.Edit, source, now)
+                : _session.ConfirmDormantSourceReturn(intent.Edit, source, now)))
         {
             StopSession("owned-local-fresh-source-refused");
             return true;
@@ -273,8 +424,7 @@ public sealed partial class SessionController
         && OwnedLocalDraftCurrent(intent.Opening) && LocalDraftSourceCurrent(intent)
         && binding == LocalDraftReturnRead() && fresh.Binding == binding
         && _loop.NowMs >= fresh.ObservedAtMs && _loop.NowMs - fresh.ObservedAtMs <= Limits.ObservationMaxAgeMs
-        && _session.State == SessionState.EditedTranslationPending && _session.Revision == _automaticEditRevision
-        && _session.Current?.Target == binding.Target && _session.Candidate == intent.Draft
+        && LocalDraftCoreReturnCurrent(intent)
         && _sessionShortcuts is { SourceReady: true } ack && ack.Generation == binding.CommandGeneration
         && ack.Target == binding.Target && ack.Bindings == CurrentSessionBindings
         && _retireOwnedPractice is not null && !_automaticRetirementUnconfirmed && _automaticRetirement is not { IsCompleted: false };
@@ -308,6 +458,8 @@ public sealed partial class SessionController
         // executable; the host still keeps its reader sealed until this succeeds.
         _ownedLocalDraft = null;
         _ownedPractice = binding;
+        if (intent.Return?.ReplacesDraft == true)
+            _ownedLocalRegenerate = new(intent, binding, generation);
         _retiredAutomaticTarget = null;
         _permitUntil = 0;
         _nextCapture = 0;
@@ -321,8 +473,7 @@ public sealed partial class SessionController
             && AutomaticPracticeIsCurrent(binding) && _session.DormantReturnFamilyIsCurrent(intent.Edit)
             && LocalDraftSourceCurrent(intent) && intent.Fresh is { } fresh
             && _loop.NowMs >= fresh.ObservedAtMs && _loop.NowMs - fresh.ObservedAtMs <= Limits.ObservationMaxAgeMs
-            && _session.State == SessionState.EditedTranslationPending && _session.Revision == _automaticEditRevision
-            && _session.Candidate == intent.Draft;
+            && LocalDraftReturnWithinDeadline(intent) && LocalDraftCoreReturnCurrent(intent);
         bool RefuseInstalledReturn()
         {
             // A callback may have replaced the entire run/session. Only this

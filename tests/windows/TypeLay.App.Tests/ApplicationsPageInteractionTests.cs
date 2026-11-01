@@ -6,7 +6,9 @@ using System.Windows.Automation;
 using System.Windows.Automation.Peers;
 using System.Windows.Automation.Provider;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Media;
 using System.Windows.Threading;
 using TypeLay.App;
 using TypeLay.Core;
@@ -432,6 +434,54 @@ public sealed partial class SettingsRenderingTests
         Task? interaction = null;
         object? firstReadiness = null;
         int readinessObservations = 0, lastCandidateCount = 0;
+        int rightDowns = 0, rightUps = 0;
+        object? lastRightDown = null, lastRightUp = null;
+        bool failureRecorded = false;
+        static string? InputTarget(object source)
+        {
+            for (int depth = 0; depth < 8 && source is DependencyObject element; depth++)
+            {
+                string id = AutomationProperties.GetAutomationId(element);
+                if (!string.IsNullOrEmpty(id))
+                    return id;
+                if (element is not Visual || VisualTreeHelper.GetParent(element) is not { } parent)
+                    break;
+                source = parent;
+            }
+            return source.GetType().Name;
+        }
+        MouseButtonEventHandler rightDown = (_, e) =>
+        {
+            if (e.ChangedButton != MouseButton.Right)
+                return;
+            rightDowns++;
+            try
+            {
+                lastRightDown = new
+                {
+                    At = Environment.TickCount64,
+                    Target = InputTarget(e.OriginalSource),
+                    e.Handled
+                };
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { }
+        };
+        MouseButtonEventHandler rightUp = (_, e) =>
+        {
+            if (e.ChangedButton != MouseButton.Right)
+                return;
+            rightUps++;
+            try
+            {
+                lastRightUp = new
+                {
+                    At = Environment.TickCount64,
+                    Target = InputTarget(e.OriginalSource),
+                    e.Handled
+                };
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { }
+        };
         var previousOwned = owner.OwnedWindows.Cast<Window>().ToArray();
         object? ReadReadiness()
         {
@@ -445,13 +495,43 @@ public sealed partial class SettingsRenderingTests
                     OwnerActive = owner.IsActive,
                     OwnerEnabled = owner.IsEnabled,
                     Foreground = Native.GetForegroundWindow().ToInt64(),
-                    Owner = new WindowInteropHelper(owner).Handle.ToInt64()
+                    Owner = new WindowInteropHelper(owner).Handle.ToInt64(),
+                    Owned = owner.OwnedWindows.Cast<Window>().Take(4).Select(window => new
+                    {
+                        Id = AutomationProperties.GetAutomationId(window),
+                        window.IsVisible,
+                        window.IsActive,
+                        window.IsEnabled
+                    }).ToArray()
                 };
             }
             catch (Exception error) when (error is not OutOfMemoryException)
             {
                 return null;
             }
+        }
+        void RecordBeforeCleanup()
+        {
+            if (failureRecorded)
+                return;
+            failureRecorded = true;
+            try
+            {
+                TestContext.Current.TestOutputHelper?.WriteLine("Application dialog before cleanup: " + JsonSerializer.Serialize(new
+                {
+                    Id = id,
+                    Stage = observed ? "dialog-observed" : "waiting-for-dialog",
+                    At = Environment.TickCount64,
+                    RightDowns = rightDowns,
+                    RightUps = rightUps,
+                    LastRightDown = lastRightDown,
+                    LastRightUp = lastRightUp,
+                    Observations = readinessObservations,
+                    LastObservedCandidateCount = lastCandidateCount,
+                    Readiness = ReadReadiness()
+                }));
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { }
         }
         async Task InteractAsync()
         {
@@ -506,7 +586,12 @@ public sealed partial class SettingsRenderingTests
                 ct.ThrowIfCancellationRequested();
                 await interact(dialog, ct);
             }
-            catch (Exception error) { failure ??= error; dialog?.Close(); }
+            catch (Exception error)
+            {
+                failure ??= error;
+                RecordBeforeCleanup();
+                dialog?.Close();
+            }
             finally { completed = true; }
         }
         var action = owner.Dispatcher.BeginInvoke(new Action(() => interaction = InteractAsync()), DispatcherPriority.ApplicationIdle);
@@ -514,13 +599,16 @@ public sealed partial class SettingsRenderingTests
         timeout.Tick += (_, _) =>
         {
             failure ??= new TimeoutException("application-dialog-did-not-close");
+            RecordBeforeCleanup();
             limit.Cancel();
             foreach (var dialog in owner.OwnedWindows.Cast<Window>().ToArray())
                 dialog.Close();
         };
-        timeout.Start();
+        owner.AddHandler(Mouse.PreviewMouseDownEvent, rightDown, true);
+        owner.AddHandler(Mouse.PreviewMouseUpEvent, rightUp, true);
         try
         {
+            timeout.Start();
             ct.ThrowIfCancellationRequested();
             open();
             owner.Dispatcher.Invoke(() => { }, DispatcherPriority.SystemIdle);
@@ -530,8 +618,16 @@ public sealed partial class SettingsRenderingTests
             limit.Cancel();
             // Drain the already-cancelled callback on this same dispatcher;
             // never grant it a fresh input deadline after the modal returns.
-            owner.Dispatcher.Invoke(() => { }, DispatcherPriority.SystemIdle);
-            timeout.Stop();
+            try
+            {
+                owner.Dispatcher.Invoke(() => { }, DispatcherPriority.SystemIdle);
+            }
+            finally
+            {
+                timeout.Stop();
+                owner.RemoveHandler(Mouse.PreviewMouseDownEvent, rightDown);
+                owner.RemoveHandler(Mouse.PreviewMouseUpEvent, rightUp);
+            }
         }
         if (action.Status == DispatcherOperationStatus.Pending)
             action.Abort();

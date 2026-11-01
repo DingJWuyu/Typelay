@@ -451,7 +451,7 @@ public sealed partial class SessionController : IDisposable
         if (!ReferenceEquals(_configuredGlossary, GlossaryForTranslation()))
             ApplyGlossarySettings();
         DrainInputNotices();
-        if (TickOwnedLocalDraft())
+        if (TickOwnedLocalDraft() || TickOwnedLocalRegenerate())
             return;
         if (_awaitingPractice is not null && (_automaticRetirementUnconfirmed || _automaticRetirement is { IsCompleted: false }))
             return;
@@ -632,7 +632,7 @@ public sealed partial class SessionController : IDisposable
     private InputContext Context() => new(_hook.UserEpoch, _hook.ForegroundEpoch,
         _hook.SourceUserEpoch, _session.Current?.Target, _settings.Value.Excluded,
         _settings.Value.Enabled && _settings.Value.Mode == WorkMode.OnDemand,
-        new(_hook.CommandGeneration, CurrentSessionBindings), LocalDraftReturnRead() ?? PracticeReturnRead() ?? ContinuousPracticeRead());
+        new(_hook.CommandGeneration, CurrentSessionBindings), _ownedLocalRegenerate?.Binding ?? LocalDraftReturnRead() ?? PracticeReturnRead() ?? ContinuousPracticeRead());
     private bool PauseAnchorIsCurrent(long now) => _pauseAnchor is { IsUsable: true } anchor
         && _pauseWindowEpoch == _hook.WindowEpoch && _pauseForegroundEpoch == _hook.ForegroundEpoch
         && anchor.FocusEpoch == _hook.ForegroundEpoch && _hook.GetFocus(anchor.Target) == FocusMember.Source
@@ -900,6 +900,11 @@ public sealed partial class SessionController : IDisposable
             if (ObserveOwnedLocalDraftReturn(result, request, windowEpoch, configurationRevision, now))
             {
                 captureExit = "local-draft-return";
+                return;
+            }
+            if (ObserveOwnedLocalRegenerateCapture(result, request, now))
+            {
+                captureExit = "local-draft-regenerate";
                 return;
             }
             if (SuspendAutomaticRead(request, result, now))
@@ -2022,7 +2027,7 @@ public sealed partial class SessionController : IDisposable
     }
     private async Task Regenerate()
     {
-        if (_disposed || _sourceRegenerate is not null || !_settings.Value.Enabled || _overlay.EditingComposition)
+        if (_disposed || _ownedLocalDraft is not null || _ownedLocalRegenerate is not null || _sourceRegenerate is not null || !_settings.Value.Enabled || _overlay.EditingComposition)
             return;
         if (_session.State == SessionState.EditingTranslation)
         {
@@ -2101,6 +2106,7 @@ public sealed partial class SessionController : IDisposable
     public void StopSession() => StopSession("stop-session");
     private void StopSession(string reason)
     {
+        _ownedLocalRegenerate = null;
         _sourceRegenerate = null;
         CancelGlossaryEntry();
         _manualObservation = null;
@@ -2145,6 +2151,11 @@ public sealed partial class SessionController : IDisposable
         RetireInvalidGlossaryEntry();
         if (_disposed)
             return;
+        if (_ownedLocalRegenerate is { } regenerate && OwnedLocalRegenerateCurrent(regenerate))
+        {
+            _renderedAcceptanceReady = false;
+            return;
+        }
         if (_manualObservation is { UnavailableUntil: > 0 })
         {
             _renderedAcceptanceReady = false;
@@ -2188,7 +2199,7 @@ public sealed partial class SessionController : IDisposable
     }
     private bool CanPresentAcceptance(long nowMs)
     {
-        if (_manualObservation is { UnavailableUntil: > 0 }
+        if (_ownedLocalRegenerate is not null || _manualObservation is { UnavailableUntil: > 0 }
             || _glossaryEntry is not null || _presentationPermit is not { } issued || _permitUntil == 0 || nowMs > _permitUntil
             || _session.State is not (SessionState.ValidTranslation or SessionState.EditedTranslationPending)
             || _session.Current is not { } source)

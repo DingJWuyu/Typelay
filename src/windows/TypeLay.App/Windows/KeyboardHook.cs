@@ -1067,6 +1067,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
         {
             int message = (int)wParam;
             ObserveEditorMouse(message, lParam);
+            ObserveLocalDraftMouse(message, lParam);
             if (message is 0x201 or 0x204 or 0x207 or 0x20B)
                 _mouseButtons++;
             // A drag changes the selection even without a UIA focus event.

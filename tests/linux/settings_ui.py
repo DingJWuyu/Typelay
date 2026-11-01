@@ -1966,6 +1966,68 @@ def main(arguments=None):
 
             pictures = []
 
+            def titlebar_palette():
+                import cairo
+
+                # GtkWindow's default CSD is an internal child, intentionally
+                # absent from get_titlebar(). forall() is the public observer.
+                children = []
+                surface.window.forall(children.append)
+                headers = [
+                    child
+                    for child in children
+                    if isinstance(child, Gtk.HeaderBar)
+                    and child.get_parent() is surface.window
+                    and child.get_style_context().has_class("titlebar")
+                    and child.get_style_context().has_class("default-decoration")
+                ]
+                assert len(headers) == 1, "owned settings default titlebar is missing or ambiguous"
+                header = headers[0]
+                pending, titles = [header], []
+                for _ in range(32):
+                    if not pending:
+                        break
+                    widget = pending.pop()
+                    if (
+                        isinstance(widget, Gtk.Label)
+                        and widget.get_mapped()
+                        and widget.get_style_context().has_class("title")
+                    ):
+                        titles.append(widget)
+                    if isinstance(widget, Gtk.Container):
+                        widget.forall(pending.append)
+                assert not pending and len(titles) == 1
+                assert titles[0].get_text() == surface.window.get_title()
+                context = titles[0].get_style_context()
+                ink = context.get_color(context.get_state())
+                foreground = [round(channel * 255) for channel in (ink.red, ink.green, ink.blue)]
+                width, height = header.get_allocated_width(), header.get_allocated_height()
+                assert header.get_mapped() and width > 0 and height > 0
+                # Render this real node's background, including any theme image;
+                # a background-color lookup alone would miss a native gradient.
+                drawing = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+                Gtk.render_background(
+                    header.get_style_context(), cairo.Context(drawing), 0, 0, width, height
+                )
+                drawing.flush()
+                sample = Gdk.pixbuf_get_from_surface(drawing, width // 2, height // 2, 1, 1)
+                background = list(sample.get_pixels()[:3])
+                assert ink.alpha == 1 and (
+                    not sample.get_has_alpha() or sample.get_pixels()[3] == 255
+                )
+                expected = (
+                    ([244, 243, 238], [38, 38, 36])
+                    if state["theme"] == "dark"
+                    else ([20, 20, 19], [247, 246, 242])
+                )
+                assert (foreground, background) == expected, (
+                    "native settings titlebar foreground/background do not match the page palette",
+                    state["theme"],
+                    foreground,
+                    background,
+                )
+                return {"foreground": foreground, "background": background}
+
             async def picture(name):
                 await paint(surface.window)
                 if not options.owned_niri_capture:
@@ -1992,6 +2054,9 @@ def main(arguments=None):
                         deadline=deadline,
                         observation=observation["compositor"],
                     )
+                    # Preserve the same compositor image even if the style
+                    # regression below fails; it is independent pixel evidence.
+                    observation["titlebar"] = titlebar_palette()
                 finally:
                     try:
                         (options.output / "shortcuts-capture-observation.json").write_text(

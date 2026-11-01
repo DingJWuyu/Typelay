@@ -326,6 +326,7 @@ public sealed partial class SessionController
 
     private void RetireAutomaticPractice(bool rotateConfiguration = true)
     {
+        _ownedLocalRegenerate = null;
         _pendingEditorExit = null;
         if (AutomaticPracticeProgress is not { } progress)
             return;

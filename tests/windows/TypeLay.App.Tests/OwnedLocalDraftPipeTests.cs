@@ -83,6 +83,75 @@ public sealed class OwnedLocalDraftPipeTests
         await Assert.ThrowsAsync<InvalidDataException>(() => PracticeProgressPipe.WriteAsync(stream, malformed, TestContext.Current.CancellationToken));
         Assert.Equal(0, stream.Length);
     }
+    [Theory]
+    [InlineData(13)]
+    [InlineData(32)]
+    [InlineData(0)]
+    public async Task ReplaceCarriesItsOwnKeyOrMouseReleaseWithoutAnAcceptancePlan(int key)
+    {
+        var (_, message) = Messages();
+        var returning = message.LocalReturn!;
+        message = message with
+        {
+            LocalReturn = returning with
+            {
+                ReplacesDraft = true,
+                KeyPress = key == 0 ? null : new(28, false, false, (uint)key),
+                MousePress = key == 0 ? new(400, 500, false) : null,
+                Release = returning.Release with
+                {
+                    InputSequence = key == 0 ? 9 : 10
+                }
+            }
+        };
+        using var stream = new MemoryStream();
+        await PracticeProgressPipe.WriteAsync(stream, message, TestContext.Current.CancellationToken);
+        stream.Position = 0;
+        Assert.Equal(message, await PracticeProgressPipe.ReadAsync(stream, TestContext.Current.CancellationToken));
+        Assert.Equal(Guid.Empty, message.Acceptance!.PlanId);
+    }
+
+    [Theory]
+    [InlineData("keep-mouse")]
+    [InlineData("replace-tab")]
+    [InlineData("key-and-mouse")]
+    [InlineData("missing-press")]
+    [InlineData("mouse-release-sequence")]
+    public async Task AReplaceGestureCannotBeReinterpretedAsKeepOrAnotherInput(string invalid)
+    {
+        var (_, message) = Messages();
+        var returning = message.LocalReturn! with
+        {
+            ReplacesDraft = true,
+            KeyPress = new(28, false, false, 13)
+        };
+        returning = invalid switch
+        {
+            "keep-mouse" => returning with
+            {
+                ReplacesDraft = false,
+                KeyPress = null,
+                MousePress = new(400, 500, false),
+                Release = returning.Release with
+                {
+                    InputSequence = 9
+                }
+            },
+            "replace-tab" => returning with { KeyPress = new(15, false, false, 9) },
+            "key-and-mouse" => returning with { MousePress = new(400, 500, false) },
+            "missing-press" => returning with { KeyPress = null },
+            "mouse-release-sequence" => returning with { KeyPress = null, MousePress = new(400, 500, false) },
+            _ => throw new ArgumentException(invalid)
+        };
+        using var stream = new MemoryStream();
+        await Assert.ThrowsAsync<InvalidDataException>(() => PracticeProgressPipe.WriteAsync(stream,
+            message with
+            {
+                LocalReturn = returning
+            }, TestContext.Current.CancellationToken));
+        Assert.Equal(0, stream.Length);
+    }
+
     [Fact]
     public async Task NativeTimestampWrapDoesNotRenewTheOriginalDownDeadline()
     {

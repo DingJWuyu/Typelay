@@ -177,8 +177,8 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                         pressSequence = press?.Sequence,
                         pressReceivedAtMs = press?.ReceivedAtMs,
                         pressNativeTime = press?.NativeTime,
-                        pressScan = press?.Key.ScanCode,
-                        pressExtended = press?.Key.Extended,
+                        pressScan = press?.Key?.ScanCode,
+                        pressExtended = press?.Key?.Extended,
                         messageScan = tab,
                         downTimes = downTimes.Take(2).ToArray(),
                         upTimes = upTimes.Take(2).ToArray(),
@@ -234,6 +234,90 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                 else
                     held.Remove(edge.Scan);
             Assert.Equal((uint)inputs.Length, sent); // A partial send is never retried.
+        }
+    });
+
+    [Fact]
+    public Task AReleasedReplaceThatExpiresBeforeClaimDoesNotConsumeTheFirstFreshRetry() => desktop.RunAsync(async () =>
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(3));
+        var replace = new Button { Content = "Replace" };
+        var window = new Window { Content = replace, Width = 420, Height = 160 };
+        window.Show();
+        Assert.True(window.Activate());
+        Assert.True(replace.Focus());
+        nint hwnd = new WindowInteropHelper(window).Handle;
+        using var hook = new KeyboardHook(allowInjectedInput: true, editorHwnd: hwnd);
+        hook.ConfigureShortcuts(false, "Ctrl+Shift+F9", "Ctrl+Shift+F10", SessionShortcutBindings.Default, true);
+        Guid opening = Guid.NewGuid(), confirmation = Guid.NewGuid();
+        ushort enter = Scan(13);
+        int cancellations = 0;
+        var captures = new List<KeyboardHook.LocalDraftPress?>();
+        var ups = new List<uint>();
+        KeyEventHandler down = (_, e) =>
+        {
+            e.Handled = true;
+            if (e.Key != Key.Enter)
+                return;
+            var message = ComponentDispatcher.CurrentKeyboardMessage;
+            uint scan = (uint)(message.lParam.ToInt64() >> 16) & 255;
+            captures.Add(hook.CaptureLocalDraftReplacePress(opening, confirmation,
+                unchecked((uint)message.time), 13, scan, (message.lParam.ToInt64() & 0x01000000) != 0));
+        };
+        KeyEventHandler up = (_, e) =>
+        {
+            e.Handled = true;
+            if (e.Key == Key.Enter)
+                ups.Add(unchecked((uint)ComponentDispatcher.CurrentKeyboardMessage.time));
+        };
+        window.AddHandler(Keyboard.PreviewKeyDownEvent, down, true);
+        window.AddHandler(Keyboard.PreviewKeyUpEvent, up, true);
+        try
+        {
+            await Until(() => hook.ShortcutsReady && Native.GetForegroundWindow() == hwnd && replace.IsKeyboardFocused);
+            hook.BeginLocalDraftAnchor(opening, hwnd, hwnd, _ => Interlocked.Increment(ref cancellations));
+            hook.SetLocalDraftPrompt(opening, confirmation, replaceFocused: true);
+            SendPair();
+            await Until(() => ups.Count == 1);
+            var expired = Assert.IsType<KeyboardHook.LocalDraftPress>(captures.Single());
+            Assert.True(WindowsInterruptClock.NowMs < expired.ExpiresAtMs); // Original LL down/up was timely.
+            await Until(() => WindowsInterruptClock.NowMs >= expired.ExpiresAtMs);
+            Assert.Null(hook.ClaimLocalDraftReplaceTap(expired, ups[0])); // Delayed consumer, not a held key.
+            Assert.True(hook.LocalDraftAnchorCurrent(opening));
+            SendPair(); // The very first new real action must work, not only a second retry.
+            await Until(() => ups.Count == 2);
+            var fresh = Assert.IsType<KeyboardHook.LocalDraftPress>(captures[1]);
+            Assert.NotSame(expired, fresh);
+            Assert.Equal(fresh.ReceivedAtMs + 500, fresh.ExpiresAtMs);
+            Assert.Null(hook.ClaimLocalDraftReplaceTap(expired, ups[0]));
+            var claimed = Assert.IsType<KeyboardHook.LocalDraftTap>(hook.ClaimLocalDraftReplaceTap(fresh, ups[1]));
+            Assert.Same(fresh, claimed.Press);
+            Assert.Null(hook.ClaimLocalDraftReplaceTap(fresh, ups[1]));
+            Assert.Equal(0, Volatile.Read(ref cancellations));
+            Assert.False(hook.TryRead(out _));
+        }
+        finally
+        {
+            window.RemoveHandler(Keyboard.PreviewKeyDownEvent, down);
+            window.RemoveHandler(Keyboard.PreviewKeyUpEvent, up);
+            hook.EndLocalDraftAnchor(opening);
+        }
+        async Task Until(Func<bool> condition)
+        {
+            while (!condition())
+                await Task.Delay(5, deadline.Token);
+        }
+        void SendPair()
+        {
+            Assert.Equal(hwnd, Native.GetForegroundWindow());
+            Assert.Same(replace, Keyboard.FocusedElement);
+            Assert.False(Native.GetAsyncKeyState(13) < 0);
+            deadline.Token.ThrowIfCancellationRequested();
+            uint sent = SendInput(2, [Edge(enter, false), Edge(enter, true)], Marshal.SizeOf<Input>());
+            if (sent == 1)
+                Assert.Equal(1u, SendInput(1, [Edge(enter, true)], Marshal.SizeOf<Input>())); // Own partial-send cleanup only.
+            Assert.Equal(2u, sent);
         }
     });
 

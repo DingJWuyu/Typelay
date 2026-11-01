@@ -97,7 +97,7 @@ internal static partial class Program
         {
             if (_localDraft is not { Invalid: false, Returning: null } local || local.Control.Opening != control.Opening
                 || _retired || _closePending || _restartPending || _plan is not null || _witness is not null
-                || control.KeyPress.Injected && !_allowInjectedInput || WindowsInterruptClock.NowMs < control.Release.ObservedAtMs
+                || (control.KeyPress?.Injected ?? control.MousePress!.Injected) && !_allowInjectedInput || WindowsInterruptClock.NowMs < control.Release.ObservedAtMs
                 || WindowsInterruptClock.NowMs >= control.ExpiresAtMs || SourceFocused()
                 || Descriptor() != local.FencedDescriptor)
                 throw new InvalidDataException("practice-local-return-fence");
@@ -109,7 +109,7 @@ internal static partial class Program
             _witness = new(_witnessMapping);
             _witnessFailed = false;
             _lastWitnessAcknowledged = _installWitnessFloor = 0;
-            // This local Tab's original up was already observed and claimed.
+            // This local action's original up was already observed and claimed.
             // There is no remaining key to consume in the source. The old
             // ordinary/owned editor held-key return paths remain separate.
             _tabHeld = _tabConsumed = false;

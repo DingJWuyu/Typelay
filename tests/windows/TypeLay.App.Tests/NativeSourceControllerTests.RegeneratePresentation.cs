@@ -1,5 +1,6 @@
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Automation.Peers;
@@ -71,6 +72,16 @@ public sealed partial class NativeSourceControllerTests
         }
         await native.Prepare(native.A, "你好", new(0, 2));
         using var broker = new FixtureBroker(native);
+        int returns = 0;
+        string? returnStatus = null;
+        broker.ObserveResponse = (request, response) =>
+        {
+            if (request.Op == "return")
+            {
+                Volatile.Write(ref returnStatus, response.Status);
+                Interlocked.Increment(ref returns);
+            }
+        };
         var overlay = new OverlayWindow(clientAreaAnimation: () => animate);
         string directory = Path.Combine(Path.GetTempPath(), "TypeLay.SourceConfirmationSheet." + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
@@ -120,7 +131,10 @@ public sealed partial class NativeSourceControllerTests
             Assert.True(N.GetWindowRect(native.A, out var sourceRect));
             if (animate)
                 Assert.True(Bounds().Top >= sourceRect.Bottom, "The compact preview must be below this owned field.");
+            nint originalCookie = N.GetProp(native.A, "TypeLay.NativeInput.Lifetime.v2");
+            uint sourceThread = N.GetWindowThreadProcessId(native.A, out uint sourceProcess);
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(native.Token);
+            long deadlineStarted = Environment.TickCount64;
             deadline.CancelAfter(TimeSpan.FromSeconds(3));
             var more = RuntimeDescendants(overlay).OfType<Button>().Single(button => AutomationProperties.GetName(button) == UiTheme.L("更多翻译操作", "More Translation Actions"));
             Assert.IsAssignableFrom<IInvokeProvider>(new ButtonAutomationPeer(more).GetPattern(PatternInterface.Invoke)).Invoke();
@@ -171,13 +185,101 @@ public sealed partial class NativeSourceControllerTests
             Assert.Same(currentKeep, Keyboard.FocusedElement);
             Assert.Equal(ModifierKeys.None, Keyboard.Modifiers);
             deadline.Token.ThrowIfCancellationRequested();
-            Key(0x0d, false);
-            keepHeld = true;
-            Key(0x0d, true);
-            keepHeld = false;
-            await Until(() => N.Focused() == (native.Root, native.A)
-                && !RuntimeDescendants(overlay).OfType<FrameworkElement>().Any(element => AutomationProperties.GetAutomationId(element) == "RegenerateConfirmation")
-                && Bounds().Width == compactWidth, deadline.Token);
+            int beforeReturn = Volatile.Read(ref returns), downs = 0, ups = 0;
+            long sentAt = Environment.TickCount64;
+            (long At, bool Handled, bool Repeat)? lastDown = null, lastUp = null;
+            N.FocusObservation? lastFocus = null;
+            KeyEventHandler down = (_, e) =>
+            {
+                if (e.Key == System.Windows.Input.Key.Enter)
+                {
+                    downs++;
+                    lastDown = (Environment.TickCount64, e.Handled, e.IsRepeat);
+                }
+            };
+            KeyEventHandler up = (_, e) =>
+            {
+                if (e.Key == System.Windows.Input.Key.Enter)
+                {
+                    ups++;
+                    lastUp = (Environment.TickCount64, e.Handled, e.IsRepeat);
+                }
+            };
+            overlay.AddHandler(Keyboard.PreviewKeyDownEvent, down, true);
+            overlay.AddHandler(Keyboard.PreviewKeyUpEvent, up, true);
+            try
+            {
+                Key(0x0d, false);
+                keepHeld = true;
+                Key(0x0d, true);
+                keepHeld = false;
+                await Until(() =>
+                {
+                    // Preserve the original focus condition and short-circuiting.
+                    // Retain its one native observation, not a second focus read.
+                    var focus = N.ReadFocus();
+                    lastFocus = focus;
+                    return (focus.Root, focus.Control) == (native.Root, native.A)
+                        && !RuntimeDescendants(overlay).OfType<FrameworkElement>().Any(element => AutomationProperties.GetAutomationId(element) == "RegenerateConfirmation")
+                        && Bounds().Width == compactWidth;
+                }, deadline.Token);
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                try
+                {
+                    bool boundsRead = N.GetWindowRect(overlay.Handle, out var bounds);
+                    TestContext.Current.TestOutputHelper?.WriteLine("Source sheet Keep before cleanup: " + JsonSerializer.Serialize(new
+                    {
+                        DeadlineStarted = deadlineStarted,
+                        SentAt = sentAt,
+                        FailedAt = Environment.TickCount64,
+                        Downs = downs,
+                        Ups = ups,
+                        LastDown = lastDown is { } d ? new
+                        {
+                            d.At,
+                            d.Handled,
+                            d.Repeat
+                        } : null,
+                        LastUp = lastUp is { } u ? new
+                        {
+                            u.At,
+                            u.Handled,
+                            u.Repeat
+                        } : null,
+                        BeforeReturn = beforeReturn,
+                        Returns = Volatile.Read(ref returns),
+                        ReturnStatus = Volatile.Read(ref returnStatus),
+                        FocusObserved = lastFocus is not null,
+                        ForegroundIsNone = lastFocus?.Root == 0,
+                        ForegroundIsRoot = lastFocus?.Root == native.Root,
+                        ForegroundIsField = lastFocus?.Root == native.A,
+                        ForegroundIsOverlay = lastFocus?.Root == overlay.Handle,
+                        FocusIsField = lastFocus?.Control == native.A,
+                        RootIsSource = lastFocus is { } f && N.GetAncestor(f.Root, 2) == native.Root,
+                        ProcessIsSource = sourceProcess != 0 && lastFocus?.ProcessId == sourceProcess,
+                        ThreadIsSource = sourceThread != 0 && lastFocus?.ThreadId == sourceThread,
+                        GuiThreadInfoSucceeded = lastFocus?.GuiThreadInfoSucceeded,
+                        OriginalCookiePresent = originalCookie != 0,
+                        CookieIsOriginal = originalCookie != 0 && N.GetProp(native.A, "TypeLay.NativeInput.Lifetime.v2") == originalCookie,
+                        OverlayVisible = overlay.IsVisible,
+                        KeepVisible = currentKeep.IsVisible,
+                        KeepFocused = currentKeep.IsKeyboardFocused,
+                        SheetPresent = RuntimeDescendants(overlay).OfType<FrameworkElement>().Any(element => AutomationProperties.GetAutomationId(element) == "RegenerateConfirmation"),
+                        BoundsRead = boundsRead,
+                        Width = boundsRead ? bounds.Right - bounds.Left : (int?)null,
+                        CompactWidth = compactWidth
+                    }));
+                }
+                catch (Exception diagnosticError) when (diagnosticError is not OutOfMemoryException) { }
+                throw;
+            }
+            finally
+            {
+                overlay.RemoveHandler(Keyboard.PreviewKeyDownEvent, down);
+                overlay.RemoveHandler(Keyboard.PreviewKeyUpEvent, up);
+            }
             Assert.Equal(anchor, Bounds().Right);
             if (animate)
             {
@@ -200,6 +302,7 @@ public sealed partial class NativeSourceControllerTests
         }
         finally
         {
+            broker.ObserveResponse = null;
             if (sampled is not null)
                 CompositionTarget.Rendering -= sampled;
             if (keepHeld)

@@ -69,6 +69,62 @@ public sealed class DormantEditingTests
     }
 
     [Theory]
+    [InlineData("")]
+    [InlineData("discarded manual draft")]
+    public void RegenerateReturnOnlyConfirmsTheSourceWithoutMakingTheDiscardedDraftWritable(string draft)
+    {
+        var (session, source) = Ready();
+        Assert.True(session.BeginEdit());
+        session.ChangeDraft(draft);
+        var edit = Assert.IsType<Session.DormantEdit>(session.SuspendEdit());
+        var (other, _) = Ready();
+        Assert.False(other.ConfirmDormantRegenerateReturn(edit, source, 1300));
+        Assert.True(session.DormantEditIsCurrent(edit));
+        Assert.True(session.ConfirmDormantRegenerateReturn(edit, source, 1300));
+        Assert.True(session.DormantReturnFamilyIsCurrent(edit));
+        Assert.Equal(SessionState.NoSession, session.State);
+        Assert.Equal(source, session.Current);
+        Assert.Empty(session.Candidate);
+        Assert.Empty(session.Preview);
+        Assert.Null(session.TakeTranslationJob(1300));
+        Assert.Null(session.Prepare(source, Context(source), 1300).Plan);
+        Assert.False(session.ConfirmDormantRegenerateReturn(edit, source, 1300));
+        Assert.False(session.ConfirmDormantSourceReturn(edit, source, 1300));
+    }
+
+    [Theory]
+    [InlineData("text")]
+    [InlineData("input")]
+    [InlineData("ime")]
+    [InlineData("target")]
+    [InlineData("scope")]
+    [InlineData("stale")]
+    public void DiscardingAnEmptyDraftCannotBypassTheSavedSourceBasis(string change)
+    {
+        var (session, source) = Ready();
+        Assert.True(session.BeginEdit());
+        session.ChangeDraft("");
+        var edit = Assert.IsType<Session.DormantEdit>(session.SuspendEdit());
+        var fresh = change switch
+        {
+            "text" => source with { Text = source.Text + " changed" },
+            "input" => source with { InputEpoch = source.InputEpoch + 1 },
+            "ime" => source with { Ime = ImeState.Unknown },
+            "target" => source with { Target = B },
+            "scope" => source with { Selection = new(0, 1) },
+            "stale" => source with { ObservedAtMs = 0 },
+            _ => throw new ArgumentException(change)
+        };
+        Assert.False(session.ConfirmDormantRegenerateReturn(edit, fresh, 1300));
+        Assert.Equal(SessionState.NoSession, session.State);
+        Assert.Null(session.Current);
+        Assert.Empty(session.Candidate);
+        Assert.Null(session.TakeTranslationJob(1300));
+        Assert.Null(session.Prepare(source, Context(source), 1300).Plan);
+        Assert.False(session.DormantReturnFamilyIsCurrent(edit));
+    }
+
+    [Theory]
     [InlineData("leave")]
     [InlineData("direction")]
     [InlineData("observe")]

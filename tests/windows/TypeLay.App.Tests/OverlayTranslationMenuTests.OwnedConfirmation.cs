@@ -27,6 +27,9 @@ public sealed partial class OverlayTranslationMenuTests
     public Task OwnedKeepPreservesTheSameEditorUndoAndReturnsThroughAFreshSourceBinding() => OwnedKeepCase(false);
 
     [Fact]
+    public Task ClickingOwnedKeepPreservesTheSameEditorDraftSelectionAndUndo() => OwnedKeepCase(false, keepClick: true);
+
+    [Fact]
     public Task AnExpandedOwnedDraftFromANarrowFieldShowsTheFullSheetAndRestoresItsOriginalFrame() => OwnedKeepCase(true);
 
     [Fact]
@@ -38,7 +41,25 @@ public sealed partial class OverlayTranslationMenuTests
     [InlineData("composition")]
     public Task ALocalReturnDownCannotSurviveDraftOrCompositionAba(string change) => OwnedKeepCase(false, change);
 
-    private Task OwnedKeepCase(bool expandedNarrow, string? returnChange = null, bool promptTab = false) => desktop.RunAsync(async () =>
+    [Theory]
+    [InlineData("click")]
+    [InlineData("enter")]
+    [InlineData("space")]
+    public Task OwnedReplaceRetranslatesTheOriginalSourceWithoutAnExtraTab(string action) =>
+        OwnedKeepCase(expandedNarrow: false, replaceAction: action);
+
+    [Theory]
+    [InlineData("repeat")]
+    [InlineData("held")]
+    public Task ARefusedOwnedReplacePreservesTheSamePromptDraftAndUndoForAFreshAction(string refusal) =>
+        OwnedKeepCase(expandedNarrow: false, replaceAction: "enter", replaceRefusal: refusal);
+
+    [Fact]
+    public Task OwnedReplaceCanDiscardAnEmptyDraftWithoutWritingItToTheSource() =>
+        OwnedKeepCase(expandedNarrow: false, replaceAction: "click", emptyDraft: true);
+
+    private Task OwnedKeepCase(bool expandedNarrow, string? returnChange = null, bool promptTab = false,
+        string? replaceAction = null, string? replaceRefusal = null, bool emptyDraft = false, bool keepClick = false) => desktop.RunAsync(async () =>
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(25));
@@ -168,6 +189,11 @@ public sealed partial class OverlayTranslationMenuTests
             Assert.True(editedToken.Revision > initialToken.Revision);
             // This creates a real TextBox Undo unit; it is not physical typing evidence.
             editor.AppendText(" - owned manual draft");
+            if (emptyDraft)
+            {
+                editor.SelectAll();
+                editor.SelectedText = "";
+            }
             string draft = editor.Text;
             editor.Select(1, 2);
             Assert.True(editor.CanUndo);
@@ -195,7 +221,7 @@ public sealed partial class OverlayTranslationMenuTests
             if (expandedNarrow)
             {
                 using var picture = ActionDeadline();
-                await RegenerateSheetRendering.AssertAndCapture(overlay, "zh-CN", "light", "owned-expanded-narrow", picture.Token, replacementAvailable: false);
+                await RegenerateSheetRendering.AssertAndCapture(overlay, "zh-CN", "light", "owned-expanded-narrow", picture.Token);
                 Assert.True(N.GetWindowRect(overlay.Handle, out var promptFrame));
                 Assert.Equal(originalFrame.Right, promptFrame.Right);
                 Assert.True(promptFrame.Right - promptFrame.Left > originalFrame.Right - originalFrame.Left);
@@ -209,15 +235,69 @@ public sealed partial class OverlayTranslationMenuTests
                 var keep = RegenerateButton(overlay, "RegenerateKeep");
                 using var action = ActionDeadline();
                 await SendOwnedConfirmationKey(overlay, Key.Tab, keep, action.Token);
+                var replace = RegenerateButton(overlay, "RegenerateReplace");
+                Assert.True(replace.IsKeyboardFocused);
+                await SendOwnedConfirmationKey(overlay, Key.Tab, replace, action.Token);
                 Assert.Same(keep, RegenerateButton(overlay, "RegenerateKeep"));
                 Assert.True(keep.IsKeyboardFocused);
                 Assert.Equal(draft, editor.Text);
                 Assert.True(editor.CanUndo);
             }
+            if (replaceAction is not null)
+            {
+                var replace = RegenerateButton(overlay, "RegenerateReplace");
+                Assert.True(replace.IsEnabled);
+                using (var action = ActionDeadline())
+                {
+                    if (replaceAction == "click")
+                        await ClickMouse(replace, Button.ClickEvent, "owned-confirmation-replace", action.Token);
+                    else
+                    {
+                        await SendOwnedConfirmationKey(overlay, Key.Tab, RegenerateButton(overlay, "RegenerateKeep"), action.Token);
+                        Assert.Same(replace, Keyboard.FocusedElement);
+                        if (replaceRefusal is not null)
+                            await SendRefusedOwnedReplaceKey(overlay, replace, replaceRefusal, action.Token);
+                        else
+                        {
+                            // An Invoke peer has no original native down/up and
+                            // must not consume this live prompt's fresh action.
+                            var invoke = Assert.IsAssignableFrom<IInvokeProvider>(new ButtonAutomationPeer(replace).GetPattern(PatternInterface.Invoke));
+                            invoke.Invoke();
+                            await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+                        }
+                        Assert.Same(replace, RegenerateButton(overlay, "RegenerateReplace"));
+                        Assert.Same(replace, Keyboard.FocusedElement);
+                        Assert.Equal(draft, editor.Text);
+                        Assert.True(editor.CanUndo);
+                        Assert.Equal(modelCalls, model.Calls);
+                        Assert.Null(host.CaptureDescriptor);
+                        Assert.Equal(sourceText, N.ReadText(field, Limits.MaxTextUnits));
+                        Assert.Equal(sourceSelection, N.ReadSelection(field));
+                        await SendOwnedConfirmationKey(overlay, replaceAction == "enter" ? Key.Enter : Key.Space,
+                            replace, action.Token);
+                    }
+                }
+                await Until(() => model.Calls == modelCalls + 1 && editor.IsReadOnly && editor.Text == translation
+                    && N.Focused() == (root, field) && host.CaptureDescriptor is { } fresh
+                    && fresh.NativeFocusRevision > before.NativeFocusRevision && host.SourceReady(initialToken.Target)
+                    && controller.AutomaticPracticeProgress is { AwaitingFreshSource: false });
+                Assert.Equal(sourceText, Assert.IsType<TranslationJob>(model.LastJob).SourceText);
+                Assert.Equal(sourceText, N.ReadText(field, Limits.MaxTextUnits));
+                Assert.Equal(sourceSelection, N.ReadSelection(field));
+                Assert.False(settings.Value.ExperimentalWriteback);
+                Assert.False(controller.AutomaticPracticeProgress!.AcceptanceCompleted);
+                return;
+            }
             finishKeyboardObservation = ObserveOwnedKeyboardFlow(overlay, editor,
                 RegenerateButton(overlay, "RegenerateKeep"), controller, draft);
             using (var action = ActionDeadline())
-                await SendOwnedConfirmationKey(overlay, Key.Enter, RegenerateButton(overlay, "RegenerateKeep"), action.Token);
+            {
+                var keep = RegenerateButton(overlay, "RegenerateKeep");
+                if (keepClick)
+                    await ClickMouse(keep, Button.ClickEvent, "owned-confirmation-keep", action.Token);
+                else
+                    await SendOwnedConfirmationKey(overlay, Key.Enter, keep, action.Token);
+            }
             await Until(() => editor.IsKeyboardFocused && !editor.IsReadOnly
                 && !Descendants(overlay).OfType<FrameworkElement>().Any(element =>
                     AutomationProperties.GetAutomationId(element) == "RegenerateConfirmation"));
@@ -700,7 +780,7 @@ public sealed partial class OverlayTranslationMenuTests
         IInputElement expectedFocus, CancellationToken cancellation)
     {
         ushort code = checked((ushort)KeyInterop.VirtualKeyFromKey(key));
-        Assert.True(key is Key.Enter or Key.Tab);
+        Assert.True(key is Key.Enter or Key.Space or Key.Tab);
         uint mapped = MapOwnedConfirmationKey(code, 4); // MAPVK_VK_TO_VSC_EX, no invented scan identity.
         Assert.InRange(mapped, 1u, 255u); // Both actions are non-extended keys.
         ushort scan = checked((ushort)mapped);
@@ -737,6 +817,59 @@ public sealed partial class OverlayTranslationMenuTests
         }
     }
 
+    private static async Task SendRefusedOwnedReplaceKey(OverlayWindow overlay, Button replace,
+        string refusal, CancellationToken cancellation)
+    {
+        uint mapped = MapOwnedConfirmationKey(13, 4);
+        Assert.InRange(mapped, 1u, 255u);
+        ushort scan = checked((ushort)mapped);
+        var down = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var repeated = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var released = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        KeyEventHandler observeDown = (_, e) =>
+        {
+            if (e.Key != Key.Enter)
+                return;
+            if (e.IsRepeat)
+                repeated.TrySetResult();
+            else
+                down.TrySetResult();
+        };
+        KeyEventHandler observeUp = (_, e) => { if (e.Key == Key.Enter) released.TrySetResult(); };
+        overlay.AddHandler(Keyboard.PreviewKeyDownEvent, observeDown, true);
+        overlay.AddHandler(Keyboard.PreviewKeyUpEvent, observeUp, true);
+        bool held = false;
+        try
+        {
+            Assert.Equal(overlay.Handle, Native.GetForegroundWindow());
+            Assert.Same(replace, Keyboard.FocusedElement);
+            Assert.Equal(ModifierKeys.None, Keyboard.Modifiers);
+            Assert.False((MoreAsyncKeyState(13) & 0x8000) != 0);
+            cancellation.ThrowIfCancellationRequested();
+            uint sent = SendMoreInput(1, [new() { Type = 1, Scan = scan, Flags = 8 }], Marshal.SizeOf<MoreKeyInput>());
+            held = sent == 1;
+            Assert.Equal(1u, sent);
+            await down.Task.WaitAsync(cancellation);
+            if (refusal == "held")
+                await Task.Delay(TimeSpan.FromMilliseconds(550), cancellation); // Deliberately outlive this original down's 500ms.
+            // Even after expiry this is still the held physical-key lifecycle,
+            // not a fresh down entitled to a new deadline.
+            Assert.Equal(1u, SendMoreInput(1, [new() { Type = 1, Scan = scan, Flags = 8 }], Marshal.SizeOf<MoreKeyInput>()));
+            await repeated.Task.WaitAsync(cancellation);
+            cancellation.ThrowIfCancellationRequested();
+            Assert.Equal(1u, SendMoreInput(1, [new() { Type = 1, Scan = scan, Flags = 10 }], Marshal.SizeOf<MoreKeyInput>()));
+            held = false;
+            await released.Task.WaitAsync(cancellation);
+        }
+        finally
+        {
+            overlay.RemoveHandler(Keyboard.PreviewKeyDownEvent, observeDown);
+            overlay.RemoveHandler(Keyboard.PreviewKeyUpEvent, observeUp);
+            if (held)
+                Assert.Equal(1u, SendMoreInput(1, [new() { Type = 1, Scan = scan, Flags = 10 }], Marshal.SizeOf<MoreKeyInput>()));
+        }
+    }
+
     private sealed class OwnedConfirmationTranslation(string translation = "Hello") : ITranslationService
     {
         public bool Ready => true;
@@ -745,8 +878,13 @@ public sealed partial class OverlayTranslationMenuTests
         {
             get; private set;
         }
+        public TranslationJob? LastJob
+        {
+            get; private set;
+        }
         public Task<ModelResponse> TranslateAsync(TranslationJob job)
         {
+            LastJob = job;
             Calls++;
             return Task.FromResult(new ModelResponse(1, "translated", translation));
         }

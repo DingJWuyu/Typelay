@@ -2973,6 +2973,8 @@ private:
             panel->setObjectName(QLatin1String(name));
             panel->setProperty("typelayMenu", true);
             panel->setFocusPolicy(Qt::NoFocus);
+            // Keep unhandled padding/disabled-control presses in this menu.
+            panel->setAttribute(Qt::WA_NoMousePropagation);
             panel->setAutoFillBackground(true);
             panel->hide();
             connect(frame, &QObject::destroyed, panel, [panel] { panel->hide(); panel->deleteLater(); });
@@ -3269,7 +3271,9 @@ private:
     bool eventFilter(QObject *object, QEvent *event) override {
         if (!onThread()) return false;
         if (object == qApp && event->type() == QEvent::ApplicationPaletteChange) refreshSystemTheme();
-        if (openedMenu_ && event->type() == QEvent::MouseButtonPress) {
+        // The QWindow sees the press before Qt resolves its QWidget receiver.
+        // Hiding here on that raw event would remove the menu before hit testing.
+        if (openedMenu_ && event->type() == QEvent::MouseButtonPress && qobject_cast<QWidget *>(object)) {
             bool inside = object == language_ || object == more_;
             for (auto *parent = object; parent && !inside; parent = parent->parent()) inside = parent == openedMenu_;
             if (!inside) closeOverlayMenus();

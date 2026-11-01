@@ -442,7 +442,7 @@ internal static partial class BrowserCooperationCheck
             }
             finally { await PageCallAsync("Runtime.releaseObject", new { objectId = id }, ct); }
         }
-        // Last owned-control observation only; no labels, user text, retry or new input.
+        // Bounded owned-control observations only; no labels, user text, retry or new input.
         public JsonElement? LastOverlayMenuObservation
         {
             get; private set;
@@ -452,6 +452,7 @@ internal static partial class BrowserCooperationCheck
         {
             LastOverlayMenuObservation = null;
             JsonElement? observation = null;
+            string probeKey = "__typelayMenuObservation_" + Guid.NewGuid().ToString("N");
             var retained = new List<string>();
             bool failed = false;
             string? id = await PreviewObjectAsync(ct);
@@ -493,9 +494,10 @@ internal static partial class BrowserCooperationCheck
                             returnByValue = true,
                             arguments = new object[] { new { value = more }, new { value = label },
                                 actionId is null ? (object)new { value = (string?)null } : new { objectId = actionId },
-                                menuId is null ? (object)new { value = (string?)null } : new { objectId = menuId } },
+                                menuId is null ? (object)new { value = (string?)null } : new { objectId = menuId },
+                                new { value = probeKey } },
                             functionDeclaration = """
-                                function(more,label,expectedAction,expectedMenu){
+                                function(more,label,expectedAction,expectedMenu,probeKey){
                                  const root=this.getRootNode(),menus=root.querySelectorAll('[role=group][aria-label="更多操作"]');
                                  const buttons=more?root.querySelectorAll('button[aria-controls="more-actions"]'):[...root.querySelectorAll('[role=group][aria-label="更多操作"]>button')].filter(b=>b.querySelector('span')?.textContent===label);
                                  const observation={more,action:label==='加入术语表'?'glossary':'settings',editorConnected:this.isConnected,editorReadOnly:this.readOnly,editorFocused:root.activeElement===this,documentFocused:document.hasFocus(),menuCount:menus.length,menuHidden:menus.length===1?menus[0].hidden:null,matchedCount:buttons.length};
@@ -506,7 +508,42 @@ internal static partial class BrowserCooperationCheck
                                  // Never return arbitrary title text, user content or an inferred authority.
                                  const qualificationReasons={'术语功能尚未开放':'not-released','当前模型不支持同时应用风格与术语表':'combination-unavailable','当前模型方向尚未开放风格与术语同时应用':'combination-not-released','当前译文无法加入术语表':'editing-required','请先完成或取消当前输入':'ime','请回到当前术语表单':'focus','请先完成当前术语表单':'already-open','请等待当前操作完成':'busy','操作已取消':'cancelled','内容或设置已变化，请重新打开表单':'stale','请检查词语、方向、冲突规则及容量限制':'invalid-glossary','当前无法加入术语表':'unavailable'};
                                  const qualificationReason=label!=='加入术语表'||!b.title?null:Object.hasOwn(qualificationReasons,b.title)?qualificationReasons[b.title]:'other';
-                                 return {...observation,qualificationReason,x:r.x+r.width/2,y:r.y+r.height/2,visible:b.isConnected&&!b.hidden&&!b.disabled&&r.width>0&&r.height>0,painted:Number(getComputedStyle(b).opacity)>0,buttonConnected:b.isConnected,buttonHidden:b.hidden,buttonDisabled:b.disabled,width:r.width,height:r.height,reason:!this.isConnected?'editor-retired':!b.isConnected?'button-retired':b.hidden?'button-hidden':b.disabled?'button-disabled':r.width<=0||r.height<=0?'button-not-laid-out':'visible'};
+                                 const point={...observation,qualificationReason,x:r.x+r.width/2,y:r.y+r.height/2,visible:b.isConnected&&!b.hidden&&!b.disabled&&r.width>0&&r.height>0,painted:Number(getComputedStyle(b).opacity)>0,buttonConnected:b.isConnected,buttonHidden:b.hidden,buttonDisabled:b.disabled,width:r.width,height:r.height,reason:!this.isConnected?'editor-retired':!b.isConnected?'button-retired':b.hidden?'button-hidden':b.disabled?'button-disabled':r.width<=0||r.height<=0?'button-not-laid-out':'visible'};
+                                 let probe=this[probeKey];
+                                 if(more&&menus.length===1&&!probe){
+                                  // Bind only these displayed controls. This observer never
+                                  // invokes an action, reads text, changes focus or follows replacements.
+                                  const trigger=b,menu=menus[0],events=[],types=['pointerdown','pointerup','click'];
+                                  let observing=true,limitReached=false;
+                                  const state=()=>({triggerConnected:trigger.isConnected,menuConnected:menu.isConnected,
+                                   triggerCurrent:root.querySelector('button[aria-controls="more-actions"]')===trigger,
+                                   menuCurrent:root.querySelector('[role=group][aria-label="更多操作"]')===menu,
+                                   menuHidden:menu.hidden,expanded:trigger.getAttribute('aria-expanded')==='true'});
+                                  const detach=()=>{observing=false;observer.disconnect();for(const type of types)trigger.removeEventListener(type,pointer);};
+                                  const record=(kind,extra)=>{
+                                   if(!observing)return;
+                                   events.push({kind,atMs:performance.now(),...state(),...extra});
+                                   if(events.length===12){limitReached=true;detach();}
+                                  };
+                                  const pointer=event=>{if(event.isTrusted)record(event.type,{trusted:true,x:event.clientX,y:event.clientY});};
+                                  const mutations=records=>{
+                                   for(const change of records){
+                                    if(!observing)break;
+                                    record(change.target===menu?'hidden':'aria-expanded',{
+                                     previous:change.target===menu?change.oldValue!==null:change.oldValue==='true'?true:change.oldValue==='false'?false:null});
+                                   }
+                                  };
+                                  const observer=new MutationObserver(mutations);
+                                  for(const type of types)trigger.addEventListener(type,pointer);
+                                  observer.observe(menu,{attributes:true,attributeFilter:['hidden'],attributeOldValue:true});
+                                  observer.observe(trigger,{attributes:true,attributeFilter:['aria-expanded'],attributeOldValue:true});
+                                  probe={initialMore:point,lastMore:point,
+                                   snapshot(){return {initialMore:this.initialMore,lastMore:this.lastMore,events:[...events],limitReached,...state()};},
+                                   dispose(){mutations(observer.takeRecords());detach();return this.snapshot();}};
+                                  Object.defineProperty(this,probeKey,{value:probe,configurable:true});
+                                 }
+                                 if(more&&probe)probe.lastMore=point;
+                                 return probe?{...point,moreInput:probe.snapshot()}:point;
                                 }
                                 """
                         }, ct);
@@ -562,6 +599,29 @@ internal static partial class BrowserCooperationCheck
             finally
             {
                 Exception? cleanupFailure = null;
+                try
+                {
+                    // Drain this bounded observation before releasing its original editor.
+                    // The existing scene token still governs cleanup; never retry the input.
+                    var result = await PageCallAsync("Runtime.callFunctionOn", new
+                    {
+                        objectId = id,
+                        returnByValue = true,
+                        arguments = new object[] { new { value = probeKey }, new { value = observation } },
+                        functionDeclaration = """
+                            function(probeKey,observation){
+                             const probe=this[probeKey];
+                             if(!probe)return observation;
+                             try{const moreInput=probe.dispose();return observation?{...observation,moreInput}:null;}
+                             finally{delete this[probeKey];}
+                            }
+                            """
+                    }, ct);
+                    if (failed && result.GetProperty("result").GetProperty("value").ValueKind == JsonValueKind.Object)
+                        LastOverlayMenuObservation = result.GetProperty("result").GetProperty("value").Clone();
+                }
+                catch (OutOfMemoryException) { throw; }
+                catch (Exception error) { cleanupFailure ??= error; }
                 foreach (string retainedId in retained.Append(id!))
                 {
                     try

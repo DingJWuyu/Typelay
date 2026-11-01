@@ -38,9 +38,11 @@ internal sealed record OwnedEditorControl(Guid Intent, OwnedCaptureDescriptor De
 // Old editor identity is retained only as provenance for its one reader-close fence.
 internal sealed record OwnedLocalDraftControl(Guid Opening, OwnedEditorControl Previous, long SourceEventSequence = 0);
 internal sealed record OwnedLocalReturnRelease(long InputSequence, long ObservedAtMs, uint NativeDownTime, uint NativeUpTime);
+internal sealed record OwnedLocalReplaceMouse(int X, int Y, bool Injected);
 internal sealed record OwnedLocalReturnControl(Guid Opening, Guid Intent, long PressedAtMs, long ExpiresAtMs,
-    long InputSequence, OwnedReturnKeyPress KeyPress, OwnedLocalReturnRelease Release,
-    long SourceEventSequence = 0, OwnedCaptureDescriptor? Descriptor = null);
+    long InputSequence, OwnedReturnKeyPress? KeyPress, OwnedLocalReturnRelease Release,
+    long SourceEventSequence = 0, OwnedCaptureDescriptor? Descriptor = null,
+    bool ReplacesDraft = false, OwnedLocalReplaceMouse? MousePress = null);
 
 internal enum OwnedReturnKind
 {
@@ -98,6 +100,18 @@ internal static class PracticeProgressPipe
         return message;
     }
 
+    private static bool LocalReturnGestureValid(OwnedLocalReturnControl returned)
+    {
+        if (returned.KeyPress is { Modifiers: ShortcutModifiers.None, ScanCode: > 0 and <= 255 } key
+            && returned.MousePress is null)
+            return returned.Release.InputSequence == returned.InputSequence + 1
+                && (returned.ReplacesDraft ? key.VirtualKey is 13 or 32 : key.VirtualKey == 9);
+        // A Replace click is an action-specific local intent. It cannot be
+        // relabelled as the editor's Tab or as source acceptance authority.
+        return returned.ReplacesDraft && returned.KeyPress is null && returned.MousePress is not null
+            && returned.Release.InputSequence == returned.InputSequence;
+    }
+
     private static void Validate(PracticeMessage message)
     {
         bool localDraft = message.Kind is "draft-fence" or "draft-fenced" or "draft-cancel" or "draft-invalid";
@@ -125,10 +139,9 @@ internal static class PracticeProgressPipe
                     || returned.PressedAtMs <= 0 || returned.PressedAtMs > long.MaxValue - 500
                     || returned.ExpiresAtMs != returned.PressedAtMs + 500
                     || returned.Release is not { } release || returned.InputSequence == long.MaxValue
-                    || release.InputSequence != returned.InputSequence + 1
                     || release.ObservedAtMs < returned.PressedAtMs || release.ObservedAtMs >= returned.ExpiresAtMs
                     || unchecked(release.NativeUpTime - release.NativeDownTime) >= 0x80000000u
-                    || returned.KeyPress is not { VirtualKey: 9, Modifiers: ShortcutModifiers.None, ScanCode: > 0 and <= 255 }
+                    || !LocalReturnGestureValid(returned)
                     || (message.Kind is "local-return-fence" or "local-return-resume" or "local-return-cancel"
                         ? returned.SourceEventSequence != 0 : returned.SourceEventSequence <= 0)
                     || (message.Kind == "local-source-returned" ? returned.Descriptor is not { IsValid: true } : returned.Descriptor is not null)

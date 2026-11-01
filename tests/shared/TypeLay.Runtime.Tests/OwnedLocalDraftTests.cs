@@ -29,6 +29,224 @@ public sealed class OwnedLocalDraftTests
         return (request, new(opening.Id, request.Id, opening.Binding, s.Source.FocusEpoch, s.Loop.NowMs));
     }
 
+    [Fact]
+    public void ReplaceUsesFreshCoreAndBindingBeforeTranslatingTheWholeOriginalSource()
+    {
+        using var s = new SessionScenario();
+        var opening = Open(s);
+        var confirmation = Assert.IsType<OwnedLocalRegenerateConfirmation>(s.Controller.BeginOwnedLocalRegenerateConfirmation(opening));
+        var request = Assert.IsType<OwnedLocalDraftReturnRequest>(s.Controller.PrepareOwnedLocalRegenerate(confirmation, s.Loop.NowMs));
+        Assert.True(request.ReplacesDraft);
+        Assert.Null(s.Input.Permit);
+        Assert.Single(s.Model.Jobs);
+        s.Input.InEditor = false;
+        s.Source = s.Source with
+        {
+            FocusEpoch = opening.Binding.NativeFocusRevision + 2
+        };
+        var receipt = new OwnedLocalDraftReturn(opening.Id, request.Id, opening.Binding, s.Source.FocusEpoch, s.Loop.NowMs);
+        Assert.True(s.Controller.CompleteOwnedLocalReturn(request, receipt));
+        var binding = opening.Binding with
+        {
+            CommandGeneration = s.Input.CommandGeneration,
+            NativeFocusRevision = receipt.NativeFocusRevision
+        };
+        Assert.False(s.Controller.BindAutomaticPractice(binding));
+        s.Tick();
+        Assert.Null(s.Input.Permit);
+        Assert.Single(s.Model.Jobs);
+        Assert.True(s.Controller.BindAutomaticPractice(binding));
+        s.Controller.CompleteOwnedLocalRegenerate(request, binding);
+        s.Tick();
+        s.Tick(Limits.DebounceMs);
+        Assert.Equal(2, s.Model.Jobs.Count);
+        Assert.Equal("hello", s.Model.Jobs[^1].SourceText);
+        Assert.Null(s.Model.Jobs[^1].PreservedManualText);
+        Assert.Empty(s.Service.Writes);
+        Assert.Empty(s.Service.DirectWrites);
+        s.CompleteTranslation("new complete translation");
+        Assert.Equal("new complete translation", s.View.Preview);
+        Assert.Equal(SessionState.ValidTranslation, s.View.State);
+    }
+
+    [Fact]
+    public void ASourceArrivalReceiptDoesNotExtendTheOriginalReplaceDeadline()
+    {
+        using var s = new SessionScenario();
+        var opening = Open(s);
+        var confirmation = Assert.IsType<OwnedLocalRegenerateConfirmation>(s.Controller.BeginOwnedLocalRegenerateConfirmation(opening));
+        var request = Assert.IsType<OwnedLocalDraftReturnRequest>(s.Controller.PrepareOwnedLocalRegenerate(confirmation, s.Loop.NowMs));
+        s.Input.InEditor = false;
+        s.Source = s.Source with
+        {
+            FocusEpoch = opening.Binding.NativeFocusRevision + 2
+        };
+        Assert.True(s.Controller.CompleteOwnedLocalReturn(request,
+            new(opening.Id, request.Id, opening.Binding, s.Source.FocusEpoch, s.Loop.NowMs)));
+        s.Tick(500);
+        Assert.False(s.Controller.OwnedLocalDraftCurrent(opening));
+        Assert.Single(s.Model.Jobs);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AnEmptyDraftCanBeDiscardedForReplaceButCannotBeReturnedAsAKeepCandidate(bool replace)
+    {
+        using var s = new SessionScenario();
+        var opening = Open(s);
+        Assert.True(s.Controller.ChangeOwnedLocalDraft(opening, ""));
+        var request = replace
+            ? s.Controller.PrepareOwnedLocalRegenerate(
+                Assert.IsType<OwnedLocalRegenerateConfirmation>(s.Controller.BeginOwnedLocalRegenerateConfirmation(opening)), s.Loop.NowMs)
+            : s.Controller.PrepareOwnedLocalReturn(opening, s.Loop.NowMs);
+        Assert.NotNull(request);
+        s.Input.InEditor = false;
+        s.Source = s.Source with
+        {
+            FocusEpoch = opening.Binding.NativeFocusRevision + 2
+        };
+        Assert.True(s.Controller.CompleteOwnedLocalReturn(request,
+            new(opening.Id, request.Id, opening.Binding, s.Source.FocusEpoch, s.Loop.NowMs)));
+        var binding = opening.Binding with
+        {
+            CommandGeneration = s.Input.CommandGeneration,
+            NativeFocusRevision = s.Source.FocusEpoch
+        };
+        s.Tick();
+        Assert.Equal(replace, s.Controller.BindAutomaticPractice(binding));
+        Assert.Null(s.Input.Permit);
+        if (replace)
+        {
+            Assert.True(s.Controller.CompleteOwnedLocalRegenerate(request, binding));
+            s.Tick();
+            s.Tick(Limits.DebounceMs);
+            Assert.Equal(2, s.Model.Jobs.Count);
+            Assert.Equal("hello", s.Model.Jobs[^1].SourceText);
+            Assert.Null(s.Model.Jobs[^1].PreservedManualText);
+        }
+        else
+        {
+            Assert.False(s.Controller.OwnedLocalDraftCurrent(opening));
+            Assert.Single(s.Model.Jobs);
+        }
+        Assert.Empty(s.Service.Writes);
+        Assert.Empty(s.Service.DirectWrites);
+    }
+
+    [Fact]
+    public void AnExpiredReplaceKeepsTheSamePromptAndDraftAvailableForANewUserAction()
+    {
+        using var s = new SessionScenario();
+        var opening = Open(s);
+        var confirmation = Assert.IsType<OwnedLocalRegenerateConfirmation>(s.Controller.BeginOwnedLocalRegenerateConfirmation(opening));
+        long down = s.Loop.NowMs;
+        s.Tick(500);
+        Assert.Null(s.Controller.PrepareOwnedLocalRegenerate(confirmation, down));
+        Assert.True(s.Controller.OwnedLocalDraftCurrent(opening));
+        Assert.True(s.Controller.OwnedLocalRegenerateConfirmationCurrent(confirmation));
+        Assert.Single(s.Model.Jobs);
+        Assert.Null(s.Input.Permit);
+        var request = Assert.IsType<OwnedLocalDraftReturnRequest>(s.Controller.PrepareOwnedLocalRegenerate(confirmation, s.Loop.NowMs));
+        Assert.Equal(s.Loop.NowMs + 500, request.ExpiresAtMs);
+        Assert.Null(s.Controller.PrepareOwnedLocalRegenerate(confirmation, s.Loop.NowMs));
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData("new-prompt")]
+    [InlineData("draft-aba")]
+    [InlineData("cancel")]
+    [InlineData("stop")]
+    public void AChangedConfirmationCannotDiscardTheCurrentOwnedDraft(string change)
+    {
+        using var s = new SessionScenario();
+        var opening = Open(s);
+        var confirmation = Assert.IsType<OwnedLocalRegenerateConfirmation>(s.Controller.BeginOwnedLocalRegenerateConfirmation(opening));
+        if (change == "new-prompt")
+            Assert.NotNull(s.Controller.BeginOwnedLocalRegenerateConfirmation(opening));
+        else if (change == "draft-aba")
+        {
+            Assert.True(s.Controller.ChangeOwnedLocalDraft(opening, "changed"));
+            Assert.True(s.Controller.ChangeOwnedLocalDraft(opening, "manual draft"));
+        }
+        else if (change == "cancel")
+            s.Controller.CancelOwnedLocalRegenerateConfirmation(confirmation);
+        else
+            s.Controller.StopSession();
+        Assert.False(s.Controller.OwnedLocalRegenerateConfirmationCurrent(confirmation));
+        Assert.Null(s.Controller.PrepareOwnedLocalRegenerate(confirmation, s.Loop.NowMs));
+        Assert.Equal(change != "stop", s.Controller.OwnedLocalDraftCurrent(opening));
+        Assert.Single(s.Model.Jobs);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData("ready")]
+    [InlineData("expired")]
+    [InlineData("source")]
+    [InlineData("ime")]
+    [InlineData("ack")]
+    [InlineData("focus")]
+    public void ReplaceWaitsForTheInstalledReaderAndItsFreshSourceWithoutPublishingTheManualDraft(string outcome)
+    {
+        using var s = new SessionScenario();
+        var opening = Open(s);
+        var confirmation = Assert.IsType<OwnedLocalRegenerateConfirmation>(s.Controller.BeginOwnedLocalRegenerateConfirmation(opening));
+        var request = Assert.IsType<OwnedLocalDraftReturnRequest>(s.Controller.PrepareOwnedLocalRegenerate(confirmation, s.Loop.NowMs));
+        s.Input.InEditor = false;
+        s.Source = s.Source with
+        {
+            FocusEpoch = opening.Binding.NativeFocusRevision + 2
+        };
+        var receipt = new OwnedLocalDraftReturn(opening.Id, request.Id, opening.Binding, s.Source.FocusEpoch, s.Loop.NowMs);
+        Assert.True(s.Controller.CompleteOwnedLocalReturn(request, receipt));
+        var binding = opening.Binding with
+        {
+            CommandGeneration = s.Input.CommandGeneration,
+            NativeFocusRevision = receipt.NativeFocusRevision
+        };
+        Assert.False(s.Controller.CompleteOwnedLocalRegenerate(request, binding));
+        Assert.False(s.Controller.BindAutomaticPractice(binding));
+        s.Tick();
+        Assert.True(s.Controller.BindAutomaticPractice(binding));
+        int captures = s.Service.Captures, published = s.Input.PublishedLeases.Count;
+        s.Tick();
+        Assert.Equal(captures, s.Service.Captures);
+        Assert.Single(s.Model.Jobs);
+        Assert.Null(s.Input.Permit);
+        Assert.Equal(published, s.Input.PublishedLeases.Count);
+        Assert.True(s.Controller.CompleteOwnedLocalRegenerate(request, binding));
+        Assert.False(s.Controller.CompleteOwnedLocalRegenerate(request, binding));
+        s.Service.PendingCapture = new();
+        s.Tick();
+        Assert.Equal(captures + 1, s.Service.Captures);
+        Assert.Single(s.Model.Jobs);
+        Assert.Null(s.Input.Permit);
+        if (outcome == "expired")
+            s.Tick(500);
+        else if (outcome == "focus")
+            s.FocusAnotherField();
+        var source = outcome switch
+        {
+            "source" => s.Fresh with { Text = "another source", Selection = new(14, 14) },
+            "ime" => s.Fresh with { Ime = ImeState.Unknown },
+            _ => s.Fresh
+        };
+        s.CompleteCapture(new(source, FocusMember.Source, UserEpoch: s.Input.UserEpoch, ForegroundEpoch: s.Input.ForegroundEpoch,
+            SessionShortcuts: outcome == "ack" ? null : new(source.Target, s.Input.CommandGeneration, s.Input.SessionBindings, true, true),
+            OwnedSource: new(binding, source.ObservedAtMs, false)));
+        Assert.Equal(published, s.Input.PublishedLeases.Count);
+        s.Tick(Limits.DebounceMs);
+        Assert.Equal(outcome == "ready" ? 2 : 1, s.Model.Jobs.Count);
+        Assert.Empty(s.Service.Writes);
+        Assert.Empty(s.Service.DirectWrites);
+        Assert.False(s.Controller.CompleteOwnedLocalRegenerate(request, binding));
+    }
+
     [Theory]
     [InlineData("begin")]
     [InlineData("return")]

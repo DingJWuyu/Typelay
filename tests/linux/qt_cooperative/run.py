@@ -376,7 +376,7 @@ def stock_sync(out, env, children):
     return result
 
 
-def language_options(native, captured, generation, state, window, environment):
+def language_options(native, captured, generation, state, window, environment, native_log):
     """Drive actual native menu buttons; this is view rendering, never model inventory."""
     from wire import now_ms
 
@@ -449,13 +449,7 @@ def language_options(native, captured, generation, state, window, environment):
             "actual language menu render",
         )
 
-    def click(name):
-        value = state()
-        control = value["overlayControls"][name]
-        assert control["visible"]
-        bounds = control["geometry"]
-        assert bounds["width"] > 0 and bounds["height"] > 0
-        x, y = bounds["x"] + bounds["width"] / 2, bounds["y"] + bounds["height"] / 2
+    def click_at(value, x, y):
         assert 0 <= x < value["width"] and 0 <= y < value["height"]
         run(
             [
@@ -470,6 +464,14 @@ def language_options(native, captured, generation, state, window, environment):
             ],
             env=environment,
         )
+
+    def click(name):
+        value = state()
+        control = value["overlayControls"][name]
+        assert control["visible"]
+        bounds = control["geometry"]
+        assert bounds["width"] > 0 and bounds["height"] > 0
+        click_at(value, bounds["x"] + bounds["width"] / 2, bounds["y"] + bounds["height"] / 2)
 
     def toggle(opened, renew=True):
         if renew:
@@ -495,6 +497,14 @@ def language_options(native, captured, generation, state, window, environment):
             ]
             assert checked == [f"typelay-{side}-{code}"], (side, checked)
 
+    def overlay_events():
+        prefix = "qt-overlay-event "
+        return [
+            json.loads(line[len(prefix) :])
+            for line in native_log.read_text().splitlines(keepends=True)
+            if line.startswith(prefix) and line.endswith("\n")
+        ]
+
     actual = render()
     assert actual["overlayControls"]["typelay-menu-trigger"]["description"] == "English → 日本語"
     baseline = state()
@@ -506,6 +516,41 @@ def language_options(native, captured, generation, state, window, environment):
     assert not opened["overlayControls"]["typelay-copy"]["visible"]
     assert opened["first"] == baseline["first"]
     assert opened["focusTransitions"] == baseline["focusTransitions"]
+    # Observe the real receiver before judging this negative control. Run it
+    # at the first opening, before the fixture's finite event log fills up.
+    shown = [
+        event
+        for event in overlay_events()
+        if event["role"] == "typelay-menu" and event["event"] == "show"
+    ][-1]
+    padding = opened["overlayMenuGeometry"]
+    assert shown["geometry"] == padding and shown["instance"] > 0
+    x, y = padding["x"] + 2, padding["y"] + 2
+    click_at(opened, x, y)
+
+    def padding_observed():
+        inputs = [
+            event
+            for event in overlay_events()
+            if event["sequence"] > shown["sequence"]
+            and event["instance"] == shown["instance"]
+            and event["role"] == "typelay-menu"
+            and event["event"] in ("mouse-press", "mouse-release")
+        ]
+        if len(inputs) < 2:
+            return None
+        assert [event["event"] for event in inputs] == ["mouse-press", "mouse-release"]
+        for event in inputs:
+            assert event["spontaneous"] and event["geometry"] == padding
+            assert abs(event["x"] - x) <= 1 and abs(event["y"] - y) <= 1
+        value = state()
+        return value if value.get("observedAtMs", 0) > inputs[-1]["atMs"] else None
+
+    padded = wait(padding_observed, "menu padding press/release and subsequent state")
+    assert padded["overlayMenuVisible"]
+    assert not padded["overlayMoreMenuVisible"]
+    for name in ("first", "second", "editorText", "editorDocumentRevision", "focusTransitions"):
+        assert padded[name] == opened[name], name
     # Production keeps the native revision when only translationActions change.
     # This public DTO update must retire the menu, without a full editor render.
     menu_actions = {
@@ -685,6 +730,35 @@ def language_options(native, captured, generation, state, window, environment):
     assert events() == before_events
     assert state()["first"]["text"] == original["first"]["text"]
     assert state()["second"]["text"] == original["second"]["text"]
+    # A genuinely outside QWidget must still receive the original mouse press.
+    # End this fixture by focusing the other source, rather than manufacturing
+    # a new authority or restoring focus after the click.
+    render()
+    click("typelay-more-trigger")
+    outside = wait(
+        lambda: value if (value := state())["overlayMoreMenuVisible"] else None,
+        "More before an outside source click",
+    )
+    bounds = outside["second"]["geometry"]
+    x, y = bounds["x"] + 2, bounds["y"] + bounds["height"] / 2
+    for name in ("overlayGeometry", "overlayMoreMenuGeometry"):
+        bounds = outside[name]
+        assert not (
+            bounds["x"] <= x < bounds["x"] + bounds["width"]
+            and bounds["y"] <= y < bounds["y"] + bounds["height"]
+        ), name
+    assert not outside["second"]["focused"]
+    click_at(outside, x, y)
+    closed = wait(
+        lambda: value
+        if (value := state())["second"]["focused"] and not value["overlayMoreMenuVisible"]
+        else None,
+        "outside click reaches source and closes More",
+    )
+    assert not closed["overlayMenuVisible"]
+    assert not closed["first"]["focused"]
+    for name in ("first", "second"):
+        assert closed[name]["text"] == original[name]["text"]
     return {
         "passed": True,
         "scope": "actual Qt menu widgets and XTest; synthetic view DTO; no model",
@@ -1071,7 +1145,9 @@ def ordered_controls(
                     {"target": description["target"], "authority": description["authority"]},
                 )
                 assert captured and captured["ime"] == "Clear"
-                result = language_options(native, captured, generation, state, window, environment)
+                result = language_options(
+                    native, captured, generation, state, window, environment, Path(log.name)
+                )
                 fixture("quit")
                 assert client.wait(timeout=10) == 0
                 path.unlink(missing_ok=True)

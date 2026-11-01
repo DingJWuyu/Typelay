@@ -62,19 +62,34 @@ public sealed partial class Session
         return true;
     }
 
-    public bool ConfirmDormantSourceReturn(DormantEdit edit, InputSnapshot source, long nowMs)
+    public bool ConfirmDormantSourceReturn(DormantEdit edit, InputSnapshot source, long nowMs) =>
+        ConfirmDormantReturn(edit, source, nowMs, regenerate: false);
+
+    // The discarded text is not a replacement candidate. This consumes only
+    // the saved source basis; no job, candidate or write authority is created.
+    public bool ConfirmDormantRegenerateReturn(DormantEdit edit, InputSnapshot source, long nowMs) =>
+        ConfirmDormantReturn(edit, source, nowMs, regenerate: true);
+
+    private bool ConfirmDormantReturn(DormantEdit edit, InputSnapshot source, long nowMs, bool regenerate)
     {
         if (!DormantEditIsCurrent(edit))
             return false; // An old/foreign handle cannot retire another current opening.
         _dormantEdit = null; // Consume before either result can be observed or re-entered.
-        if (!EditSourceReturnValid(edit.Basis, edit.Scope, edit.Text, edit.ValidBasis, source, nowMs))
+        if (!EditSourceBasisValid(edit.Basis, edit.Scope, edit.ValidBasis, source, nowMs)
+            || !regenerate && !WriteSafety.ValidReplacement(edit.Text))
         {
             LeaveFamily(); // No automatic fallback job after a failed local return.
             return false;
         }
         edit.Returned = true;
         _scope = edit.Scope;
-        CommitEditedSourceReturn(source, edit.Text);
+        if (regenerate)
+        {
+            _current = source;
+            _focus = FocusMember.Source;
+        }
+        else
+            CommitEditedSourceReturn(source, edit.Text);
         return true;
     }
 
@@ -85,9 +100,13 @@ public sealed partial class Session
         && edit.ConfigurationRevision == _configurationRevision;
 
     private static bool EditSourceReturnValid(InputSnapshot? basis, TextRange? scope, string draft,
-        bool unchanged, InputSnapshot source, long nowMs) => unchanged && basis is not null
+        bool unchanged, InputSnapshot source, long nowMs) => WriteSafety.ValidReplacement(draft)
+        && EditSourceBasisValid(basis, scope, unchanged, source, nowMs);
+
+    private static bool EditSourceBasisValid(InputSnapshot? basis, TextRange? scope, bool unchanged,
+        InputSnapshot source, long nowMs) => unchanged && basis is not null
         && source.Target == basis.Target && source.Text == basis.Text && source.InputEpoch == basis.InputEpoch
-        && WriteSafety.CheckSnapshot(source, nowMs) == Denial.None && WriteSafety.ValidReplacement(draft)
+        && WriteSafety.CheckSnapshot(source, nowMs) == Denial.None
         // Preserve the ordinary return rule: a collapsed mouse selection may
         // retain the saved range, never a different nonempty translation scope.
         && (source.TranslationScope is null || source.TranslationScope == scope);

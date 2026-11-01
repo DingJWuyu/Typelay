@@ -21,6 +21,7 @@ internal sealed partial class PracticeHost
         public int TraceCount, TraceDropped;
         public bool TraceCancelled;
         public KeyboardHook.LocalDraftTap? Tap;
+        public OwnedLocalRegenerateConfirmation? Confirmation;
         public OwnedLocalDraftReturnRequest? Request;
         public OwnedLocalReturnControl? Returning;
         public OwnedMapping? Replacement;
@@ -170,6 +171,64 @@ internal sealed partial class PracticeHost
                 focused && _editorOverlay?.LocalDraftEditorFocused(opening) == true);
     }
 
+    internal OwnedLocalRegenerateConfirmation? BeginLocalDraftRegenerate(OwnedLocalDraft opening)
+    {
+        if (!LocalDraftPresentationCurrent(opening))
+            return null;
+        var confirmation = _session!.BeginOwnedLocalRegenerateConfirmation(opening);
+        if (confirmation is not null)
+            _monitor!.SetLocalDraftPrompt(opening.Id, confirmation.Id, false);
+        return confirmation;
+    }
+
+    internal void LocalDraftRegenerateFocus(OwnedLocalRegenerateConfirmation confirmation, bool replaceFocused)
+    {
+        if (LocalDraftPresentationCurrent(confirmation.Opening))
+            _monitor!.SetLocalDraftPrompt(confirmation.Opening.Id, confirmation.Id, replaceFocused);
+    }
+
+    internal void CancelLocalDraftRegenerate(OwnedLocalRegenerateConfirmation confirmation)
+    {
+        _session?.CancelOwnedLocalRegenerateConfirmation(confirmation);
+        _monitor?.SetLocalDraftPrompt(confirmation.Opening.Id, Guid.Empty, false);
+    }
+
+    internal KeyboardHook.LocalDraftPress? CaptureLocalDraftReplacePress(OwnedLocalRegenerateConfirmation confirmation,
+        uint nativeTime, uint virtualKey = 0, uint scan = 0, bool extended = false) =>
+        LocalDraftReady(confirmation.Opening) && _session!.OwnedLocalRegenerateConfirmationCurrent(confirmation)
+        ? _monitor!.CaptureLocalDraftReplacePress(confirmation.Opening.Id, confirmation.Id, nativeTime, virtualKey, scan, extended) : null;
+
+    internal bool BeginLocalDraftReplace(OwnedLocalRegenerateConfirmation confirmation, KeyboardHook.LocalDraftPress press, uint nativeUpTime)
+    {
+        var opening = confirmation.Opening;
+        if (!press.ReplacesDraft || press.Confirmation != confirmation.Id || press.Opening != opening.Id
+            || !LocalDraftReady(opening) || _localDraftAttempt is not { } local
+            || !_session!.OwnedLocalRegenerateConfirmationCurrent(confirmation)
+            || _editorOverlay?.LocalDraftReplaceFocused(confirmation) != true
+            || _monitor!.ClaimLocalDraftReplaceTap(press, nativeUpTime) is not { } tap)
+            return false;
+        var request = _session.PrepareOwnedLocalRegenerate(confirmation, press.ReceivedAtMs);
+        if (request is null)
+        {
+            _monitor.ReleaseUnacceptedLocalReplace(tap);
+            return false; // Same prompt may retry with a new real action; no source request was sent.
+        }
+        if (!LocalDraftIdentityCurrent(local) || !_monitor.LocalDraftTapCurrent(tap))
+        {
+            CancelOwnedLocalDraft(opening);
+            return false;
+        }
+        local.Confirmation = confirmation;
+        local.Tap = tap;
+        local.Request = request;
+        local.Returning = new(opening.Id, request.Id, press.ReceivedAtMs, press.ExpiresAtMs, press.Sequence, press.Key,
+            new(tap.UpSequence, tap.ReleasedAtMs, press.NativeTime, tap.NativeUpTime),
+            ReplacesDraft: true, MousePress: press.Mouse);
+        TraceLocalDraft(opening, LocalDraftTraceEvent.Prepared);
+        PollOwnedLocalDraft();
+        return !local.Cancelled;
+    }
+
     internal KeyboardHook.LocalDraftPress? CaptureLocalDraftReturnPress(OwnedLocalDraft opening,
         uint scan, bool extended, uint nativeDownTime) => LocalDraftReady(opening)
         && _editorOverlay?.LocalDraftEditorFocused(opening) == true
@@ -265,6 +324,8 @@ internal sealed partial class PracticeHost
             _localDraftAttempt = null;
             _editorSealed = false;
             _editorOverlay?.CompleteLocalDraftReturn(local.Opening);
+            if (local.Request is { ReplacesDraft: true } regenerate)
+                _session.CompleteOwnedLocalRegenerate(regenerate, capture.Binding);
         }
     }
 
@@ -321,7 +382,7 @@ internal sealed partial class PracticeHost
             local.Replacement = null;
             _witnessWriter = new(_witnessMapping);
             _monitor.SetOwnedChannel(local.Connection, _witnessWriter, local.Control.Previous.Descriptor);
-            if (_editorOverlay?.ArmLocalDraftDeparture(local.Opening) != true)
+            if (_editorOverlay?.ArmLocalDraftDeparture(local.Opening, local.Confirmation) != true)
             {
                 CancelOwnedLocalDraft(local.Opening);
                 return true;

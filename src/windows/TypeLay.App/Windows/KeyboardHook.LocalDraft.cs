@@ -15,11 +15,19 @@ internal sealed partial class KeyboardHook
         public Action<Guid> Cancel { get; } = cancel;
         public int Invalid, Returning;
         public object? EditorFocus;
+        public LocalDraftPrompt? Prompt;
+    }
+    private sealed class LocalDraftPrompt(Guid id)
+    {
+        public Guid Id { get; } = id;
+        public int ReplaceFocused;
     }
     internal sealed record LocalDraftPress(Guid Opening, long Sequence, long ReceivedAtMs,
-        uint NativeTime, OwnedReturnKeyPress Key)
+        uint NativeTime, OwnedReturnKeyPress? Key, Guid Confirmation = default, OwnedLocalReplaceMouse? Mouse = null)
     {
         public long ExpiresAtMs => checked(ReceivedAtMs + 500);
+        public bool ReplacesDraft => Confirmation != Guid.Empty;
+        public bool Injected => Key?.Injected ?? Mouse!.Injected;
     }
     internal sealed record LocalDraftTap(LocalDraftPress Press, long UpSequence, long ReleasedAtMs, uint NativeUpTime);
     private LocalDraftAnchor? _localDraftAnchor;
@@ -91,7 +99,7 @@ internal sealed partial class KeyboardHook
         long now = WindowsInterruptClock.NowMs;
         if (anchor is null || anchor.Opening != opening || Volatile.Read(ref anchor.Invalid) != 0
             || Volatile.Read(ref anchor.Returning) != 0 || Volatile.Read(ref anchor.EditorFocus) is null || press is null || press.Opening != opening
-            || press.NativeTime != nativeDownTime || press.Key.ScanCode != scan || press.Key.Extended != extended
+            || press.ReplacesDraft || press.Key is null || press.NativeTime != nativeDownTime || press.Key.ScanCode != scan || press.Key.Extended != extended
             || press.Key.Injected && !_allowInjectedInput || !ShortcutsReady || !_sessionEnabled
             || Native.GetForegroundWindow() != anchor.Overlay || now < press.ReceivedAtMs || now >= press.ExpiresAtMs
             || (tap is null ? EditorInputSequence != press.Sequence
@@ -131,11 +139,11 @@ internal sealed partial class KeyboardHook
             : tap is null ? LocalDraftTapClaimResult.TapMissing
             : !ReferenceEquals(tap.Press, press) ? LocalDraftTapClaimResult.PressMismatch
             : tap.NativeUpTime != nativeUpTime ? LocalDraftTapClaimResult.NativeUpTimeMismatch
-            : press.Key.ScanCode != scan ? LocalDraftTapClaimResult.ScanMismatch
-            : press.Key.Extended != extended ? LocalDraftTapClaimResult.ExtendedMismatch
+            : press.ReplacesDraft || press.Key is null || press.Key.ScanCode != scan ? LocalDraftTapClaimResult.ScanMismatch
+            : press.Key!.Extended != extended ? LocalDraftTapClaimResult.ExtendedMismatch
             : !ShortcutsReady ? LocalDraftTapClaimResult.ShortcutsUnavailable
             : !_sessionEnabled ? LocalDraftTapClaimResult.SessionDisabled
-            : press.Key.Injected && !_allowInjectedInput ? LocalDraftTapClaimResult.InjectionRefused
+            : press.Key!.Injected && !_allowInjectedInput ? LocalDraftTapClaimResult.InjectionRefused
             : Native.GetForegroundWindow() != anchor.Overlay ? LocalDraftTapClaimResult.ForegroundMismatch
             : !LocalDraftTapCurrent(tap) ? LocalDraftTapClaimResult.TapCurrentRefused
             : LocalDraftTapClaimResult.Success;
@@ -157,16 +165,31 @@ internal sealed partial class KeyboardHook
         && EditorInputSequence == expected.UpSequence
         && WindowsInterruptClock.NowMs >= expected.Press.ReceivedAtMs && WindowsInterruptClock.NowMs < expected.Press.ExpiresAtMs;
 
+    // Only the LL event thread runs this cleanup. A timely release can wait
+    // behind the UI queue past its deadline; it must not eat the first new
+    // action. No accepted return or original down is renewed here.
+    private void RetireExpiredLocalReplace(LocalDraftAnchor anchor, long now)
+    {
+        if (Volatile.Read(ref anchor.Returning) == 0 && ReferenceEquals(Volatile.Read(ref _localDraftAnchor), anchor)
+            && Volatile.Read(ref _localDraftPress) is { ReplacesDraft: true } press
+            && now >= press.ExpiresAtMs)
+        {
+            Interlocked.Exchange(ref _localDraftPress, null);
+            Interlocked.Exchange(ref _localDraftTap, null);
+        }
+    }
+
     private void ObserveLocalDraftKey(Native.KeyData data, bool down, bool repeated, bool injected, long now)
     {
         if (Volatile.Read(ref _localDraftAnchor) is not { Invalid: 0 } anchor)
             return;
+        RetireExpiredLocalReplace(anchor, now);
         var press = Volatile.Read(ref _localDraftPress);
         if (press is not null)
         {
             long sequence = EditorInputSequence;
             if (!down && Volatile.Read(ref _localDraftTap) is null && press.Sequence < long.MaxValue
-                && sequence == press.Sequence + 1 && press.Key.VirtualKey == data.Key && press.Key.ScanCode == data.Scan
+                && sequence == press.Sequence + 1 && press.Key is not null && press.Key.VirtualKey == data.Key && press.Key.ScanCode == data.Scan
                 && press.Key.Extended == ((data.Flags & 1) != 0) && press.Key.Injected == injected
                 && unchecked(data.Time - press.NativeTime) < 0x80000000u
                 && now >= press.ReceivedAtMs && now < press.ExpiresAtMs && CurrentModifiers == ShortcutModifiers.None
@@ -174,6 +197,14 @@ internal sealed partial class KeyboardHook
             {
                 Interlocked.Exchange(ref _localDraftTap, new(press, sequence, now, data.Time));
                 TraceLocalDraftKey("tab-up", press, now);
+                return;
+            }
+            if (press.ReplacesDraft)
+            {
+                // An unaccepted repeat or interrupted click discards only the
+                // action, not this still-valid local prompt and manual draft.
+                Interlocked.Exchange(ref _localDraftPress, null);
+                Interlocked.Exchange(ref _localDraftTap, null);
                 return;
             }
             // A second down (even at the same native timestamp), repeat,
@@ -184,25 +215,139 @@ internal sealed partial class KeyboardHook
         }
         var keys = Volatile.Read(ref _sessionKeys);
         object? editorFocus = Volatile.Read(ref anchor.EditorFocus);
-        bool admit = down && !repeated && data.Key == 9 && data.Scan is > 0 and <= 255
-            && CurrentModifiers == ShortcutModifiers.None && _sessionEnabled && keys.Supported
-            && keys.Accept == 9 && keys.AcceptModifiers == ShortcutModifiers.None && (!injected || _allowInjectedInput)
-            && Volatile.Read(ref anchor.Returning) == 0 && editorFocus is not null
+        var prompt = Volatile.Read(ref anchor.Prompt);
+        bool replace = data.Key is 13 or 32 && prompt is not null && Volatile.Read(ref prompt.ReplaceFocused) != 0;
+        bool keep = data.Key == 9 && editorFocus is not null && keys.Accept == 9 && keys.AcceptModifiers == ShortcutModifiers.None;
+        bool admit = down && !repeated && (keep || replace) && data.Scan is > 0 and <= 255
+            && CurrentModifiers == ShortcutModifiers.None && _sessionEnabled && keys.Supported && (!injected || _allowInjectedInput)
+            && Volatile.Read(ref anchor.Returning) == 0
             && Native.GetForegroundWindow() == anchor.Overlay
             && EditorInputSequence is > 0 and < long.MaxValue && now <= long.MaxValue - 500;
         if (admit)
         {
             Interlocked.Exchange(ref _localDraftPress, new(anchor.Opening, EditorInputSequence, now, data.Time,
-                new(data.Scan, (data.Flags & 1) != 0, injected, 9)));
+                new(data.Scan, (data.Flags & 1) != 0, injected, data.Key), replace ? prompt!.Id : Guid.Empty));
             // A concurrent menu/focus transition cannot arm this down after its
             // editor already retired. Never reset an existing candidate here.
-            if (!ReferenceEquals(Volatile.Read(ref anchor.EditorFocus), editorFocus)
+            if (keep && !ReferenceEquals(Volatile.Read(ref anchor.EditorFocus), editorFocus)
                 && Interlocked.Exchange(ref anchor.Invalid, 1) == 0)
                 anchor.Cancel(anchor.Opening);
         }
         if (data.Key == 9)
             TraceLocalDraftKey(down ? "tab-down" : "unmatched-tab-up", Volatile.Read(ref _localDraftPress), now);
     }
+    internal void SetLocalDraftPrompt(Guid opening, Guid confirmation, bool replaceFocused)
+    {
+        if (Volatile.Read(ref _localDraftAnchor) is not { Invalid: 0, Returning: 0 } anchor || anchor.Opening != opening)
+            return;
+        var prompt = Volatile.Read(ref anchor.Prompt);
+        if (confirmation == Guid.Empty || prompt?.Id != confirmation)
+        {
+            prompt = confirmation == Guid.Empty ? null : new(confirmation);
+            Interlocked.Exchange(ref anchor.Prompt, prompt);
+            if (Volatile.Read(ref _localDraftPress) is { ReplacesDraft: true })
+            {
+                Interlocked.Exchange(ref _localDraftPress, null);
+                Interlocked.Exchange(ref _localDraftTap, null);
+            }
+        }
+        if (prompt is null)
+            return;
+        if (!replaceFocused && Interlocked.Exchange(ref prompt.ReplaceFocused, 0) != 0
+            && Volatile.Read(ref _localDraftPress) is { ReplacesDraft: true })
+        {
+            Interlocked.Exchange(ref _localDraftPress, null);
+            Interlocked.Exchange(ref _localDraftTap, null);
+        }
+        else if (replaceFocused)
+            Volatile.Write(ref prompt.ReplaceFocused, 1);
+    }
+
+    internal LocalDraftPress? CaptureLocalDraftReplacePress(Guid opening, Guid confirmation, uint nativeDownTime,
+        uint virtualKey = 0, uint scan = 0, bool extended = false)
+    {
+        if (Volatile.Read(ref _localDraftAnchor) is not { Invalid: 0, Returning: 0, Prompt: { } prompt } anchor
+            || anchor.Opening != opening || prompt.Id != confirmation
+            || Volatile.Read(ref _localDraftPress) is not { ReplacesDraft: true } press || press.Opening != opening
+            || press.Confirmation != confirmation || press.NativeTime != nativeDownTime
+            || !ShortcutsReady || !_sessionEnabled || press.Injected && !_allowInjectedInput
+            || Native.GetForegroundWindow() != anchor.Overlay
+            || WindowsInterruptClock.NowMs < press.ReceivedAtMs || WindowsInterruptClock.NowMs >= press.ExpiresAtMs)
+            return null;
+        var tap = Volatile.Read(ref _localDraftTap);
+        if (tap is null ? EditorInputSequence != press.Sequence
+            : !ReferenceEquals(tap.Press, press) || EditorInputSequence != tap.UpSequence)
+            return null;
+        if (press.Key is { } key)
+            return key.VirtualKey == virtualKey && key.ScanCode == scan && key.Extended == extended
+                && Volatile.Read(ref prompt.ReplaceFocused) != 0 ? press : null;
+        uint position = GetMessagePos();
+        return virtualKey == 0 && press.Mouse is { } mouse
+            && mouse.X == unchecked((short)position) && mouse.Y == unchecked((short)(position >> 16)) ? press : null;
+    }
+
+    internal LocalDraftTap? ClaimLocalDraftReplaceTap(LocalDraftPress press, uint nativeUpTime)
+    {
+        if (!press.ReplacesDraft || Volatile.Read(ref _localDraftAnchor) is not { Invalid: 0, Returning: 0, Prompt: { } prompt } anchor
+            || anchor.Opening != press.Opening || prompt.Id != press.Confirmation || Volatile.Read(ref prompt.ReplaceFocused) == 0
+            || Volatile.Read(ref _localDraftTap) is not { } tap || !ReferenceEquals(tap.Press, press)
+            || tap.NativeUpTime != nativeUpTime || !ShortcutsReady || !_sessionEnabled
+            || press.Injected && !_allowInjectedInput || CurrentModifiers != ShortcutModifiers.None
+            || Native.GetForegroundWindow() != anchor.Overlay || !LocalDraftTapCurrent(tap)
+            || Interlocked.CompareExchange(ref anchor.Returning, 1, 0) != 0)
+            return null;
+        if (LocalDraftTapCurrent(tap))
+            return tap;
+        ReleaseUnacceptedLocalReplace(tap);
+        return null;
+    }
+
+    internal void ReleaseUnacceptedLocalReplace(LocalDraftTap tap)
+    {
+        if (tap.Press.ReplacesDraft && Volatile.Read(ref _localDraftAnchor) is { } anchor && anchor.Opening == tap.Press.Opening)
+        {
+            Interlocked.Exchange(ref _localDraftPress, null);
+            Interlocked.Exchange(ref _localDraftTap, null);
+            Volatile.Write(ref anchor.Returning, 0); // No source request was sent; never renew the rejected press.
+        }
+    }
+
+    private void ObserveLocalDraftMouse(int message, nint dataPointer)
+    {
+        if (Volatile.Read(ref _localDraftAnchor) is not { Invalid: 0, Prompt: { } prompt } anchor)
+            return;
+        var data = System.Runtime.InteropServices.Marshal.PtrToStructure<MouseData>(dataPointer);
+        long now = WindowsInterruptClock.NowMs;
+        RetireExpiredLocalReplace(anchor, now);
+        var press = Volatile.Read(ref _localDraftPress);
+        bool injected = (data.Flags & 3) != 0;
+        if (press is { ReplacesDraft: true })
+        {
+            if (message == 0x202 && press.Mouse is { } mouse && Volatile.Read(ref _localDraftTap) is null
+                && _mouseButtons == 1 && EditorInputSequence == press.Sequence
+                && mouse.X == data.Point.X && mouse.Y == data.Point.Y && mouse.Injected == injected
+                && unchecked(data.Time - press.NativeTime) < 0x80000000u
+                && now >= press.ReceivedAtMs && now < press.ExpiresAtMs && CurrentModifiers == ShortcutModifiers.None
+                && Native.GetForegroundWindow() == anchor.Overlay)
+            {
+                Interlocked.Exchange(ref _localDraftTap, new(press, press.Sequence, now, data.Time));
+                return;
+            }
+            if (message != 0x200 || EditorInputSequence != (Volatile.Read(ref _localDraftTap)?.UpSequence ?? press.Sequence))
+            {
+                Interlocked.Exchange(ref _localDraftPress, null);
+                Interlocked.Exchange(ref _localDraftTap, null);
+            }
+            return;
+        }
+        if (press is null && message == 0x201 && _mouseButtons == 0 && CurrentModifiers == ShortcutModifiers.None
+            && Volatile.Read(ref anchor.Returning) == 0 && _sessionEnabled && ShortcutsReady && (!injected || _allowInjectedInput)
+            && Native.GetForegroundWindow() == anchor.Overlay && WindowFromPoint(data.Point) == anchor.Overlay
+            && EditorInputSequence is > 0 and < long.MaxValue && now <= long.MaxValue - 500)
+            Interlocked.Exchange(ref _localDraftPress, new(anchor.Opening, EditorInputSequence, now, data.Time,
+                null, prompt.Id, new(data.Point.X, data.Point.Y, injected)));
+    }
+
     private void ObserveLocalDraftForeground(nint foreground)
     {
         if (Volatile.Read(ref _localDraftAnchor) is not { } anchor)

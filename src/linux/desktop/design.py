@@ -34,6 +34,9 @@ window.typelay-surface.quick-panel.settings-dark { background: rgba(44,43,40,.96
 window.typelay-surface.quick-panel.settings-dark.reduce-transparency { background: #2c2b28; }
 .typelay-surface { background: #f7f6f2; color: #141413; font-family: 'Inter', 'Noto Sans SC', sans-serif; font-size: 13px; }
 .typelay-surface label { color: inherit; }
+/* Pair the owned settings window's default CSD with its inherited ink. */
+window.typelay-surface.typelay-settings > headerbar.titlebar.default-decoration { background: #f7f6f2; color: #141413; }
+window.typelay-surface.typelay-settings.settings-dark > headerbar.titlebar.default-decoration { background: #262624; color: #f4f3ee; }
 .typelay-surface .settings-sidebar { background: #eeece5; border: 1px solid rgba(20,20,19,.085); border-radius: 12px; padding: 14px 10px 10px; margin: 8px; }
 .typelay-surface .settings-brand { font-size: 13px; font-weight: 600; }
 .typelay-surface .settings-navigation, .typelay-surface .settings-navigation list { background: transparent; border: 0; }
