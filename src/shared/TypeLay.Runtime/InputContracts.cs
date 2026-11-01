@@ -47,7 +47,8 @@ public sealed record ShortcutLease(InputSnapshot Source, long ContentEpoch, long
 // Observation epochs and timestamps belong to the platform observation domain. A platform
 // must map its clock into the session loop's monotonic milliseconds before returning a capture.
 public sealed record InputContext(long UserEpoch, long ForegroundEpoch, long SourceUserEpoch,
-    TargetId? BoundTarget, string[] Excluded, bool CaptureDirect, SessionShortcutConfiguration? SessionShortcuts = null, OwnedPracticeBinding? PracticeRead = null, OwnedPracticeReturnRequest? PracticeReturn = null);
+    TargetId? BoundTarget, string[] Excluded, bool CaptureDirect, SessionShortcutConfiguration? SessionShortcuts = null, OwnedPracticeBinding? PracticeRead = null, OwnedPracticeReturnRequest? PracticeReturn = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] EditorSourceReturnRequest? EditorReturn = null);
 // FencedPracticeRead identifies only an old read superseded by that exact
 // owned source's foreground-age suspension. It is neither an observation nor
 // a retirement ACK and cannot renew freshness, a baseline or any authority.
@@ -60,13 +61,24 @@ public sealed record InputCapture(InputSnapshot? Snapshot, FocusMember Focus = F
 // this read was refused and its original executor acknowledged revocation.
 public sealed record OwnedSourceEvidence(OwnedPracticeBinding Binding, long ObservedAtMs, bool ContextAdvanced);
 
+// Correlation for one accepted editor Replace action, not editor/source/write authority.
+// The platform creates ActionId only after binding the actual UI event to its exact owner.
+public sealed record EditorRegenerateRequest(Guid ActionId, SessionViewToken Token, long QueuedAtMs);
+// Operation is the controller's actual returning token. The original action deadline never renews.
+public sealed record EditorSourceReturnRequest(EditorRegenerateRequest Action, SessionViewToken Operation,
+    long ExpiresAtMs);
+
 // A private return proves a new source-focus baseline, never source write authority.
 public sealed record OwnedPracticeReturnRequest(OwnedPracticeBinding Binding, SessionViewToken Token);
 public sealed record OwnedPracticeReturn(OwnedPracticeBinding Binding, SessionViewToken Token,
     long NativeFocusRevision, long ObservedAtMs);
 // ContextLost reports an observed invalidation of this return operation even
 // when focus has since come back. Ordinary denial/timeout alone is not loss.
-public sealed record InputReturn(bool Returned, OwnedPracticeReturn? Practice = null, bool ContextLost = false);
+// A returned editor action may attest its one actual focus transition's new
+// platform epoch. This is not a source text/IME observation or input capability.
+public sealed record EditorSourceReturnReceipt(EditorSourceReturnRequest Request, long WindowEpoch);
+public sealed record InputReturn(bool Returned, OwnedPracticeReturn? Practice = null, bool ContextLost = false,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] EditorSourceReturnReceipt? EditorReturn = null);
 
 // The service must authorize metadata before reading it and must not capture
 // field text, selections or native write bindings for this observation.

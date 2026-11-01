@@ -859,7 +859,8 @@ internal sealed partial class BrowserInput
             return;
         }
         var epochs = _hook.BrowserEpochs;
-        var record = new BrowserObservation(peer, route, authority, target, capturedAt, owner.Root, epochs, ack!);
+        var record = new BrowserObservation(peer, route, authority, target, capturedAt, owner.Root, epochs, ack!,
+            EditorRegenerateSupported: SupportsEditorRegenerate(native));
         _observations.Remember(record);
         if (OwnerForeground(owner))
             _current = record;
@@ -965,6 +966,8 @@ internal sealed partial class BrowserInput
     }
     public async Task<InputReturn> ReturnAsync(InputContext context)
     {
+        if (context.EditorReturn is { } regenerate)
+            return await ReturnEditorRegenerateAsync(context, regenerate);
         if (context.BoundTarget is not { } target || Latest(target) is not { } record
             || !ForegroundCurrent(record) || !AcknowledgementCurrent(record))
             return new(false);
@@ -993,6 +996,7 @@ internal sealed partial class BrowserInput
     private void Receive(BrowserEvent message)
     {
         var (peer, name, value, route) = message;
+        ObserveEditorRegenerateEvent(message);
         if (name == "command-owner")
         {
             OwnerAcknowledged(peer, route, value);
@@ -1160,6 +1164,7 @@ internal sealed partial class BrowserInput
     }
     internal void CancelEditorTransition()
     {
+        _editorRegenerate = null;
         _editorTransition?.Completion.TrySetResult(false);
         _editorTransition = null;
         _editorToken = null;

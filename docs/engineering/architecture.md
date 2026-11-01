@@ -117,7 +117,7 @@ flowchart TD
 | Linux 两个宿主进程怎样连接 | [desktop main](../../src/linux/desktop/main.py)、[DesktopLink](../../src/linux/TypeLay.Linux/DesktopLink.cs) |
 | 为什么两端输入能力不同 | [Windows 架构](../platforms/windows/architecture.md)、[Linux 架构](../platforms/linux/architecture.md) |
 
-下面保留实现与维护所需的精确合同。风格、术语与另述虽已有代码，当前质量发布门仍关闭；图中的普通翻译链不代表这些要求已交付。
+下面保留实现与维护所需的精确合同。风格与另述质量门仍关闭；术语仅对已登记固定 Index profile 的中英方向开放，不泛化到其它模型或方向。图中的普通翻译链不代表全部质量要求已交付。
 
 ## 生产边界
 
@@ -128,6 +128,12 @@ Windows/Linux 在 trunk 共用 src/shared/ 下的一份 Core、Runtime、Protoco
 `TypeLay.Runtime` 引用 Core/Protocol，拥有 SessionController 的时序编排、设置持久化及 ModelClient 的本地模型协议。宿主注入输入服务/输入观察、串行事件循环、视图、数据路径和进程所有权。这里没有 WPF、Win32、UIA、Registry、Windows Broker DTO 或 provider 名称判定。模型、设置、平台事件通过公开端口进入同一会话所有者，不另建线程、服务容器或消息总线。
 
 Windows 自有练习源的人工稿进入 More 时，旧编辑 attempt 永久退休、旧 reader 立即停用，独立 ACK 证明其已关闭后才允许新的返回；同一 TextBox 的文字、选区与 Undo 转入本地-only 呈现，不再是源字段、`FocusMember.Overlay`、输入镜像或接受许可。[Core 的单会话 opaque dormant edit](../../src/shared/TypeLay.Core/Session.DormantEdit.cs) 仅保存原编辑基准，空稿仍锁定风格，配置/会话退休后不能复用。Keep 保留本地稿，再由真实 Tab keyup 一次发起返回；Replace 则只由本次真实 click、Enter 或 Space 生成专用一次意图，不伪装 Tab。两者均在实际 down 冻结稿件/输入身份，原 down 起算的 500ms 不续期，持键或排队过期拒绝；旧普通源与正常 owned 编辑返回的 held 路径不变。Keep 后真实 Tab 的原始按键期限绑定[独立返回 receipt](../../src/shared/TypeLay.Runtime/SessionController.OwnedLocalDraft.cs)；Windows Host/Practice 分别核对新 reader、真实源焦点到达与新鲜捕获，Core 共用原回源基准校验通过后才建立新 binding。绑定前不发布许可或模型任务。Replace 的专用 Core 回源确认只保原源基准，不把待弃人工稿变成可接受候选；空稿可被明确丢弃重译，但 Keep 原可写稿条件不变。Host 核新 reader 安装后，还须同一次操作期限内 fresh 原源观察才完整重译，接受/写回资格始终独立。未受理的同合法 prompt 失败保稿可重试；明确失权沿原 Keep 退休，不新建通用恢复界面，旧回执不能作用于新会话。该身份不是持久草稿恢复或通用辅助焦点授权，完整交互与未完成子项见[原型对照](../design/prototype-parity.md)。
+
+Browser 的 `EditingTranslation` 重译确认使用独立于 owned 练习源的[一次操作关联](../../src/shared/TypeLay.Runtime/SessionController.EditorRegenerate.cs)。Host 配置 `editorRegenerateVersion=1`，只在当前 DOM 的实际 `sessionBindings` 与 fresh describe 同样回显版本 1 时消费专用对象；缺省或未知版本不算支持。旧版未协商 Editing 与原非 Editing 的 plain 操作保持兼容，已协商的 plain 或任何状态的畸形对象不能降级为旧重译入口。非浏览器消费者不接入这个协议。
+
+Host 在真实受理点冻结本次 Action、原 view/peer/document/route/target 与操作时间；Runtime 产生实际 Returning Operation 后，通过既有 Return 请求传递关联，不从 token 加一或最新全局状态猜身份。原操作起 500ms 不续期，关联不是读取、编辑、接受或写回许可。UI 受理到异步调用、Returning Render 到 Return RPC 的间隙内，后来稿仅作为该 exact owner 的本地观察暂存；实际请求匹配后才送入同一 Runtime 操作，失权则丢弃旧关联。真实 DraftChanged（含 ABA 及协议允许范围内的超长稿）永久废弃旧 Replace 意图，成功回源后走当前稿的普通路径；非法稿仍沿既有 Core 规则，不新增接受承诺。没有后来编辑时，ACK 也只说明这次返回，必须再 fresh Capture 当前合法原源并经 Core 判定才重译；合法正文改变可翻译完整当前源，已退休旧会话不得复活或重复调度。全局焦点/源 epoch 如实推进，后继观察 receipt 仅能关联本次实际返回，不能代替 fresh 身份或 IME 校验。
+
+只有已证明尚未派发且原 editor 仍合法，或 exact 回执明确返回失败且未失权时，才保留最新稿并一次迁移后继 Editing token；sent unknown、坏回执和明确失权沿既有退休。早期 null-id 终结仅清该未受理的 exact pending，不能撤销另一个已派发动作。标准 input/textarea 是本切片的完整当前源路径；未变化 rich editor 沿原 provider 的合法 bookmark/focus，正文改变使旧 bookmark 失效时仍安全拒绝，不绕过富文本结构保护。两端消费者见 [Windows](../../src/windows/TypeLay.App/Windows/BrowserInput.EditorRegenerate.cs) 与 [Linux](../../src/linux/desktop/input.py)，实际平台证据与未验边界见[当前状态](development-state.md#当前真实平台依据)和[原型对照](../design/prototype-parity.md)。
 
 GTK、Qt 和共享浏览器沿用现有视图状态，在 `Translating`、正文非空且 `editorOwnsText=false` 时以现有弱化文字色显示旧译文，与 Windows 更新态对齐；新结果恢复正常色，编辑与回源人工稿保持原色，不增加协议字段或接受资格。
 

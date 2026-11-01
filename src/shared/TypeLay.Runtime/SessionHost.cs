@@ -52,6 +52,14 @@ public interface ISessionView
     {
         get; set;
     }
+    // Optional browser-editing path. Legacy/native Regenerate keeps its existing contract.
+    Func<EditorRegenerateRequest, Task<bool>>? EditorRegenerateRequested
+    {
+        get => null;
+        set
+        {
+        }
+    }
     Func<SessionViewToken, SessionGlossaryEntry?>? BeginGlossaryRequested
     {
         get; set;

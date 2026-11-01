@@ -122,7 +122,7 @@ internal static partial class BrowserCooperationCheck
     // Only this fixture's owned CfT endpoint is used. CDP drives/observes synthetic
     // page UI and reads public extension metadata; it never writes extension state,
     // native messages or product permits.
-    private sealed class Cdp : IDisposable
+    private sealed partial class Cdp : IDisposable
     {
         private readonly ClientWebSocket _socket = new();
         private int _nextId;

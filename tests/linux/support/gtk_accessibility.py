@@ -476,11 +476,13 @@ def scroll_settings_control(pid, node, *, deadline, at_start=False):
     )
 
 
-def focus_settings_control(pid, node, timeout=15):
+def focus_settings_control(pid, node, timeout=15, *, initial_calibration=None):
     """Reveal an exact settings peer through GTK focus, then prove all clips.
 
     GTK3 does not implement Component.scroll_to. This uses its native focus
     adjustment, not a hidden control Action or a guessed viewport fallback.
+    A supplied first-screen calibration admits only the existing, exact GTK3
+    viewport sentinel proof; every ancestor still has to contain the target.
     """
     deadline = time.monotonic() + timeout
     node.clear_cache()
@@ -534,20 +536,39 @@ def focus_settings_control(pid, node, timeout=15):
                 clip = Atspi.Component.get_extents(
                     ancestor.get_component_iface(), Atspi.CoordType.SCREEN
                 )
+                raw_clip = (clip.x, clip.y, clip.width, clip.height)
+                calibrated = None
+                if (
+                    role == Atspi.Role.VIEWPORT
+                    and raw_clip[:2] == (-(2**31), -(2**31))
+                    and initial_calibration is not None
+                ):
+                    from support.gtk_settings_geometry import (
+                        settings_scroll_snapshot,
+                        settings_viewport_from_pane,
+                    )
+
+                    assert time.monotonic() < deadline, (
+                        "settings control did not focus/scroll fully into view: " + name
+                    )
+                    measured = settings_scroll_snapshot(pid, ancestor)
+                    if measured is not None and measured["viewport"] == raw_clip:
+                        calibrated = settings_viewport_from_pane(initial_calibration, measured)
+                x, y, width, height = calibrated if calibrated is not None else raw_clip
                 rejected = [
                     reason
                     for reason, accepted in (
-                        ("nonpositive-width", clip.width > 0),
-                        ("nonpositive-height", clip.height > 0),
-                        ("unknown-x", clip.x != -(2**31)),
-                        ("unknown-y", clip.y != -(2**31)),
+                        ("nonpositive-width", width > 0),
+                        ("nonpositive-height", height > 0),
+                        ("unknown-x", x != -(2**31)),
+                        ("unknown-y", y != -(2**31)),
                         (
                             "outside-horizontal",
-                            clip.x <= area.x <= clip.x + clip.width - area.width,
+                            x <= area.x <= x + width - area.width,
                         ),
                         (
                             "outside-vertical",
-                            clip.y <= area.y <= clip.y + clip.height - area.height,
+                            y <= area.y <= y + height - area.height,
                         ),
                     )
                     if not accepted
@@ -556,7 +577,8 @@ def focus_settings_control(pid, node, timeout=15):
                     {
                         "depth": depth,
                         "role": getattr(role, "value_nick", str(role)),
-                        "clip": (clip.x, clip.y, clip.width, clip.height),
+                        "clip": raw_clip,
+                        **({"calibratedClip": calibrated} if calibrated is not None else {}),
                         "rejectedBy": rejected,
                     }
                 )

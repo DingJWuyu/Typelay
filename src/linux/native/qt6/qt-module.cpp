@@ -3115,7 +3115,22 @@ private:
                     && (!glossary_ || !glossary_->source || retainedSourceForm)
                     && overlayView_ != view && editorViewIdentity(overlayView_) == editorViewIdentity(view);
                 if (menuView_ && (menuView_->revision != integer(data, "revision", 0)
-                    || menuView_->generation != data.value("generation") || menuView_->view != view)) closeOverlayMenus();
+                    || menuView_->generation != data.value("generation") || menuView_->view != view)) {
+                    const QPointer<QWidget> observedMenu = qEnvironmentVariableIsSet("TYPELAY_QT_PROBE")
+                        && openedMenu_ == menu_ && menu_ && menu_->isVisible() ? menu_ : nullptr;
+                    QJsonObject retirement;
+                    if (observedMenu) retirement = {{"reason", "view-changed"},
+                        {"generation", menuView_->generation}, {"revision", menuView_->revision},
+                        {"incomingGeneration", data.value("generation")}, {"incomingRevision", integer(data, "revision", 0)},
+                        {"viewChanged", menuView_->view != view}};
+                    closeOverlayMenus();
+                    // Observe only the closed original child, after withdrawing
+                    // its callbacks. This metadata never participates in authority.
+                    if (observedMenu && observedMenu == menu_ && !openedMenu_ && observedMenu->isHidden()) {
+                        retirement.insert("closedAtMs", now());
+                        observedMenu->setProperty("typelay.qt.menu.retirement", QVariant::fromValue(retirement));
+                    }
+                }
                 if (menuOnly) {
                     // Keep the original editor control ticket and its deadline.
                     // Only the new read-only menu subtree changed; do not touch

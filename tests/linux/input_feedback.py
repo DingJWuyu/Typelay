@@ -2894,6 +2894,1612 @@ class InputFeedbackTests(unittest.TestCase):
         received.extend(self.native_frames(self.peer))
         return received
 
+    def test_browser_editing_regenerate_is_one_source_bound_action_not_an_unscoped_command(self):
+        self.connect_registered_browser()
+
+        async def exercise():
+            capture = await self.capture_browser(bindings={"editorRegenerateVersion": 1})
+            jobs = []
+            overlay = Overlay(
+                self.host,
+                self.input,
+                lambda coroutine: jobs.append(asyncio.create_task(coroutine)),
+                lambda: None,
+            )
+            token = {
+                "target": capture["snapshot"]["target"],
+                "commandGeneration": self.generation,
+                "revision": 9,
+            }
+            overlay.render(
+                {
+                    "state": "EditingTranslation",
+                    "source": {"target": token["target"]},
+                    "viewContext": {
+                        "token": token,
+                        "bindings": {"accept": "Tab", "exit": "Esc"},
+                        "canEdit": True,
+                    },
+                    "canAccept": False,
+                }
+            )
+            await self.settle_overlay(jobs)
+            self.input.set_overlay_focus(True)
+            before = len(self.host.events)
+            event = {
+                "target": token["target"]["value"],
+                "revision": overlay.revision,
+                "generation": self.generation,
+                "operation": "regenerate",
+                "value": {"draft": "My latest edited translation", "queuedAtMs": 1000},
+            }
+            self.peer.link.receive({"event": "ui", "route": self.route, "data": event})
+            await self.settle_overlay(jobs)
+            requests = [
+                value for operation, value in self.host.requests if operation == "editorRegenerate"
+            ]
+            self.assertEqual(len(requests), 1, "Editing Replace lost its source-bound action")
+            request = requests[0]
+            self.assertEqual(request["draft"], "My latest edited translation")
+            self.assertEqual(request["action"]["token"], token)
+            self.assertEqual(request["action"]["queuedAtMs"], 1000)
+            self.assertNotEqual(uuid.UUID(request["action"]["actionId"]).int, 0)
+            self.assertNotIn(("regenerate", None), self.host.events[before:])
+            self.assertFalse(
+                any(operation in ("write", "accept") for operation, _ in self.host.events[before:])
+            )
+
+        asyncio.run(exercise())
+
+    def test_browser_held_return_forwards_later_draft_events_including_aba(self):
+        self.connect_registered_browser()
+
+        async def exercise():
+            capture = await self.capture_browser(bindings={"editorRegenerateVersion": 1})
+            jobs = []
+            overlay = Overlay(
+                self.host,
+                self.input,
+                lambda coroutine: jobs.append(asyncio.create_task(coroutine)),
+                lambda: None,
+            )
+            token = {
+                "target": capture["snapshot"]["target"],
+                "commandGeneration": self.generation,
+                "revision": 9,
+            }
+            view = {
+                "state": "EditingTranslation",
+                "source": {"target": token["target"]},
+                "viewContext": {
+                    "token": token,
+                    "bindings": {"accept": "Tab", "exit": "Esc"},
+                    "canEdit": True,
+                },
+                "canAccept": False,
+            }
+            overlay.render(view)
+            await self.settle_overlay(jobs)
+            self.input.set_overlay_focus(True)
+            event = {
+                "target": token["target"]["value"],
+                "revision": overlay.revision,
+                "generation": self.generation,
+                "operation": "regenerate",
+                "value": {"draft": "Draft A", "queuedAtMs": 1000},
+            }
+            returning = {**token, "revision": 73}  # Actual admitted operation, never token + 1.
+            self.browser_native["editorRegenerate"] = {
+                "token": token,
+                "queuedAtMs": 1000,
+                "actionId": None,
+                "editorFocused": True,
+            }
+            original_ask = self.host.ask
+
+            async def ask(operation, value=None):
+                if operation == "editorRegenerate":
+                    self.host.requests.append((operation, value))
+                    return await self.input.request(
+                        "return",
+                        {
+                            "boundTarget": token["target"],
+                            "sessionShortcuts": {
+                                "generation": self.generation,
+                                "bindings": {"accept": "Tab", "exit": "Esc"},
+                            },
+                            "editorReturn": {
+                                "action": value["action"],
+                                "operation": returning,
+                                "expiresAtMs": 1500,
+                            },
+                        },
+                    )
+                return await original_ask(operation, value)
+
+            self.host.ask = ask
+            self.peer.link.receive({"event": "ui", "route": self.route, "data": event})
+            request = None
+            try:
+                async with asyncio.timeout(1):
+                    while request is None:
+                        await asyncio.sleep(0)
+                        for frame in self.native_frames(self.peer):
+                            if frame["op"] == "describe":
+                                self.peer.link.receive(
+                                    {
+                                        "id": frame["id"],
+                                        "route": self.route,
+                                        "data": self.browser_native,
+                                    }
+                                )
+                            elif frame["op"] == "return":
+                                request = frame
+                overlay.render(
+                    {
+                        **view,
+                        "state": "ReturningToSource",
+                        "viewContext": {**view["viewContext"], "token": returning},
+                    }
+                )
+                # The provider is still editable while its real Return is held.
+                # Public draft notifications retain the original displayed owner.
+                before = len(self.host.events)
+                for draft in ("Draft B", "Draft A"):
+                    self.peer.link.receive(
+                        {
+                            "event": "ui",
+                            "route": self.route,
+                            "data": {**event, "operation": "draft", "value": draft},
+                        }
+                    )
+                self.assertEqual(
+                    [
+                        value
+                        for operation, value in self.host.events[before:]
+                        if operation == "draft"
+                    ],
+                    ["Draft B", "Draft A"],
+                    "Returning view dropped later editor events, including ABA",
+                )
+            finally:
+                if request is not None:
+                    self.peer.link.receive(
+                        {"id": request["id"], "route": self.route, "data": {"returned": False}}
+                    )
+                await self.settle_overlay(jobs)
+
+        asyncio.run(exercise())
+
+    def test_browser_return_accounts_for_the_real_source_focus_epoch_without_suppressing_it(self):
+        self.connect_registered_browser()
+
+        async def exercise():
+            capture = await self.capture_browser(bindings={"editorRegenerateVersion": 1})
+            jobs = []
+            overlay = Overlay(
+                self.host,
+                self.input,
+                lambda coroutine: jobs.append(asyncio.create_task(coroutine)),
+                lambda: None,
+            )
+            token = {
+                "target": capture["snapshot"]["target"],
+                "commandGeneration": self.generation,
+                "revision": 9,
+            }
+            view = {
+                "state": "EditingTranslation",
+                "source": {"target": token["target"]},
+                "viewContext": {
+                    "token": token,
+                    "bindings": {"accept": "Tab", "exit": "Esc"},
+                    "canEdit": True,
+                },
+                "canAccept": False,
+            }
+            overlay.render(view)
+            await self.settle_overlay(jobs)
+            self.input.set_overlay_focus(True)
+            self.browser_native["editorRegenerate"] = {
+                "token": token,
+                "queuedAtMs": 1000,
+                "actionId": None,
+                "editorFocused": True,
+            }
+            event = {
+                "target": token["target"]["value"],
+                "revision": overlay.revision,
+                "generation": self.generation,
+                "operation": "regenerate",
+                "value": {"draft": "Draft A", "queuedAtMs": 1000},
+            }
+            returning = {**token, "revision": 73}
+            original_ask = self.host.ask
+            result = []
+            requests = []
+
+            async def ask(operation, value=None):
+                if operation == "editorRegenerate":
+                    request = {
+                        "action": value["action"],
+                        "operation": returning,
+                        "expiresAtMs": 1500,
+                    }
+                    requests.append(request)
+                    result.append(
+                        await self.input.request(
+                            "return",
+                            {
+                                "boundTarget": token["target"],
+                                "sessionShortcuts": {
+                                    "generation": self.generation,
+                                    "bindings": {"accept": "Tab", "exit": "Esc"},
+                                },
+                                "editorReturn": request,
+                            },
+                        )
+                    )
+                    return result[-1].get("returned") is True
+                return await original_ask(operation, value)
+
+            self.host.ask = ask
+            self.peer.link.receive({"event": "ui", "route": self.route, "data": event})
+            before = self.input.window_epoch
+            async with asyncio.timeout(1):
+                while any(not job.done() for job in jobs):
+                    await asyncio.sleep(0)
+                    for frame in self.native_frames(self.peer):
+                        if frame["op"] == "describe":
+                            self.peer.link.receive(
+                                {
+                                    "id": frame["id"],
+                                    "route": self.route,
+                                    "data": self.browser_native,
+                                }
+                            )
+                        elif frame["op"] == "return":
+                            self.peer.link.receive(
+                                {
+                                    "event": "ui",
+                                    "route": self.route,
+                                    "data": {**event, "operation": "focus", "value": False},
+                                }
+                            )
+                            self.peer.link.receive(
+                                {
+                                    "event": "input",
+                                    "route": self.route,
+                                    "data": {
+                                        "target": event["target"],
+                                        "textChanged": False,
+                                        "focusChanged": True,
+                                        "focused": True,
+                                    },
+                                }
+                            )
+                            self.peer.link.receive(
+                                {
+                                    "id": frame["id"],
+                                    "route": self.route,
+                                    "data": {
+                                        "returned": True,
+                                        "contextLost": False,
+                                        "editorReturn": requests[0],
+                                        "editorFocused": False,
+                                        "draft": "Draft A",
+                                    },
+                                }
+                            )
+            for job in jobs:
+                job.result()
+            self.assertEqual(
+                self.input.window_epoch,
+                before + 1,
+                "The public focus observation must not be suppressed",
+            )
+            self.assertEqual(
+                result,
+                [
+                    {
+                        "returned": True,
+                        "editorReturn": {
+                            "request": requests[0],
+                            "windowEpoch": self.input.window_epoch,
+                        },
+                    }
+                ],
+            )
+
+        asyncio.run(exercise())
+
+    async def begin_browser_editor_return(
+        self,
+        *,
+        queued_at=1000,
+        revision=9,
+        draft="Draft A",
+        before_return=None,
+        legacy=False,
+        version=None,
+    ):
+        capture = await self.capture_browser(
+            bindings={
+                "editorRegenerateVersion": (0 if legacy else 1) if version is None else version
+            }
+        )
+        jobs = []
+        overlay = Overlay(
+            self.host,
+            self.input,
+            lambda coroutine: jobs.append(asyncio.create_task(coroutine)),
+            lambda: None,
+        )
+        token = {
+            "target": capture["snapshot"]["target"],
+            "commandGeneration": self.generation,
+            "revision": revision,
+        }
+        view = {
+            "state": "EditingTranslation",
+            "source": {"target": token["target"]},
+            "viewContext": {
+                "token": token,
+                "bindings": {"accept": "Tab", "exit": "Esc"},
+                "canEdit": True,
+            },
+            "canAccept": False,
+        }
+        overlay.render(view)
+        await self.settle_overlay(jobs)
+        self.input.set_overlay_focus(True)
+        self.browser_native["editorRegenerate"] = {
+            "token": token,
+            "queuedAtMs": queued_at,
+            "actionId": None,
+            "editorFocused": True,
+        }
+        event = {
+            "target": token["target"]["value"],
+            "revision": overlay.revision,
+            "generation": self.generation,
+            "operation": "regenerate",
+            "value": None if legacy else {"draft": draft, "queuedAtMs": queued_at},
+        }
+        state = SimpleNamespace(
+            overlay=overlay,
+            token=token,
+            view=view,
+            event=event,
+            jobs=jobs,
+            requests=[],
+            ui_requests=[],
+            results=[],
+            original_ask=self.host.ask,
+        )
+
+        async def ask(operation, value=None):
+            if operation == "editorRegenerate":
+                state.ui_requests.append(copy.deepcopy(value))
+                action = value["action"]
+                request = {
+                    "action": action,
+                    "operation": {**action["token"], "revision": action["token"]["revision"] + 64},
+                    "expiresAtMs": action["queuedAtMs"] + 500,
+                }
+                state.requests.append(request)
+                if before_return is not None:
+                    await before_return(state, request)
+                state.results.append(
+                    await self.input.request(
+                        "return",
+                        {
+                            "boundTarget": token["target"],
+                            "sessionShortcuts": {
+                                "generation": self.generation,
+                                "bindings": {"accept": "Tab", "exit": "Esc"},
+                            },
+                            "editorReturn": request,
+                        },
+                    )
+                )
+                return state.results[-1].get("returned") is True
+            return await state.original_ask(operation, value)
+
+        self.host.ask = ask
+        self.peer.link.receive({"event": "ui", "route": self.route, "data": event})
+        return state
+
+    async def editor_return_frame(self, state, operation):
+        async with asyncio.timeout(1):
+            while True:
+                await asyncio.sleep(0)
+                selected = None
+                for frame in self.native_frames(self.peer):
+                    if frame["op"] == operation:
+                        self.assertIsNone(selected)
+                        selected = frame
+                    elif frame["op"] == "describe":
+                        self.peer.link.receive(
+                            {"id": frame["id"], "route": self.route, "data": self.browser_native}
+                        )
+                    elif frame["op"] == "overlay-render":
+                        self.peer.link.receive(
+                            {
+                                "id": frame["id"],
+                                "route": self.route,
+                                "data": {"visible": True, "editing": True},
+                            }
+                        )
+                if selected is not None:
+                    return selected
+                for job in state.jobs:
+                    if job.done():
+                        job.result()
+                self.assertFalse(
+                    all(job.done() for job in state.jobs),
+                    f"Return completed before {operation}: {state.results}",
+                )
+
+    def editor_source_focus(self, state, *, target=None, focused=True, route=None):
+        self.peer.link.receive(
+            {
+                "event": "ui",
+                "route": self.route,
+                "data": {**state.event, "operation": "focus", "value": False},
+            }
+        )
+        self.peer.link.receive(
+            {
+                "event": "input",
+                "route": route or self.route,
+                "data": {
+                    "target": target or state.event["target"],
+                    "textChanged": False,
+                    "focusChanged": True,
+                    "focused": focused,
+                },
+            }
+        )
+
+    async def finish_browser_editor_return(self, state):
+        await self.settle_overlay(state.jobs)
+        self.host.ask = state.original_ask
+        state.overlay.hide()
+        self.native_frames(self.peer)
+
+    def test_browser_return_does_not_adopt_external_focus_aba_or_multiple_source_transfers(self):
+        self.connect_registered_browser()
+
+        async def exercise():
+            for changes in ("source-aba", "external-aba", "document", "unknown", "expired"):
+                with self.subTest(changes=changes):
+                    state = await self.begin_browser_editor_return()
+                    frame = await self.editor_return_frame(state, "return")
+                    before = self.input.window_epoch
+                    response = {
+                        "returned": True,
+                        "contextLost": False,
+                        "editorReturn": state.requests[0],
+                        "editorFocused": False,
+                        "draft": "Draft A",
+                    }
+                    if changes == "source-aba":
+                        self.editor_source_focus(state)
+                        self.editor_source_focus(state, focused=False)
+                        self.editor_source_focus(state)
+                    elif changes == "external-aba":
+                        self.editor_source_focus(state, target=self.route["documentToken"] + ":2")
+                        self.editor_source_focus(state)
+                    elif changes == "document":
+                        other = {
+                            **self.route,
+                            "documentId": "replacement-document",
+                            "documentToken": str(uuid.uuid4()),
+                        }
+                        self.peer.link.receive(
+                            {"event": "document-focus", "data": True, "route": other}
+                        )
+                    elif changes == "unknown":
+                        response = None
+                    else:
+                        self.editor_source_focus(state)
+                        self.clock.return_value = 1500
+                    self.peer.link.receive(
+                        {"id": frame["id"], "route": self.route, "data": response}
+                    )
+                    await self.settle_overlay(state.jobs)
+                    self.assertEqual(state.results, [{"returned": False, "contextLost": True}])
+                    self.assertFalse(
+                        any(
+                            frame["op"] == "overlay-resume"
+                            for frame in self.native_frames(self.peer)
+                        )
+                    )
+                    if changes in ("source-aba", "external-aba"):
+                        self.assertGreaterEqual(self.input.window_epoch, before + 2)
+                    await self.finish_browser_editor_return(state)
+                    self.clock.return_value = 1000
+                    self.peer.link.receive(
+                        {"event": "document-focus", "data": True, "route": self.route}
+                    )
+
+        asyncio.run(exercise())
+
+    def test_browser_return_explicit_provider_loss_never_becomes_safe_editor_failure(self):
+        self.connect_registered_browser()
+
+        async def exercise():
+            state = await self.begin_browser_editor_return()
+            frame = await self.editor_return_frame(state, "return")
+            self.peer.link.receive(
+                {
+                    "id": frame["id"],
+                    "route": self.route,
+                    "data": {
+                        "returned": False,
+                        "contextLost": True,
+                        "editorReturn": state.requests[0],
+                        "editorFocused": True,
+                        "draft": "Draft A",
+                    },
+                }
+            )
+            await self.settle_overlay(state.jobs)
+            self.assertEqual(
+                state.results,
+                [{"returned": False, "contextLost": True}],
+                "A focused editor is not proof that its provider remains legal",
+            )
+            await self.finish_browser_editor_return(state)
+
+        asyncio.run(exercise())
+
+    def test_browser_editor_known_failure_keeps_latest_draft_and_requires_a_new_replace_action(
+        self,
+    ):
+        self.connect_registered_browser()
+
+        async def exercise():
+            state = await self.begin_browser_editor_return()
+            frame = await self.editor_return_frame(state, "return")
+            for text in ("Draft B", "Draft A"):
+                self.peer.link.receive(
+                    {
+                        "event": "ui",
+                        "route": self.route,
+                        "data": {**state.event, "operation": "draft", "value": text},
+                    }
+                )
+            self.peer.link.receive(
+                {
+                    "id": frame["id"],
+                    "route": self.route,
+                    "data": {
+                        "returned": False,
+                        "contextLost": False,
+                        "editorReturn": state.requests[0],
+                        "editorFocused": True,
+                        "draft": "Draft A",
+                    },
+                }
+            )
+            frames = await self.settle_overlay(state.jobs)
+            self.assertEqual(state.results, [{"returned": False}])
+            self.assertEqual(
+                [value for operation, value in self.host.events if operation == "draft"],
+                ["Draft B", "Draft A", "Draft A"],
+            )
+            self.assertTrue(any(item["op"] == "overlay-resume" for item in frames))
+            self.assertIsNone(self.input.editor_regenerate)
+            # Runtime's actual failed operation is now the displayed editor.
+            retry_token = state.requests[0]["operation"]
+            state.overlay.render(
+                {**state.view, "viewContext": {**state.view["viewContext"], "token": retry_token}}
+            )
+            await self.settle_overlay(state.jobs)
+            self.clock.return_value = 1100
+            self.browser_native["authority"]["observedAtMs"] = 1100
+            self.browser_native["editorRegenerate"] = {
+                "token": retry_token,
+                "queuedAtMs": 1100,
+                "actionId": None,
+                "editorFocused": True,
+            }
+            state.event = {
+                **state.event,
+                "revision": state.overlay.revision,
+                "value": {"draft": "Draft A", "queuedAtMs": 1100},
+            }
+            self.assertFalse(any(item["op"] == "return" for item in self.native_frames(self.peer)))
+            self.peer.link.receive({"event": "ui", "route": self.route, "data": state.event})
+            proof = await self.editor_return_frame(state, "describe")
+            self.peer.link.receive(
+                {"id": proof["id"], "route": self.route, "data": self.browser_native}
+            )
+            retry = await self.editor_return_frame(state, "return")
+            self.assertNotEqual(
+                state.requests[0]["action"]["actionId"], state.requests[1]["action"]["actionId"]
+            )
+            self.assertEqual([request["expiresAtMs"] for request in state.requests], [1500, 1600])
+            self.editor_source_focus(state)
+            self.peer.link.receive(
+                {
+                    "id": retry["id"],
+                    "route": self.route,
+                    "data": {
+                        "returned": True,
+                        "contextLost": False,
+                        "editorReturn": state.requests[1],
+                        "editorFocused": False,
+                        "draft": "Draft A",
+                    },
+                }
+            )
+            await self.settle_overlay(state.jobs)
+            self.assertEqual(
+                state.results[-1],
+                {
+                    "returned": True,
+                    "editorReturn": {
+                        "request": state.requests[1],
+                        "windowEpoch": self.input.window_epoch,
+                    },
+                },
+            )
+            await self.finish_browser_editor_return(state)
+
+        asyncio.run(exercise())
+
+    def test_browser_unsent_expiry_flushes_real_latest_draft_before_false_without_native_return(
+        self,
+    ):
+        self.connect_registered_browser()
+
+        async def exercise():
+            state = await self.begin_browser_editor_return()
+            frame = await self.editor_return_frame(state, "describe")
+            for text in ("Draft B", "Draft A"):
+                self.peer.link.receive(
+                    {
+                        "event": "ui",
+                        "route": self.route,
+                        "data": {**state.event, "operation": "draft", "value": text},
+                    }
+                )
+            self.clock.return_value = 1500
+            self.input.niri._deliver(
+                ("test", [{"id": 99, "pid": os.getpid(), "is_focused": True}], {}, {}, False, 1500)
+            )
+            self.browser_native["authority"]["observedAtMs"] = 1500
+            self.peer.link.receive(
+                {"id": frame["id"], "route": self.route, "data": self.browser_native}
+            )
+            frames = await self.settle_overlay(state.jobs)
+            self.assertEqual(state.results, [{"returned": False}])
+            self.assertEqual(
+                [value for operation, value in self.host.events if operation == "draft"],
+                ["Draft B", "Draft A", "Draft A"],
+            )
+            self.assertFalse(any(item["op"] == "return" for item in frames))
+            self.assertTrue(any(item["op"] == "overlay-resume" for item in frames))
+            self.assertIsNone(self.input.editor_regenerate)
+            await self.finish_browser_editor_return(state)
+
+        asyncio.run(exercise())
+
+    def test_browser_return_fresh_capture_uses_current_original_source_and_keeps_late_draft_owner(
+        self,
+    ):
+        self.connect_registered_browser()
+
+        async def exercise():
+            state = await self.begin_browser_editor_return()
+            frame = await self.editor_return_frame(state, "return")
+            actual = state.requests[0]
+            state.overlay.render(
+                {
+                    **state.view,
+                    "state": "ReturningToSource",
+                    "viewContext": {**state.view["viewContext"], "token": actual["operation"]},
+                }
+            )
+            self.editor_source_focus(state)
+            self.peer.link.receive(
+                {
+                    "id": frame["id"],
+                    "route": self.route,
+                    "data": {
+                        "returned": True,
+                        "contextLost": False,
+                        "editorReturn": actual,
+                        "editorFocused": False,
+                        "draft": "Draft A",
+                    },
+                }
+            )
+            await self.settle_overlay(state.jobs)
+            self.assertTrue(state.results[0]["returned"])
+            self.assertFalse(self.input.overlay_focused)
+            self.peer.link.receive(
+                {
+                    "event": "ui",
+                    "route": self.route,
+                    "data": {
+                        **state.event,
+                        "operation": "focus",
+                        "value": True,
+                    },
+                }
+            )
+            self.assertFalse(
+                self.input.overlay_focused, "A late receipt event restored the editor role"
+            )
+            operation = asyncio.create_task(
+                self.input.request(
+                    "capture",
+                    {
+                        "boundTarget": state.token["target"],
+                        "editorReturn": actual,
+                    },
+                )
+            )
+            frames = []
+            try:
+                for expected, draft in (("describe", "Draft B"), ("capture", "Draft A")):
+                    async with asyncio.timeout(1):
+                        while True:
+                            await asyncio.sleep(0)
+                            received = self.native_frames(self.peer)
+                            frames.extend(received)
+                            requests = [item for item in received if item["op"] == expected]
+                            if requests:
+                                break
+                            if operation.done():
+                                self.fail(
+                                    f"Fresh capture finished before {expected}: {operation.result()}"
+                                )
+                    self.assertEqual(len(requests), 1)
+                    self.assertEqual(requests[0]["data"]["target"], state.event["target"])
+                    self.peer.link.receive(
+                        {
+                            "event": "ui",
+                            "route": self.route,
+                            "data": {
+                                **state.event,
+                                "operation": "draft",
+                                "value": {
+                                    "actionId": actual["action"]["actionId"],
+                                    "text": draft,
+                                },
+                            },
+                        }
+                    )
+                    current = {**self.browser_native, "text": "Current changed original source"}
+                    self.peer.link.receive(
+                        {"id": requests[0]["id"], "route": self.route, "data": current}
+                    )
+                result = await operation
+                self.assertEqual(result["snapshot"]["text"], "Current changed original source")
+                self.assertEqual(result["snapshot"]["target"], state.token["target"])
+                self.assertEqual(result["focus"], "Source")
+                self.assertEqual(
+                    [value for name, value in self.host.events if name == "draft"],
+                    ["Draft B", "Draft A"],
+                )
+                self.assertFalse(
+                    any(item["op"] in ("accept", "write", "direct") for item in frames)
+                )
+            finally:
+                if not operation.done():
+                    operation.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await operation
+                await self.finish_browser_editor_return(state)
+
+        asyncio.run(exercise())
+
+    def test_browser_expired_unadmitted_replace_clears_only_its_local_pending_before_fresh_retry(
+        self,
+    ):
+        self.connect_registered_browser()
+
+        async def exercise():
+            state = await self.begin_browser_editor_return(queued_at=499)
+            frames = await self.settle_overlay(state.jobs)
+            self.assertEqual(state.requests, [])
+            terminal = [frame["data"] for frame in frames if frame["op"] == "overlay-resume"]
+            self.assertEqual(
+                len(terminal), 1, "An unadmitted Replace left the local editor pending forever"
+            )
+            self.assertEqual(
+                terminal[0]["editorRegenerate"],
+                {
+                    "actionId": None,
+                    "token": state.token,
+                    "queuedAtMs": 499,
+                },
+            )
+            self.assertFalse(any(frame["op"] == "return" for frame in frames))
+            # A separate real click has a new time and must obtain a new describe.
+            state.event = {**state.event, "value": {"draft": "Draft A", "queuedAtMs": 1000}}
+            self.browser_native["editorRegenerate"]["queuedAtMs"] = 1000
+            self.peer.link.receive({"event": "ui", "route": self.route, "data": state.event})
+            proof = await self.editor_return_frame(state, "describe")
+            self.peer.link.receive(
+                {"id": proof["id"], "route": self.route, "data": self.browser_native}
+            )
+            frame = await self.editor_return_frame(state, "return")
+            self.assertEqual(len(state.requests), 1)
+            self.assertEqual(state.requests[0]["action"]["queuedAtMs"], 1000)
+            self.peer.link.receive(
+                {
+                    "id": frame["id"],
+                    "route": self.route,
+                    "data": {
+                        "returned": False,
+                        "contextLost": False,
+                        "editorReturn": state.requests[0],
+                        "editorFocused": True,
+                        "draft": "Draft A",
+                    },
+                }
+            )
+            await self.finish_browser_editor_return(state)
+
+        asyncio.run(exercise())
+
+    def test_browser_oversized_unadmitted_draft_clears_only_its_local_pending_without_return(self):
+        self.connect_registered_browser()
+
+        async def exercise():
+            state = await self.begin_browser_editor_return(draft="A" * 8193)
+            frames = await self.settle_overlay(state.jobs)
+            self.assertEqual(state.requests, [])
+            terminal = [frame["data"] for frame in frames if frame["op"] == "overlay-resume"]
+            self.assertEqual(len(terminal), 1)
+            self.assertEqual(
+                terminal[0]["editorRegenerate"],
+                {
+                    "actionId": None,
+                    "token": state.token,
+                    "queuedAtMs": 1000,
+                },
+            )
+            self.assertFalse(any(frame["op"] == "return" for frame in frames))
+            await self.finish_browser_editor_return(state)
+
+        asyncio.run(exercise())
+
+    def test_browser_second_replace_cannot_replace_or_cancel_an_already_admitted_action(self):
+        self.connect_registered_browser()
+
+        async def exercise():
+            state = await self.begin_browser_editor_return()
+            frame = await self.editor_return_frame(state, "return")
+            first = copy.deepcopy(state.requests[0])
+            self.clock.return_value = 1100
+            self.peer.link.receive(
+                {
+                    "event": "ui",
+                    "route": self.route,
+                    "data": {
+                        **state.event,
+                        "value": {"draft": "A new user choice", "queuedAtMs": 1100},
+                    },
+                }
+            )
+            self.assertEqual(state.requests, [first])
+            self.assertFalse(
+                any(item["op"] == "overlay-resume" for item in self.native_frames(self.peer))
+            )
+            self.peer.link.receive(
+                {
+                    "id": frame["id"],
+                    "route": self.route,
+                    "data": {
+                        "returned": False,
+                        "contextLost": False,
+                        "editorReturn": first,
+                        "editorFocused": True,
+                        "draft": "Draft A",
+                    },
+                }
+            )
+            await self.finish_browser_editor_return(state)
+            self.assertEqual(state.results, [{"returned": False}])
+
+        asyncio.run(exercise())
+
+    def test_browser_pending_return_consumes_original_dom_focus_without_losing_source_epoch(self):
+        self.connect_registered_browser()
+
+        async def exercise():
+            state = await self.begin_browser_editor_return()
+            frame = await self.editor_return_frame(state, "return")
+            state.overlay.render(
+                {
+                    **state.view,
+                    "state": "ReturningToSource",
+                    "viewContext": {
+                        **state.view["viewContext"],
+                        "token": state.requests[0]["operation"],
+                    },
+                }
+            )
+            source_before = self.input.source_epoch
+            try:
+                # The Host render is queued, but DOM is still the original real
+                # editor accepted by this in-flight Return. Both public events
+                # must keep their usual accounting; no epoch is assigned here.
+                self.editor_source_focus(state)
+                self.assertEqual(
+                    self.input.source_epoch,
+                    source_before + 1,
+                    "The original DOM blur was discarded at the new Host view revision",
+                )
+            finally:
+                self.peer.link.receive(
+                    {
+                        "id": frame["id"],
+                        "route": self.route,
+                        "data": {
+                            "returned": True,
+                            "contextLost": False,
+                            "editorReturn": state.requests[0],
+                            "editorFocused": False,
+                            "draft": "Draft A",
+                        },
+                    }
+                )
+                await self.finish_browser_editor_return(state)
+
+        asyncio.run(exercise())
+
+    def test_browser_pending_return_preserves_real_original_editor_composition_notifications(self):
+        self.connect_registered_browser()
+
+        async def exercise():
+            state = await self.begin_browser_editor_return()
+            frame = await self.editor_return_frame(state, "return")
+            state.overlay.render(
+                {
+                    **state.view,
+                    "state": "ReturningToSource",
+                    "viewContext": {
+                        **state.view["viewContext"],
+                        "token": state.requests[0]["operation"],
+                    },
+                }
+            )
+            before = len(self.host.events)
+            try:
+                for composing in (True, False):
+                    self.peer.link.receive(
+                        {
+                            "event": "ui",
+                            "route": self.route,
+                            "data": {
+                                **state.event,
+                                "operation": "composition",
+                                "value": composing,
+                            },
+                        }
+                    )
+                self.assertEqual(
+                    [value for name, value in self.host.events[before:] if name == "composition"],
+                    [True, False],
+                )
+            finally:
+                self.peer.link.receive(
+                    {
+                        "id": frame["id"],
+                        "route": self.route,
+                        "data": {
+                            "returned": False,
+                            "contextLost": False,
+                            "editorReturn": state.requests[0],
+                            "editorFocused": True,
+                            "draft": "Draft A",
+                        },
+                    }
+                )
+                await self.finish_browser_editor_return(state)
+
+        asyncio.run(exercise())
+
+    def test_browser_replace_queued_before_host_task_keeps_later_aba_after_admission(self):
+        self.connect_registered_browser()
+
+        async def exercise():
+            state = await self.begin_browser_editor_return()
+            before = len(self.host.events)
+            for draft in ("Draft B", "Draft A"):
+                self.peer.link.receive(
+                    {
+                        "event": "ui",
+                        "route": self.route,
+                        "data": {
+                            **state.event,
+                            "operation": "draft",
+                            "value": draft,
+                        },
+                    }
+                )
+            premature = [value for name, value in self.host.events[before:] if name == "draft"]
+            frame = await self.editor_return_frame(state, "return")
+            try:
+                self.assertEqual(
+                    premature, [], "Later draft reached Core before its actual Replace intent"
+                )
+                self.assertEqual(state.ui_requests[0]["draft"], "Draft A")
+                self.assertEqual(
+                    [value for name, value in self.host.events[before:] if name == "draft"],
+                    ["Draft A"],
+                    "The real later ABA event disappeared at admission",
+                )
+            finally:
+                self.peer.link.receive(
+                    {
+                        "id": frame["id"],
+                        "route": self.route,
+                        "data": {
+                            "returned": False,
+                            "contextLost": False,
+                            "editorReturn": state.requests[0],
+                            "editorFocused": True,
+                            "draft": "Draft A",
+                        },
+                    }
+                )
+                await self.finish_browser_editor_return(state)
+
+        asyncio.run(exercise())
+
+    def test_browser_returning_render_before_rpc_keeps_later_aba_until_actual_operation(self):
+        self.connect_registered_browser()
+
+        async def exercise():
+            gate = asyncio.Event()
+
+            async def before_return(state, request):
+                state.overlay.render(
+                    {
+                        **state.view,
+                        "state": "ReturningToSource",
+                        "viewContext": {
+                            **state.view["viewContext"],
+                            "token": request["operation"],
+                        },
+                    }
+                )
+                await gate.wait()
+
+            state = await self.begin_browser_editor_return(before_return=before_return)
+            async with asyncio.timeout(1):
+                while not state.requests:
+                    await asyncio.sleep(0)
+            before = len(self.host.events)
+            for draft in ("Draft B", "Draft A"):
+                self.peer.link.receive(
+                    {
+                        "event": "ui",
+                        "route": self.route,
+                        "data": {
+                            **state.event,
+                            "operation": "draft",
+                            "value": draft,
+                        },
+                    }
+                )
+            self.assertFalse(any(name == "draft" for name, _ in self.host.events[before:]))
+            gate.set()
+            frame = await self.editor_return_frame(state, "return")
+            try:
+                self.assertEqual(
+                    [value for name, value in self.host.events[before:] if name == "draft"],
+                    ["Draft A"],
+                    "The Render-to-RPC gap lost a real later ABA edit",
+                )
+            finally:
+                self.peer.link.receive(
+                    {
+                        "id": frame["id"],
+                        "route": self.route,
+                        "data": {
+                            "returned": False,
+                            "contextLost": False,
+                            "editorReturn": state.requests[0],
+                            "editorFocused": True,
+                            "draft": "Draft A",
+                        },
+                    }
+                )
+                await self.finish_browser_editor_return(state)
+
+        asyncio.run(exercise())
+
+    async def browser_malformed_editor_proof(self, proof):
+        state = await self.begin_browser_editor_return()
+        frame = await self.editor_return_frame(state, "describe")
+        self.peer.link.receive(
+            {
+                "id": frame["id"],
+                "route": self.route,
+                "data": {**self.browser_native, "editorRegenerate": proof},
+            }
+        )
+        await self.settle_overlay(state.jobs)
+        self.assertEqual(state.results, [{"returned": False, "contextLost": True}])
+        await self.finish_browser_editor_return(state)
+
+    def test_browser_null_editor_proof_is_lost_not_an_exception_or_safe_false(self):
+        self.connect_registered_browser()
+        asyncio.run(self.browser_malformed_editor_proof(None))
+
+    def test_browser_array_editor_proof_is_lost_not_an_exception_or_safe_false(self):
+        self.connect_registered_browser()
+        asyncio.run(self.browser_malformed_editor_proof([]))
+
+    def test_browser_unnegotiated_legacy_regenerate_keeps_ordinary_host_action(self):
+        self.connect_registered_browser()
+
+        async def exercise():
+            state = await self.begin_browser_editor_return(legacy=True)
+            await self.settle_overlay(state.jobs)
+            self.assertEqual(state.requests, [])
+            self.assertEqual(
+                [name for name, _ in self.host.events if name == "regenerate"],
+                ["regenerate"],
+                "The new Host swallowed an old DOM's ordinary action",
+            )
+            await self.finish_browser_editor_return(state)
+
+        asyncio.run(exercise())
+
+    def test_browser_negotiated_regenerate_never_downgrades_plain_or_malformed_actions(self):
+        self.connect_registered_browser()
+
+        async def exercise():
+            state = await self.begin_browser_editor_return(legacy=True, version=1)
+            for value in ({}, {"draft": "No timestamp"}):
+                self.peer.link.receive(
+                    {"event": "ui", "route": self.route, "data": {**state.event, "value": value}}
+                )
+            await self.settle_overlay(state.jobs)
+            self.assertFalse(any(name in ("regenerate", "draft") for name, _ in self.host.events))
+            self.assertEqual(state.requests, [])
+            await self.finish_browser_editor_return(state)
+
+        asyncio.run(exercise())
+
+    def test_browser_returning_gap_consumes_actual_focus_and_composition_without_guessing_operation(
+        self,
+    ):
+        self.connect_registered_browser()
+
+        async def exercise():
+            gate = asyncio.Event()
+
+            async def before_return(state, request):
+                state.overlay.render(
+                    {
+                        **state.view,
+                        "state": "ReturningToSource",
+                        "viewContext": {
+                            **state.view["viewContext"],
+                            "token": request["operation"],
+                        },
+                    }
+                )
+                await gate.wait()
+
+            state = await self.begin_browser_editor_return(before_return=before_return)
+            async with asyncio.timeout(1):
+                while not state.requests:
+                    await asyncio.sleep(0)
+            before = len(self.host.events)
+            epoch = self.input.source_epoch
+            for operation, value in (("composition", True), ("composition", False)):
+                self.peer.link.receive(
+                    {
+                        "event": "ui",
+                        "route": self.route,
+                        "data": {
+                            **state.event,
+                            "operation": operation,
+                            "value": value,
+                        },
+                    }
+                )
+            self.assertEqual(
+                [value for name, value in self.host.events[before:] if name == "composition"],
+                [True, False],
+            )
+            self.editor_source_focus(state)  # Actual blur then source focus observation.
+            self.assertEqual(self.input.source_epoch, epoch + 1)
+            self.assertFalse(self.input.overlay_focused)
+            gate.set()
+            await self.finish_browser_editor_return(state)
+            self.assertEqual(state.results, [{"returned": False, "contextLost": True}])
+
+        asyncio.run(exercise())
+
+    def test_browser_deferred_later_draft_never_flushes_after_original_document_retires(self):
+        self.connect_registered_browser()
+
+        async def exercise():
+            for gap in ("task", "render"):
+                with self.subTest(gap=gap):
+                    gate = asyncio.Event()
+
+                    async def before_return(state, request):
+                        state.overlay.render(
+                            {
+                                **state.view,
+                                "state": "ReturningToSource",
+                                "viewContext": {
+                                    **state.view["viewContext"],
+                                    "token": request["operation"],
+                                },
+                            }
+                        )
+                        await gate.wait()
+
+                    state = await self.begin_browser_editor_return(
+                        before_return=before_return if gap == "render" else None
+                    )
+                    if gap == "render":
+                        async with asyncio.timeout(1):
+                            while not state.requests:
+                                await asyncio.sleep(0)
+                    before = len(self.host.events)
+                    self.peer.link.receive(
+                        {
+                            "event": "ui",
+                            "route": self.route,
+                            "data": {
+                                **state.event,
+                                "operation": "draft",
+                                "value": "Retired later draft",
+                            },
+                        }
+                    )
+                    self.peer.link.receive(
+                        {"event": "document-focus", "route": self.route, "data": False}
+                    )
+                    gate.set()
+                    await self.settle_overlay(state.jobs)
+                    self.assertFalse(any(name == "draft" for name, _ in self.host.events[before:]))
+                    self.assertEqual(
+                        state.results,
+                        [{"returned": False, "contextLost": True}] if gap == "render" else [],
+                    )
+                    await self.finish_browser_editor_return(state)
+                    self.peer.link.receive(
+                        {"event": "document-focus", "route": self.route, "data": True}
+                    )
+
+        asyncio.run(exercise())
+
+    def test_browser_early_rejected_action_flushes_real_deferred_draft_only_to_same_editor(self):
+        self.connect_registered_browser()
+
+        async def exercise():
+            state = await self.begin_browser_editor_return()
+            initial = []
+
+            async def reject(operation, value=None):
+                if operation == "editorRegenerate":
+                    initial.append(value["draft"])
+                    return False
+                return await state.original_ask(operation, value)
+
+            self.host.ask = reject
+            before = len(self.host.events)
+            self.peer.link.receive(
+                {
+                    "event": "ui",
+                    "route": self.route,
+                    "data": {
+                        **state.event,
+                        "operation": "draft",
+                        "value": "Actual later draft",
+                    },
+                }
+            )
+            frames = await self.settle_overlay(state.jobs)
+            self.assertEqual(initial, ["Draft A"])
+            self.assertEqual(
+                [value for name, value in self.host.events[before:] if name == "draft"],
+                ["Actual later draft"],
+            )
+            self.assertEqual(len([frame for frame in frames if frame["op"] == "overlay-resume"]), 1)
+            self.assertEqual(state.requests, [])
+            await self.finish_browser_editor_return(state)
+
+        asyncio.run(exercise())
+
+    def test_browser_rendered_new_revision_preserves_later_aba_before_return_rpc(self):
+        self.connect_registered_browser()
+
+        async def exercise():
+            gate = asyncio.Event()
+
+            async def before_return(state, request):
+                state.overlay.render(
+                    {
+                        **state.view,
+                        "state": "ReturningToSource",
+                        "viewContext": {
+                            **state.view["viewContext"],
+                            "token": request["operation"],
+                        },
+                    }
+                )
+                await gate.wait()
+
+            state = await self.begin_browser_editor_return(before_return=before_return)
+            rendered = await self.editor_return_frame(state, "overlay-render")
+            self.assertEqual(rendered["data"]["view"]["state"], "ReturningToSource")
+            self.peer.link.receive(
+                {
+                    "id": rendered["id"],
+                    "route": self.route,
+                    "data": {"visible": True, "editing": True},
+                }
+            )
+            state.event = {**state.event, "revision": rendered["data"]["revision"]}
+            before = len(self.host.events)
+            for draft in ("Draft B", "Draft A"):
+                self.peer.link.receive(
+                    {
+                        "event": "ui",
+                        "route": self.route,
+                        "data": {
+                            **state.event,
+                            "operation": "draft",
+                            "value": draft,
+                        },
+                    }
+                )
+            for composing in (True, False):
+                self.peer.link.receive(
+                    {
+                        "event": "ui",
+                        "route": self.route,
+                        "data": {
+                            **state.event,
+                            "operation": "composition",
+                            "value": composing,
+                        },
+                    }
+                )
+            self.assertFalse(any(name == "draft" for name, _ in self.host.events[before:]))
+            gate.set()
+            frame = await self.editor_return_frame(state, "return")
+            try:
+                self.assertEqual(
+                    [value for name, value in self.host.events[before:] if name == "draft"],
+                    ["Draft A"],
+                    "A real new-render revision must not erase the later ABA event",
+                )
+                self.assertEqual(
+                    [value for name, value in self.host.events[before:] if name == "composition"],
+                    [True, False],
+                )
+            finally:
+                self.peer.link.receive(
+                    {
+                        "id": frame["id"],
+                        "route": self.route,
+                        "data": {
+                            "returned": False,
+                            "contextLost": False,
+                            "editorReturn": state.requests[0],
+                            "editorFocused": True,
+                            "draft": "Draft A",
+                        },
+                    }
+                )
+                await self.finish_browser_editor_return(state)
+
+        asyncio.run(exercise())
+
+    def test_browser_rendered_new_revision_keeps_actual_source_focus_accounting_before_rpc(self):
+        self.connect_registered_browser()
+
+        async def exercise():
+            gate = asyncio.Event()
+
+            async def before_return(state, request):
+                state.overlay.render(
+                    {
+                        **state.view,
+                        "state": "ReturningToSource",
+                        "viewContext": {
+                            **state.view["viewContext"],
+                            "token": request["operation"],
+                        },
+                    }
+                )
+                await gate.wait()
+
+            state = await self.begin_browser_editor_return(before_return=before_return)
+            rendered = await self.editor_return_frame(state, "overlay-render")
+            self.peer.link.receive(
+                {
+                    "id": rendered["id"],
+                    "route": self.route,
+                    "data": {"visible": True, "editing": True},
+                }
+            )
+            state.event = {**state.event, "revision": rendered["data"]["revision"]}
+            epoch = self.input.source_epoch
+            self.editor_source_focus(state)
+            gate.set()
+            await self.finish_browser_editor_return(state)
+            self.assertEqual(self.input.source_epoch, epoch + 1)
+            self.assertEqual(state.results, [{"returned": False, "contextLost": True}])
+
+        asyncio.run(exercise())
+
+    def test_browser_nonediting_regenerate_only_plain_action_uses_the_legacy_path(self):
+        self.connect_registered_browser()
+
+        async def exercise():
+            state = await self.begin_browser_editor_return(legacy=True, version=1)
+            state.overlay.render({**state.view, "state": "ValidTranslation"})
+            await self.settle_overlay(state.jobs)
+            self.assertFalse(state.overlay.editing)
+            before = len(self.host.events)
+            for value in ({}, {"draft": "Not an Editing action", "queuedAtMs": 1000}, "malformed"):
+                self.peer.link.receive(
+                    {
+                        "event": "ui",
+                        "route": self.route,
+                        "data": {
+                            **state.event,
+                            "revision": state.overlay.revision,
+                            "value": value,
+                        },
+                    }
+                )
+            self.assertFalse(any(name == "regenerate" for name, _ in self.host.events[before:]))
+            self.peer.link.receive(
+                {
+                    "event": "ui",
+                    "route": self.route,
+                    "data": {
+                        **state.event,
+                        "revision": state.overlay.revision,
+                        "value": None,
+                    },
+                }
+            )
+            self.assertEqual(
+                [name for name, _ in self.host.events[before:] if name == "regenerate"],
+                ["regenerate"],
+            )
+            await self.finish_browser_editor_return(state)
+
+        asyncio.run(exercise())
+
+    def test_browser_first_editing_replace_uses_host_state_after_real_begin_edit_handoff(self):
+        self.connect_registered_browser()
+
+        async def exercise():
+            capture = await self.capture_browser(bindings={"editorRegenerateVersion": 1})
+            jobs = []
+            overlay = Overlay(
+                self.host,
+                self.input,
+                lambda coroutine: jobs.append(asyncio.create_task(coroutine)),
+                lambda: None,
+            )
+            token = {
+                "target": capture["snapshot"]["target"],
+                "commandGeneration": self.generation,
+                "revision": 9,
+            }
+            view = {
+                "state": "ValidTranslation",
+                "source": {"target": token["target"]},
+                "viewContext": {
+                    "token": token,
+                    "canEdit": True,
+                    "bindings": {"accept": "Tab", "exit": "Esc"},
+                },
+            }
+            overlay.render(view)
+            await self.settle_overlay(jobs)
+            original = self.host.ask
+            actions = []
+            editor_token = {**token, "revision": 37}
+
+            async def ask(operation, value=None):
+                if operation == "beginEdit":
+                    overlay.render(
+                        {
+                            **view,
+                            "state": "EditingTranslation",
+                            "viewContext": {
+                                **view["viewContext"],
+                                "token": editor_token,
+                            },
+                        }
+                    )
+                    return {"allowed": True, "token": editor_token}
+                if operation == "editorRegenerate":
+                    actions.append(value)
+                    return False
+                return await original(operation, value)
+
+            self.host.ask = ask
+            event = {
+                "target": token["target"]["value"],
+                "generation": self.generation,
+                "revision": overlay.revision,
+                "operation": "beginEdit",
+                "value": None,
+            }
+            self.peer.link.receive({"event": "ui", "route": self.route, "data": event})
+            frames = []
+            async with asyncio.timeout(1):
+                while any(not job.done() for job in jobs):
+                    await asyncio.sleep(0)
+                    for frame in self.native_frames(self.peer):
+                        frames.append(frame)
+                        if frame["op"] == "overlay-render":
+                            # This reply really precedes overlay-edit. DOM is not
+                            # yet editable, even though Host already rendered Editing.
+                            self.peer.link.receive(
+                                {
+                                    "id": frame["id"],
+                                    "route": self.route,
+                                    "data": {"visible": True, "editing": False},
+                                }
+                            )
+                for job in jobs:
+                    job.result()
+            frames.extend(self.native_frames(self.peer))
+            self.assertTrue(any(frame["op"] == "overlay-edit" for frame in frames))
+            self.assertFalse(overlay.editing)
+            self.assertEqual(overlay.value["state"], "EditingTranslation")
+            event = {**event, "revision": overlay.revision}
+            self.peer.link.receive(
+                {
+                    "event": "ui",
+                    "route": self.route,
+                    "data": {**event, "operation": "focus", "value": True},
+                }
+            )
+            before = len(self.host.events)
+            self.peer.link.receive(
+                {
+                    "event": "ui",
+                    "route": self.route,
+                    "data": {
+                        **event,
+                        "operation": "regenerate",
+                        "value": {"draft": "First real draft", "queuedAtMs": 1000},
+                    },
+                }
+            )
+            terminal = await self.settle_overlay(jobs)
+            self.assertEqual(
+                len(actions), 1, "The render ACK's old editing:false dropped first Replace"
+            )
+            self.assertEqual(actions[0]["action"]["token"], editor_token)
+            self.assertEqual(
+                len([frame for frame in terminal if frame["op"] == "overlay-resume"]), 1
+            )
+            self.assertFalse(any(name == "regenerate" for name, _ in self.host.events[before:]))
+            self.host.ask = original
+            overlay.hide()
+
+        asyncio.run(exercise())
+
     def test_source_glossary_uses_browser_form_without_beginning_editor(self):
         self.connect_registered_browser()
 

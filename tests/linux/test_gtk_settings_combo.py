@@ -12,6 +12,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 import desktop_e2e  # noqa: E402
+from support.gtk_settings_geometry import settings_scroll_snapshot  # noqa: E402
 
 
 class Node:
@@ -160,7 +161,7 @@ class ComboScene:
 
     def run(self, *, before_open=None, before_select=None):
         with self.port():
-            self.calibration = desktop_e2e.settings_scroll_snapshot(42, self.viewport)
+            self.calibration = settings_scroll_snapshot(42, self.viewport)
             self.reads.clear()
             # CI571's exact reported viewport and target; GTK sentinel behavior
             # is supplied by this external port, not proved by this regression.
@@ -213,7 +214,7 @@ class SettingsComboTests(unittest.TestCase):
                         scene.calibration = None
                     else:
                         other = Node("", "viewport", scene.pane.area, scene.pane)
-                        scene.calibration = desktop_e2e.settings_scroll_snapshot(42, other)
+                        scene.calibration = settings_scroll_snapshot(42, other)
 
                 with self.assertRaises(AssertionError):
                     scene.run(before_open=invalidate)

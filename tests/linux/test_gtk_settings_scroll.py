@@ -250,6 +250,9 @@ class GimpDetailsScene(ScrollScene):
         self.target_focus_fault = None
         self.retired = set()
         self.tiny_target = False
+        self.scrolled_viewport_sentinel = False
+        self.first_screen_sentinel = False
+        self.pane_shift = 0
 
     def node(self, role, name, parent=None):
         node = self.Peer(role=role, name=name, parent=parent)
@@ -284,6 +287,14 @@ class GimpDetailsScene(ScrollScene):
         return super().state(node, state)
 
     def rectangle(self, node, coord):
+        if node is self.viewport and (
+            self.first_screen_sentinel
+            or self.scrolled_viewport_sentinel
+            and self.layout_position >= 200
+        ):
+            return NS(x=-(2**31), y=-(2**31), width=100, height=100)
+        if node is self.pane and self.pane_shift:
+            return NS(x=10 + self.pane_shift, y=10, width=100, height=100)
         if node is self.target and not self.expanded:
             return NS(x=9, y=9, width=1, height=1)
         if node is self.target and self.tiny_target:
@@ -383,7 +394,14 @@ class GimpDetailsScene(ScrollScene):
             spec.loader.exec_module(access)
         clock = NS(monotonic=self.clock, sleep=lambda _: None)
         with (
-            patch.dict(sys.modules, {"support.gtk_accessibility": access}),
+            patch.dict(
+                sys.modules,
+                {
+                    "support.gtk_accessibility": access,
+                    "gi": NS(require_version=lambda *_: None),
+                    "gi.repository": NS(Atspi=atspi, GLib=NS()),
+                },
+            ),
             patch.object(access, "time", clock),
             patch.object(ordinary_gimp, "time", clock),
         ):
@@ -391,6 +409,29 @@ class GimpDetailsScene(ScrollScene):
 
 
 class GimpSettingsDetailsTests(unittest.TestCase):
+    def test_scrolled_disconnect_uses_the_same_observed_first_screen_viewport(self):
+        scene = GimpDetailsScene()
+        scene.scrolled_viewport_sentinel = True
+        self.assertIs(scene.run(), scene.target)
+        self.assertEqual([scene.details, scene.target], scene.actions)
+        self.assertEqual([100, 0, 100, 200], scene.moves)
+        self.assertLess(scene.ticks, 15)
+
+    def test_unknown_first_screen_cannot_authorize_the_scrolled_disconnect(self):
+        scene = GimpDetailsScene(expanded=True)
+        scene.first_screen_sentinel = True
+        with self.assertRaisesRegex(AssertionError, "focus/scroll fully into view"):
+            scene.run()
+        self.assertEqual([], scene.actions)
+
+    def test_changed_pane_origin_cannot_reuse_the_first_screen_calibration(self):
+        scene = GimpDetailsScene(expanded=True)
+        scene.scrolled_viewport_sentinel = True
+        scene.target_focus_fault = lambda current: setattr(current, "pane_shift", 1)
+        with self.assertRaisesRegex(AssertionError, "focus/scroll fully into view"):
+            scene.run()
+        self.assertEqual([], scene.actions)
+
     def test_collapsed_detail_is_opened_before_the_frozen_disconnect_action(self):
         scene = GimpDetailsScene()
         self.assertIs(scene.run(), scene.target)

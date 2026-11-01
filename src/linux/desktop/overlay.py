@@ -242,6 +242,27 @@ class Overlay:
             and value != self.value
         ):
             self.close_glossary()
+        owner = self.input.editor_regenerate
+        if owner is not None:
+            token = value.get("viewContext", {}).get("token")
+            actual = owner["operation"]
+            owner["viewToken"] = copy.deepcopy(token)
+            owner["viewState"] = value.get("state")
+            if token != owner["action"]["token"] and not (
+                value.get("state") == "ReturningToSource"
+                and actual is not None
+                and token == actual["operation"]
+            ):
+                # A render can precede its actual Return request. Keep only the
+                # receipt, never grant it authority from this unassociated view.
+                if (
+                    value.get("state") != "ReturningToSource"
+                    or not isinstance(token, dict)
+                    or token.get("target") != owner["action"]["token"]["target"]
+                    or token.get("commandGeneration")
+                    != owner["action"]["token"]["commandGeneration"]
+                ):
+                    self.input.editor_regenerate = None
         self.value = value
         self.schedule(retain_revision=retain_revision)
 
@@ -471,6 +492,58 @@ class Overlay:
             elif operation == "visible":
                 self.visible = value is True
             return
+        owner = self.input.editor_regenerate
+        if operation in ("draft", "focus", "composition") and owner is not None:
+            action = owner["action"]
+            actual = owner["operation"]
+            current_token = self.session_token()
+            owner_revision = type(event.get("revision")) is int and (
+                event["revision"] == owner["revision"]
+                or event["revision"] == self.revision
+                and (
+                    actual is not None
+                    and current_token == actual["operation"]
+                    or actual is None
+                    and self.value.get("state") == "ReturningToSource"
+                    and current_token == owner["viewToken"]
+                )
+            )
+            if (
+                self.input.browser_regenerate_current(owner, pending_focus=True, pending_view=True)
+                and peer is owner["peer"]
+                and getattr(event, "route", None) == owner["route"]
+                and owner_revision
+                and event.get("generation") == action["token"]["commandGeneration"]
+            ):
+                if operation == "draft":
+                    text = (
+                        value
+                        if isinstance(value, str)
+                        else value.get("text")
+                        if (
+                            isinstance(value, dict)
+                            and set(value) == {"actionId", "text"}
+                            and value["actionId"] == action["actionId"]
+                        )
+                        else None
+                    )
+                    if isinstance(text, str):
+                        owner["draft"] = text
+                        if actual is None:
+                            # The UI task and Returning render each precede the
+                            # actual Return RPC. Keep only this exact owner's
+                            # observation locally; do not invent an operation.
+                            owner["laterDraftPending"] = True
+                        else:
+                            self.host.send("draft", text)
+                elif operation == "composition" and type(value) is bool:
+                    self.host.send("composition", value)
+                elif operation == "focus" and type(value) is bool and not owner["returned"]:
+                    # The original DOM blur can precede its queued new render.
+                    # Consume it normally before the real source focus event;
+                    # a completed receipt never restores the old editor role.
+                    self.input.set_overlay_focus(value and peer is self.input.focused_peer())
+            return  # Never retarget an old action's event to a new view.
         token = self.session_token()
         if (
             not token
@@ -570,10 +643,57 @@ class Overlay:
             self.schedule(visual_expansion_from=event["revision"])
         elif operation in ("return", "escape"):
             self.host.send(operation, token)
+        elif operation == "regenerate" and peer.backend == "browser":
+            # The render ACK precedes overlay-edit, so its editing bool may still
+            # be false after the real editor focused. Host state plus the exact
+            # Input owner/focus/ACK gates admission, not that old presentation fact.
+            editing = self.value.get("state") == "EditingTranslation"
+            if value is None:
+                if not editing or not self.current_record().get("editorRegenerateSupported"):
+                    self.host.send("regenerate")
+            elif editing:
+                owner = self.input.begin_browser_regenerate(peer, event, copy.deepcopy(token))
+                if owner is not None:
+                    self.tasks(self.regenerate_editor(owner))
+            # Nonplain Browser payloads never downgrade, including outside Editing.
         elif operation in ("regenerate", "exclude"):
             self.host.send(operation)
         elif operation in ("draft", "composition"):
             self.host.send(operation, value)
+
+    async def regenerate_editor(self, owner):
+        # The source may have retired before the scheduled task ever runs.
+        if not self.input.browser_regenerate_current(owner):
+            if self.input.editor_regenerate is owner:
+                self.input.editor_regenerate = None
+            return
+        try:
+            accepted = await self.host.ask(
+                "editorRegenerate", {"action": owner["action"], "draft": owner["initialDraft"]}
+            )
+            if accepted is not True and self.input.editor_regenerate is owner:
+                if (
+                    self.input.browser_regenerate_current(owner)
+                    and self.value.get("state") == "EditingTranslation"
+                    and self.input.overlay_focused
+                    and (not owner["dispatched"] or owner.get("safeFailure"))
+                ):
+                    if owner["laterDraftPending"]:
+                        owner["laterDraftPending"] = False
+                        self.host.send("draft", owner["draft"])
+                    owner["peer"].link.command(
+                        "overlay-resume",
+                        {
+                            "target": owner["action"]["token"]["target"]["value"],
+                            "generation": owner["action"]["token"]["commandGeneration"],
+                            "revision": self.revision,
+                            "editorRegenerate": owner["action"],
+                        },
+                    )
+                self.input.editor_regenerate = None
+        except (OSError, EOFError, TimeoutError):
+            if self.input.editor_regenerate is owner:
+                self.input.editor_regenerate = None
 
     @staticmethod
     def valid_opening_id(value):
@@ -1320,6 +1440,7 @@ class Overlay:
         if self.value and self.peer and os.environ.get("TYPELAY_TRACE"):
             print(f"typelay-overlay conceal reason={reason} atMs={now_ms()}", file=sys.stderr)
         self.close_glossary()
+        self.input.editor_regenerate = None
         self.revision += 1
         if self.peer and self.peer.link.channel.alive:
             self.peer.link.command("overlay-hide")

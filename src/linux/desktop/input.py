@@ -191,6 +191,7 @@ class Input:
         self.language_peer_lost = lambda *_: None
         self.glossary_focus_transfer = lambda *_: False
         self.source_glossary_return = None
+        self.editor_regenerate = None
         self.user_epoch = self.source_epoch = self.foreground_epoch = 0
         self.window_epoch = self.content_epoch = 0
         self.last_focus = None
@@ -1870,6 +1871,14 @@ class Input:
         settings_generation = self.settings_generation
         command_generation = self.shortcut_config.get("generation")
         glossary_return = self.source_glossary_return
+        editor_return = self.editor_regenerate if context.get("editorReturn") is not None else None
+        if context.get("editorReturn") is not None and (
+            not self.browser_regenerate_current(editor_return)
+            or context["editorReturn"] != editor_return["operation"]
+            or not editor_return["returned"]
+            or self.overlay_focused
+        ):
+            return self.captured("editor-return-identity-lost")
         editor = self.practice_editor
         returning = self.practice_return
         practice = self.practice_authorization or self.practice_continuity or returning
@@ -1906,6 +1915,10 @@ class Input:
             target = self.bound["value"]
         else:
             peer, window, target = self.focused_peer(), self.niri.focused, None
+        if editor_return is not None:
+            peer = editor_return["peer"]
+            window = self.niri.by_id(editor_return["record"]["window"]["id"])
+            target = editor_return["action"]["token"]["target"]["value"]
         if not self.fresh():
             self.captured("compositor-stale")
             return self.expired_practice_capture(practice)
@@ -1920,6 +1933,7 @@ class Input:
         browser_source = peer.backend == "browser" and focus == "Source"
         reuse = bool(
             browser_source
+            and editor_return is None
             and cached
             and cached["identity"] == identity
             and self.bound == target_id(peer, cached["description"]["target"])
@@ -1961,6 +1975,12 @@ class Input:
             return self.captured("browser-connection-removed")
         if not description:
             return self.captured("no-native-field")
+        if editor_return is not None and (
+            not self.browser_regenerate_current(editor_return)
+            or description.get("target") != target
+            or getattr(description, "route", None) != editor_return["route"]
+        ):
+            return self.captured("editor-return-identity-lost")
         if peer.backend == "browser":
             self.remember_browser_diagnostics(description.get("diagnostics"))
         if not reuse:
@@ -2095,6 +2115,12 @@ class Input:
                 if resumed is not None:
                     return resumed
             return self.captured("native-read-declined", native_failure=native_failure)
+        if editor_return is not None and (
+            not self.browser_regenerate_current(editor_return)
+            or native.get("target") != target
+            or getattr(native, "route", None) != editor_return["route"]
+        ):
+            return self.captured("editor-return-identity-lost")
         if glossary_return is not None and (
             not self.source_glossary_return_current(glossary_return, peer, native)
             or native.get("ime") != "Clear"
@@ -2230,6 +2256,16 @@ class Input:
                 and self.browser_source_local(peer, native)
             )
         )
+        record["editorRegenerateSupported"] = bool(
+            peer.backend == "browser"
+            and acknowledgement
+            and self.browser_source_local(peer, native)
+            and all(
+                type(item.get("sessionBindings", {}).get("editorRegenerateVersion")) is int
+                and item["sessionBindings"]["editorRegenerateVersion"] == 1
+                for item in (description, native)
+            )
+        )
         record["sessionShortcuts"] = acknowledgement
         if acknowledgement and acknowledgement["sourceLocalAcceptanceVersion"] == 1:
             peer.browser_had_v1 = True
@@ -2292,6 +2328,7 @@ class Input:
                 **configuration,
                 "shortcutDispatch": "page",
                 "sourceLocalAcceptanceVersion": 1 if peer.browser_registration else 0,
+                "editorRegenerateVersion": 1,
             }
             if peer.browser_retired:
                 configuration = {
@@ -2299,6 +2336,7 @@ class Input:
                     "enabled": False,
                     "sessionEnabled": False,
                     "sourceLocalAcceptanceVersion": 0,
+                    "editorRegenerateVersion": 0,
                 }
         if peer.backend not in ("qt6", "gtk3", "gtk4", "browser") and any(
             isinstance(configuration.get(name), str) and configuration[name].startswith("Ctrl+")
@@ -2995,8 +3033,11 @@ class Input:
                 # Only the current form's one-use, browser-proved synchronous
                 # transfer is internal to this window. Every other field focus
                 # event retains the ordinary window invalidation semantics.
+                before_window = self.window_epoch
                 if value["focusChanged"] and not self.glossary_focus_transfer(peer, value, route):
                     self.window_epoch += 1
+                if value["focusChanged"]:
+                    self.observe_browser_return_focus(peer, value, route, before_window)
                 if value["focused"] and self.enabled is not False:
                     self.bound = target_id(peer, value["target"])
                 self.state()
@@ -3196,6 +3237,253 @@ class Input:
                 peer.link.command("quarantine", {"target": target})
             return refused(True)
 
+    def begin_browser_regenerate(self, peer, event, token):
+        record = self.bound_observation
+        value = event.get("value")
+        acknowledgement = self.current_session_acknowledgement(record)
+        if (
+            self.editor_regenerate is not None
+            or peer.backend != "browser"
+            or not record
+            or record["peer"] is not peer
+            or record["target"] != token.get("target")
+            or record.get("route") != getattr(event, "route", None)
+            or not self.browser_source_local(peer, event)
+            or not self.overlay_focused
+            or not self.fresh()
+            or not acknowledgement
+            or not acknowledgement["editorReady"]
+            or token.get("commandGeneration") != acknowledgement["generation"]
+            or not isinstance(value, dict)
+            or set(value) != {"draft", "queuedAtMs"}
+            or not isinstance(value["draft"], str)
+            or type(value["queuedAtMs"]) is not int
+        ):
+            return None
+        if (
+            not record.get("editorRegenerateSupported")
+            or "\0" in value["draft"]
+            or any(0xD800 <= ord(character) <= 0xDFFF for character in value["draft"])
+            or len(value["draft"].encode("utf-16-le")) // 2 > 8192
+            or value["queuedAtMs"] < 0
+            or not 0 <= now_ms() - value["queuedAtMs"] < 500
+        ):
+            # This exact UI event was never admitted or dispatched. Clear only
+            # its still-null local pending record, never a different/accepted receipt.
+            peer.link.command(
+                "overlay-resume",
+                {
+                    "target": token["target"]["value"],
+                    "generation": token["commandGeneration"],
+                    "revision": event["revision"],
+                    "editorRegenerate": {
+                        "actionId": None,
+                        "token": token,
+                        "queuedAtMs": value["queuedAtMs"],
+                    },
+                },
+            )
+            return None
+        action = {"actionId": str(uuid.uuid4()), "token": token, "queuedAtMs": value["queuedAtMs"]}
+        owner = {
+            "action": action,
+            "peer": peer,
+            "record": record,
+            "route": dict(record["route"]),
+            "revision": event["revision"],
+            "initialDraft": value["draft"],
+            "draft": value["draft"],
+            "laterDraftPending": False,
+            "operation": None,
+            "dispatched": False,
+            "returned": False,
+            "settings": self.settings_generation,
+            "window": self.window_epoch,
+            "foreground": self.foreground_epoch,
+            "focusCount": 0,
+            "focusWindow": None,
+            "viewToken": token,
+            "viewState": "EditingTranslation",
+        }
+        self.editor_regenerate = owner
+        return owner
+
+    def browser_regenerate_current(
+        self, owner, *, request=None, pending_focus=False, pending_view=False
+    ):
+        return bool(
+            owner is not None
+            and self.editor_regenerate is owner
+            and owner["settings"] == self.settings_generation
+            and owner["foreground"] == self.foreground_epoch
+            and (
+                owner["window"] == self.window_epoch
+                or pending_focus
+                and owner["dispatched"]
+                and owner["focusCount"] == 1
+                and owner["focusWindow"] == self.window_epoch
+            )
+            and (
+                owner["viewToken"]
+                in (
+                    owner["action"]["token"],
+                    (request or owner["operation"] or {}).get("operation"),
+                )
+                or pending_view
+                and owner["operation"] is None
+                and owner["viewState"] == "ReturningToSource"
+                and isinstance(owner["viewToken"], dict)
+                and all(
+                    owner["viewToken"].get(key) == owner["action"]["token"].get(key)
+                    for key in ("target", "commandGeneration")
+                )
+            )
+            and owner["action"]["token"]["target"] == self.bound
+            and owner["action"]["token"]["commandGeneration"]
+            == self.shortcut_config.get("generation")
+            and owner["peer"] in self.peers
+            and self.focused_peer() is owner["peer"]
+            and self.fresh()
+            and self.browser_source_local(
+                owner["peer"], RoutedReply({"target": self.bound["value"]}, owner["route"])
+            )
+        )
+
+    def observe_browser_return_focus(self, peer, value, route, before_window):
+        owner = self.editor_regenerate
+        if owner is None or not owner["dispatched"] or owner["returned"]:
+            return
+        owner["focusCount"] += 1
+        if (
+            owner["focusCount"] == 1
+            and peer is owner["peer"]
+            and route == owner["route"]
+            and value.get("target") == owner["action"]["token"]["target"]["value"]
+            and value.get("textChanged") is False
+            and value.get("focused") is True
+            and before_window == owner["window"]
+            and self.window_epoch > before_window
+        ):
+            # Record the real observation after the normal epoch update. This
+            # is only pending evidence; no epoch/readiness is suppressed or adopted.
+            owner["focusWindow"] = self.window_epoch
+        else:
+            owner["focusWindow"] = None
+
+    async def return_browser_editor(self, context):
+        owner, request = self.editor_regenerate, context.get("editorReturn")
+        lost = {"returned": False, "contextLost": True}
+        if (
+            not isinstance(request, dict)
+            or not self.browser_regenerate_current(owner, request=request)
+            or owner["operation"] is not None
+            or not isinstance(request, dict)
+            or set(request) != {"action", "operation", "expiresAtMs"}
+            or request.get("action") != owner["action"]
+            or request.get("expiresAtMs") != owner["action"]["queuedAtMs"] + 500
+            or not isinstance(request.get("operation"), dict)
+            or request["operation"].get("target") != owner["action"]["token"]["target"]
+            or request["operation"].get("commandGeneration")
+            != owner["action"]["token"]["commandGeneration"]
+            or type(request["operation"].get("revision")) is not int
+            or request["operation"]["revision"] <= owner["action"]["token"]["revision"]
+            or context.get("boundTarget") != self.bound
+        ):
+            return lost
+        owner["operation"] = request
+        if owner["laterDraftPending"]:
+            # Only the actual accepted Return operation associates these real
+            # earlier observations with Runtime's intent. ABA still emits once.
+            owner["laterDraftPending"] = False
+            self.host.send("draft", owner["draft"])
+        peer, target = owner["peer"], owner["action"]["token"]["target"]["value"]
+        try:
+            description = await peer.link.ask("describe", {"target": target})
+            if (
+                not self.browser_regenerate_current(owner)
+                or not description
+                or getattr(description, "route", None) != owner["route"]
+                or description.get("target") != target
+                or not await self.approve(peer, description)
+                or not self.browser_regenerate_current(owner)
+            ):
+                return lost
+            proof = description.get("editorRegenerate", {})
+            acknowledgement = self.session_acknowledgement(peer, description)
+            if (
+                not isinstance(proof, dict)
+                or set(proof) != {"token", "queuedAtMs", "actionId", "editorFocused"}
+                or proof.get("token") != owner["action"]["token"]
+                or proof.get("queuedAtMs") != owner["action"]["queuedAtMs"]
+                or proof.get("actionId") is not None
+                or proof.get("editorFocused") is not True
+                or type(description.get("authority", {}).get("observedAtMs")) is not int
+                or not 0 <= now_ms() - description["authority"]["observedAtMs"] <= 150
+                or not acknowledgement
+                or not acknowledgement["editorReady"]
+                or type(description.get("sessionBindings", {}).get("editorRegenerateVersion"))
+                is not int
+                or description["sessionBindings"]["editorRegenerateVersion"] != 1
+                or not self.overlay_focused
+            ):
+                return lost
+            if now_ms() >= request["expiresAtMs"]:
+                # A fresh exact editor proof plus no dispatch is the only harmless
+                # expiry. Flush the latest real draft before the false receipt.
+                self.host.send("draft", owner["draft"])
+                owner["safeFailure"] = True
+                return {"returned": False}
+            owner["dispatched"] = True
+            response = await peer.link.ask(
+                "return",
+                {
+                    "target": target,
+                    "authority": description["authority"],
+                    "generation": owner["action"]["token"]["commandGeneration"],
+                    "revision": owner["revision"],
+                    "editorReturn": request,
+                },
+            )
+            if (
+                not self.browser_regenerate_current(owner, pending_focus=True)
+                or not isinstance(response, dict)
+                or getattr(response, "route", None) != owner["route"]
+                or response.get("editorReturn") != request
+                or response.get("contextLost") is not False
+            ):
+                return lost
+            if (
+                response.get("returned") is True
+                and owner["focusCount"] == 1
+                and owner["focusWindow"] == self.window_epoch
+                and now_ms() < request["expiresAtMs"]
+            ):
+                owner["returned"] = True
+                owner["window"] = self.window_epoch
+                self.overlay_focused = False
+                self.clear_browser_capture()
+                self.state()
+                return {
+                    "returned": True,
+                    "editorReturn": {
+                        "request": request,
+                        "windowEpoch": self.window_epoch,
+                    },
+                }
+            if (
+                response.get("returned") is False
+                and response.get("contextLost") is False
+                and response.get("editorFocused") is True
+                and self.browser_regenerate_current(owner)
+                and owner["focusCount"] == 0
+            ):
+                self.host.send("draft", owner["draft"])
+                owner["safeFailure"] = True
+                return {"returned": False}
+            return lost
+        except (OSError, EOFError, TimeoutError):
+            return lost  # Unknown dispatched work is never invented as a safe retry.
+
     async def return_to_source(self, context):
         trace = {"phase": "request"}
         try:
@@ -3215,6 +3503,8 @@ class Input:
                     pass
 
     async def _return_to_source(self, context, trace):
+        if context.get("editorReturn") is not None:
+            return await self.return_browser_editor(context)
         record = self.bound_observation
         configuration = context.get("sessionShortcuts")
         request = context.get("practiceReturn")

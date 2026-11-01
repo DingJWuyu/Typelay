@@ -1,5 +1,6 @@
 """GTK fixture file/geometry observations, not native scrolling or GUI evidence."""
 
+import asyncio
 import copy
 import json
 import resource
@@ -16,9 +17,9 @@ sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 from desktop_e2e import (  # noqa: E402
     collapse_spring_path_bounded,
     settings_text_visible_point,
-    settings_viewport_from_pane,
 )
 from gtk_session_reentry import (  # noqa: E402
+    capture_language_size_requests,
     check_preview_colors,
     click_point,
     clickable_control,
@@ -44,6 +45,48 @@ from native_e2e import (  # noqa: E402
     glossary_save_outcome,
     glossary_source_click_ready,
 )
+from support.gtk_settings_geometry import settings_viewport_from_pane  # noqa: E402
+
+
+class GtkLanguageSizeRequestCaptureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_eof_keeps_original_bytes_and_marks_complete(self):
+        stream = asyncio.StreamReader()
+        stream.feed_data(b"[0xabc] GtkPopover minimum 448\n")
+        stream.feed_data(b"original warning\n")
+        stream.feed_eof()
+        evidence = {}
+        await capture_language_size_requests(stream, evidence)
+        self.assertTrue(evidence["eof"])
+        self.assertEqual(evidence["bytesRead"], 48)
+        self.assertEqual(evidence["omittedBytes"], 0)
+        self.assertEqual(evidence["first"], b"[0xabc] GtkPopover minimum 448\noriginal warning\n")
+        self.assertEqual(evidence["last"], b"")
+
+    async def test_large_stderr_is_drained_with_bounded_first_and_last_bytes(self):
+        stream = asyncio.StreamReader()
+        stream.feed_data(b"a" * 131072 + b"x" * 700000 + b"z" * 131072)
+        stream.feed_eof()
+        evidence = {}
+        await capture_language_size_requests(stream, evidence)
+        self.assertTrue(evidence["eof"])
+        self.assertEqual(evidence["bytesRead"], 962144)
+        self.assertEqual(evidence["omittedBytes"], 700000)
+        self.assertEqual(evidence["first"], b"a" * 131072)
+        self.assertEqual(evidence["last"], b"z" * 131072)
+
+    async def test_cancellation_preserves_partial_evidence_without_claiming_eof(self):
+        stream = asyncio.StreamReader()
+        stream.feed_data(b"partial\xff\n")
+        evidence = {}
+        task = asyncio.create_task(capture_language_size_requests(stream, evidence))
+        await asyncio.sleep(0)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertFalse(evidence["eof"])
+        self.assertEqual(evidence["bytesRead"], 9)
+        self.assertEqual(evidence["first"], b"partial\xff\n")
+        self.assertEqual(evidence["omittedBytes"], 0)
 
 
 class GtkCollapseSpringPathTests(unittest.TestCase):

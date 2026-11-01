@@ -7,7 +7,8 @@ namespace TypeLay.App;
 
 internal sealed record BrowserObservation(BrowserPeer Peer, BrowserRoute Route, JsonElement Authority,
     TargetId Target, long ObservedAtMs, nint Root, BrowserInputEpochs Epochs,
-    SessionShortcutAcknowledgement Acknowledgement, bool SourceGlossarySupported = false);
+    SessionShortcutAcknowledgement Acknowledgement, bool SourceGlossarySupported = false,
+    bool EditorRegenerateSupported = false);
 
 // Retain arrival order explicitly: Dictionary enumeration does not retain it
 // after a removed slot is reused by a later capture.
@@ -168,6 +169,7 @@ internal sealed partial class BrowserInput : IDisposable
             wake = _wake,
             direct = _direct,
             sourceLocalAcceptanceVersion = 1,
+            editorRegenerateVersion = 1,
             trace = !string.IsNullOrWhiteSpace(_tracePath),
             traceCommand = !string.IsNullOrWhiteSpace(_tracePath)
         };
@@ -208,11 +210,17 @@ internal sealed partial class BrowserInput : IDisposable
                 return CaptureRejected(ObservationReason.EditorTimeout);
             }
         }
+        var editorReturn = context.EditorReturn is { } returnRequest
+            ? EditorRegenerateCaptureOrigin(returnRequest) : null;
+        if (context.EditorReturn is not null && editorReturn is null)
+            return new(null);
         var epochs = _hook.BrowserEpochs;
         nint root = ForegroundRoot();
         var peer = ForegroundPeer(out int candidateCount);
         if (peer is null)
             return CaptureRejected(candidateCount == 0 ? ObservationReason.ForegroundPeerMissing : ObservationReason.ForegroundPeerAmbiguous);
+        if (editorReturn is not null && peer != editorReturn.Record.Peer)
+            return new(null);
         if (!_sessionEnabled)
             return CaptureRejected(ObservationReason.SessionDisabled);
         if (context.SessionShortcuts?.Generation != _configurationGeneration)
@@ -221,7 +229,7 @@ internal sealed partial class BrowserInput : IDisposable
             RequestCommandOwnerRefresh();
         _commandExcluded = context.Excluded.ToArray();
         PollCommandOwner(WindowsInterruptClock.NowMs);
-        var bound = context.BoundTarget is { } target && Owns(target) ? Latest(target) : null;
+        var bound = editorReturn?.Record ?? (context.BoundTarget is { } target && Owns(target) ? Latest(target) : null);
         bool editor = bound is not null && (_editorFocused || GlossaryFocus is not null)
             && GetFocus(bound.Target) == FocusMember.Overlay;
         var glossary = GlossaryFocus;
@@ -229,18 +237,21 @@ internal sealed partial class BrowserInput : IDisposable
             && bound?.Target == returned.Token.Target ? returned : null;
         var owner = _commandOwner;
         long ownerFocusRevision = owner?.FocusRevision ?? 0;
-        bool sharedDescription = !editor && returnedGlossary is null && owner is { Active: true } && owner.Peer == peer
+        bool sharedDescription = editorReturn is null && !editor && returnedGlossary is null && owner is { Active: true } && owner.Peer == peer
             && PolicyContextCurrent(owner, ownerFocusRevision, epochs.Foreground);
         // Only the current source owner shares its in-flight metadata round.
         // Editor and unowned reads retain their own target-bound describe path.
         var description = sharedDescription
             ? await owner!.PolicyRefresh.CaptureAsync()
-            : await peer.RequestAsync("describe", editor || returnedGlossary is not null ? new
+            : await peer.RequestAsync("describe", editor || returnedGlossary is not null || editorReturn is not null ? new
             {
                 target = bound!.Target.Value
             } : null);
         if (!Approved(peer, description, context.Excluded, out var authority, out var metadata, out var id, out var ack,
             ObservationStage.Describe, glossary, returnedGlossary))
+            return new(null);
+        if (editorReturn is not null && (!EditorRegenerateOwnerCurrent(editorReturn)
+            || id != editorReturn.Record.Target || description!.Route != editorReturn.Record.Route))
             return new(null);
         if (sharedDescription && !PolicyContextCurrent(owner!, ownerFocusRevision, epochs.Foreground))
             return CaptureRejected(ObservationReason.ForegroundEpochChanged, description, editor);
@@ -291,6 +302,8 @@ internal sealed partial class BrowserInput : IDisposable
         if (!Approved(peer, result, context.Excluded, out var capturedAuthority, out metadata, out var capturedId, out ack,
             ObservationStage.Capture, glossary, returnedGlossary))
             return new(null);
+        if (editorReturn is not null && !EditorRegenerateOwnerCurrent(editorReturn))
+            return new(null);
         if (capturedId != id)
             return CaptureRejected(ObservationReason.TargetChanged, result, editor);
         if (!SameAuthority(authority, capturedAuthority))
@@ -314,7 +327,8 @@ internal sealed partial class BrowserInput : IDisposable
                 DirectWriteSupported = false
             };
         var record = new BrowserObservation(peer, result.Route, capturedAuthority, id, snapshot.ObservedAtMs, root, epochs, ack!,
-            Boolean(description.Data, "sourceGlossarySupported") && Boolean(result.Data, "sourceGlossarySupported"));
+            Boolean(description.Data, "sourceGlossarySupported") && Boolean(result.Data, "sourceGlossarySupported"),
+            SupportsEditorRegenerate(description.Data) && SupportsEditorRegenerate(result.Data));
         _observations.Remember(record);
         _current = record;
         _supportObservation = record;

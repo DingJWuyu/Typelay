@@ -2125,6 +2125,26 @@ async def check_language_configuration(
     evidence["elapsedMs"] = time.monotonic_ns() // 1_000_000 - started
 
 
+async def capture_language_size_requests(stream, evidence):
+    """Drain this diagnostic child without retaining unbounded GTK debug output."""
+    limit = 128 * 1024
+    first, last = bytearray(), bytearray()
+    evidence.update(bytesRead=0, eof=False, retainedLimitBytes=2 * limit)
+    try:
+        while chunk := await stream.read(8192):
+            evidence["bytesRead"] += len(chunk)
+            take = min(limit - len(first), len(chunk))
+            first.extend(chunk[:take])
+            last.extend(chunk[take:])
+            if len(last) > limit:
+                del last[:-limit]
+        evidence["eof"] = True
+    finally:
+        evidence["first"] = bytes(first)
+        evidence["last"] = bytes(last)
+        evidence["omittedBytes"] = evidence["bytesRead"] - len(first) - len(last)
+
+
 def run_owned_language_options(
     command, environment, socket_path, state_path, output, nested, *, configuration_stage=None
 ):
@@ -2273,6 +2293,24 @@ def run_owned_language_options(
         input_service = Input(GLib, Gdk, SimpleNamespace(native=socket_path), host, task)
         overlay = Overlay(host, input_service, task, lambda: host.send("settings"))
         fixture = None
+        size_requests = None
+        size_request_task = None
+        fixture_environment = environment
+        if configuration_stage == "language-options":
+            # One owned configuration-entry diagnosis, not DTO or performance evidence.
+            fixture_environment = {
+                **environment,
+                "GTK_DEBUG": "size-request",
+                "TYPELAY_FIXTURE_SIZE_REQUEST_DIAGNOSTIC": "1",
+            }
+            size_requests = {
+                "gtkDebug": "size-request",
+                "performanceEvidence": False,
+                "clock": "CLOCK_MONOTONIC",
+                "bytesRead": 0,
+                "eof": False,
+            }
+            evidence["sizeRequestDiagnostic"] = size_requests
         try:
             generation = str(uuid.uuid4())
             input_service.notification("settings", {"enabled": True})
@@ -2296,8 +2334,17 @@ def run_owned_language_options(
                 }
             )
             fixture = await asyncio.create_subprocess_exec(
-                *command, env=environment, stdout=sys.stdout, stderr=sys.stderr
+                *command,
+                env=fixture_environment,
+                stdout=sys.stdout,
+                stderr=asyncio.subprocess.PIPE if size_requests is not None else sys.stderr,
             )
+            if size_requests is not None:
+                size_requests["launcherPid"] = fixture.pid
+                size_requests["captureStartedMonoMs"] = time.monotonic_ns() // 1_000_000
+                size_request_task = asyncio.create_task(
+                    capture_language_size_requests(fixture.stderr, size_requests)
+                )
 
             def state():
                 assert fixture.returncode is None, "language fixture exited"
@@ -2318,6 +2365,8 @@ def run_owned_language_options(
             )
             assert fixture.pid in process_lineage(peer.pid), "unexpected native test peer"
             assert peer.backend in ("gtk3", "gtk4")
+            if size_requests is not None:
+                size_requests["peerPid"] = peer.pid
             if configuration_stage:
                 assert peer.backend == "gtk4", "configuration migration is GTK4-only"
             window = await language_wait_for(
@@ -2542,13 +2591,34 @@ def run_owned_language_options(
                 job.cancel()
             await asyncio.gather(*jobs, return_exceptions=True)
             input_service.close()
-            if fixture is not None and fixture.returncode is None:
-                fixture.terminate()
-                try:
-                    await asyncio.wait_for(fixture.wait(), 3)
-                except TimeoutError:
-                    fixture.kill()
-                    await asyncio.wait_for(fixture.wait(), 3)
+            try:
+                if fixture is not None and fixture.returncode is None:
+                    fixture.terminate()
+                    try:
+                        await asyncio.wait_for(fixture.wait(), 3)
+                    except TimeoutError:
+                        fixture.kill()
+                        await asyncio.wait_for(fixture.wait(), 3)
+            finally:
+                if size_request_task is not None:
+                    size_request_task.cancel()
+                    result = (await asyncio.gather(size_request_task, return_exceptions=True))[0]
+                    if isinstance(result, Exception):
+                        size_requests["captureError"] = type(result).__name__
+                    first = size_requests.pop("first", b"")
+                    last = size_requests.pop("last", b"")
+                    log_path = output / f"{state_path.stem}-size-requests.log"
+                    size_requests["log"] = log_path.name
+                    try:
+                        with log_path.open("wb") as log:
+                            log.write(first)
+                            if omitted := size_requests.get("omittedBytes", 0):
+                                log.write(
+                                    f"\n[typelay-size-request: omitted {omitted} bytes]\n".encode()
+                                )
+                            log.write(last)
+                    except OSError as error:
+                        size_requests["writeError"] = type(error).__name__
             try:
                 (output / f"{state_path.stem}-click.json").write_text(
                     json.dumps(evidence, indent=2)

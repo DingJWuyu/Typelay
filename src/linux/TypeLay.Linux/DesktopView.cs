@@ -95,6 +95,10 @@ internal sealed class DesktopView(DesktopLink link, DesktopInput input) : ISessi
     {
         get; set;
     }
+    public Func<EditorRegenerateRequest, Task<bool>>? EditorRegenerateRequested
+    {
+        get; set;
+    }
     public Action? ExcludeRequested
     {
         get; set;

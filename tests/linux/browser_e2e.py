@@ -5047,87 +5047,275 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(self.accepted(), [])
 
-    def test_retranslation_confirmation_escape_keeps_the_live_editor_draft(self):
-        for phase in ("clear", "unknown-editor", "new-view", "changed-draft"):
+    def test_editing_retranslation_has_real_default_keep_and_one_shot_keyboard_choices(self):
+        for action in (
+            "Escape",
+            "Enter",
+            "Space",
+            "Tab+Enter",
+            "Tab+Space",
+            "clickKeep",
+            "clickReplace",
+        ):
+            with self.subTest(action=action):
+                self.page.reload()
+                self.page.locator("#source").focus()
+                _, data = self.open_editor("Tab", "Esc")
+                data["appearance"] = {"uiLanguage": "zh-CN", "motion": "reduce"}
+                self.command("overlay-render", data)
+                self.page.keyboard.press("Control+A")
+                self.page.keyboard.insert_text("My keyboard-confirmed draft")
+                self.command("overlay-render", data)
+                editor = self.overlay_control("TypeLay 译文", "textbox")
+                self.click_overlay_control("更多")
+                self.click_overlay_control("重新翻译")
+                keep = self.overlay_control("保留")
+                replace = self.overlay_control("替换")
+                self.assertTrue(
+                    self.overlay_dom(keep, "function() {return this.matches(':focus');}")
+                )
+                if action.startswith("Tab+"):
+                    self.page.keyboard.press("Tab")
+                    self.assertTrue(
+                        self.overlay_dom(replace, "function() {return this.matches(':focus');}")
+                    )
+                    self.page.keyboard.press("Shift+Tab")
+                    self.assertTrue(
+                        self.overlay_dom(keep, "function() {return this.matches(':focus');}")
+                    )
+                    self.page.keyboard.press("Tab")
+                if action.startswith("click"):
+                    self.click_overlay_control("替换" if action == "clickReplace" else "保留")
+                else:
+                    key = action.split("+")[-1]
+                    self.page.keyboard.down(key)
+                    self.page.keyboard.down(key)  # A held key cannot choose twice.
+                    self.page.keyboard.up(key)
+                events = self.page.evaluate("""fixtureMessages.filter(m => m.event === 'ui'
+                    && ['escape','return','regenerate'].includes(m.data.operation)).map(m=>m.data)""")
+                replacing = action.startswith("Tab+") or action == "clickReplace"
+                self.assertEqual(
+                    [event["operation"] for event in events], ["regenerate"] if replacing else []
+                )
+                if replacing:
+                    self.assertEqual(events[0]["value"]["draft"], "My keyboard-confirmed draft")
+                    self.assertIsInstance(events[0]["value"]["queuedAtMs"], int)
+                self.assertEqual(
+                    self.overlay_dom(
+                        editor,
+                        """function() {
+                    return [this.value,this.readOnly,this.matches(':focus')];
+                }""",
+                    ),
+                    ["My keyboard-confirmed draft", False, True],
+                )
+                self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+                self.assertEqual(self.accepted(), [])
+
+    def test_editing_retranslation_unknown_ime_and_new_view_retire_old_confirmation(self):
+        for phase in ("unknown-editor", "new-view", "changed-draft"):
             with self.subTest(phase=phase):
                 self.page.reload()
                 self.page.locator("#source").focus()
                 _, data = self.open_editor("Tab", "Esc")
                 data["appearance"] = {"uiLanguage": "zh-CN", "motion": "reduce"}
-                self.assertTrue(self.command("overlay-render", data)["visible"])
-                self.page.keyboard.press("Control+A")
-                self.page.keyboard.insert_text("My keyboard-confirmed draft")
-                self.assertTrue(self.command("overlay-render", data)["visible"])
+                self.command("overlay-render", data)
+                self.page.keyboard.insert_text("My protected draft")
+                self.command("overlay-render", data)
                 editor = self.overlay_control("TypeLay 译文", "textbox")
+                before_editor = self.overlay_dom(
+                    editor,
+                    """function() {
+                    return [this.value, this.readOnly, this.matches(':focus'), this.selectionStart, this.selectionEnd];
+                }""",
+                )
                 self.click_overlay_control("更多")
                 self.click_overlay_control("重新翻译")
                 question = self.overlay_control("替换你修改过的译文？", "group")
-                self.assertTrue(
-                    self.overlay_dom(question, "function() { return this.isConnected; }")
-                )
-                self.overlay_dom(
-                    editor,
-                    """function() {
-                  window.confirmationKeys=[];
-                  this.addEventListener('keydown', event=>{
-                    if(event.key==='Escape') confirmationKeys.push({trusted:event.isTrusted,prevented:event.defaultPrevented});
-                  });
-                }""",
-                )
                 if phase == "unknown-editor":
-                    # Synthetic IME observation revokes Clear; it cannot prove
-                    # a real input-method session or manufacture a trusted end.
                     self.overlay_dom(
                         editor,
-                        """function() {
-                      this.dispatchEvent(new CompositionEvent('compositionstart'));
-                    }""",
+                        "function() {this.dispatchEvent(new CompositionEvent('compositionstart'));}",
                     )
                 elif phase == "new-view":
                     data["revision"] += 1
-                    self.assertTrue(self.command("overlay-render", data)["visible"])
-                    self.assertFalse(
-                        self.overlay_dom(question, "function() {return this.isConnected;}")
-                    )
-                elif phase == "changed-draft":
+                    self.command("overlay-render", data)
+                else:
+                    self.overlay_dom(editor, "function() {this.focus();}")
                     self.page.keyboard.insert_text("!")
-                    self.assertFalse(
-                        self.overlay_dom(question, "function() {return this.isConnected;}")
-                    )
-                before = self.overlay_dom(
-                    editor,
-                    """function() {
-                  return [this.value,this.selectionStart,this.selectionEnd];
-                }""",
-                )
                 self.page.keyboard.press("Escape")
                 self.assertEqual(
-                    self.overlay_dom(question, "function() { return this.isConnected; }"),
+                    self.overlay_dom(question, "function() {return this.isConnected;}"),
                     phase == "unknown-editor",
                 )
+                events = self.page.evaluate("""fixtureMessages.filter(m => m.event === 'ui'
+                    && ['escape','return','regenerate'].includes(m.data.operation)).map(m=>m.data.operation)""")
                 self.assertEqual(
-                    self.page.evaluate("""fixtureMessages.filter(m =>
-                    m.event === 'ui' && ['escape','return','regenerate'].includes(m.data.operation))
-                    .map(m=>m.data.operation)"""),
-                    ["escape"] if phase in ("new-view", "changed-draft") else [],
+                    events, ["escape"] if phase in ("changed-draft", "new-view") else []
                 )
-                # A new Escape after retirement belongs to the ordinary editor;
-                # the old confirmation must not permanently swallow that key.
-                self.assertEqual(
-                    self.page.evaluate("confirmationKeys"),
-                    [{"trusted": True, "prevented": False}] if phase == "unknown-editor" else [],
-                )
-                self.assertEqual(
-                    self.overlay_dom(
-                        editor,
-                        """function() {
-                  return [this.isConnected,this.value,this.selectionStart,this.selectionEnd,this.readOnly,this.matches(':focus')];
-                }""",
-                    ),
-                    [True, *before, False, True],
-                )
+                if phase == "new-view":
+                    self.assertEqual(
+                        self.overlay_dom(
+                            editor,
+                            """function() {
+                        return [this.value, this.readOnly, this.matches(':focus'), this.selectionStart, this.selectionEnd];
+                    }""",
+                        ),
+                        before_editor,
+                    )
                 self.assertEqual(self.page.locator("#source").input_value(), "Hello")
                 self.assertEqual(self.accepted(), [])
+
+    def test_editing_regenerate_requires_negotiated_version_but_legacy_host_keeps_plain_action(
+        self,
+    ):
+        for version in (None, 0, "1", 2, 1):
+            with self.subTest(version=version):
+                self.page.reload()
+                self.page.locator("#source").focus()
+                snapshot, data = self.open_editor("Tab", "Esc", regenerate_version=version)
+                data["appearance"] = {"uiLanguage": "zh-CN", "motion": "reduce"}
+                self.command("overlay-render", data)
+                self.page.keyboard.insert_text("Versioned draft")
+                self.command("overlay-render", data)
+                self.click_overlay_control("更多")
+                self.click_overlay_control("重新翻译")
+                self.click_overlay_control("替换")
+                description = self.command("describe", {"target": snapshot["target"]})
+                events = self.page.evaluate("""fixtureMessages.filter(m => m.event === 'ui'
+                    && m.data.operation === 'regenerate').map(m => m.data.value ?? null)""")
+                self.assertEqual(len(events), 1)
+                self.assertEqual(
+                    description["sessionBindings"].get("editorRegenerateVersion", 0),
+                    1 if version == 1 else 0,
+                )
+                self.assertEqual("editorRegenerate" in description, version == 1)
+                if version == 1:
+                    self.assertEqual(events[0]["draft"], "Versioned draft")
+                else:
+                    self.assertIsNone(events[0])
+                self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+                self.assertEqual(self.accepted(), [])
+
+    def test_editing_pending_replace_cannot_be_overwritten_by_a_second_confirmation(self):
+        snapshot, data = self.open_editor("Tab", "Esc")
+        data["appearance"] = {"uiLanguage": "zh-CN", "motion": "reduce"}
+        self.command("overlay-render", data)
+        self.page.keyboard.insert_text("Pending draft")
+        self.command("overlay-render", data)
+        self.click_overlay_control("更多")
+        self.click_overlay_control("重新翻译")
+        self.click_overlay_control("替换")
+        first = self.command("describe", {"target": snapshot["target"]})["editorRegenerate"]
+        self.click_overlay_control("更多")
+        self.click_overlay_control("重新翻译")
+        self.click_overlay_control("替换")
+        second = self.command("describe", {"target": snapshot["target"]})["editorRegenerate"]
+        self.assertEqual(second, first)
+        events = self.page.evaluate("""fixtureMessages.filter(m => m.event === 'ui'
+            && m.data.operation === 'regenerate').map(m => m.data.value)""")
+        self.assertEqual(len(events), 1)
+        rejected = {"actionId": None, "token": first["token"], "queuedAtMs": first["queuedAtMs"]}
+        self.command(
+            "overlay-resume",
+            {
+                "target": snapshot["target"],
+                "revision": data["revision"],
+                "editorRegenerate": {**rejected, "queuedAtMs": rejected["queuedAtMs"] + 1},
+            },
+        )
+        self.assertEqual(
+            self.command("describe", {"target": snapshot["target"]})["editorRegenerate"], first
+        )
+        # Only the matching unadmitted action's terminal cancellation clears it.
+        self.command(
+            "overlay-resume",
+            {
+                "target": snapshot["target"],
+                "revision": data["revision"],
+                "editorRegenerate": rejected,
+            },
+        )
+        self.assertNotIn(
+            "editorRegenerate", self.command("describe", {"target": snapshot["target"]})
+        )
+        self.click_overlay_control("更多")
+        self.click_overlay_control("重新翻译")
+        self.click_overlay_control("替换")
+        self.assertEqual(
+            self.page.evaluate("""fixtureMessages.filter(m => m.event === 'ui'
+            && m.data.operation === 'regenerate').length"""),
+            2,
+        )
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+
+    def test_editing_replace_return_releases_dom_role_but_keeps_exact_operation_receipt(self):
+        snapshot, data = self.open_editor("Tab", "Esc")
+        data["appearance"] = {"uiLanguage": "zh-CN", "motion": "reduce"}
+        self.command("overlay-render", data)
+        self.page.keyboard.press("Control+A")
+        self.page.keyboard.insert_text("Confirmed draft")
+        self.command("overlay-render", data)
+        self.click_overlay_control("更多")
+        self.click_overlay_control("重新翻译")
+        self.click_overlay_control("替换")
+        description = self.command("describe", {"target": snapshot["target"]})
+        fact = description["editorRegenerate"]
+        self.assertTrue(fact["editorFocused"])
+        self.assertIsNone(fact["actionId"])
+        operation = {**fact["token"], "revision": 73}
+        action = {
+            "actionId": str(uuid.uuid4()),
+            "token": fact["token"],
+            "queuedAtMs": fact["queuedAtMs"],
+        }
+        request = {
+            "action": action,
+            "operation": operation,
+            "expiresAtMs": action["queuedAtMs"] + 500,
+        }
+        data["revision"] += 1
+        data["view"]["state"] = "ReturningToSource"
+        data["view"]["viewContext"] = {
+            "token": operation,
+            "canEdit": True,
+            "bindings": {"accept": "Tab", "exit": "Esc"},
+        }
+        self.command("overlay-render", data)
+        # A held real Host request may leave the actual textarea editable.
+        self.page.keyboard.insert_text(" later")
+        description = self.command("describe", {"target": snapshot["target"]})
+        payload = {
+            "target": snapshot["target"],
+            "authority": description["authority"],
+            "editorReturn": request,
+        }
+        returned = self.command("return", payload)
+        self.assertTrue(returned["returned"])
+        self.assertEqual(returned["editorReturn"], request)
+        self.assertEqual(returned["draft"], "Confirmed draft later")
+        self.assertFalse(self.command("return", payload)["returned"])
+        editor = self.overlay_control("TypeLay 译文", "textbox")
+        self.assertEqual(
+            self.overlay_dom(editor, "function() {return [this.value,this.readOnly];}"),
+            ["Confirmed draft later", True],
+        )
+        description = self.command("describe", {"target": snapshot["target"]})
+        self.assertFalse(description["editorRegenerate"]["editorFocused"])
+        self.assertEqual(description["editorRegenerate"]["actionId"], action["actionId"])
+        fresh = self.command(
+            "capture",
+            {
+                "target": snapshot["target"],
+                "authority": description["authority"],
+                "requireFocused": True,
+            },
+        )
+        self.assertEqual(fresh["text"], "Hello")
+        self.assertTrue(fresh["focused"])
+        self.assertTrue(fresh["sessionBindings"]["sourceReady"])
+        self.assertEqual(self.accepted(), [])
 
     def test_retranslation_confirms_human_draft_and_rejects_superseded_confirmation(self):
         snapshot, data = self.open_editor("Tab", "Esc")
@@ -5182,11 +5370,16 @@ class BrowserContract(unittest.TestCase):
     def test_control_editor_returns_without_write_then_requires_a_new_complete_pair(self):
         self.check_editor_draft_return_then_accept("Ctrl+F7", "Ctrl+F8")
 
-    def open_editor(self, accept, exit_key, *, dispatch=None):
+    def open_editor(self, accept, exit_key, *, dispatch=None, regenerate_version=1):
         self.command(
             "configure-shortcuts",
             {
                 "generation": "editor-" + accept,
+                **(
+                    {"editorRegenerateVersion": regenerate_version}
+                    if regenerate_version is not None
+                    else {}
+                ),
                 **({"shortcutDispatch": dispatch} if dispatch else {}),
                 "enabled": False,
                 "sessionEnabled": True,

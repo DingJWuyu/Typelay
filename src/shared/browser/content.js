@@ -128,7 +128,9 @@
     return {generation: configuration?.generation ?? null, accept: configuration?.accept ?? null,
       exit: configuration?.exit ?? null, sourceReady: source, editorReady: !auxiliary && editorConfigured(field),
       shortcutDispatch: shortcutDispatch(), target: field?.id ?? null,
-      sourceLocalAcceptanceVersion: sourceLocal ? 1 : 0};
+      sourceLocalAcceptanceVersion: sourceLocal ? 1 : 0,
+      ...(sessionConfigured() && configuration?.editorRegenerateVersion === 1
+        ? {editorRegenerateVersion: 1} : {})};
   }
   function sessionKey(event, action) {
     return sessionConfigured() && event.ctrlKey === controlBinding(action)
@@ -555,6 +557,12 @@
     return {target: field.id, metadata: meta, authority: authority(field, meta),
       geometry: geometry(field), focused: focused(field), diagnostics: diagnostics(),
       publication: publicationState(field, meta), sessionBindings: sessionBindings(field),
+      ...(overlay?.field === field && overlay.editorReturn ? {editorRegenerate: {
+        token: overlay.editorReturn.token, queuedAtMs: overlay.editorReturn.queuedAtMs,
+        actionId: overlay.editorReturn.actionId,
+        editorFocused: overlay.editing && document.activeElement === overlay.host
+          && overlay.shadow.activeElement === overlay.editor && !overlay.composing
+      }} : {}),
       glossaryFocus: overlay?.field === field ? glossaryFocus() : null,
       sourceGlossarySupported: sourceGlossarySupported(field),
       glossarySource: overlay?.field === field && overlay.glossary?.entry.sourceOrigin === true
@@ -1184,7 +1192,9 @@
         if (event.isComposing) overlay.composing = true;
         if (kind === "input" && overlay.editing) {
           closeRegenerate(overlay);
-          ui("draft", editor.value);
+          overlay.draftRevision = (overlay.draftRevision || 0) + 1;
+          ui("draft", overlay.editorReturn?.actionId
+            ? {actionId: overlay.editorReturn.actionId, text: editor.value} : editor.value);
           if (overlay?.editor === editor) refreshTextActions(overlay);
           sizeEditor(); position();
         }
@@ -1205,7 +1215,8 @@
         retireEditorControl();
         // A verified move to this approved form stays in the overlay family.
         // The auxiliary field is never registered as a translation editor.
-        if (!glossaryControl(overlay?.glossary, event.relatedTarget)) ui("focus", false);
+        if (!glossaryControl(overlay?.glossary, event.relatedTarget)
+          && !overlay?.regenerateConfirmation?.box.contains(event.relatedTarget)) ui("focus", false);
       });
       const hint = document.createElement("span");
       hint.className = "hint";
@@ -1412,7 +1423,17 @@
     if (overlay.viewIdentity !== viewIdentity) {
       overlay.retryPending = false;
       closeMore(overlay);
-      closeRegenerate(overlay);
+      // A transport refresh of the same legal editor retires the question, not
+      // its editor focus/selection. A new owner or revoked editor never gets focus.
+      closeRegenerate(overlay, overlay.editing && view.state === "EditingTranslation"
+        && editorConfigured(field) && view.editable && view.viewContext?.canEdit === true
+        && JSON.stringify(view.viewContext?.token) === JSON.stringify(overlay.viewToken)
+        && liveDeadline(overlay));
+      // Retain only the receipt of this already requested handoff. No new view
+      // gets an action until the host supplies the actual operation identity.
+      if (overlay.editorReturn && (view.state !== "ReturningToSource"
+        || view.viewContext?.token?.target?.value !== overlay.field.id
+        || view.viewContext?.token?.commandGeneration !== overlay.generation)) overlay.editorReturn = null;
       retireEditorControl();
       if (overlay.glossaryOpening && (data.revision !== overlay.glossaryOpening.revision
         || JSON.stringify(view.viewContext?.token) !== overlay.glossaryOpening.tokenKey)) overlay.glossaryOpening = null;
@@ -1541,7 +1562,7 @@
       const text = paused ? "" : view.text || "";
       if (overlay.editor.value !== text) overlay.editor.value = text;
       overlay.editing = false; overlay.editor.readOnly = true;
-    } else if (!overlay.editing) overlay.editor.value = view.text || "";
+    } else if (!overlay.editing && !overlay.editorReturn) overlay.editor.value = view.text || "";
     refreshTextActions(overlay);
     localizeChrome(overlay);
     sizeEditor(); position();
@@ -1569,9 +1590,37 @@
       if (menuOpeningCurrent(current, opened)) current.status.textContent = uiText("复制失败，请选中译文手动复制");
     }
   }
-  function closeRegenerate(current) {
-    current?.regenerateConfirmation?.box.remove();
-    if (current) current.regenerateConfirmation = null;
+  function closeRegenerate(current, restore = false) {
+    const confirmation = current?.regenerateConfirmation;
+    if (!confirmation) return;
+    current.regenerateConfirmation = null;
+    if (restore && overlay === current && current.editing && current.editor.isConnected
+      && confirmation.box.contains(current.shadow.activeElement)) current.editor.focus({preventScroll: true});
+    confirmation.box.remove();
+  }
+  function completeRegenerate(current, confirmation, replace, event) {
+    if (overlay !== current || current.regenerateConfirmation !== confirmation) return;
+    const allowed = menuActionCurrent(current, confirmation.opened)
+      && current.editor.value === confirmation.draft && current.draftRevision === confirmation.draftRevision;
+    const editing = current.editing && current.state === "EditingTranslation"
+      && configuration?.editorRegenerateVersion === 1;
+    // Freeze the original trusted click/key timestamp using the same proved
+    // host-clock lower bound as source commands. Handler delay cannot renew it.
+    const queuedAtMs = clockValid() && Number.isFinite(event?.timeStamp)
+      && event.timeStamp >= 0 && event.timeStamp <= monoNow()
+      ? Math.floor(clock.lower + event.timeStamp) : NaN;
+    closeRegenerate(current, true);
+    // One pending handoff keeps its original identity/time until its exact
+    // terminal reply or a new view retires it. Expiry alone is not settlement.
+    if (replace && current.editorReturn) { if (overlay === current) position(); return; }
+    if (replace && allowed && (!editing || Number.isSafeInteger(queuedAtMs))) {
+      if (editing) {
+        current.editorReturn = {token: current.viewToken, tokenKey: JSON.stringify(current.viewToken),
+          revision: current.revision, queuedAtMs, actionId: null, operation: null, returned: false};
+        ui("regenerate", {draft: current.editor.value, queuedAtMs});
+      } else ui("regenerate");
+    }
+    if (overlay === current) position();
   }
   function confirmRegenerate(current, opened) {
     closeRegenerate(current);
@@ -1580,20 +1629,72 @@
     box.className = "more-actions"; box.setAttribute("role", "group");
     box.setAttribute("aria-label", uiText("替换你修改过的译文？"));
     label.textContent = uiText("替换你修改过的译文？"); box.append(label);
-    const confirmation = {box, draft, opened};
+    const confirmation = {box, draft, draftRevision: current.draftRevision, opened, buttons: []};
     for (const [text, replace] of [["保留", false], ["替换", true]]) {
       const button = document.createElement("button"); button.textContent = uiText(text);
       button.addEventListener("pointerdown", event => event.preventDefault());
       button.addEventListener("click", event => {
-        if (!event.isTrusted || overlay !== current || current.regenerateConfirmation !== confirmation) return;
-        const allowed = menuActionCurrent(current, opened) && current.editor.value === draft;
-        closeRegenerate(current);
-        if (replace && allowed) ui("regenerate");
-        if (overlay === current) position();
+        if (event.isTrusted) completeRegenerate(current, confirmation, replace, event);
       });
-      box.append(button);
+      button.addEventListener("blur", event => {
+        if (overlay === current && current.regenerateConfirmation === confirmation
+          && event.relatedTarget !== current.editor && !box.contains(event.relatedTarget)) ui("focus", false);
+      });
+      confirmation.buttons.push(button); box.append(button);
     }
     current.regenerateConfirmation = confirmation; current.panel.append(box); position();
+    // Only Editing owns this local button family. Other existing manual states
+    // retain their source-focus path; they are not claimed by this slice.
+    if (current.editing && current.state === "EditingTranslation") confirmation.buttons[0].focus({preventScroll: true});
+  }
+  function returnRegeneratingEditor(field, data) {
+    const current = overlay, pending = current?.editorReturn, request = data.editorReturn;
+    const action = request?.action, operation = request?.operation;
+    if (!pending || current.field !== field || !current.editing || pending.returned
+      || pending.actionId !== null || !action || typeof action.actionId !== "string"
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(action.actionId)
+      || JSON.stringify(action.token) !== pending.tokenKey || action.queuedAtMs !== pending.queuedAtMs
+      || request.expiresAtMs !== action.queuedAtMs + 500
+      || JSON.stringify(operation?.target) !== JSON.stringify(action.token.target)
+      || operation?.commandGeneration !== data.generation || !Number.isSafeInteger(operation?.revision)
+      || operation.revision <= action.token.revision
+      || ![pending.tokenKey, JSON.stringify(operation)].includes(JSON.stringify(current.viewToken))) return {returned: false};
+    pending.actionId = action.actionId; pending.operation = operation;
+    const applied = configuration;
+    const editorFocused = () => overlay === current && current.editing && document.activeElement === current.host
+      && current.shadow.activeElement === current.editor && !current.composing;
+    const editorLegal = () => alive && overlay === current && current.editorReturn === pending
+      && configuration === applied && sessionCurrent(data.generation) && editorConfigured(field)
+      && !field.dead && !field.quarantined && approved(field, data.authority) && issued(field, data.authority)
+      && field.ime === "Clear" && document.hasFocus() && editorFocused();
+    const response = returned => ({returned, editorReturn: request,
+      contextLost: !returned && !editorLegal(), editorFocused: editorFocused(), draft: current.editor.value});
+    const expires = {expiresAtPerformanceMs: deadline(request.expiresAtMs, 500),
+      expiresAtWallMs: request.expiresAtMs - clock?.upperWall};
+    if (!sessionCurrent(data.generation) || !editorConfigured(field) || !approved(field, data.authority)
+      || !issued(field, data.authority) || field.ime !== "Clear" || current.composing
+      || !document.hasFocus() || !liveDeadline(expires)
+      || document.activeElement !== current.host || current.shadow.activeElement !== current.editor)
+      return response(false);
+    const previousFocus = field.focus;
+    const basis = field.richCapture;
+    if (field.richText) {
+      if (!basis || basis.version !== field.richVersion || basis.inputRevision !== field.input
+        || basis.contentRevision !== field.content) return response(false);
+      if (!rich.focus(field.element, basis)) return response(false);
+    } else field.element.focus({preventScroll: true});
+    drainMutations();
+    const returned = alive && overlay === current && current.editorReturn === pending && configuration === applied
+      && sessionCurrent(data.generation) && !field.dead && !field.quarantined
+      && approved(field, data.authority) && editorConfigured(field) && field.ime === "Clear"
+      && !current.composing && focused(field) && field.focus === previousFocus + 1 && liveDeadline(expires);
+    if (returned) {
+      pending.returned = true;
+      // Drop the DOM observation role, not the receipt that owns in-flight
+      // draft messages. The next capture must see the actual source again.
+      current.editing = false; current.editor.readOnly = true;
+    }
+    return response(returned);
   }
   function translationActions(view) {
     const value = view.viewContext?.translationActions;
@@ -2041,6 +2142,7 @@
       }
       case "quarantine": retireOrdered(); retireEditorControl(); if (field) field.quarantined = true; publication = null; return null;
       case "return": {
+        if (data.editorReturn !== undefined) return returnRegeneratingEditor(field, data);
         if (!editorConfigured(field)) return {returned: false};
         if (!sessionCurrent(data.generation) || !field || !approved(field, data.authority)
           || field.content !== data.authority.contentRevision || field.ime !== "Clear"
@@ -2106,6 +2208,17 @@
         return null;
       case "overlay-resume":
         if (sourceConfigured(field) && overlay?.field === field && overlayCurrent(data) && !overlay.paused && document.hasFocus()) {
+          const pending = overlay.editorReturn, action = data.editorRegenerate;
+          if (action !== undefined) {
+            if (!action || !(action.actionId === null || typeof action.actionId === "string"
+              && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(action.actionId))) return null;
+            if (!pending || pending.returned || JSON.stringify(action.token) !== pending.tokenKey
+              || action.queuedAtMs !== pending.queuedAtMs
+              || pending.actionId !== null && pending.actionId !== action.actionId
+              || !overlay.editing || document.activeElement !== overlay.host
+              || overlay.shadow.activeElement !== overlay.editor) return null;
+            overlay.editorReturn = null;
+          }
           overlay.status.textContent = uiText("无法返回原输入框，请点击译文继续编辑");
         }
         return null;
@@ -2462,22 +2575,25 @@
     observeHeld(press, event);
     held.set(event.code, press);
     const confirmationOwner = overlay, confirmation = confirmationOwner?.regenerateConfirmation;
-    if (event.key === "Escape" && !event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey
-      && confirmation && confirmationOwner.editing && event.target === confirmationOwner.host
-      && confirmationOwner.shadow.activeElement === confirmationOwner.editor) {
+    if (confirmation && confirmationOwner.editing && event.target === confirmationOwner.host
+      && confirmation.buttons.includes(confirmationOwner.shadow.activeElement)) {
       retireOrdered(); retireEditorControl();
-      // This is only cancellation of a current editor-owned confirmation. It
-      // neither transfers focus nor grants an auxiliary form any editor role.
       if (event.isComposing || event.keyCode === 229) { confirmationOwner.composing = true; return; }
-      if (confirmationOwner.composing || confirmationOwner.field.ime !== "Clear") return;
-      const sameDraft = confirmationOwner.editor.value === confirmation.draft;
-      // A synchronous callback may have retired the original interaction.
-      // Consume its old press without closing or commanding a newer view.
-      if (overlay !== confirmationOwner || confirmationOwner.regenerateConfirmation !== confirmation
-        || confirmationOwner.shadow.activeElement !== confirmationOwner.editor) { consume(event); return; }
-      if (!sameDraft || !document.hasFocus() || document.visibilityState !== "visible"
-        || !menuActionCurrent(confirmationOwner, confirmation.opened)) return;
-      consume(event); closeRegenerate(confirmationOwner); position(); return;
+      if (confirmationOwner.composing || confirmationOwner.field.ime !== "Clear"
+        || !menuActionCurrent(confirmationOwner, confirmation.opened)
+        || confirmationOwner.editor.value !== confirmation.draft
+        || confirmationOwner.draftRevision !== confirmation.draftRevision) return;
+      if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey && event.key !== "Tab") return;
+      if (event.key === "Tab") {
+        consume(event);
+        const selected = confirmation.buttons.indexOf(confirmationOwner.shadow.activeElement);
+        confirmation.buttons[(selected + 1) % 2].focus({preventScroll: true});
+      } else if (["Escape", "Enter", " "].includes(event.key)) {
+        consume(event);
+        completeRegenerate(confirmationOwner, confirmation,
+          event.key !== "Escape" && confirmationOwner.shadow.activeElement === confirmation.buttons[1], event);
+      }
+      return; // Confirmation controls never fall through to source acceptance.
     }
     const menuOwner = overlay, openedMenu = menuOwner?.menuContext;
     if (event.key.toLowerCase() === "c" && event.ctrlKey !== event.metaKey && !event.altKey && !event.shiftKey

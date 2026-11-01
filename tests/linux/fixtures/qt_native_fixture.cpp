@@ -117,7 +117,8 @@ public:
     QWidget *window = nullptr;
     struct OverlayObject { QString role; quint64 instance; QRect bounds; };
     QHash<QObject *, OverlayObject> overlayObjects;
-    quint64 overlayInstance = 0, overlayEventCount = 0, languageClickEventCount = 0;
+    quint64 overlayInstance = 0, overlayEventCount = 0, languageEventCount = 0;
+    bool languageOpeningObserved = false;
     QJsonArray motionInputs;
     bool observeMotionInputs = false;
     QJsonObject counts;
@@ -185,16 +186,21 @@ public:
         if (observeMotionInputs && motionInputs.size() < 8
             && (qstrcmp(event, "mouse-press") == 0 || qstrcmp(event, "mouse-release") == 0
                 || qstrcmp(event, "clicked") == 0)) motionInputs.append(extra);
-        // Preserve the existing total bound, reserving twelve events for the
-        // first real Auto/English clicks after the preceding desktop cases.
-        const bool languageClick = (object.role == QStringLiteral("typelay-source-auto")
-            || object.role == QStringLiteral("typelay-source-en"))
+        // Keep the same 160-event total and twelve-event reservation. The real
+        // trigger and its menu must be observable even if Auto is never reached.
+        if (object.role == QStringLiteral("typelay-menu-trigger") && qstrcmp(event, "mouse-press") == 0)
+            languageOpeningObserved = true;
+        const bool languageInput = (object.role == QStringLiteral("typelay-source-auto")
+            || object.role == QStringLiteral("typelay-source-en") || object.role == QStringLiteral("typelay-menu-trigger"))
             && (qstrcmp(event, "mouse-press") == 0 || qstrcmp(event, "mouse-release") == 0
                 || qstrcmp(event, "pressed") == 0 || qstrcmp(event, "released") == 0
                 || qstrcmp(event, "clicked") == 0);
-        if (overlayEventCount >= 160 || (languageClick ? languageClickEventCount >= 12
-                : overlayEventCount - languageClickEventCount >= 148)) return;
-        if (languageClick) ++languageClickEventCount;
+        const bool languageMenu = languageOpeningObserved && object.role == QStringLiteral("typelay-menu")
+            && (qstrcmp(event, "show") == 0 || qstrcmp(event, "hide") == 0 || qstrcmp(event, "view-retired") == 0);
+        const bool languageEvent = languageInput || languageMenu;
+        if (overlayEventCount >= 160 || (languageEvent ? languageEventCount >= 12
+                : overlayEventCount - languageEventCount >= 148)) return;
+        if (languageEvent) ++languageEventCount;
         extra.insert("sequence", qint64(++overlayEventCount));
         const auto bytes = QJsonDocument(extra).toJson(QJsonDocument::Compact);
         std::fprintf(stderr, "qt-overlay-event %s\n", bytes.constData());
@@ -224,6 +230,18 @@ public:
     }
     bool eventFilter(QObject *object, QEvent *event) override {
         const auto type = event->type();
+        if (type == QEvent::DynamicPropertyChange
+            && static_cast<QDynamicPropertyChangeEvent *>(event)->propertyName() == "typelay.qt.menu.retirement") {
+            // Optional native probe facts share the existing finite event log.
+            // No callback, input, render, source text or permission is requested.
+            auto *widget = qobject_cast<QWidget *>(object);
+            observeOverlay(widget);
+            if (widget && overlayObjects.contains(object) && overlayObjects.value(object).role == QStringLiteral("typelay-menu")) {
+                const auto retirement = widget->property("typelay.qt.menu.retirement").value<QJsonObject>();
+                if (retirement.value("reason").toString() == QStringLiteral("view-changed"))
+                    overlayEvent("view-retired", overlayObjects.value(object), retirement);
+            }
+        }
         if (type == QEvent::Show || type == QEvent::Hide || type == QEvent::Move || type == QEvent::Resize
             || type == QEvent::MouseButtonPress || type == QEvent::MouseButtonRelease) {
             auto *widget = qobject_cast<QWidget *>(object);

@@ -18,6 +18,8 @@ internal sealed class WindowsSessionView : ISessionView
             view.ReturnRequested = token => { if (ReferenceEquals(_active, view)) ReturnRequested?.Invoke(token); };
             view.EscapeRequested = token => { if (ReferenceEquals(_active, view)) EscapeRequested?.Invoke(token); };
             view.RegenerateRequested = () => { if (ReferenceEquals(_active, view)) RegenerateRequested?.Invoke(); };
+            view.EditorRegenerateRequested = action => ReferenceEquals(_active, view) && EditorRegenerateRequested is { } regenerate
+                ? regenerate(action) : Task.FromResult(false);
             view.AlternativeRequested = token => { if (ReferenceEquals(_active, view)) AlternativeRequested?.Invoke(token); };
             view.StyleRequested = request => ReferenceEquals(_active, view) && StyleRequested is { } change
                 ? change(request) : Task.FromResult(new StyleChangeResult(false, "style-stale"));
@@ -42,6 +44,10 @@ internal sealed class WindowsSessionView : ISessionView
         get; set;
     }
     public Action<SessionViewToken>? EscapeRequested
+    {
+        get; set;
+    }
+    public Func<EditorRegenerateRequest, Task<bool>>? EditorRegenerateRequested
     {
         get; set;
     }

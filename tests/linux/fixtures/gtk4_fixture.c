@@ -727,7 +727,27 @@ static void control_map_observation(GtkWidget *widget, ControlPaint *paint, gboo
             json_array_add_int_element(version, versions[i][part]);
         json_object_set_array_member(value, version_names[i], version);
     }
-    json_object_set_int_member(value, "atMonoMs", g_get_monotonic_time() / 1000);
+    gint64 observed_at = g_get_monotonic_time() / 1000;
+    json_object_set_int_member(value, "atMonoMs", observed_at);
+    if (g_str_equal(stage, "language-options")
+        && g_strcmp0(g_getenv("TYPELAY_FIXTURE_SIZE_REQUEST_DIAGNOSTIC"), "1") == 0) {
+        char address[2 + sizeof(gpointer) * 2 + 1];
+        g_snprintf(address, sizeof address, "%p", (void *)native);
+        json_object_set_int_member(value, "processId", (gint64)getpid());
+        json_object_set_string_member(value, "nativeAddress", address);
+        json_object_set_string_member(value, "nativeType", G_OBJECT_TYPE_NAME(native));
+        /* Same stderr stream as GTK's existing size-request records. At most
+         * the first observed map/unmap pair; addresses are local to this PID. */
+        static gboolean observed_map, observed_unmap;
+        gboolean *seen = mapped ? &observed_map : &observed_unmap;
+        if (!*seen) {
+            *seen = TRUE;
+            g_printerr("[typelay-size-request] pid=%ld native=%s type=%s event=%s"
+                " atMonoMs=%" G_GINT64_FORMAT " mapGeneration=%" G_GUINT64_FORMAT "\n",
+                (long)getpid(), address, G_OBJECT_TYPE_NAME(native),
+                mapped ? "map-observed" : "unmap", observed_at, paint->map_generation);
+        }
+    }
     json_object_set_int_member(value, "mapGeneration", paint->map_generation);
     json_object_set_int_member(value, "control", language_instance(G_OBJECT(widget)));
     json_object_set_int_member(value, "native", language_instance(G_OBJECT(native)));

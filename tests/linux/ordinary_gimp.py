@@ -233,6 +233,7 @@ def disconnect_completed(application, observed_receipts):
 def activate_settings_detail(pid, node, *, deadline):
     """Open this GIMP action's real detail ancestor, never activate a hidden child."""
     from support.gtk_accessibility import Atspi, focus_settings_control, scroll_settings_control
+    from support.gtk_settings_geometry import settings_scroll_snapshot
 
     name = node.get_name()
     assert node.get_role() == Atspi.Role.PUSH_BUTTON
@@ -258,6 +259,9 @@ def activate_settings_detail(pid, node, *, deadline):
     ]
     assert len(matches) == 1, "GIMP action has no unique real detail expander"
     details = matches[0]
+    viewports = [peer for peer, role in path if role == Atspi.Role.VIEWPORT]
+    assert len(viewports) == 1, "GIMP detail has no unique settings viewport"
+    viewport = viewports[0]
 
     def current():
         assert time.monotonic() < deadline, "public action exhausted its interaction budget"
@@ -281,12 +285,26 @@ def activate_settings_detail(pid, node, *, deadline):
         )
         return states.contains(Atspi.StateType.EXPANDED)
 
+    def focus_scrolled_control(control):
+        # Each navigation owns a fresh first-screen observation of this exact
+        # viewport. Never borrow the calibration of an earlier opening.
+        scroll_settings_control(pid, control, deadline=deadline, at_start=True)
+        assert current() or control == details, "GIMP settings detail collapsed during navigation"
+        initial = settings_scroll_snapshot(pid, viewport)
+        scroll_settings_control(pid, control, deadline=deadline)
+        assert current() or control == details, "GIMP settings detail collapsed during navigation"
+        focus_settings_control(
+            pid,
+            control,
+            timeout=deadline - time.monotonic(),
+            initial_calibration=initial,
+        )
+        assert current() or control == details, "GIMP settings detail collapsed during navigation"
+
     if not current():
         # Opening the visible expander is a separate public user action, not
         # permission to focus/click its collapsed secondary child or replace it.
-        scroll_settings_control(pid, details, deadline=deadline)
-        current()
-        focus_settings_control(pid, details, timeout=deadline - time.monotonic())
+        focus_scrolled_control(details)
         if not current():
             interface = details.get_action_iface()
             assert time.monotonic() < deadline
@@ -295,9 +313,7 @@ def activate_settings_detail(pid, node, *, deadline):
                 time.sleep(0.05)
 
     assert current(), "GIMP settings detail collapsed during navigation"
-    scroll_settings_control(pid, node, deadline=deadline)
-    assert current(), "GIMP settings detail collapsed during navigation"
-    focus_settings_control(pid, node, timeout=deadline - time.monotonic())
+    focus_scrolled_control(node)
     assert current(), "GIMP settings detail collapsed before its action"
     area = Atspi.Component.get_extents(node.get_component_iface(), Atspi.CoordType.SCREEN)
     assert (area.width, area.height) != (1, 1), (

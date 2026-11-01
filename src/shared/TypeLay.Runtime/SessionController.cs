@@ -222,6 +222,7 @@ public sealed partial class SessionController : IDisposable
         overlay.AddGlossaryRequested = AddGlossaryEntryAsync;
         overlay.CloseGlossaryRequested = CloseGlossaryEntry;
         overlay.RegenerateRequested = () => _ = Regenerate();
+        overlay.EditorRegenerateRequested = RegenerateEditorAsync;
         overlay.ExcludeRequested = () => _ = ExcludeCurrentApplication();
         overlay.ResumeRequested = revision => _ = ResumePause(revision);
         settings.Changed += Configure;
@@ -309,6 +310,7 @@ public sealed partial class SessionController : IDisposable
     private void Configure()
     {
         _sourceRegenerate = null;
+        _editorRegenerate = null;
         _styleObservation = null;
         _editorGlossaryHandoff = null;
         _pendingPracticeCompletion = null;
@@ -632,7 +634,8 @@ public sealed partial class SessionController : IDisposable
     private InputContext Context() => new(_hook.UserEpoch, _hook.ForegroundEpoch,
         _hook.SourceUserEpoch, _session.Current?.Target, _settings.Value.Excluded,
         _settings.Value.Enabled && _settings.Value.Mode == WorkMode.OnDemand,
-        new(_hook.CommandGeneration, CurrentSessionBindings), _ownedLocalRegenerate?.Binding ?? LocalDraftReturnRead() ?? PracticeReturnRead() ?? ContinuousPracticeRead());
+        new(_hook.CommandGeneration, CurrentSessionBindings), _ownedLocalRegenerate?.Binding ?? LocalDraftReturnRead() ?? PracticeReturnRead() ?? ContinuousPracticeRead(),
+        EditorReturn: _editorRegenerate is { AwaitingCapture: true } regenerate ? regenerate.Operation : null);
     private bool PauseAnchorIsCurrent(long now) => _pauseAnchor is { IsUsable: true } anchor
         && _pauseWindowEpoch == _hook.WindowEpoch && _pauseForegroundEpoch == _hook.ForegroundEpoch
         && anchor.FocusEpoch == _hook.ForegroundEpoch && _hook.GetFocus(anchor.Target) == FocusMember.Source
@@ -1065,9 +1068,12 @@ public sealed partial class SessionController : IDisposable
             }
             // A capture may finish between the platform return and its awaiting
             // continuation. It cannot publish before that return has been verified.
-            if (_sourceRegenerate is { ReturningRevision: > 0, AwaitingCapture: false })
+            if (_sourceRegenerate is { ReturningRevision: > 0, AwaitingCapture: false }
+                || _editorRegenerate is { Operation: not null, AwaitingCapture: false })
                 return;
             _session.Observe(snapshot, result.Focus, now);
+            if (CompleteEditorRegenerateCapture(result, request, now))
+                return;
             if (CompleteSourceRegenerateCapture(result, request, now))
                 return;
             bool styled = _settings.Value.Styles is not null && (_model.StyledTranslationCapability is not null
@@ -1855,18 +1861,29 @@ public sealed partial class SessionController : IDisposable
         return true;
     }
     private async Task<bool> ReturnFromEditor(PendingEditorExit? exit = null,
-        SourceRegenerateConfirmation? sourceConfirmation = null, bool resumeEditorOnFailure = true)
+        SourceRegenerateConfirmation? sourceConfirmation = null, bool resumeEditorOnFailure = true,
+        EditorRegenerateIntent? editorRegenerate = null)
     {
         if (_sourceRegenerate is not null && !ReferenceEquals(_sourceRegenerate.Opening, sourceConfirmation)
             || _returningToSource || _overlay.EditingComposition || !_session.RequestSourceReturn() || _session.Current is not { } source)
             return false;
         long generation = ++_generation;
+        var operation = new SessionViewToken(source.Target, _hook.CommandGeneration, generation);
+        if (editorRegenerate is not null)
+            editorRegenerate.Operation = new(editorRegenerate.Action, operation, editorRegenerate.Action.QueuedAtMs + 500);
         if (_sourceRegenerate is { } confirmation)
             confirmation.ReturningRevision = generation;
         RevokeInput("return-from-editor");
         _permitUntil = 0;
         Render();
-        var operation = new SessionViewToken(source.Target, _hook.CommandGeneration, generation);
+        if (editorRegenerate is not null && !EditorRegenerateCurrent(editorRegenerate))
+        {
+            // A real view callback may retire this action synchronously. Never
+            // send its return or overwrite a newer operation after that render.
+            if (ReferenceEquals(_editorRegenerate, editorRegenerate))
+                StopSession("editor-regenerate-render-owner-changed");
+            return false;
+        }
         _sourceReturn = operation;
         var request = _ownedPractice is { } owned
             ? new OwnedPracticeReturnRequest(owned, new(source.Target, _hook.CommandGeneration, generation)) : null;
@@ -1876,10 +1893,15 @@ public sealed partial class SessionController : IDisposable
         {
             result = await _broker.ReturnToSourceAsync(Context() with
             {
-                PracticeReturn = request
+                PracticeReturn = request,
+                EditorReturn = editorRegenerate?.Operation
             });
         }
-        catch (Exception ex) when (ex is not OutOfMemoryException) { }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            if (editorRegenerate is not null)
+                result = new(false, ContextLost: true); // A thrown transport result cannot prove an unsent return.
+        }
         finally
         {
             if (ReferenceEquals(_sourceReturn, operation))
@@ -1894,6 +1916,11 @@ public sealed partial class SessionController : IDisposable
         }
         if (result.Returned)
         {
+            if (editorRegenerate is not null && !AwaitEditorRegenerateReturn(editorRegenerate, result.EditorReturn))
+            {
+                StopSession("editor-regenerate-return-unproven");
+                return false;
+            }
             if (request is not null && !AwaitPracticeReturn(request, result.Practice))
             {
                 StopSession("practice-return-unproven");
@@ -1919,6 +1946,11 @@ public sealed partial class SessionController : IDisposable
             }
             _nextCapture = 0;
             return true;
+        }
+        if (editorRegenerate is not null && !EditorRegenerateCurrent(editorRegenerate))
+        {
+            StopSession("editor-regenerate-failed-owner-changed");
+            return false;
         }
         _session.CancelSourceReturn();
         if (resumeEditorOnFailure)
@@ -1997,7 +2029,8 @@ public sealed partial class SessionController : IDisposable
     }
     private async Task Escape()
     {
-        if (_disposed || _sourceRegenerate is not null || !_settings.Value.Enabled || _overlay.EditingComposition)
+        if (_disposed || _sourceRegenerate is not null || _editorRegenerate is not null
+            || !_settings.Value.Enabled || _overlay.EditingComposition)
             return;
         if (_session.State == SessionState.EditingTranslation)
         {
@@ -2027,7 +2060,9 @@ public sealed partial class SessionController : IDisposable
     }
     private async Task Regenerate()
     {
-        if (_disposed || _ownedLocalDraft is not null || _ownedLocalRegenerate is not null || _sourceRegenerate is not null || !_settings.Value.Enabled || _overlay.EditingComposition)
+        if (_disposed || _ownedLocalDraft is not null || _ownedLocalRegenerate is not null
+            || _sourceRegenerate is not null || _editorRegenerate is not null
+            || !_settings.Value.Enabled || _overlay.EditingComposition)
             return;
         if (_session.State == SessionState.EditingTranslation)
         {
@@ -2108,6 +2143,7 @@ public sealed partial class SessionController : IDisposable
     {
         _ownedLocalRegenerate = null;
         _sourceRegenerate = null;
+        _editorRegenerate = null;
         CancelGlossaryEntry();
         _manualObservation = null;
         _styleObservation = null;
@@ -2267,6 +2303,7 @@ public sealed partial class SessionController : IDisposable
     public void Dispose()
     {
         _sourceRegenerate = null;
+        _editorRegenerate = null;
         CancelGlossaryEntry();
         _pendingPracticeCompletion = null;
         RetireAutomaticPractice(false);

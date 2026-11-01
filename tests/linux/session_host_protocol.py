@@ -2964,6 +2964,169 @@ while True:
         self.assertFalse(upgraded["editable"])
         self.assertFalse(upgraded["canAccept"])
 
+    async def test_browser_editor_regenerate_pipe_uses_actual_return_then_fresh_capture_and_real_drafts(
+        self,
+    ):
+        # Actual Program/DesktopInput/Runtime framing, with the existing controlled
+        # worker process. This proves neither DOM focus nor real model inference.
+        generation, worker = self.model_generation()
+        self.assertEqual(
+            await self.ask(
+                "activateModel",
+                {
+                    "identity": uuid.uuid4().hex,
+                    "generation": generation,
+                },
+            ),
+            "confirmed",
+        )
+        for name in ("pid", "supervisor-pid"):
+            owned = int((worker / name).read_text())
+            self.addCleanup(lambda pid=owned: self.assertFalse(Path(f"/proc/{pid}").exists()))
+        self.assertTrue((await self.ask("saveSettingsDraft", self.draft()))["saved"])
+        self.assertTrue(await self.ask("traySettings", {"source": "en", "target": "zh"}))
+        self.assertTrue(await self.ask("start"))
+        target = {
+            "backend": "linux-browser",
+            "value": "browser-owned-document:1",
+            "lifetime": str(uuid.uuid4()),
+        }
+        acknowledgement = {
+            "target": target,
+            "generation": self.latest("shortcuts")["generation"],
+            "bindings": {"accept": "F7", "exit": "F8"},
+            "sourceReady": True,
+            "editorReady": True,
+            "sourceLocalAcceptanceVersion": 1,
+        }
+        state = {
+            "ready": True,
+            "nativeReady": True,
+            "target": target,
+            "focus": "Source",
+            "connectionId": str(uuid.uuid4()),
+            "userEpoch": 1,
+            "sourceUserEpoch": 1,
+            "foregroundEpoch": 1,
+            "windowEpoch": 1,
+            "contentEpoch": 1,
+            "sessionShortcuts": acknowledgement,
+        }
+
+        def capture(operation, _context):
+            self.assertEqual(operation, "capture")
+            return {
+                "focus": state["focus"],
+                "application": "fixture-browser",
+                "sessionShortcuts": acknowledgement,
+                "userEpoch": state["userEpoch"],
+                "foregroundEpoch": state["foregroundEpoch"],
+                "snapshot": {
+                    "target": target,
+                    "text": "Original source",
+                    "selection": {"start": 0, "end": 0},
+                    "bounds": {"x": 0, "y": 0, "width": 100, "height": 20},
+                    "multiline": False,
+                    "access": "Supported",
+                    "ime": "Clear",
+                    "inputEpoch": 1,
+                    "focusEpoch": 1,
+                    "observedAtMs": time.clock_gettime_ns(time.CLOCK_BOOTTIME) // 1_000_000,
+                    "writeSupported": True,
+                    "directWriteSupported": True,
+                },
+            }
+
+        self.input_reply = capture
+        await self.send({"event": "state", "data": state})
+        translated = (
+            await self.receive_until(
+                lambda frame: frame.get("event") == "render"
+                and frame["data"].get("state") == "ValidTranslation"
+            )
+        )["data"]
+        editing = await self.ask("beginEdit", translated["viewContext"]["token"])
+        self.assertTrue(editing["allowed"])
+        state["focus"] = "Overlay"
+        await self.send({"event": "state", "data": state})
+        await self.send({"event": "draft", "data": "Draft A"})
+        action = {
+            "actionId": str(uuid.uuid4()),
+            "token": editing["token"],
+            "queuedAtMs": time.clock_gettime_ns(time.CLOCK_BOOTTIME) // 1_000_000,
+        }
+        self.sequence += 1
+        action_reply = self.sequence
+        await self.send(
+            {
+                "id": action_reply,
+                "op": "editorRegenerate",
+                "data": {"action": action, "draft": "Draft A"},
+            }
+        )
+        returning = await self.receive_until(lambda frame: frame.get("op") == "return")
+        actual = returning["data"]["editorReturn"]
+        self.assertEqual(actual["action"], action)
+        self.assertEqual(actual["expiresAtMs"], action["queuedAtMs"] + 500)
+        self.assertEqual(actual["operation"], self.latest("render")["viewContext"]["token"])
+        self.assertEqual(self.latest("render")["state"], "ReturningToSource")
+        for draft in ("Draft B", "Draft A"):
+            await self.send({"event": "draft", "data": draft})
+        state.update(focus="Source", userEpoch=2, sourceUserEpoch=2, windowEpoch=2)
+        await self.send({"event": "state", "data": state})
+        await self.send(
+            {
+                "reply": returning["id"],
+                "data": {
+                    "returned": True,
+                    "editorReturn": {"request": actual, "windowEpoch": 2},
+                },
+            }
+        )
+        accepted = await self.receive_until(lambda frame: frame.get("reply") == action_reply)
+        self.assertTrue(accepted["data"])
+        fresh = await self.receive_until(
+            lambda frame: frame.get("op") == "capture"
+            and frame["data"].get("editorReturn") == actual
+        )
+        self.assertEqual((worker / "requests").read_text().splitlines(), ["hello", "translate"])
+        # Even a message already in flight after ACK belongs to this same editor.
+        for draft in ("Draft C", "Draft A"):
+            await self.send({"event": "draft", "data": draft})
+        await self.send({"reply": fresh["id"], "data": capture("capture", fresh["data"])})
+        pending = (
+            await self.receive_until(
+                lambda frame: frame.get("event") == "render"
+                and frame["data"].get("state") == "EditedTranslationPending"
+            )
+        )["data"]
+        self.assertEqual(pending["text"], "Draft A")
+        self.assertEqual((worker / "requests").read_text().splitlines(), ["hello", "translate"])
+        self.assertFalse(any(frame.get("event") == "direct" for frame in self.events))
+
+    async def test_browser_editor_regenerate_pipe_rejects_malformed_and_unowned_actions(self):
+        target = {"backend": "linux-browser", "value": "field", "lifetime": str(uuid.uuid4())}
+        action = {
+            "actionId": str(uuid.uuid4()),
+            "token": {
+                "target": target,
+                "commandGeneration": str(uuid.uuid4()),
+                "revision": 73,
+            },
+            "queuedAtMs": time.clock_gettime_ns(time.CLOCK_BOOTTIME) // 1_000_000,
+        }
+        for value in (
+            None,
+            {},
+            {"action": action, "draft": "A"},
+            {"action": {**action, "actionId": "not-a-guid"}, "draft": "A"},
+            {"action": {**action, "queuedAtMs": -1}, "draft": "A"},
+            {"action": action, "draft": "A", "accepted": True},
+        ):
+            with self.subTest(value=value):
+                self.assertFalse(await self.ask("editorRegenerate", value))
+        self.assertIsNone(self.process.returncode)
+
     async def language_configuration_source(self):
         # The real production Host consumes these controlled input-port replies.
         # This is not native focus, IME or acceptance evidence.

@@ -586,6 +586,24 @@ internal static class Program
                         allowed,
                         token = allowed ? view.Token : null
                     };
+                case "editorRegenerate":
+                    if (!ExactObject(value, "action", "draft")
+                        || value.GetProperty("draft").ValueKind != JsonValueKind.String)
+                        return false;
+                    var editorAction = value.GetProperty("action");
+                    if (!ExactObject(editorAction, "actionId", "token", "queuedAtMs")
+                        || editorAction.GetProperty("actionId").ValueKind != JsonValueKind.String
+                        || !editorAction.GetProperty("actionId").TryGetGuid(out var actionId) || actionId == Guid.Empty
+                        || !ValidSessionToken(editorAction.GetProperty("token"))
+                        || editorAction.GetProperty("queuedAtMs").ValueKind != JsonValueKind.Number
+                        || !editorAction.GetProperty("queuedAtMs").TryGetInt64(out long queuedAt)
+                        || queuedAt < 0 || queuedAt > loop.NowMs || loop.NowMs - queuedAt >= 500)
+                        return false;
+                    var regenerateRequest = DesktopLink.Decode<EditorRegenerateRequest>(editorAction);
+                    if (regenerateRequest.Token != view.Token || regenerateRequest.Token.Target.Backend != "linux-browser")
+                        return false;
+                    view.DraftChanged?.Invoke(value.GetProperty("draft").GetString()!);
+                    return view.EditorRegenerateRequested is { } regenerateEditor && await regenerateEditor(regenerateRequest);
                 case "beginLanguageConfiguration":
                     return await BeginLanguageConfiguration(value);
                 case "saveLanguageConfiguration":

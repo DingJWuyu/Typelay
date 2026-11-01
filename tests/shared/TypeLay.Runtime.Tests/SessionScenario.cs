@@ -435,13 +435,19 @@ internal sealed class SessionScenario : IDisposable
             get; private set;
         }
         public Func<OwnedPracticeReturn, OwnedPracticeReturn?> ReturnEvidence { get; set; } = value => value;
+        public Func<EditorSourceReturnReceipt, EditorSourceReturnReceipt?> EditorReturnEvidence { get; set; } = value => value;
         public OwnedPracticeReturnRequest? LastReturnRequest
+        {
+            get; private set;
+        }
+        public InputContext? LastReturnContext
         {
             get; private set;
         }
         public async Task<InputReturn> ReturnToSourceAsync(InputContext context)
         {
             Returns++;
+            LastReturnContext = context;
             LastReturnRequest = context.PracticeReturn;
             bool returned = PendingReturn is { } pending ? await pending.Task : ReturnAllowed;
             if (returned)
@@ -456,7 +462,9 @@ internal sealed class SessionScenario : IDisposable
             }
             else
                 ReturnedPractice = null;
-            return new(returned, ReturnedPractice, ReturnContextLost);
+            var editorReceipt = returned && context.EditorReturn is { } editorReturn
+                ? EditorReturnEvidence(new(editorReturn, host.Input.WindowEpoch)) : null;
+            return new(returned, ReturnedPractice, ReturnContextLost, editorReceipt);
         }
         public Task<WriteReceipt> WriteAsync(WritePlan plan, InputContext context, long expiresAtMs)
         {
@@ -539,6 +547,10 @@ internal sealed class SessionScenario : IDisposable
             get; set;
         }
         public Func<SessionStyleRequest, Task<StyleChangeResult>>? StyleRequested
+        {
+            get; set;
+        }
+        public Func<EditorRegenerateRequest, Task<bool>>? EditorRegenerateRequested
         {
             get; set;
         }
@@ -646,6 +658,10 @@ internal sealed class SessionScenario : IDisposable
         {
             get; private set;
         }
+        public Action? Rendered
+        {
+            get; set;
+        }
         public void Render(Session session, UserSettings settings, bool canAccept, string? statusOverride = null, SessionViewContext? context = null)
         {
             Renders++;
@@ -657,6 +673,7 @@ internal sealed class SessionScenario : IDisposable
             Draft = session.Draft;
             CanAccept = canAccept;
             Visible = session.State is not (SessionState.NoSession or SessionState.Paused);
+            Rendered?.Invoke();
         }
         public void RenderPaused(PauseAnchor anchor, long revision)
         {

@@ -96,6 +96,10 @@ internal static partial class BrowserCooperationCheck
         {
             get; set;
         }
+        public JsonElement? EditorRegenerateObservation
+        {
+            get; set;
+        }
         public JsonElement? OverlayMenuObservation
         {
             get; set;
@@ -227,12 +231,13 @@ internal static partial class BrowserCooperationCheck
         var setup = new Scene("setup");
         var automatic = new Scene("automatic-preview-tab");
         var glossary = new Scene("browser-editor-glossary-lifetime");
+        var regenerate = new Scene("browser-editing-regenerate-confirmation");
         var mode = new Scene("on-demand-settings");
         var direct = new Scene("direct-selection");
         var background = new Scene("direct-original-field-after-focus-switch");
         var disconnected = new Scene("removed-connection-before-command");
         var submitCounter = new Scene("submit-counter-positive-control");
-        Scene[] scenes = [setup, automatic, glossary, mode, direct, background, disconnected, submitCounter];
+        Scene[] scenes = [setup, automatic, regenerate, glossary, mode, direct, background, disconnected, submitCounter];
         Scene active = setup;
         var cleanupErrors = new List<CleanupError>();
         using var all = new CancellationTokenSource(TimeSpan.FromMinutes(9));
@@ -445,6 +450,12 @@ internal static partial class BrowserCooperationCheck
                 var state = await WaitStateAsync(cdp!, s => ObserveDom(s, automatic, reference), ct);
                 CheckReplacement(state, automatic, reference, sourceFocus: true);
                 Require(await WaitTraceAsync(trace, "browser-accept-Verified", 0, ct) > 0, "tab-receipt-unconfirmed");
+            });
+            await Phase(regenerate, "editing-confirmation-real-controls", 90, async ct =>
+            {
+                await PrepareInputAsync(cdp!, windows!, "", "", selectSource: false, ct);
+                await WaitPreviewAsync(cdp!, ct);
+                regenerate.EditorRegenerateObservation = await cdp!.VerifyEditorRegenerateAsync(trace, cleanupErrors, ct);
             });
             await Phase(glossary, "preview-editor-more-glossary", 30, async ct =>
             {

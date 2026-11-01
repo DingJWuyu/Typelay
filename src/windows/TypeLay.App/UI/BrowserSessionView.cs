@@ -5,7 +5,7 @@ using TypeLay.Windows;
 
 namespace TypeLay.App;
 
-internal sealed class BrowserSessionView : ISessionView
+internal sealed partial class BrowserSessionView : ISessionView
 {
     private readonly BrowserInput _input;
     private readonly Action _settings;
@@ -116,6 +116,7 @@ internal sealed class BrowserSessionView : ISessionView
             HideQuietly();
             return;
         }
+        RetireEditorRegenerateForView(record, context.Token, session.State);
         _record = record;
         _context = context;
         _state = session.State;
@@ -222,6 +223,7 @@ internal sealed class BrowserSessionView : ISessionView
     public void RenderPaused(PauseAnchor anchor, long revision) => HideQuietly();
     public void HideQuietly()
     {
+        RetireEditorRegenerate();
         if (_glossary is { } entry)
             CloseGlossary(entry.FormId);
         _input.CancelEditorTransition();
@@ -243,6 +245,8 @@ internal sealed class BrowserSessionView : ISessionView
     }
     private void Event(BrowserEvent message)
     {
+        if (ConsumeEditorRegenerateEvent(message))
+            return;
         if (_record is not { } record || _context is not { } context || message.Peer != record.Peer
             || message.Route != record.Route || BrowserInput.String(message.Data, "target") != record.Target.Value
             || BrowserInput.String(message.Data, "generation") != context.Token.CommandGeneration.ToString()
@@ -311,7 +315,16 @@ internal sealed class BrowserSessionView : ISessionView
                     EscapeRequested?.Invoke(token);
                 break;
             case "regenerate":
-                RegenerateRequested?.Invoke();
+                if (value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+                {
+                    // Old DOM has no negotiated editor protocol. Preserve only
+                    // its legacy plain action; negotiated or malformed payloads
+                    // must not downgrade into that path.
+                    if (_state != SessionState.EditingTranslation || !record.EditorRegenerateSupported)
+                        RegenerateRequested?.Invoke();
+                }
+                else if (_state == SessionState.EditingTranslation)
+                    _ = RegenerateEditorAsync(record, context, value);
                 break;
             case "alternative":
                 if (context.TranslationActions is { AlternativeReleased: true }

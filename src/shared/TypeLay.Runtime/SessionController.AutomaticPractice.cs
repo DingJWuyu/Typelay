@@ -677,6 +677,8 @@ public sealed partial class SessionController
 
     private void ChangePracticeDraft(string text)
     {
+        if (ChangeReturningEditorDraft(text))
+            return;
         _session.ChangeDraft(text);
         if (_session.State != SessionState.EditingTranslation || _session.Current is not { } source
             || AutomaticPracticeFor(source.Target) is null || _automaticEditRevision != _session.Revision
