@@ -132,7 +132,8 @@ static inline const char *tl_overlay_ui(const char *value, int english) {
         {"重译", "Retranslate"}, {"重新翻译", "Retranslate"}, {"展开", "Expand"}, {"收起", "Collapse"},
         {"恢复", "Resume"}, {"已暂停", "Paused"}, {"更多", "More"}, {"源语言", "From"}, {"目标语言", "To"},
         {"应用语言方向", "Apply languages"}, {"交换语言", "Swap languages"}, {"当前应用风格", "Style in this app"},
-        {"继承", "Use default"}, {"自然", "Natural"}, {"正式", "Formal"}, {"✓ 继承", "✓ Use default"},
+        {"继承", "Use default"}, {"自然", "Natural"}, {"正式", "Formal"},
+        {"风格", "Style"}, {"简洁", "Concise"}, {"口语", "Casual"}, {"暂不可用", "Not available yet"}, {"✓ 继承", "✓ Use default"},
         {"✓ 自然", "✓ Natural"}, {"✓ 正式", "✓ Formal"}, {"换种说法", "Rephrase"},
         {"加入术语表", "Add to glossary"}, {"复制译文", "Copy translation"}, {"排除此应用", "Hide in this app"},
         {"不要在这个应用中显示", "Hide in this app"}, {"设置…", "Settings…"}, {"点击译文编辑", "Click to edit translation"},
@@ -239,19 +240,27 @@ static inline int tl_overlay_qt_css(char *out, size_t capacity, TlOverlayPalette
         "QFrame#typelay-overlay QPushButton:hover, QFrame#typelay-overlay QPushButton:pressed { color:%s; background:%s; }"
         "QFrame#typelay-overlay QPushButton#typelay-menu-trigger { border-radius:13px; padding:0 5px; }"
         "QFrame#typelay-overlay QPushButton#typelay-resume { color:%s; font-weight:600; }"
-        "QFrame#typelay-overlay QWidget#typelay-menu { border-top:1px solid %s; }"
         "QFrame#typelay-overlay QPlainTextEdit#typelay-editor { background:%s; color:%s; border:1px solid %s;"
         " border-radius:10px; padding:4px; font-family:%s; font-size:%dpx; font-weight:normal; selection-background-color:%s; selection-color:%s; }"
         "QFrame#typelay-overlay QPlainTextEdit#typelay-editor:hover { background:%s; }"
         "QFrame#typelay-overlay QPlainTextEdit#typelay-editor:focus { border-color:%s; background:%s; }"
         "QFrame#typelay-overlay QWidget#typelay-glossary QLineEdit { background:%s; color:%s; border:1px solid %s;"
         " border-radius:8px; padding:5px; selection-background-color:%s; selection-color:%s; }"
-        "QFrame#typelay-overlay QWidget#typelay-glossary QLineEdit:focus { border-color:%s; }",
+        "QFrame#typelay-overlay QWidget#typelay-glossary QLineEdit:focus { border-color:%s; }"
+        "QFrame[typelayMenu=\"true\"] { background:%s; color:%s; border:1px solid %s; border-radius:12px;"
+        " font-family:%s; font-size:12px; }"
+        "QFrame[typelayMenu=\"true\"] QLabel, QFrame[typelayMenu=\"true\"] QRadioButton { color:%s; background:transparent; }"
+        "QFrame[typelayMenu=\"true\"] QPushButton { color:%s; background:transparent; border:0; border-radius:7px;"
+        " padding:0 5px; min-height:26px; font-size:12px; text-align:left; }"
+        "QFrame[typelayMenu=\"true\"] QWidget#typelay-application-style QPushButton { padding:0 3px; text-align:center; }"
+        "QFrame[typelayMenu=\"true\"] QPushButton:hover, QFrame[typelayMenu=\"true\"] QPushButton:checked { color:%s; background:%s; }"
+        "QFrame[typelayMenu=\"true\"] QPushButton:disabled, QFrame[typelayMenu=\"true\"] QRadioButton:disabled { color:%s; background:transparent; }",
         p.surface, p.ink, p.line, ui_font, p.ink, p.tertiary, p.secondary, p.accent, p.secondary,
-        p.ink, p.hover, p.accent_ink, p.line, editing ? p.card : "transparent", stale ? p.tertiary : p.ink,
+        p.ink, p.hover, p.accent_ink, editing ? p.card : "transparent", stale ? p.tertiary : p.ink,
         editing ? p.accent : "transparent", font, text_size, p.accent_ink, p.card,
         editing ? p.card : editable ? p.hover : "transparent", p.accent, p.card,
-        p.card, p.ink, p.line, p.accent_ink, p.card, p.accent);
+        p.card, p.ink, p.line, p.accent_ink, p.card, p.accent,
+        p.surface, p.ink, p.line, ui_font, p.ink, p.ink, p.ink, p.hover, p.tertiary);
 }
 
 #if defined(GTK_MAJOR_VERSION)

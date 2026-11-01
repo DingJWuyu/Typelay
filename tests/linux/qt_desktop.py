@@ -737,6 +737,7 @@ def run_qt(
                         assert actual["first"]["changes"] == before["first"]["changes"]
                         assert not actual["overlayControls"]["typelay-menu-trigger"]["visible"]
                         assert not actual["overlayMenuVisible"]
+                        assert not actual["overlayMoreMenuVisible"]
                         assert not actual["editorVisible"] and not actual["editorFocused"]
                         assert actual["editorReadOnly"] and actual["editorText"] == ""
 
@@ -1157,15 +1158,15 @@ def run_qt(
                 # A short translation has no irrelevant expand action.
                 overlay_bounds = initial_application["overlayGeometry"]
                 editor_bounds = initial_application["editorGeometry"]
-                more_control = initial_application["overlayControls"]["typelay-menu-trigger"]
-                more_bounds = more_control["geometry"]
-                assert more_control["visible"] and more_control["enabled"]
+                language_control = initial_application["overlayControls"]["typelay-menu-trigger"]
+                language_bounds = language_control["geometry"]
+                assert language_control["visible"] and language_control["enabled"]
                 assert not initial_application["overlayMenuVisible"]
                 assert 300 <= overlay_bounds["width"] <= 440
                 assert 36 <= editor_bounds["height"] <= 167
                 assert not initial_application["overlayControls"]["typelay-expand"]["visible"]
-                assert more_bounds["y"] >= editor_bounds["y"] + editor_bounds["height"]
-                for bounds in (editor_bounds, more_bounds):
+                assert language_bounds["y"] >= editor_bounds["y"] + editor_bounds["height"]
+                for bounds in (editor_bounds, language_bounds):
                     assert bounds["width"] > 0 and bounds["height"] > 0
                     assert overlay_bounds["x"] <= bounds["x"]
                     assert (
@@ -1296,6 +1297,7 @@ def run_qt(
                     and value["editorReadOnly"]
                     and value["editorText"] == candidate
                     and not value["overlayMenuVisible"]
+                    and not value["overlayMoreMenuVisible"]
                     and not value["overlayControls"]["typelay-expand"]["visible"]
                     and 300 <= value["overlayGeometry"]["width"] <= 440
                     and 36 <= value["editorGeometry"]["height"] <= 167
@@ -1398,14 +1400,28 @@ def run_qt(
                     "widget palettes, six screenshots, no source mutation or writes"
                 )
                 before_menu = state()
-                assert not before_menu["overlayMenuVisible"]
+                assert not before_menu["overlayMoreMenuVisible"]
                 assert not before_menu["overlayControls"]["typelay-copy"]["visible"]
                 assert before_menu["clipboardText"] != candidate
                 before_menu_write = trace_checkpoint()
-                click_overlay("typelay-menu-trigger")
+                click_overlay("typelay-more-trigger")
                 opened = wait_for(
-                    lambda: value if (value := state()).get("overlayMenuVisible") else None,
-                    "actual Qt language/more button did not open its menu",
+                    lambda: value if (value := state()).get("overlayMoreMenuVisible") else None,
+                    "actual Qt More button did not open its menu",
+                )
+                assert not opened["overlayMenuVisible"]
+                assert not opened["overlayControls"]["typelay-source-en"]["visible"]
+                assert opened["overlayGeometry"] == before_menu["overlayGeometry"]
+                assert opened["editorGeometry"] == before_menu["editorGeometry"]
+                styles = [
+                    opened["overlayControls"][f"typelay-style-{name}"]
+                    for name in ("natural", "formal", "concise", "casual")
+                ]
+                assert all(style["visible"] and not style["enabled"] for style in styles)
+                assert len({style["geometry"]["y"] for style in styles}) == 1
+                assert all(
+                    left["geometry"]["x"] + left["geometry"]["width"] <= right["geometry"]["x"]
+                    for left, right in zip(styles, styles[1:])
                 )
                 assert opened["first"] == before_menu["first"]
                 assert opened["focusTransitions"] == before_menu["focusTransitions"]
@@ -1414,7 +1430,7 @@ def run_qt(
                     lambda: value
                     if (value := state()).get("clipboardText") == candidate
                     and value["overlayVisible"]
-                    and not value["overlayMenuVisible"]
+                    and not value["overlayMoreMenuVisible"]
                     else None,
                     "actual Qt Copy did not copy the candidate and close its menu",
                 )
@@ -1543,6 +1559,46 @@ def run_qt(
                     else None,
                     "real editor typing did not establish the selected undoable suffix",
                 )
+                # The separate More surface must not surrender a live draft,
+                # its selection or native undo history just to copy that draft.
+                menu_write = trace_checkpoint()
+                click_overlay("typelay-more-trigger")
+                draft_menu = wait_for(
+                    lambda: value if (value := state())["overlayMoreMenuVisible"] else None,
+                    "More did not open beside the live manual editor",
+                )
+                assert not draft_menu["overlayMenuVisible"]
+                assert all(
+                    draft_menu["overlayControls"][f"typelay-style-{name}"]["visible"]
+                    and not draft_menu["overlayControls"][f"typelay-style-{name}"]["enabled"]
+                    for name in ("natural", "formal", "concise", "casual")
+                )
+                click_overlay("typelay-copy")
+                copied_draft = wait_for(
+                    lambda: value
+                    if (value := state())["clipboardText"] == long_draft + " MARK"
+                    and not value["overlayMoreMenuVisible"]
+                    else None,
+                    "More did not copy the owned draft and close without returning focus",
+                )
+                for observation in (draft_menu, copied_draft):
+                    for name in (
+                        "editorText",
+                        "editorCursor",
+                        "editorAnchor",
+                        "editorDocument",
+                        "editorDocumentRevision",
+                        "editorUndoSteps",
+                        "editorUndoAvailable",
+                        "editorRedoAvailable",
+                        "editorFocused",
+                        "editorReadOnly",
+                        "focusTransitions",
+                        "first",
+                        "second",
+                    ):
+                        assert observation[name] == editing_theme_before[name], name
+                assert not new_write_outcomes(menu_write)
                 recording = start_motion("qt-motion-chinese-draft", screenshots=True)
                 draft_frames = finish_motion(recording, "qt-motion-chinese-draft")
                 for frame in draft_frames:
@@ -1847,6 +1903,7 @@ def run_qt(
                     assert not host["acceptanceReady"]
                     assert not actual["overlayControls"]["typelay-menu-trigger"]["visible"]
                     assert not actual["overlayMenuVisible"]
+                    assert not actual["overlayMoreMenuVisible"]
                     assert not actual["editorVisible"] and not actual["editorFocused"]
                     assert actual["editorReadOnly"] and actual["editorText"] == ""
                     return actual

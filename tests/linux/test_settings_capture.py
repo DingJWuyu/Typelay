@@ -14,7 +14,13 @@ from pathlib import Path
 from types import SimpleNamespace as NS
 from unittest.mock import patch
 
+import gi
 from settings_ui import capture_owned_niri, pixbuf_observation
+
+# Load the real image library before the controlled niri module scope restores
+# sys.modules. Native GTypes cannot be safely unloaded and imported again.
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import GdkPixbuf  # noqa: E402
 
 
 def image(width, height, channels, stride, pixels):
@@ -27,6 +33,15 @@ def image(width, height, channels, stride, pixels):
         get_has_alpha=lambda: channels == 4,
         get_pixels=lambda: pixels,
     )
+
+
+def png(alpha=255):
+    """A single synthetic RGBA pixel, never evidence of a rendered desktop."""
+    pixel = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, True, 8, 1, 1)
+    pixel.fill((40 << 24) | (60 << 16) | (80 << 8) | alpha)
+    saved, data = pixel.save_to_bufferv("png", [], [])
+    assert saved
+    return data
 
 
 class PixbufObservationTests(unittest.TestCase):
@@ -132,11 +147,12 @@ class OwnedCaptureTests(unittest.IsolatedAsyncioTestCase):
         )
         return scope
 
-    async def capture(self, observation):
+    async def capture(self, observation, *, name="shortcuts-en-light-default", deadline=None):
         await capture_owned_niri(
             self.output,
             "TypeLay Settings",
-            deadline=time.monotonic() + 30,
+            name=name,
+            deadline=time.monotonic() + 30 if deadline is None else deadline,
             observation=observation,
         )
 
@@ -145,8 +161,8 @@ class OwnedCaptureTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(["grim", "-o", "winit"], args[:3])
             self.assertNotIn("start_new_session", kwargs)
             self.assertEqual(subprocess.DEVNULL, kwargs["stderr"])
-            # Command-boundary fixture, deliberately not an image or UI proof.
-            Path(args[3]).write_bytes(b"controlled-command-output-not-a-screenshot")
+            # A real PNG decoder may inspect this fixture, not a real desktop.
+            Path(args[3]).write_bytes(png())
             return Child()
 
         observed = {}
@@ -163,6 +179,62 @@ class OwnedCaptureTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         self.assertTrue(observed["childReaped"])
+        self.assertEqual(1, observed["pixels"]["nontransparentPixels"])
+
+    async def test_transparent_or_invalid_output_is_not_recorded_as_a_captured_image(self):
+        for data in (png(alpha=0), b"not-a-png"):
+            with self.subTest(data=data):
+                destination = self.output / "shortcuts-en-light-default.png"
+                destination.unlink(missing_ok=True)
+
+                def spawn(args, **_kwargs):
+                    Path(args[3]).write_bytes(data)
+                    return Child()
+
+                observed = {}
+                with self.endpoints(), patch("settings_ui.subprocess.Popen", side_effect=spawn):
+                    await self.capture(observed)
+                self.assertEqual("unavailable", observed["status"])
+                self.assertTrue(observed["failure"])
+                self.assertTrue(observed["childReaped"])
+
+    async def test_nine_state_names_keep_separate_images_without_overwriting_or_renewing(self):
+        names = (
+            "en-light-default",
+            "en-light-recording",
+            "en-light-save-failed",
+            "en-light-duplicate",
+            "en-light-conflict",
+            "en-light-default-final",
+            "en-dark-default-final",
+            "zh-light-default-final",
+            "zh-dark-default-final",
+        )
+        deadline = time.monotonic() + 30
+
+        def spawn(args, **_kwargs):
+            Path(args[3]).write_bytes(png())
+            return Child()
+
+        with self.endpoints(), patch("settings_ui.subprocess.Popen", side_effect=spawn) as command:
+            for name in names:
+                observed = {}
+                await self.capture(observed, name="shortcuts-" + name, deadline=deadline)
+                self.assertEqual("written-not-reviewed", observed["status"])
+                self.assertEqual("shortcuts-" + name + ".png", observed["file"])
+                self.assertTrue(observed["childReaped"])
+            original = (self.output / "shortcuts-en-light-default.png").read_bytes()
+            repeated = {}
+            await self.capture(repeated, deadline=deadline)
+            self.assertEqual("unavailable", repeated["status"])
+            self.assertEqual(
+                original, (self.output / "shortcuts-en-light-default.png").read_bytes()
+            )
+            expired = {}
+            await self.capture(expired, name="not-started", deadline=time.monotonic() - 1)
+            self.assertEqual("unavailable", expired["status"])
+        self.assertEqual(9, command.call_count)
+        self.assertEqual(9, len(list(self.output.glob("shortcuts-*.png"))))
 
     async def test_foreign_or_ambiguous_windows_and_unknown_outputs_never_capture(self):
         for change in (

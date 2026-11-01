@@ -1,5 +1,6 @@
 """Observe owned GTK test windows through the real desktop accessibility API."""
 
+import json
 import time
 from collections import deque
 
@@ -271,8 +272,15 @@ def record_shortcut(pid, title, chord, send_key, timeout=15):
     assert time.monotonic() < deadline, "shortcut recording exhausted its interaction budget"
     # Stored/product spelling is Esc; the X11 keysym is Escape. xdotool
     # silently ignores an unknown symbol, so do not send the display spelling.
+    # Product chords uppercase letters for display. An uppercase X11 keysym
+    # asks xdotool to add Shift; only an explicit chord part may do that here.
     key_names = {"Ctrl": "ctrl", "Shift": "shift", "Alt": "alt", "Super": "super", "Esc": "Escape"}
-    send_key("+".join(key_names.get(part, part) for part in chord.split("+")))
+    send_key(
+        "+".join(
+            part.lower() if len(part) == 1 and "A" <= part <= "Z" else key_names.get(part, part)
+            for part in chord.split("+")
+        )
+    )
     return node
 
 
@@ -479,30 +487,38 @@ def focus_settings_control(pid, node, timeout=15):
     assert node.get_process_id() == pid
     name = node.get_name()
     assert Atspi.Component.grab_focus(node.get_component_iface()), name
+    observation = {}
 
     def settings_control_visible():
+        # Keep only this attempt's existing observations. Failure reporting
+        # must not query the remote tree again or outlive the original budget.
+        observation.clear()
+        observation.update(targetStates={}, clips=[])
         node.clear_cache()
         assert node.get_process_id() == pid and node.get_name() == name
         states = node.get_state_set()
-        if not all(
-            states.contains(state)
-            for state in (
-                Atspi.StateType.SHOWING,
-                Atspi.StateType.FOCUSED,
-                Atspi.StateType.SENSITIVE,
-                Atspi.StateType.ENABLED,
-            )
+        for label, state in (
+            ("showing", Atspi.StateType.SHOWING),
+            ("focused", Atspi.StateType.FOCUSED),
+            ("sensitive", Atspi.StateType.SENSITIVE),
+            ("enabled", Atspi.StateType.ENABLED),
         ):
-            return False
+            present = states.contains(state)
+            observation["targetStates"][label] = present
+            if not present:
+                observation["reason"] = "target-not-" + label
+                return False
         area = Atspi.Component.get_extents(node.get_component_iface(), Atspi.CoordType.SCREEN)
+        observation["targetBounds"] = (area.x, area.y, area.width, area.height)
         if area.width <= 0 or area.height <= 0:
+            observation["reason"] = "target-nonpositive-size"
             return False
         ancestor = node.get_parent()
         seen = {node}
         # The real GTK searchable popover adds six nested accessibility peers;
         # its owned settings frame is at depth 19. Keep traversal bounded and
         # reject cycles while checking every clip, not just the final frame.
-        for _ in range(24):
+        for depth in range(24):
             assert ancestor is not None and ancestor.get_process_id() == pid
             assert ancestor not in seen, "settings accessibility ancestry contains a cycle"
             seen.add(ancestor)
@@ -518,14 +534,34 @@ def focus_settings_control(pid, node, timeout=15):
                 clip = Atspi.Component.get_extents(
                     ancestor.get_component_iface(), Atspi.CoordType.SCREEN
                 )
-                if not (
-                    clip.width > 0
-                    and clip.height > 0
-                    and clip.x != -(2**31)
-                    and clip.y != -(2**31)
-                    and clip.x <= area.x <= clip.x + clip.width - area.width
-                    and clip.y <= area.y <= clip.y + clip.height - area.height
-                ):
+                rejected = [
+                    reason
+                    for reason, accepted in (
+                        ("nonpositive-width", clip.width > 0),
+                        ("nonpositive-height", clip.height > 0),
+                        ("unknown-x", clip.x != -(2**31)),
+                        ("unknown-y", clip.y != -(2**31)),
+                        (
+                            "outside-horizontal",
+                            clip.x <= area.x <= clip.x + clip.width - area.width,
+                        ),
+                        (
+                            "outside-vertical",
+                            clip.y <= area.y <= clip.y + clip.height - area.height,
+                        ),
+                    )
+                    if not accepted
+                ]
+                observation["clips"].append(
+                    {
+                        "depth": depth,
+                        "role": getattr(role, "value_nick", str(role)),
+                        "clip": (clip.x, clip.y, clip.width, clip.height),
+                        "rejectedBy": rejected,
+                    }
+                )
+                if rejected:
+                    observation["reason"] = "ancestor-clip-rejected"
                     return False
                 if role in (Atspi.Role.FRAME, Atspi.Role.DIALOG, Atspi.Role.ALERT):
                     assert (
@@ -536,12 +572,16 @@ def focus_settings_control(pid, node, timeout=15):
             ancestor = ancestor.get_parent()
         raise AssertionError("settings control exceeds its bounded owned ancestry")
 
-    while time.monotonic() < deadline:
-        if settings_control_visible():
-            assert settings_control_visible(), "settings control moved after focus: " + name
-            return node
-        time.sleep(0.05)
-    raise AssertionError("settings control did not focus/scroll fully into view: " + name)
+    try:
+        while time.monotonic() < deadline:
+            if settings_control_visible():
+                assert settings_control_visible(), "settings control moved after focus: " + name
+                return node
+            time.sleep(0.05)
+        raise AssertionError("settings control did not focus/scroll fully into view: " + name)
+    except AssertionError as error:
+        error.add_note("settings focus observation: " + json.dumps(observation, ensure_ascii=False))
+        raise
 
 
 def language_label(node):

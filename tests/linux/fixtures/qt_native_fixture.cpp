@@ -203,7 +203,8 @@ public:
         if (!widget || !window || widget->window() != window) return;
         const auto name = widget->objectName();
         const bool control = qobject_cast<QAbstractButton *>(widget) && name.startsWith(QStringLiteral("typelay-"));
-        if (!control && name != QStringLiteral("typelay-overlay") && name != QStringLiteral("typelay-menu")) return;
+        if (!control && name != QStringLiteral("typelay-overlay") && name != QStringLiteral("typelay-menu")
+            && name != QStringLiteral("typelay-more-menu")) return;
         const QRect bounds(widget->mapTo(window, QPoint()), widget->size());
         if (overlayObjects.contains(widget)) { overlayObjects[widget].bounds = bounds; return; }
         overlayObjects.insert(widget, {name, ++overlayInstance, bounds});
@@ -517,6 +518,7 @@ int main(int argc, char **argv) {
         auto *overlay = window.findChild<QWidget *>(QStringLiteral("typelay-overlay"));
         auto *editor = window.findChild<QPlainTextEdit *>(QStringLiteral("typelay-editor"));
         auto *menu = window.findChild<QWidget *>(QStringLiteral("typelay-menu"));
+        auto *moreMenu = window.findChild<QWidget *>(QStringLiteral("typelay-more-menu"));
         QJsonObject glossary;
         auto *form = window.findChild<QWidget *>(QStringLiteral("typelay-glossary"));
         glossary.insert("visible", form && form->isVisible());
@@ -535,6 +537,7 @@ int main(int argc, char **argv) {
         }
         observer.observeOverlay(overlay);
         observer.observeOverlay(menu);
+        observer.observeOverlay(moreMenu);
         QJsonObject overlayControls;
         QAbstractButton *visibleExpand = nullptr;
         QJsonObject visibleExpandControl;
@@ -606,7 +609,11 @@ int main(int argc, char **argv) {
             {"overlayPalette", overlay ? paletteState(overlay->palette()) : QJsonObject()},
             {"overlayTextColors", overlayTextColors},
             {"overlayGeometry", overlay ? rectangle(overlay) : QJsonObject()},
-            {"overlayMenuVisible", menu && menu->isVisible()}, {"overlayControls", overlayControls},
+            {"overlayMenuVisible", menu && menu->isVisible()},
+            {"overlayMenuGeometry", menu ? rectangle(menu) : QJsonObject()},
+            {"overlayMoreMenuVisible", moreMenu && moreMenu->isVisible()},
+            {"overlayMoreMenuGeometry", moreMenu ? rectangle(moreMenu) : QJsonObject()},
+            {"overlayControls", overlayControls},
             {"clipboardText", clipboard->ownsClipboard() ? clipboard->text() : QString()},
             {"editorVisible", editor && editor->isVisible()},
             {"editorFocused", editor && editor->hasFocus()},

@@ -1268,11 +1268,11 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             }
             catch (N.NativeMessageException error)
             {
-                // One failure-only observation of this retained owned child.
-                // No second WM_GETTEXT, replacement timeout or inferred success.
+                // Freeze the failed read before optional diagnostics. No second
+                // WM_GETTEXT, replacement timeout, or inferred success.
+                long failedAtMs = WindowsInterruptClock.NowMs;
                 try
                 {
-                    long failedAtMs = WindowsInterruptClock.NowMs;
                     bool exited = child!.Process.HasExited;
                     uint thread = N.GetWindowThreadProcessId(field, out uint process);
                     bool owned = process == (uint)child.Process.Id && N.GetAncestor(field, 2) == root;
@@ -1281,14 +1281,22 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                     int? guiError = guiRead == false ? Marshal.GetLastPInvokeError() : null;
                     var acceptance = System.Text.Json.JsonSerializer.SerializeToElement(
                         host.AcceptanceDiagnostics(first.Lease, first.Permit));
+                    object sourceInstall = ReadInstallTrace(acceptance);
                     TestContext.Current.TestOutputHelper?.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
                     {
                         operation = "owned-source-read-failed",
                         afterFailure = true,
                         failedAtMs,
+                        wanted = new
+                        {
+                            connection = acceptance.GetProperty("connection"),
+                            run = acceptance.GetProperty("run"),
+                            sequence = acceptance.GetProperty("sequence"),
+                            planSequence = acceptance.GetProperty("planSequence")
+                        },
                         // Keep the exact existing post-ACK record before this
                         // owned child's teardown deletes its trace directory.
-                        sourceInstall = ReadInstallTrace(acceptance),
+                        sourceInstall,
                         nativeOperation = error.Operation is "ReadText" or "Send" ? error.Operation : "unknown",
                         error.MessageId,
                         error.Win32Error,
@@ -1301,6 +1309,29 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                         guiThreadInfoError = guiError,
                         sourceActive = guiRead == true ? gui.Active == root : (bool?)null,
                         fieldFocused = guiRead == true ? gui.Focus == field : (bool?)null
+                    }));
+                    // The original failure is already in the TRX. Read only the
+                    // same expected install within both bounds; never retry input.
+                    long evidenceDeadlineMs = failedAtMs + 1000;
+                    object lateSourceInstall = sourceInstall;
+                    while (traceEnabled && lateSourceInstall is not System.Text.Json.JsonElement
+                        && !child.Process.HasExited && WindowsInterruptClock.NowMs < evidenceDeadlineMs
+                        && !deadline.IsCancellationRequested)
+                    {
+                        await Task.Delay(10, deadline.Token);
+                        if (deadline.IsCancellationRequested || WindowsInterruptClock.NowMs >= evidenceDeadlineMs)
+                            break;
+                        lateSourceInstall = ReadInstallTrace(acceptance);
+                    }
+                    TestContext.Current.TestOutputHelper?.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        operation = "owned-source-read-late-evidence",
+                        failedAtMs,
+                        evidenceDeadlineMs,
+                        evidenceObservedAtMs = WindowsInterruptClock.NowMs,
+                        lateSourceInstall,
+                        childExited = child.Process.HasExited,
+                        overallDeadlineReached = deadline.IsCancellationRequested
                     }));
                 }
                 catch { /* Keep the original bounded native-message exception. */ }
@@ -1494,7 +1525,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                     if (!File.Exists(file))
                         return new
                         {
-                            status = "not-flushed"
+                            status = "trace-file-not-present"
                         };
                     // The source can still be appending its post-ACK trace.
                     // Share that writer without waiting or reopening: a partial
@@ -1503,6 +1534,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                     using var reader = new StreamReader(stream);
                     string contents = reader.ReadToEnd();
                     int completeEnd = contents.LastIndexOf('\n');
+                    int completeInstallRecords = 0;
                     // A concurrent append may leave a final partial record.
                     // Only complete lines can describe this exact installation.
                     foreach (string line in contents[..(completeEnd + 1)].Split('\n', StringSplitOptions.RemoveEmptyEntries))
@@ -1514,6 +1546,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                             || operation.ValueKind != System.Text.Json.JsonValueKind.String
                             || operation.GetString() != "owned-install-source")
                             continue;
+                        completeInstallRecords++;
                         if (new[] { "connection", "run", "sequence", "planSequence" }.All(key =>
                             value.TryGetProperty(key, out var actual) && expected.TryGetProperty(key, out var wanted)
                             && actual.ToString() == wanted.ToString()))
@@ -1521,7 +1554,9 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                     }
                     return new
                     {
-                        status = "exact-install-not-flushed"
+                        status = "no-matching-complete-install",
+                        completeInstallRecords,
+                        incompleteTail = completeEnd + 1 < contents.Length
                     };
                 }
                 catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)

@@ -187,7 +187,8 @@ public sealed partial class SetupRenderingTests
                     var currentDark = AppearancePaintedTile(scene.Window, "theme", "dark");
                     double before = AppearanceLayer(currentDark, "selection").BorderThickness.Left;
                     Record(currentDark, before);
-                    if (before is not (> .7 and < 1.7))
+                    // Retarget only from an actually painted, strictly in-flight state.
+                    if (before is not (> .5001 and < 2.5))
                         return;
                     changed = true;
                     // SelectionItem.Select is the public, synchronous RadioButton operation.
@@ -197,6 +198,7 @@ public sealed partial class SetupRenderingTests
                     Assert.NotSame(currentDark, newDark);
                     firstAfterSecond = AppearanceLayer(newDark, "selection").BorderThickness.Left;
                     Assert.InRange(firstAfterSecond.Value, .5001, before + .25);
+                    Assert.True(firstAfterSecond.Value < 2.5);
                 }
                 else if (changed)
                 {

@@ -1,5 +1,6 @@
 """Exercise actual fixture focus ancestry with a fake AT-SPI port, not GUI acceptance."""
 
+import json
 import runpy
 import sys
 import unittest
@@ -39,6 +40,8 @@ class Node:
 class SettingsFocusTests(unittest.TestCase):
     def setUp(self):
         self.focus_calls = []
+        self.extent_reads = []
+        self.sleeps = []
         atspi = NS(
             Role=NS(
                 FRAME="frame",
@@ -52,7 +55,7 @@ class SettingsFocusTests(unittest.TestCase):
             ),
             CoordType=NS(SCREEN="screen"),
             Component=NS(
-                get_extents=lambda node, _: node.area,
+                get_extents=lambda node, _: self.extent_reads.append(node) or node.area,
                 grab_focus=lambda node: self.focus_calls.append(node) or True,
             ),
         )
@@ -67,7 +70,7 @@ class SettingsFocusTests(unittest.TestCase):
                 str(Path(__file__).parent / "support/gtk_accessibility.py")
             )["focus_settings_control"]
         ticks = iter(value / 1000 for value in range(1000))
-        self.focus.__globals__["time"] = NS(monotonic=lambda: next(ticks), sleep=lambda _: None)
+        self.focus.__globals__["time"] = NS(monotonic=lambda: next(ticks), sleep=self.sleeps.append)
 
     def peers(self, role="alert"):
         application = Node("application")
@@ -85,6 +88,52 @@ class SettingsFocusTests(unittest.TestCase):
             with self.subTest(role=role):
                 _, button = self.peers(role)
                 self.assertIs(self.focus(10, button, timeout=0.02), button)
+
+    def test_failed_clip_reports_only_the_original_observed_target_and_ancestors(self):
+        top, button = self.peers("frame")
+        pane = Node("scroll", top, area=(0, 0, 80, 300))
+        viewport = Node("viewport", pane)
+        button.parent = viewport
+        with self.assertRaises(AssertionError) as caught:
+            self.focus(10, button, timeout=0.002)
+        self.assertEqual(
+            "settings control did not focus/scroll fully into view: 取消", str(caught.exception)
+        )
+        observed = json.loads(caught.exception.__notes__[0].split(": ", 1)[1])
+        self.assertEqual([20, 30, 70, 26], observed["targetBounds"])
+        self.assertEqual(
+            {"showing": True, "focused": True, "sensitive": True, "enabled": True},
+            observed["targetStates"],
+        )
+        self.assertEqual(
+            [
+                {"depth": 0, "role": "viewport", "clip": [0, 0, 400, 300], "rejectedBy": []},
+                {
+                    "depth": 1,
+                    "role": "scroll",
+                    "clip": [0, 0, 80, 300],
+                    "rejectedBy": ["outside-horizontal"],
+                },
+            ],
+            observed["clips"],
+        )
+        self.assertEqual([button, viewport, pane], self.extent_reads)
+        self.assertEqual([button], self.focus_calls)
+        self.assertEqual([0.05], self.sleeps)
+
+    def test_unfocused_target_keeps_the_same_short_circuit_without_reading_geometry(self):
+        _, button = self.peers()
+        button.states.remove("focused")
+        with self.assertRaises(AssertionError) as caught:
+            self.focus(10, button, timeout=0.002)
+        observed = json.loads(caught.exception.__notes__[0].split(": ", 1)[1])
+        self.assertEqual({"showing": True, "focused": False}, observed["targetStates"])
+        self.assertEqual("target-not-focused", observed["reason"])
+        self.assertNotIn("targetBounds", observed)
+        self.assertEqual([], observed["clips"])
+        self.assertEqual([], self.extent_reads)
+        self.assertEqual([button], self.focus_calls)
+        self.assertEqual([0.05], self.sleeps)
 
     def test_alert_preserves_identity_ancestry_clip_and_enabled_gates(self):
         for fault in (

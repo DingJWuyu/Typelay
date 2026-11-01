@@ -14,6 +14,14 @@ class ShortcutInputTests(unittest.TestCase):
             ("Esc", "Escape"),
             ("Ctrl+Esc", "ctrl+Escape"),
             ("Ctrl+Shift+F8", "ctrl+shift+F8"),
+            ("Ctrl+C", "ctrl+c"),
+            ("Ctrl+V", "ctrl+v"),
+            ("Ctrl+Shift+C", "ctrl+shift+c"),
+            ("Alt+A", "alt+a"),
+            ("Super+Z", "super+z"),
+            ("Ctrl+c", "ctrl+c"),
+            ("Ctrl+F24", "ctrl+F24"),
+            ("Ctrl+Return", "ctrl+Return"),
         ):
             with self.subTest(stored=stored):
                 events = []

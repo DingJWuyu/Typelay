@@ -302,13 +302,13 @@ public sealed partial class SetupRenderingTests
         {
             window.ShowOrActivate();
             Observe("show-or-activate-returned");
+            AssertOnboardingHidden(window, destination);
             await Dispatcher.Yield(DispatcherPriority.ContextIdle);
             Observe("existing-context-idle-resumed");
             if (fault.Task.IsFaulted)
                 await fault.Task;
             Assert.True(acted);
-            Assert.False(window.IsVisible);
-            Assert.True(destination.IsActive);
+            AssertOnboardingHidden(window, destination);
             Assert.Equal(0, scene.Attempts);
             succeeded = true;
         }
@@ -327,8 +327,11 @@ public sealed partial class SetupRenderingTests
                 }
                 catch (Exception error) when (error is not OutOfMemoryException) { }
             }
-            window.Close();
-            destination.Close();
+            try
+            {
+                window.Close();
+            }
+            finally { destination.Close(); }
         }
     });
 

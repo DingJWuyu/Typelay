@@ -403,14 +403,16 @@ def language_options(native, captured, generation, state, window, environment):
         "presentation": {"visible": True, "editorOwnsText": False},
     }
     revision = 0
+    menu_actions = None
     original = state()
 
     def controls():
         return state().get("overlayControls", {})
 
-    def render():
+    def render(advance_revision=True):
         nonlocal revision
-        revision += 1
+        if advance_revision:
+            revision += 1
         view["viewContext"] = {
             "token": {
                 "target": {
@@ -424,6 +426,8 @@ def language_options(native, captured, generation, state, window, environment):
             "bindings": {"accept": "Ctrl+F7", "exit": "Ctrl+F8"},
             "canEdit": False,
         }
+        if menu_actions is not None:
+            view["viewContext"]["translationActions"] = menu_actions
         assert native.call(
             "overlay-render",
             {
@@ -493,7 +497,45 @@ def language_options(native, captured, generation, state, window, environment):
 
     actual = render()
     assert actual["overlayControls"]["typelay-menu-trigger"]["description"] == "English → 日本語"
+    baseline = state()
     toggle(True)
+    opened = state()
+    assert opened["overlayGeometry"] == baseline["overlayGeometry"]
+    assert opened["editorGeometry"] == baseline["editorGeometry"]
+    assert not opened["overlayMoreMenuVisible"]
+    assert not opened["overlayControls"]["typelay-copy"]["visible"]
+    assert opened["first"] == baseline["first"]
+    assert opened["focusTransitions"] == baseline["focusTransitions"]
+    # Production keeps the native revision when only translationActions change.
+    # This public DTO update must retire the menu, without a full editor render.
+    menu_actions = {
+        "settingsRevision": 12,
+        "styleReleased": False,
+        "canChangeStyle": False,
+        "canInheritStyle": True,
+        "applicationStyle": "Formal",
+        "styleUnavailableReason": None,
+        "inheritUnavailableReason": None,
+        "alternativeReleased": False,
+        "canRequestAlternative": False,
+        "alternativeUnavailableReason": None,
+        "feedback": None,
+    }
+    menu_update = render(advance_revision=False)
+    assert not menu_update["overlayMenuVisible"]
+    assert not menu_update["overlayMoreMenuVisible"]
+    for name in (
+        "first",
+        "second",
+        "editorText",
+        "editorDocument",
+        "editorDocumentRevision",
+        "editorGeometry",
+        "overlayGeometry",
+        "focusTransitions",
+    ):
+        assert menu_update[name] == opened[name], name
+    toggle(True, renew=False)
     actual = controls()
     for side in ("source", "target"):
         items = {
@@ -510,6 +552,8 @@ def language_options(native, captured, generation, state, window, environment):
             assert renewed["overlayControls"][name][field] == control[field], (name, field)
     assert renewed["first"]["focused"] == before["first"]["focused"]
     assert renewed["focusTransitions"] == before["focusTransitions"]
+    assert not renewed["overlayMenuVisible"], "new view must retire the old menu"
+    toggle(True, renew=False)
     before_events = events()
     click("typelay-source-ko")
     wait(lambda: not state().get("overlayMenuVisible"), "immediate source choice")
@@ -524,6 +568,8 @@ def language_options(native, captured, generation, state, window, environment):
     view["sourceLanguage"] = "ko"
     render()
     chosen("ko", "ja")
+    assert not state()["overlayMenuVisible"]
+    toggle(True, renew=False)
     click("typelay-target-en")
     wait(lambda: not state().get("overlayMenuVisible"), "immediate target choice")
     assert events()[-1]["value"] == {"source": "ko", "target": "en"}
@@ -532,6 +578,8 @@ def language_options(native, captured, generation, state, window, environment):
     view["targetLanguage"] = "en"
     render()
     chosen("ko", "en")
+    assert not state()["overlayMenuVisible"]
+    toggle(True, renew=False)
     click("typelay-swap")
     wait(lambda: not state().get("overlayMenuVisible"), "swap choice")
     assert events()[-1]["value"] == {"source": "en", "target": "ko"}
@@ -568,6 +616,7 @@ def language_options(native, captured, generation, state, window, environment):
         value["checked"] for name, value in actual.items() if name.startswith("typelay-source-")
     )
     assert not actual["typelay-swap"]["enabled"]
+    toggle(True, renew=False)
     click("typelay-source-ja")
     wait(lambda: not state().get("overlayMenuVisible"), "replace unavailable source choice")
     assert events()[-1]["value"] == {"source": "ja", "target": "ko"}
@@ -576,6 +625,48 @@ def language_options(native, captured, generation, state, window, environment):
         value["checked"] for name, value in controls().items() if name.startswith("typelay-source-")
     ), "unconfirmed replacement was presented as saved"
 
+    render()
+    toggle(True, renew=False)
+    before_cancel = state()
+    click("typelay-more-trigger")
+    switched = wait(
+        lambda: value if (value := state())["overlayMoreMenuVisible"] else None,
+        "switch from language to More",
+    )
+    assert not switched["overlayMenuVisible"]
+    assert switched["overlayGeometry"] == before_cancel["overlayGeometry"]
+    assert switched["editorGeometry"] == before_cancel["editorGeometry"]
+    assert switched["first"] == before_cancel["first"]
+    assert switched["focusTransitions"] == before_cancel["focusTransitions"]
+    menu_actions = {
+        **menu_actions,
+        "settingsRevision": 13,
+        "canInheritStyle": False,
+        "applicationStyle": None,
+    }
+    retired = render(advance_revision=False)
+    assert not retired["overlayMoreMenuVisible"], "same-revision actions must retire More as well"
+    assert not retired["overlayMenuVisible"]
+    for name in (
+        "first",
+        "second",
+        "editorText",
+        "editorDocument",
+        "editorDocumentRevision",
+        "editorGeometry",
+        "overlayGeometry",
+        "focusTransitions",
+    ):
+        assert retired[name] == switched[name], name
+    click("typelay-more-trigger")
+    reopened = wait(
+        lambda: value if (value := state())["overlayMoreMenuVisible"] else None,
+        "reopen current More",
+    )
+    assert reopened["overlayControls"]["typelay-style-inherit"]["checked"]
+    assert not reopened["overlayControls"]["typelay-style-inherit"]["enabled"]
+    click("typelay-more-trigger")
+    wait(lambda: not state()["overlayMoreMenuVisible"], "cancel More from its trigger")
     before_events = events()
     view.update(sourceLanguage="ja", targetLanguage="ko")
     for invalid in (None, {**choices, "target": choices["target"] * 2}):
@@ -589,6 +680,7 @@ def language_options(native, captured, generation, state, window, environment):
     view.pop("languageChoices")
     actual = render()["overlayControls"]
     assert actual["typelay-menu-trigger"]["description"] == "ja（当前不可用） → ko（当前不可用）"
+    toggle(True, renew=False)
     click("typelay-swap")
     assert events() == before_events
     assert state()["first"]["text"] == original["first"]["text"]
@@ -1730,8 +1822,10 @@ def ordered_controls(
                         ]
 
                     observe(lambda value: value.get("overlayVisible"), "source glossary preview")
-                    click("typelay-menu-trigger")
-                    observe(lambda value: value.get("overlayMenuVisible"), "source glossary menu")
+                    click("typelay-more-trigger")
+                    observe(
+                        lambda value: value.get("overlayMoreMenuVisible"), "source glossary menu"
+                    )
                     if check_inherit:
                         controls = state()["overlayControls"]
                         assert (
@@ -1740,7 +1834,12 @@ def ordered_controls(
                         )
                         assert all(
                             not controls[name]["enabled"]
-                            for name in ("typelay-style-natural", "typelay-style-formal")
+                            for name in (
+                                "typelay-style-natural",
+                                "typelay-style-formal",
+                                "typelay-style-concise",
+                                "typelay-style-casual",
+                            )
                         )
                         click("typelay-style-inherit")
                         inherit = wait(lambda: events("style"), "closed-quality null style request")
@@ -1758,9 +1857,9 @@ def ordered_controls(
                         assert render_view(
                             publication, view_state, "Kept candidate", False, 1, actions
                         )["visible"]
-                        click("typelay-menu-trigger")
+                        click("typelay-more-trigger")
                         observe(
-                            lambda value: value.get("overlayMenuVisible"),
+                            lambda value: value.get("overlayMoreMenuVisible"),
                             "glossary menu after null style request",
                         )
                     click("typelay-glossary-open")

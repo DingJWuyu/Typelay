@@ -690,7 +690,8 @@ private:
             shortcutSummary);
     }
     bool insideOverlay(QObject *object) const {
-        for (auto *parent = object; parent; parent = parent->parent()) if (parent == card_) return true;
+        for (auto *parent = object; parent; parent = parent->parent())
+            if (parent == card_ || parent == menu_ || parent == moreMenu_) return true;
         return false;
     }
     static bool standardField(QWidget *widget) {
@@ -1690,10 +1691,14 @@ private:
         if (overlayFocused_) ui("focus", false);
         if (composing_) ui("composition", false);
         ui("visible", false);
+        closeOverlayMenus();
+        for (const auto &panel : {menu_, moreMenu_}) {
+            if (panel) { panel->hide(); panel->deleteLater(); }
+        }
         auto *card = card_.data();
         card_ = nullptr; editor_ = nullptr; regionalDisplay_ = nullptr; overlayFontPolicy_.clear();
         hint_ = nullptr; status_ = nullptr;
-        language_ = nullptr; exit_ = nullptr; footer_ = nullptr; menu_ = nullptr; tools_ = nullptr; swap_ = nullptr; resume_ = nullptr;
+        language_ = nullptr; more_ = nullptr; exit_ = nullptr; footer_ = nullptr; menu_ = nullptr; moreMenu_ = nullptr; tools_ = nullptr; swap_ = nullptr; resume_ = nullptr;
         styleOptions_ = nullptr; applicationStyles_ = nullptr; alternative_ = nullptr; translationFeedback_ = nullptr; glossaryAction_ = nullptr;
         translationActionMenu_.reset();
         sourceLanguages_ = nullptr; targetLanguages_ = nullptr; overlayTarget_ = nullptr;
@@ -1817,19 +1822,27 @@ private:
         const auto revision = overlayRevision_;
         if (card_->styleSheet() != style) card_->setStyleSheet(style);
         if (!surface || card_ != surface || overlayView_ != view || overlayGeneration_ != generation || overlayRevision_ != revision) return;
+        for (const auto &panel : {menu_, moreMenu_}) {
+            if (panel && panel->styleSheet() != style) panel->setStyleSheet(style);
+            if (!surface || card_ != surface || overlayView_ != view || overlayGeneration_ != generation || overlayRevision_ != revision) return;
+        }
         if (skeleton_) skeleton_->configure(QColor(dark ? 255 : 20, dark ? 255 : 20, dark ? 255 : 19, dark ? 23 : 20),
             overlayAppearance_.value("reduceMotion").toBool()
             || card_->style()->styleHint(QStyle::SH_Widget_Animation_Duration, nullptr, card_) <= 0);
         if (editor_) editor_->setAccessibleName(overlayUi("译文"));
         if (!surface || card_ != surface || overlayView_ != view || overlayGeneration_ != generation || overlayRevision_ != revision) return;
+        if (more_) { more_->setAccessibleName(overlayUi("更多")); more_->setToolTip(overlayUi("更多")); }
+        if (!surface || card_ != surface || overlayView_ != view || overlayGeneration_ != generation || overlayRevision_ != revision) return;
         QList<QPointer<QAbstractButton>> buttons;
-        for (auto *button : card_->findChildren<QAbstractButton *>()) buttons.append(button);
+        for (QWidget *root : {static_cast<QWidget *>(card_.data()), menu_.data(), moreMenu_.data()})
+            if (root) for (auto *button : root->findChildren<QAbstractButton *>()) buttons.append(button);
         for (const auto &button : buttons) {
             if (!surface || card_ != surface || overlayView_ != view || overlayGeneration_ != generation || overlayRevision_ != revision) return;
             if (button) button->setText(overlayUi(button->text().toUtf8().constData()));
         }
         QList<QPointer<QLabel>> labels;
-        for (auto *label : card_->findChildren<QLabel *>()) labels.append(label);
+        for (QWidget *root : {static_cast<QWidget *>(card_.data()), menu_.data(), moreMenu_.data()})
+            if (root) for (auto *label : root->findChildren<QLabel *>()) labels.append(label);
         for (const auto &label : labels) {
             if (!surface || card_ != surface || overlayView_ != view || overlayGeneration_ != generation || overlayRevision_ != revision) return;
             if (label) label->setText(overlayUi(label->text().toUtf8().constData()));
@@ -1881,7 +1894,7 @@ private:
         auto *top = field->window();
         if (card_->parentWidget() != top) { hideOverlay(); return; }
         const bool capsule = paused() || overlayView_.value("state").toString() == "IdleCapsule";
-        const int proposed = capsule && !menu_->isVisible() ? 160 : expanded_ ? qBound(300, field->width(), 560)
+        const int proposed = capsule ? 160 : expanded_ ? qBound(300, field->width(), 560)
             : editor_->isReadOnly() ? qBound(300, field->width() * 66 / 100, 440) : qBound(400, field->width() * 72 / 100, 440);
         const int width = qMin(proposed, qMax(1, top->width() - 16));
         const int collapsedHeight = (overlayTextSize() * 155 * 7 + 99) / 100 + 4;
@@ -1914,6 +1927,7 @@ private:
         const int above = int(integer(bounds, "y")) - card_->height() - 6;
         const int y = above >= 0 ? above : int(integer(bounds, "y") + integer(bounds, "height")) + 6;
         card_->move(x, qBound(0, y, qMax(0, top->height() - card_->height())));
+        placeOverlayMenu();
     }
     void resizeOverlay() {
         // This opt-in attempt owns its bounded budget; unrelated renders cannot
@@ -2025,6 +2039,67 @@ private:
         return rendered.card && card_ == rendered.card && overlayView_ == rendered.view
             && overlayGeneration_ == rendered.generation && overlayRevision_ == rendered.revision;
     }
+    bool overlayMenuCurrent(const QPointer<QWidget> &panel) const {
+        return panel && panel == openedMenu_ && menuView_ && languageCurrent(*menuView_)
+            && overlayActive() && !paused();
+    }
+    void closeOverlayMenus() {
+        // Withdraw callbacks before hide notifications can re-enter the host.
+        openedMenu_ = nullptr;
+        menuView_.reset();
+        translationActionMenu_.reset();
+        const auto language = menu_, more = moreMenu_;
+        if (language) language->hide();
+        if (more) more->hide();
+    }
+    void placeOverlayMenu() {
+        const auto panel = openedMenu_;
+        if (!overlayMenuCurrent(panel)) return;
+        const auto rendered = *menuView_;
+        const QPointer<QWidget> top = card_->parentWidget();
+        const QPointer<QPushButton> trigger = panel == menu_ ? language_ : more_;
+        if (!top || !trigger || panel->parentWidget() != top) { closeOverlayMenus(); return; }
+        // Sibling child surfaces stay within the source window. Their layout
+        // never changes the card/editor geometry or starts a new input grab.
+        const int width = qMin(panel == menu_ ? 320 : 360, qMax(1, top->width() - 16));
+        panel->setFixedWidth(width);
+        panel->ensurePolished();
+        if (!languageCurrent(rendered) || !overlayMenuCurrent(panel)) return;
+        auto *layout = panel->layout();
+        layout->activate();
+        const int height = layout->hasHeightForWidth() ? layout->totalHeightForWidth(width) : layout->sizeHint().height();
+        panel->resize(width, qMax(1, height));
+        if (!languageCurrent(rendered) || !overlayMenuCurrent(panel) || !trigger || !top) return;
+        const QRect anchor(trigger->mapTo(top, QPoint()), trigger->size());
+        const int x = panel == menu_ ? anchor.left() : anchor.right() + 1 - panel->width();
+        const int below = anchor.bottom() + 7;
+        const int y = below + panel->height() <= top->height() - 8 ? below : anchor.top() - panel->height() - 6;
+        panel->move(qBound(0, x, qMax(0, top->width() - panel->width())),
+            qBound(0, y, qMax(0, top->height() - panel->height())));
+        panel->raise();
+    }
+    void toggleOverlayMenu(const QPointer<QWidget> &requested) {
+        const auto panel = requested;
+        const bool closing = panel && panel == openedMenu_ && !panel->isHidden();
+        const auto rendered = languageRender();
+        closeOverlayMenus();
+        if (closing || !panel || !languageCurrent(rendered) || !overlayActive() || paused() || glossary_ || glossaryOpening_) return;
+        if (panel == menu_ && !resetLanguageSelection()) return;
+        if (!languageCurrent(rendered) || !overlayTarget_) return;
+        openedMenu_ = panel;
+        menuView_ = rendered;
+        if (panel == moreMenu_) {
+            translationActionMenu_ = TranslationActionMenu{card_, overlayTarget_->id,
+                rendered.view.value("viewContext").toObject().value("token").toObject(),
+                translationActions(rendered.view), rendered.generation, rendered.revision, rendered.view.value("state").toString()};
+            if (!renderTranslationActions()) return;
+        }
+        if (!overlayMenuCurrent(panel)) return;
+        placeOverlayMenu();
+        if (!overlayMenuCurrent(panel)) return;
+        panel->show();
+        if (overlayMenuCurrent(panel)) panel->raise();
+    }
     bool selectLanguage(QPointer<QButtonGroup> group, const QJsonArray &choices, const QString &code,
         const LanguageRender &rendered) {
         if (!group || !languageCurrent(rendered)) return false;
@@ -2127,7 +2202,7 @@ private:
         return languageCurrent(rendered);
     }
     void chooseLanguages(const QString &source, const QString &target) {
-        if (settingLanguages_ || paused() || !menu_ || languageIndex(sourceChoices_, source) < 0 || languageIndex(targetChoices_, target) < 0) return;
+        if (settingLanguages_ || !overlayMenuCurrent(menu_) || menu_->isHidden() || languageIndex(sourceChoices_, source) < 0 || languageIndex(targetChoices_, target) < 0) return;
         const auto menu = menu_;
         const auto card = card_;
         const auto view = overlayView_;
@@ -2135,8 +2210,7 @@ private:
         const auto revision = overlayRevision_;
         ui("languages", QJsonObject{{"source", source}, {"target", target}});
         if (card_ != card || menu_ != menu || overlayView_ != view || overlayGeneration_ != generation || overlayRevision_ != revision) return;
-        menu_->hide();
-        arrangeOverlay();
+        closeOverlayMenus();
     }
     static QJsonObject translationActions(const QJsonObject &view) {
         auto actions = view.value("viewContext").toObject().value("translationActions").toObject();
@@ -2472,7 +2546,7 @@ private:
         return false;
     }
     void beginGlossary() {
-        if (!translationActionMenu_ || !menu_ || menu_->isHidden() || glossary_ || glossaryOpening_) return;
+        if (!translationActionMenu_ || !overlayMenuCurrent(moreMenu_) || moreMenu_->isHidden() || glossary_ || glossaryOpening_) return;
         const auto context = *translationActionMenu_;
         const auto actions = translationActions(overlayView_);
         if (!actions.value("canOpenGlossary").toBool()
@@ -2488,8 +2562,7 @@ private:
         clearPermit();
         glossaryOpening_ = context;
         glossaryOpeningFocus_ = focusGeneration_;
-        translationActionMenu_.reset();
-        menu_->hide();
+        closeOverlayMenus();
         glossaryEvent(context, "sessionGlossaryBegin");
         if (card_ == context.card) arrangeOverlay();
     }
@@ -2688,7 +2761,7 @@ private:
         const auto rendered = languageRender();
         const auto actions = translationActions(rendered.view);
         const bool current = translationActionMenu_ && translationMenuCurrent(*translationActionMenu_);
-        styleOptions_->setVisible(actions.value("styleReleased").toBool() || actions.value("canInheritStyle").toBool());
+        styleOptions_->show();
         if (!languageCurrent(rendered) || !applicationStyles_) return false;
         const auto style = actions.value("applicationStyle");
         const int selected = style.isNull() ? 0 : style.toString() == QStringLiteral("Natural") ? 1 : 2;
@@ -2699,13 +2772,14 @@ private:
             const int index = applicationStyles_->id(choice);
             choice->setChecked(!actions.isEmpty() && index == selected);
             if (!choice || !languageCurrent(rendered)) return false;
-            choice->setEnabled(current && (index == 0 || actions.value("styleReleased").toBool())
+            choice->setEnabled(current && index <= 2 && (index == 0 || actions.value("styleReleased").toBool())
                 && actions.value(index == 0 ? "canInheritStyle" : "canChangeStyle").toBool());
             if (!choice || !languageCurrent(rendered)) return false;
-            choice->setToolTip(actions.value(index == 0 ? "inheritUnavailableReason" : "styleUnavailableReason").toString());
+            choice->setToolTip(index > 2 ? overlayUi("暂不可用")
+                : actions.value(index == 0 ? "inheritUnavailableReason" : "styleUnavailableReason").toString());
         }
         if (!languageCurrent(rendered) || !alternative_) return false;
-        alternative_->setVisible(actions.value("alternativeReleased").toBool());
+        alternative_->show();
         if (!languageCurrent(rendered) || !alternative_) return false;
         alternative_->setEnabled(current && actions.value("alternativeReleased").toBool()
             && actions.value("canRequestAlternative").toBool());
@@ -2730,7 +2804,7 @@ private:
         return languageCurrent(rendered);
     }
     void chooseTranslationAction(bool style, int index = -1) {
-        if (!translationActionMenu_ || !menu_ || menu_->isHidden() || paused() || !overlayActive()) return;
+        if (!translationActionMenu_ || !overlayMenuCurrent(moreMenu_) || moreMenu_->isHidden() || paused() || !overlayActive()) return;
         // Freeze the complete opening context before any widget callbacks. A
         // later render can invalidate it, but must never retarget this action.
         const auto opened = *translationActionMenu_;
@@ -2748,8 +2822,7 @@ private:
             if (!actions.value("alternativeReleased").toBool() || !actions.value("canRequestAlternative").toBool()) return;
             event.insert("operation", "alternative");
         }
-        translationActionMenu_.reset();
-        menu_->hide();
+        closeOverlayMenus();
         if (!translationMenuCurrent(opened) || !overlayActive()) return;
         // The bridge resolves only this exact target/generation/revision to its
         // original token. Unlike ui(), this never reads the latest view here.
@@ -2800,30 +2873,25 @@ private:
                     return;
                 }
                 if (paused()) return;
-                if (qstrcmp(operation, "menu") == 0) {
-                    if (menu_->isHidden()) {
-                        const auto rendered = languageRender();
-                        if (!resetLanguageSelection() || !languageCurrent(rendered) || !overlayTarget_) return;
-                        translationActionMenu_ = TranslationActionMenu{card_, overlayTarget_->id,
-                            rendered.view.value("viewContext").toObject().value("token").toObject(),
-                            translationActions(rendered.view), rendered.generation, rendered.revision, rendered.view.value("state").toString()};
-                        if (!renderTranslationActions()) return;
-                    } else translationActionMenu_.reset();
-                    menu_->setVisible(menu_->isHidden());
+                if (qstrcmp(operation, "languages-menu") == 0 || qstrcmp(operation, "more-menu") == 0) {
+                    toggleOverlayMenu(qstrcmp(operation, "languages-menu") == 0 ? menu_ : moreMenu_);
+                    return;
                 } else if (qstrcmp(operation, "expand") == 0) {
-                    menu_->hide();
+                    closeOverlayMenus();
                     expanded_ = !expanded_;
                     value->setText(expanded_ ? overlayUi("收起") : overlayUi("展开"));
                     ui("expand", expanded_);
                     resizeOverlay();
                     return;
                 } else {
-                    menu_->hide();
+                    if (value->parentWidget() == moreMenu_ && (!overlayMenuCurrent(moreMenu_) || moreMenu_->isHidden())) return;
+                    const auto rendered = languageRender();
+                    closeOverlayMenus();
+                    if (!languageCurrent(rendered) || !overlayActive()) return;
                     if (qstrcmp(operation, "copy") == 0) {
                         if (editor_) QApplication::clipboard()->setText(editor_->toPlainText());
                     } else ui(operation);
                 }
-                arrangeOverlay();
             });
             box->addWidget(value);
             return value;
@@ -2833,10 +2901,8 @@ private:
         dot_ = new QLabel(QStringLiteral("●"), frame);
         dot_->setObjectName(QStringLiteral("typelay-dot"));
         header->addWidget(dot_);
-        language_ = button(frame, header, QString(), "menu");
+        language_ = button(frame, header, QString(), "languages-menu");
         language_->setObjectName(QStringLiteral("typelay-menu-trigger"));
-        language_->setAccessibleName(QStringLiteral("语言与更多操作"));
-        language_->setToolTip(QStringLiteral("语言与更多操作"));
         status_ = new QLabel(frame);
         status_->setObjectName(QStringLiteral("typelay-status"));
         status_->setWordWrap(true);
@@ -2846,9 +2912,10 @@ private:
         auto *toolsLayout = new QHBoxLayout(tools_);
         toolsLayout->setContentsMargins(0, 0, 0, 0);
         toolsLayout->setSpacing(2);
-        auto *more = button(tools_, toolsLayout, QStringLiteral("⋯"), "menu");
-        more->setAccessibleName(overlayUi("更多"));
-        more->setToolTip(overlayUi("更多"));
+        more_ = button(tools_, toolsLayout, QStringLiteral("⋯"), "more-menu");
+        more_->setObjectName(QStringLiteral("typelay-more-trigger"));
+        more_->setAccessibleName(overlayUi("更多"));
+        more_->setToolTip(overlayUi("更多"));
         button(tools_, toolsLayout, expanded_ ? overlayUi("收起") : overlayUi("展开"), "expand")->setObjectName(QStringLiteral("typelay-expand"));
         header->addWidget(tools_);
         resume_ = button(frame, header, QStringLiteral("恢复"), "resume");
@@ -2901,10 +2968,21 @@ private:
         footerLayout->addWidget(hint_); footerLayout->addStretch();
         exit_ = button(footer_, footerLayout, QString(), "escape");
         header->addWidget(footer_);
-        menu_ = new QWidget(frame);
-        menu_->setObjectName(QStringLiteral("typelay-menu"));
+        auto menuSurface = [&](const char *name) {
+            auto *panel = new QFrame(top);
+            panel->setObjectName(QLatin1String(name));
+            panel->setProperty("typelayMenu", true);
+            panel->setFocusPolicy(Qt::NoFocus);
+            panel->setAutoFillBackground(true);
+            panel->hide();
+            connect(frame, &QObject::destroyed, panel, [panel] { panel->hide(); panel->deleteLater(); });
+            return panel;
+        };
+        menu_ = menuSurface("typelay-menu");
+        moreMenu_ = menuSurface("typelay-more-menu");
         auto *menuLayout = new QVBoxLayout(menu_);
-        menuLayout->setContentsMargins(0, 8, 0, 0);
+        menuLayout->setContentsMargins(10, 10, 10, 10);
+        menuLayout->setSpacing(4);
         // Keep choices inside the source window without a popup/focus grab.
         // Direction changes still belong to the host's existing settings path.
         for (const bool source : {true, false}) {
@@ -2927,55 +3005,71 @@ private:
         swap_ = new QPushButton(QStringLiteral("交换语言"), menu_);
         swap_->setObjectName(QStringLiteral("typelay-swap"));
         swap_->setFocusPolicy(Qt::NoFocus);
-        connect(swap_, &QPushButton::clicked, this, [this] {
+        connect(swap_, &QPushButton::clicked, this, [this, owner = QPointer<QPushButton>(swap_)] {
+            if (!owner || owner != swap_) return;
             const auto source = overlayView_.value("sourceLanguage").toString();
             if (source != QStringLiteral("auto")) chooseLanguages(overlayView_.value("targetLanguage").toString(), source);
         });
         menuLayout->addWidget(swap_);
-        styleOptions_ = new QWidget(menu_);
+        auto *moreLayout = new QVBoxLayout(moreMenu_);
+        moreLayout->setContentsMargins(10, 8, 10, 8);
+        moreLayout->setSpacing(4);
+        button(moreMenu_, moreLayout, QStringLiteral("重新翻译"), "regenerate")->setObjectName(QStringLiteral("typelay-regenerate"));
+        styleOptions_ = new QWidget(moreMenu_);
         styleOptions_->setObjectName(QStringLiteral("typelay-application-style"));
-        auto *styleLayout = new QVBoxLayout(styleOptions_);
+        auto *styleLayout = new QHBoxLayout(styleOptions_);
         styleLayout->setContentsMargins(0, 0, 0, 0);
-        styleLayout->addWidget(new QLabel(QStringLiteral("当前应用风格"), styleOptions_));
-        auto *styleRow = new QHBoxLayout;
-        applicationStyles_ = new QButtonGroup(styleOptions_);
-        const QStringList styleLabels{QStringLiteral("继承"), QStringLiteral("自然"), QStringLiteral("正式")};
-        const QStringList styleNames{QStringLiteral("inherit"), QStringLiteral("natural"), QStringLiteral("formal")};
+        styleLayout->setSpacing(2);
+        styleLayout->addWidget(new QLabel(QStringLiteral("风格"), styleOptions_));
+        applicationStyles_ = new QButtonGroup(moreMenu_);
+        const QStringList styleLabels{QStringLiteral("自然"), QStringLiteral("正式"), QStringLiteral("简洁"), QStringLiteral("口语")};
+        const QStringList styleNames{QStringLiteral("natural"), QStringLiteral("formal"), QStringLiteral("concise"), QStringLiteral("casual")};
         for (int index = 0; index < styleLabels.size(); ++index) {
-            auto *choice = new QRadioButton(styleLabels[index], styleOptions_);
+            auto *choice = new QPushButton(styleLabels[index], styleOptions_);
+            choice->setCheckable(true);
             choice->setObjectName(QStringLiteral("typelay-style-") + styleNames[index]);
             choice->setFocusPolicy(Qt::NoFocus);
-            applicationStyles_->addButton(choice, index);
-            styleRow->addWidget(choice);
+            choice->setEnabled(false);
+            applicationStyles_->addButton(choice, index + 1);
+            styleLayout->addWidget(choice);
         }
-        styleLayout->addLayout(styleRow);
-        connect(applicationStyles_, &QButtonGroup::idClicked, this, [this](int index) { chooseTranslationAction(true, index); });
-        menuLayout->addWidget(styleOptions_);
-        styleOptions_->hide();
-        alternative_ = new QPushButton(QStringLiteral("换种说法"), menu_);
+        auto *inherit = new QPushButton(QStringLiteral("继承"), moreMenu_);
+        inherit->setObjectName(QStringLiteral("typelay-style-inherit"));
+        inherit->setCheckable(true);
+        inherit->setFocusPolicy(Qt::NoFocus);
+        applicationStyles_->addButton(inherit, 0);
+        connect(applicationStyles_, &QButtonGroup::idClicked, this,
+            [this, owner = QPointer<QButtonGroup>(applicationStyles_)](int index) {
+                if (owner && owner == applicationStyles_) chooseTranslationAction(true, index);
+            });
+        alternative_ = new QPushButton(QStringLiteral("换种说法"), moreMenu_);
         alternative_->setObjectName(QStringLiteral("typelay-alternative"));
         alternative_->setFocusPolicy(Qt::NoFocus);
-        connect(alternative_, &QPushButton::clicked, this, [this] { chooseTranslationAction(false); });
-        menuLayout->addWidget(alternative_);
+        connect(alternative_, &QPushButton::clicked, this, [this, owner = QPointer<QPushButton>(alternative_)] {
+            if (owner && owner == alternative_) chooseTranslationAction(false);
+        });
+        moreLayout->addWidget(alternative_);
+        moreLayout->addWidget(styleOptions_);
+        moreLayout->addWidget(inherit);
         alternative_->hide();
-        glossaryAction_ = new QPushButton(QStringLiteral("加入术语表"), menu_);
+        button(moreMenu_, moreLayout, QStringLiteral("复制译文"), "copy")->setObjectName(QStringLiteral("typelay-copy"));
+        glossaryAction_ = new QPushButton(QStringLiteral("加入术语表"), moreMenu_);
         glossaryAction_->setObjectName(QStringLiteral("typelay-glossary-open"));
         glossaryAction_->setFocusPolicy(Qt::NoFocus);
-        connect(glossaryAction_, &QPushButton::clicked, this, &Native::beginGlossary);
-        menuLayout->addWidget(glossaryAction_);
+        connect(glossaryAction_, &QPushButton::clicked, this, [this, owner = QPointer<QPushButton>(glossaryAction_)] {
+            if (owner && owner == glossaryAction_) beginGlossary();
+        });
+        moreLayout->addWidget(glossaryAction_);
         glossaryAction_->hide();
-        translationFeedback_ = new QLabel(menu_);
+        translationFeedback_ = new QLabel(moreMenu_);
         translationFeedback_->setObjectName(QStringLiteral("typelay-translation-feedback"));
         translationFeedback_->setWordWrap(true);
         translationFeedback_->setStyleSheet(QStringLiteral("color: palette(mid);"));
         translationFeedback_->hide();
-        menuLayout->addWidget(translationFeedback_);
-        button(menu_, menuLayout, QStringLiteral("重新翻译"), "regenerate");
-        button(menu_, menuLayout, QStringLiteral("复制译文"), "copy")->setObjectName(QStringLiteral("typelay-copy"));
-        button(menu_, menuLayout, QStringLiteral("不要在这个应用中显示"), "exclude");
-        button(menu_, menuLayout, QStringLiteral("设置…"), "settings");
-        layout->addWidget(menu_);
-        menu_->hide();
+        moreLayout->addWidget(translationFeedback_);
+        button(moreMenu_, moreLayout, QStringLiteral("不要在这个应用中显示"), "exclude")->setObjectName(QStringLiteral("typelay-exclude"));
+        button(moreMenu_, moreLayout, QStringLiteral("设置…"), "settings")->setObjectName(QStringLiteral("typelay-settings"));
+        moreMenu_->hide();
     }
     QJsonObject overlayCommand(const QString &op, Target *target, const QJsonObject &data) {
         if (op == "overlay-hide") hideOverlay();
@@ -3018,6 +3112,8 @@ private:
                     && data.value("appearance").toObject() == overlayAppearance_
                     && (!glossary_ || !glossary_->source || retainedSourceForm)
                     && overlayView_ != view && editorViewIdentity(overlayView_) == editorViewIdentity(view);
+                if (menuView_ && (menuView_->revision != integer(data, "revision", 0)
+                    || menuView_->generation != data.value("generation") || menuView_->view != view)) closeOverlayMenus();
                 if (menuOnly) {
                     // Keep the original editor control ticket and its deadline.
                     // Only the new read-only menu subtree changed; do not touch
@@ -3133,7 +3229,7 @@ private:
                 skeleton_->setVisible(!capsule && text.isEmpty() && !editing && view.value("state").toString() == QStringLiteral("Translating"));
                 status_->setVisible(isPaused || !capsule);
                 language_->setVisible(!isPaused); resume_->setVisible(isPaused); resume_->setEnabled(!pendingResume_);
-                if (isPaused) menu_->hide();
+                if (isPaused) closeOverlayMenus();
                 // Only the exact one-use expansion echo may continue geometry.
                 // All current view/authority/edit state above has already applied.
                 if (continueMotion) motionRevision_ = overlayRevision_;
@@ -3142,7 +3238,7 @@ private:
                 if (!card_) return {{"visible", false}, {"editing", false}};
                 arrangeOverlay(continueMotion ? editor_->height() : -1);
                 if (!card_) return {{"visible", false}, {"editing", false}};
-                card_->show(); card_->raise(); syncOverlay();
+                card_->show(); card_->raise(); placeOverlayMenu(); syncOverlay();
             }
         } else if (op == "overlay-renew") {
             if (!sessionApplied() || data.value("generation") != shortcutConfiguration_.value("generation"))
@@ -3173,6 +3269,11 @@ private:
     bool eventFilter(QObject *object, QEvent *event) override {
         if (!onThread()) return false;
         if (object == qApp && event->type() == QEvent::ApplicationPaletteChange) refreshSystemTheme();
+        if (openedMenu_ && event->type() == QEvent::MouseButtonPress) {
+            bool inside = object == language_ || object == more_;
+            for (auto *parent = object; parent && !inside; parent = parent->parent()) inside = parent == openedMenu_;
+            if (!inside) closeOverlayMenus();
+        }
         if (insideGlossary(object)) {
             const auto form = glossary_;
             if (event->type() == QEvent::KeyPress || event->type() == QEvent::InputMethod
@@ -3583,12 +3684,13 @@ private:
     QString overlayFontPolicy_;
     QPointer<QObject> overlaySourceProvider_;
     QPointer<QLabel> hint_, status_, translationFeedback_;
-    QPointer<QPushButton> language_, swap_, resume_, exit_, alternative_, glossaryAction_;
+    QPointer<QPushButton> language_, more_, swap_, resume_, exit_, alternative_, glossaryAction_;
     QPointer<QButtonGroup> sourceLanguages_, targetLanguages_, applicationStyles_;
     QPointer<QGridLayout> sourceLanguageLayout_, targetLanguageLayout_;
     QJsonArray sourceChoices_, targetChoices_;
     QString savedSourceLanguage_, savedTargetLanguage_;
-    QPointer<QWidget> footer_, menu_, tools_, styleOptions_;
+    QPointer<QWidget> footer_, menu_, moreMenu_, openedMenu_, tools_, styleOptions_;
+    std::optional<LanguageRender> menuView_;
     std::optional<TranslationActionMenu> translationActionMenu_;
     std::optional<TranslationActionMenu> glossaryOpening_, glossaryEditorContext_;
     std::optional<GlossarySource> glossaryOpeningSource_;

@@ -52,8 +52,8 @@ def pixbuf_observation(image):
     }
 
 
-async def capture_owned_niri(output, title, *, deadline, observation):
-    """One diagnostic of the runner's private output, never a desktop fallback."""
+async def capture_owned_niri(output, title, *, name, deadline, observation):
+    """One named capture of the runner's private output, never a desktop fallback."""
     import stat
 
     child = None
@@ -97,7 +97,8 @@ async def capture_owned_niri(output, title, *, deadline, observation):
             output="winit",
             identityObservedAtMonoMs=int(time.monotonic() * 1000),
         )
-        destination = output / "shortcuts-first-compositor.png"
+        assert name and Path(name).name == name
+        destination = output / (name + ".png")
         assert not destination.exists(), "preserve an earlier compositor diagnostic"
         remaining = work_end - time.monotonic()
         assert remaining > 0
@@ -113,7 +114,20 @@ async def capture_owned_niri(output, title, *, deadline, observation):
         code = await asyncio.to_thread(child.wait, max(0, work_end - time.monotonic()))
         observation["exitCode"] = code
         if code == 0 and destination.is_file() and destination.stat().st_size > 0:
-            observation.update(status="written-not-reviewed", file=destination.name)
+            import gi
+
+            gi.require_version("GdkPixbuf", "2.0")
+            from gi.repository import GdkPixbuf
+
+            observation["stage"] = "png-readback"
+            assert time.monotonic() < work_end
+            pixels = pixbuf_observation(GdkPixbuf.Pixbuf.new_from_file(str(destination)))
+            observation["pixels"] = pixels
+            assert time.monotonic() < work_end
+            if pixels["nontransparentPixels"]:
+                observation.update(status="written-not-reviewed", file=destination.name)
+            else:
+                observation["failure"] = "compositor-image-transparent"
         else:
             observation["failure"] = "grim-did-not-produce-an-image"
     except asyncio.CancelledError:
@@ -136,6 +150,7 @@ async def capture_owned_niri(output, title, *, deadline, observation):
             except Exception as error:
                 observation["childReaped"] = False
                 observation["cleanupFailure"] = type(error).__name__
+                observation["status"] = "unavailable"
         observation["finishedAtMonoMs"] = int(time.monotonic() * 1000)
 
 
@@ -144,11 +159,10 @@ def main(arguments=None):
 
     gi.require_version("Gtk", "3.0")
     gi.require_version("Gdk", "3.0")
-    gi.require_version("GdkPixbuf", "2.0")
     from types import SimpleNamespace
 
     from gi.events import GLibEventLoop
-    from gi.repository import Gdk, GdkPixbuf, GLib, Gtk, Pango
+    from gi.repository import Gdk, GLib, Gtk, Pango
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dotnet", type=Path)
@@ -451,8 +465,7 @@ def main(arguments=None):
             window = surface.window.get_window()
             width, height = surface.window.get_size()
             image = Gdk.pixbuf_get_from_window(window, 0, 0, width, height)
-            saved = image.savev(str(options.output / (name + ".png")), "png", [], [])
-            return image, saved
+            image.savev(str(options.output / (name + ".png")), "png", [], [])
 
         async def choose_visible_appearance(key, value):
             control = (
@@ -1951,23 +1964,18 @@ def main(arguments=None):
                 await paint(surface.window)
                 assert settings_path.read_bytes() == before and host.draft_submissions == calls
 
-            first_picture = True
+            pictures = []
 
             async def picture(name):
-                nonlocal first_picture
                 await paint(surface.window)
-                started = int(time.monotonic() * 1000)
-                image, saved = capture("shortcuts-" + name)
-                if not (first_picture and options.owned_niri_capture):
+                if not options.owned_niri_capture:
+                    capture("shortcuts-" + name)
                     return
-                first_picture = False
+                # The Wayland client pixbuf was fully transparent even while
+                # the owned compositor showed the window. Use the same proven
+                # output scope for every existing state, not a pixbuf fallback.
                 observation = {
-                    "schema": 1,
-                    "sameFrame": False,
-                    "note": "Client pixbuf and compositor output are separate sequential observations.",
-                    "pixbufStartedAtMonoMs": started,
-                    "pixbufSavedAtMonoMs": int(time.monotonic() * 1000),
-                    "saveReturned": bool(saved),
+                    "state": name,
                     "gtkVersion": [
                         Gtk.get_major_version(),
                         Gtk.get_minor_version(),
@@ -1975,29 +1983,19 @@ def main(arguments=None):
                     ],
                     "compositor": {},
                 }
+                pictures.append(observation)
                 try:
-                    try:
-                        observation["pixbuf"] = pixbuf_observation(image)
-                        readback = GdkPixbuf.Pixbuf.new_from_file(
-                            str(options.output / ("shortcuts-" + name + ".png"))
-                        )
-                        observation["pngReadback"] = pixbuf_observation(readback)
-                        observation["sameSavedPixels"] = all(
-                            observation["pixbuf"][key] == observation["pngReadback"][key]
-                            for key in ("width", "height", "rgbaSha256")
-                        )
-                    except Exception as error:
-                        observation["pixbufObservationFailure"] = type(error).__name__
                     await capture_owned_niri(
                         options.output,
                         surface.window.get_title(),
+                        name="shortcuts-" + name,
                         deadline=deadline,
                         observation=observation["compositor"],
                     )
                 finally:
                     try:
                         (options.output / "shortcuts-capture-observation.json").write_text(
-                            json.dumps(observation, indent=2) + "\n"
+                            json.dumps({"schema": 2, "captures": pictures}, indent=2) + "\n"
                         )
                     except OSError as error:
                         print("SHORTCUT CAPTURE DIAGNOSTIC UNAVAILABLE: " + type(error).__name__)

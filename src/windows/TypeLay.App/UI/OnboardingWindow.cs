@@ -132,6 +132,9 @@ internal sealed partial class OnboardingWindow : Window
                 _showRequest = null;
                 _pageIdentity = new();
             }
+            CoerceValue(ShowActivatedProperty);
+            if (!ReferenceEquals(_stepOpening, opening) || IsVisible != visible)
+                return;
             RetireStepMotion();
             if (!ReferenceEquals(_stepOpening, opening) || IsVisible != visible)
                 return;
@@ -149,6 +152,7 @@ internal sealed partial class OnboardingWindow : Window
         Closed += (_, _) =>
         {
             _closed = true;
+            RetireShowSource();
             _showRequest = null;
             _stepEntrance = null;
             RetireStepMotion();
@@ -177,7 +181,7 @@ internal sealed partial class OnboardingWindow : Window
         if (_closed || !ReferenceEquals(_showRequest, request))
             return;
         if (!IsVisible)
-            Show();
+            ShowOpening(request);
         // Public layout/visibility callbacks may have hidden this opening or
         // accepted another Show. The old tail must not activate either one.
         if (!_closed && IsVisible && ReferenceEquals(_showRequest, request))
