@@ -1420,9 +1420,22 @@
       delete identityView.viewContext.translationActions;
     }
     const viewIdentity = JSON.stringify({generation: data.generation, revision: data.revision, view: identityView});
+    const moreDraftView = {...identityView};
+    delete moreDraftView.text;
+    const moreDraftIdentity = JSON.stringify({generation: data.generation, revision: data.revision, view: moreDraftView});
+    // Only the current editor's exact draft echo may keep this inert opening.
+    // Every other view difference still retires it; actions keep their own gate.
+    const keepMoreForDraftEcho = !overlay.menu.hidden && overlay.menuContext
+      && menuOpeningCurrent(overlay, overlay.menuContext) && overlay.moreDraftIdentity === moreDraftIdentity
+      && overlay.field === field && overlay.generation === data.generation && overlay.revision === data.revision
+      && JSON.stringify(overlay.viewToken) === JSON.stringify(view.viewContext?.token)
+      && overlay.state === "EditingTranslation" && overlay.editing && overlay.editable && !overlay.editor.readOnly
+      && view.state === "EditingTranslation" && view.presentation.editorOwnsText && !paused
+      && editorConfigured(field) && view.editable && view.viewContext?.canEdit === true
+      && view.text === overlay.editor.value;
     if (overlay.viewIdentity !== viewIdentity) {
       overlay.retryPending = false;
-      closeMore(overlay);
+      if (!keepMoreForDraftEcho) closeMore(overlay);
       // A transport refresh of the same legal editor retires the question, not
       // its editor focus/selection. A new owner or revoked editor never gets focus.
       closeRegenerate(overlay, overlay.editing && view.state === "EditingTranslation"
@@ -1441,6 +1454,7 @@
         || JSON.stringify(view.viewContext?.token) !== overlay.glossary.tokenKey)) closeGlossary(false);
     }
     overlay.viewIdentity = viewIdentity;
+    overlay.moreDraftIdentity = moreDraftIdentity;
     // Only successful display updates set the bounds for a future Ctrl. An
     // existing editor ticket keeps its original copied bounds through renewal.
     overlay.expiresAtPerformanceMs = deadline(data.expiresAtMs, 800);

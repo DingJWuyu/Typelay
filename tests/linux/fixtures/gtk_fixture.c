@@ -239,6 +239,8 @@ static gboolean language_control(const char *name) {
         || g_strcmp0(name, "typelay-settings") == 0 || g_strcmp0(name, "typelay-alternative") == 0
         || g_strcmp0(name, "typelay-source-language") == 0
         || g_strcmp0(name, "typelay-target-language") == 0
+        || g_strcmp0(name, "typelay-target-language-search") == 0
+        || g_strcmp0(name, "typelay-target-language-empty") == 0
         || g_strcmp0(name, "typelay-apply-languages") == 0
         || g_str_has_prefix(name, "typelay-style-")
         || g_strcmp0(name, "typelay-language-menu") == 0;
@@ -530,6 +532,7 @@ static void report_glossary_entry_pointer(JsonBuilder *builder, GtkWidget *widge
     json_builder_add_int_value(builder,
         (gintptr)g_object_get_data(G_OBJECT(widget), "fixture-glossary-pointer-entered"));
 }
+static GtkWidget *find_named_widget(GtkWidget *widget, const char *name);
 static void report_language_control(GtkWidget *widget, gpointer data) {
     JsonBuilder *builder = data;
     const char *name = gtk_widget_get_name(widget);
@@ -622,6 +625,17 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
         if (GTK_IS_ENTRY(widget)) {
             json_builder_set_member_name(builder, "text");
             json_builder_add_string_value(builder, gtk_entry_get_text(GTK_ENTRY(widget)));
+            if (g_str_equal(name, "typelay-target-language-search")) {
+                const char *placeholder = gtk_entry_get_placeholder_text(GTK_ENTRY(widget));
+                json_builder_set_member_name(builder, "placeholder");
+                json_builder_add_string_value(builder, placeholder ? placeholder : "");
+                gint start = 0, end = 0;
+                gtk_editable_get_selection_bounds(GTK_EDITABLE(widget), &start, &end);
+                json_builder_set_member_name(builder, "selectionStart"); json_builder_add_int_value(builder, start);
+                json_builder_set_member_name(builder, "selectionEnd"); json_builder_add_int_value(builder, end);
+                json_builder_set_member_name(builder, "cursor");
+                json_builder_add_int_value(builder, gtk_editable_get_position(GTK_EDITABLE(widget)));
+            }
         } else if (GTK_IS_LABEL(widget)) {
             json_builder_set_member_name(builder, "text");
             json_builder_add_string_value(builder, gtk_label_get_text(GTK_LABEL(widget)));
@@ -644,8 +658,11 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
             report_glossary_paint(builder, widget);
         if (GTK_IS_MENU_BUTTON(widget)) {
             GtkPopover *popup = gtk_menu_button_get_popover(GTK_MENU_BUTTON(widget));
-            GtkWidget *scroll = popup ? gtk_bin_get_child(GTK_BIN(popup)) : NULL;
-            GtkWidget *list = scroll ? gtk_bin_get_child(GTK_BIN(scroll)) : NULL;
+            /* Traverse the real public widget hierarchy, not production data
+             * pointers or an assumed popover -> scroll -> list nesting. */
+            const char *list_name = g_str_equal(name, "typelay-source-language") ? "typelay-source-language-list"
+                : g_str_equal(name, "typelay-target-language") ? "typelay-target-language-list" : NULL;
+            GtkWidget *list = popup && list_name ? find_named_widget(GTK_WIDGET(popup), list_name) : NULL;
             if (GTK_IS_TREE_VIEW(list)) {
                 watch_language_popup(widget, popup);
                 json_builder_set_member_name(builder, "buttonFocused");
@@ -664,11 +681,17 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
                 json_builder_add_int_value(builder, language_instance(G_OBJECT(model)));
                 GtkTreeIter iter;
                 gint selected = -1;
+                char *selected_code = NULL;
                 if (gtk_tree_selection_get_selected(gtk_tree_view_get_selection(GTK_TREE_VIEW(list)), NULL, &iter)) {
                     GtkTreePath *path = gtk_tree_model_get_path(model, &iter);
                     selected = gtk_tree_path_get_indices(path)[0];
+                    gtk_tree_model_get(model, &iter, 0, &selected_code, -1);
                     gtk_tree_path_free(path);
                 }
+                json_builder_set_member_name(builder, "selectedCode");
+                if (selected_code) json_builder_add_string_value(builder, selected_code);
+                else json_builder_add_null_value(builder);
+                g_free(selected_code);
                 json_builder_set_member_name(builder, "selected");
                 json_builder_add_int_value(builder, selected);
                 json_builder_set_member_name(builder, "popupVisible");
@@ -680,6 +703,15 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
                     gtk_tree_model_get(model, &iter, 1, &label, -1);
                     json_builder_add_string_value(builder, label ? label : "");
                     g_free(label);
+                } while (gtk_tree_model_iter_next(model, &iter));
+                json_builder_end_array(builder);
+                json_builder_set_member_name(builder, "codes");
+                json_builder_begin_array(builder);
+                if (model && gtk_tree_model_get_iter_first(model, &iter)) do {
+                    char *code = NULL;
+                    gtk_tree_model_get(model, &iter, 0, &code, -1);
+                    json_builder_add_string_value(builder, code ? code : "");
+                    g_free(code);
                 } while (gtk_tree_model_iter_next(model, &iter));
                 json_builder_end_array(builder);
             }
@@ -833,6 +865,16 @@ static gboolean report_state(gpointer unused) {
             json_builder_set_member_name(builder, "fontFamily");
             json_builder_add_string_value(builder, pango_font_description_get_family(font));
             GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(candidate));
+            GtkTextIter selected_start, selected_end;
+            gtk_text_buffer_get_selection_bounds(buffer, &selected_start, &selected_end);
+            json_builder_set_member_name(builder, "instance");
+            json_builder_add_int_value(builder, language_instance(G_OBJECT(candidate)));
+            json_builder_set_member_name(builder, "bufferInstance");
+            json_builder_add_int_value(builder, language_instance(G_OBJECT(buffer)));
+            json_builder_set_member_name(builder, "selectionStart");
+            json_builder_add_int_value(builder, gtk_text_iter_get_offset(&selected_start));
+            json_builder_set_member_name(builder, "selectionEnd");
+            json_builder_add_int_value(builder, gtk_text_iter_get_offset(&selected_end));
             GtkTextIter first, last;
             gtk_text_buffer_get_bounds(buffer, &first, &last);
             char *text = gtk_text_buffer_get_text(buffer, &first, &last, TRUE);

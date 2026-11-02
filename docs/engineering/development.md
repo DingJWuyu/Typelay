@@ -22,6 +22,8 @@
 
 上述有效 push 中，`tests/shared/TypeLay.{Core,Runtime,Protocol}.Tests/` 三个目录根部已有 `*Tests.cs` 的普通修改属于 Windows 检查范围，不属于文档中性路径：单独修改或仅混合 Windows、文档路径时，保留共享检查与 Windows 完整方案测试、格式检查，省去 Linux 产品链。目录不递归；新增、删除、重命名、类型变化及其后续撤销仍检查双端，任一合并父提交都计入，状态查询失败也保留双端。辅助源、fixture/support、worker、项目/锁文件和共享生产源码不适用该例外。
 
+Qt 完整 probe 明确失败但正式 module/fixture 已构建、同源码及二进制/default async 身份仍完整时，原 Qt desktop 步骤可先用 `desktop_admission.py` 只读核验，再显式使用 unbundled build-input 路由收集独立交互证据。缺失或不匹配则 not-run/失败；成功 probe 仍走原 relocated bundle 路由。该观察不改 probe 的失败，不回填发行 manifest，不放宽 pack/finalize 或 GIMP 完整包依赖，也不改变整体 CI 失败及原预算。报告标明 `distributionAcceptance: false`，不能当发行包搬迁验收。async 资格记录在本次 session/CLI 最早阶段清旧，仅原 client 成功完成后绑定实际 build/test 输入发布。
+
 CI 发布的 artifact 以提交 SHA 命名，包含对应平台的测试结果、当前运行的发行包和校验和。不要上传 artifacts 的整个目录。工作流日志是对应提交的执行记录，不写回源码树。
 
 新增的 `index-windows` / `index-linux` 在对应平台被选择时分别检查正式 Index 安装器与宿主 owner；与既有 Hy、输入及 GUI 链独立，不替换它们或放宽预算。Index 模型只下载到临时 runner，不上传 GitHub cache 或 artifact；仅 CPU archive 可缓存，artifact 只列结构化阶段/身份结果，详见[测试边界](testing.md#index-默认切换的验证边界)。

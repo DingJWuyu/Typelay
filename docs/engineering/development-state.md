@@ -4,7 +4,7 @@
 
 ## 当前身份与范围
 
-截至 **2026-11-02**，远端开发分支仍为 `work/linux-usability`，已核提交 [`dd2297500d556136b5f1344c919f18b2daeff166`](https://github.com/DingJWuyu/Typelay/commit/dd2297500d556136b5f1344c919f18b2daeff166)，tree `b5e33b451dd6d8456b5dd1a95ef342026f6c9e5c`。Browser Editing 两端完整消费者、GIMP 导航校准与 Qt/GTK4 窄观察已保存在该提交，不是未发布半链。`main` 保持 `09fe613a606073876483b51446211030a66a9597`，`trunk` 保持 `438c49789777beca9b14136dbbbbf41426c4d888`；不更新两者、不 force、不自动 PR。
+截至 **2026-11-02**，远端开发分支仍为 `work/linux-usability`，已核提交 [`7ae238cdc1e4a9b05c3e53bf810b3b31944da935`](https://github.com/DingJWuyu/Typelay/commit/7ae238cdc1e4a9b05c3e53bf810b3b31944da935)，tree `c84f74c7533bd9c980256cc8d9d222a6f8f251de`。新 12 文件修复/观察批已逐项核远端 blob/tree/parent/ref；Browser Editing 两端消费者、GIMP 导航校准等前序成果保持。`main` 保持 `09fe613a606073876483b51446211030a66a9597`，`trunk` 保持 `438c49789777beca9b14136dbbbbf41426c4d888`；不更新两者、不 force、不自动 PR。
 
 本次环境恢复时，未发布 17 文件的冻结 tree `05c838e0` 与独立 S09 候选再次不可读，远端旧 tree 查询为 404。当前重新 clone 精确 dd229750，按真实 CI575 失败重建必要修复；不把历史实现或验证摘要冒充原件，不继承丢失候选的通过。已成熟且审验的后继及时提交开发分支，再跟精确 CI，避免积累未保存源码；本地目录不承诺跨环境保留。
 
@@ -12,44 +12,42 @@
 
 ## 最近真实平台结果
 
-[CI575](https://github.com/DingJWuyu/Typelay/actions/runs/41281349343) 精确 head 为 dd229750，终态 failure。scope/shared 与双端 Index 通过，Windows/Linux 主链失败。Windows contracts、完整 Windows 包、Linux desktop 小诊断与两端终态日志已重新取回并核官方 SHA；以下区分实际通过、失败和未执行。
+[CI576](https://github.com/DingJWuyu/Typelay/actions/runs/41383694261) 精确 head 7ae238cd 已于 2026-11-02 04:00 UTC 终态 failure。共享/范围与双端 Index 通过，两主平台失败。Windows contracts/完整包、Linux desktop/Qt probe 小原件及两端终态日志已取回并核官方大小/SHA；Linux 完整包超过大小边界未取。当前修复以本头事实为准，不继承旧失败标签或把未执行说成通过。
 
 | 场景 | 当前事实 | 下一动作与边界 |
 | --- | --- | --- |
-| Windows contracts | App 实际执行 1446，1442 过、4 失败；Runtime 1556、Core 318、Protocol 28、Windows.Contracts 211 与独立 2 项通过 | 四个失败分别处理；不以测试通过率估算产品完成度 |
-| FirstWake | ordered 两分支超原 150ms，首次 managed-focus 是主要耗时但非已证独因；相关源码与先前通过头一致 | 暂无已证安全替代，不预热、延预算或删源身份检查；不重复泛性能取证 |
-| Appearance | 第二选择已发生；末 Rendering observer 先读 .598368，同帧 product 后为 .5；另有真实 271.686ms 帧隙 | tests-only 改最终读取相位，严格 .5/原中间断言/预算保留；不称修复动效性能 |
-| LocalDraft | unarmed-prefix 在首 anchor 断言失败，未到后继 claim；实际取消原因未证 | 用现公开 cancel callback 的首个时间/身份/前台分类与失败末态做有界观察，非原 WinEvent、非原子快照，不增输入或等待 |
-| Windows Browser | setup、automatic-preview-tab 过；新 Editing 确认场 90s 超时，后 6 场未跑。顺序 fixture 与 trace 只支持四种 Keep/click Replace 已完成，Enter 轮前半具体断点未知 | 复用原 Observe 响应记录阶段、计数及布尔/长度/选区，不额外读或输出正文，不新增 CDP/输入/等待；下一原件定位后最小修验 |
-| Linux Browser | DOM 94 项中 92 过、2 失败：测试输入追加了初稿；隐式新 token 却期待旧确认 Esc | 真实 Ctrl+A/精确稿观察；显式区分同 token refresh 保稿/选区/焦点与真新 token 退休/零旧操作。tests-only 修正不冒新 DOM 已通过 |
-| GIMP | 六场及正常退出、取消/确认 Disconnect 与清理通过 | 严格首屏/fullclip 校准已有实际闭环；原生 Undo 不支持边界保持 |
-| Qt6 | capsule 语言 Auto/English 与编辑态 More Copy 已越过旧阻塞；后继主题几何失败前没有本次 collapse 的 spring settled | 原总界内关联实际 attempt/started/continuation/settled，再以同对象目标高度的 fresh 快照冻结 baseline；不松尺寸、稿/选区/焦点/Undo 断言 |
-| GTK4 | 同 PID/address/代次 map→unmap 14ms，minimum 532×184 对 surface 448×100；无源 FocusOut、renew 更晚。官方 shadow 缓存路径与两轴 `532−90+6=448`、`184−90+6=100` 吻合 | 同 provider 完整 CSS 在 Popover 构造/挂 parent 前加载的新候选已双轴静审，CSS/阴影/宽度不变；未 C 编译/GUI。下轮核同实例首 map、尺寸、paint 与配置链 |
-| Notepad | 5 场通过；接受/Undo 需可信物理输入未测，编辑回源/Undo 因依赖未测 | 不以注入替代可信输入，不称整端通过 |
+| Windows contracts | App 实际执行 1446，1445 过、1 失败，22 未执行；Runtime 1556、Core 318、Protocol 28、Windows.Contracts 211 与独立 2 项通过 | 唯一失败是 GeneralMode `zh-CN/dark` 的采帧前断言：预期 ≤55.99，实际 56.5164。没有该例帧序列/终态，不能据合法超调断言初段已呈现；窄取证原 Select/布局/一次 Bounds 的时间，不松阈值或预算 |
+| FirstWake / LocalDraft | FirstWake ordered 两分支、LocalDraft 16 项本头通过；失败专用 cancel 观察未触发 | 不解释旧超时/取消根因，不预热、延 150ms/500ms 或删源身份检查 |
+| Appearance | retarget 实际 Passed，8 帧至 .5，末帧 pre/post 均 .5；最大相邻帧隙 140.625ms | 末态观察修正已有本头执行；不抹去 CI575 271.686ms 帧隙，也不称性能根因已解决 |
+| S09 暂停 | 两参数 Passed，known/unknown 两张独立 920×700 有效 PNG 已逐图读；known 显示约75%与98.3/131.1KB，unknown仅98.3KB | 同名覆盖及该暂停静态子项已闭；不外推整页材质/所有状态和 DPI |
+| Windows Browser | setup/automatic-preview-tab 过；新确认首次开菜单在1667ms失败，后6场未跑。Keep/Replace均0；trusted click 已打开菜单，同节点约12.6ms后隐藏，editor/document仍focused | 新阶段/菜单观察已排除“未送达点击”；沿原 view/焦点/关闭生命周期核原因，不再沿旧 Enter 90s 超时标签猜测，不重复输入或续期求绿 |
+| Linux Browser / GTK3 | DOM 94/94 真实通过，旧两处输入/隐式token构造失败已闭；真实 Browser、Settings、Tutorial与GTK3流程通过 | 不等于Windows确认或完整IME/混版GUI；GTK3搜索是独立后继，未合入本头 |
+| GIMP | 本头完整包前置因Qt probe失败未成，未执行；最近CI575六场/断连清理通过 | 保完整package依赖，未运行不计本头通过；原生Undo不支持边界保持 |
+| Qt6 | 本头原async probe过；unmodified-reentry的second焦点真、generic press/release 1/1、队列0，但F23具名计数未出现，原负控失败，正式desktop因此未执行 | 窄键身份观察区分sender/Qt/provider；不以generic代替F23或修改输入求绿。评估既有显式unbundled独立用户流程，保发行包/完整probe失败门，不冒搬迁验收；主题settled前置尚未实际运行 |
+| GTK4 | 首preview同实例map前后min均532×184，真实首paint/hover/trigger click已越过旧阻塞；unmap紧跟language-configuration主动hide。新配置begin=1/cancel=1/save=0，另popup mapped/search聚焦后top inactive回调取消 | 原CSS首map子项已闭，不把后继取消套旧shadow原因；核配置自己root/popup焦点生命周期与真实外窗区别，不恢复旧source或假active/grace |
+| Notepad | 5场通过；接受/Undo两项因可信物理输入依赖未测 | 不以注入替代可信输入，不称整端通过 |
 
 仍有效的邻近依据：Onboarding 退休 opening 的旧 Show 复活及 nested/inherited/属性策略/Close/异常已有真实 WPF 回归通过；owned Replace click/Enter/Space、空稿、held/repeat 后新动作与 Keep 稿/选区/Undo 已有 CI574 证据。Queue 后续通过未解释原超时根因。Settings 深色标题窄修已有有效九图与样式节点通过，不等于整页材质/动效 1:1。
 
-## 当前候选、owner 与恢复动作
+## 当前候选与恢复动作
 
-| Owner | 当前工作 | 收束条件 |
+| 模块 | 当前工作 | 收束条件 |
 | --- | --- | --- |
-| 集成 / resume_typelay_ui_delivery | 已重取必要原件、恢复锁定工具并完成 12 文件成熟批适用检查；冻结发布与精确 CI 跟踪 | 新源码绑定独审与适用检查；回读 blob/tree/commit/ref，不继承旧 tree 或旧 GREEN |
-| GTK4 / nov2_gtk4_initial_css | 单文件首 map CSS 顺序修已形成新固定候选，Spec/Standards 静审通过 | 原首次 paint/点击和后继配置链实际通过，诊断模式不作性能验收 |
-| Linux / nov2_linux_followup | Browser 两测试构造修正与 Qt 稳定态前置已合当前批；独立只读核 GTK3 搜索边界 | parser/格式/语法检查与真实 DOM/Qt 分开；旧失败保留，不改生产 spring 或源权限 |
-| Windows / nov2_windows_followup | Browser 阶段观察、Appearance 末帧读取、LocalDraft 窄取证及 S09 捕获分名 | 本批托管编译/格式已过，真实 Windows 原场景再验；诊断不是产品修复 |
-| Standards / nov2_standards；Root | 固定源码独立工程标准审与独立 Spec/advisor；Root 负责用户里程碑沟通 | 后继修改另审差量，不让一轴通过代替另一轴或 GUI |
+| 发布与集成 | 已合 GTK3 搜索、Browser More 稿回显修正、Qt 独立流程资格及三处窄观察，共 15 个代码/测试文件；已完成组合检查 | 冻结这批及 5 份现役文档，核远端仍为 7ae238cd 后逐项发布；跟新头 CI，不继承旧 tree 或旧 GREEN |
+| GTK3 语言菜单 | GTK3 真实目标搜索已重建并完成审查，保源选择/Apply、code/目录身份与原 IME 门；Unknown/Composing 的原搜索键不会落入通用 Escape 命令 | 下一真实 GTK 编译、搜索/空态/导航/同 opening/重开与 Composing 回归；Unknown 仍未实测，不把静态结论当平台通过 |
+| Browser 编辑菜单 | More 仅在同合法 Editing、同 field/view/token 且 text 精确回显当前稿时保显示；原 control/regenerate 退休不变，新增 1 正向/7 负向公开场景 | 下一真实 DOM/Windows 验证，不称已证明 CI576 唯一根因；本地未运行 DOM，使用下一目标平台结果验证 |
+| GTK4 配置窗口 | 原首 map 已越过；仅给原 inactive 信号附当前 controller/event surface/root/popup 身份及已有异步 compositor 观察，不改关闭条件 | 一份真实证据区分合法配置转焦与外窗切走；缺失/截断标 unknown，非原子观察不作性能验收 |
+| Qt 验证流程 | 保原 F23 断言，附两 owned 字段最多 4 个键身份事件；完整 probe 失败时仅精确当前 build/default async 证明可进原显式 unbundled 用户流程 | 下一真实 Qt 证据；缺证明不运行，发行 pack/finalize/GIMP 与整体失败门保持，不把独立交互当发行包验收 |
+| Windows GeneralMode | GeneralMode 只在原失败附 Select/布局/原一次 Bounds 的时间；新 App.Tests Release build 和单文件格式已过 | 下一真实 WPF 判定原采样前失败；不新增几何读取或放宽 55.99、300ms、3s |
 
-S09 两个 knownTotal 参数在 CI575 均 Passed，但 `File.Create` 共用 `model-paused.png` 只留下单图。新候选仅把两个既有截图按 known/unknown 分名，无新增截图、输入、等待或断言；取得两张新图前不关闭 known 暂停视觉。
+Qt 目标搜索壳仍未恢复；GTK3 本批只补现有语言子层的目标搜索与本地键盘选择，不冒完整原型方向头/交换/即时保存。新 CI 期间按实际原件补有价值缺口，不重启模型研究或为忙碌扩诊断。
 
-GTK3 目标搜索不在本轮优先修复小批：丢失候选尚未恢复，现役源/目标选择与 Apply 保留；Qt 搜索壳亦未恢复。先让已证失败的必要修正得到下一次真实平台结果，再独立推进有用户收益的菜单搜索，不把等待当全局停止，也不为忙碌扩底层研究。
-
-Agent 目标配置为 `gpt-6-astra` / `xhigh`，工具仅确认任务标识，实际配置未独立核实。作者只写 ignored 候选，集成唯一修改 live、文档和发布。标准检查由集成单 owner 串行，记录输入/预算/退出/清理；先快速格式再重编译，新权限、预算扩张或不确定并发再判断。
 
 ## 验证环境与未闭产品边界
 
-本批 9 个代码/测试文件与 3 份产品/状态文档已分别完成 Standards 与 Spec 静审。最终 Linux 15 项观察契约、真实 CI575 trace 对照、三文件 Ruff/AST 通过；最后仅 test 格式机械调整，AST 等价。并集 diff、5 个 C# 文件的 folder-only whitespace 与两段现有 Browser JS 语法通过。App.Tests 首次 C# 产物已生成，但末尾 Copy 缺正式 native DLL 输出路径而失败；按项目路径放置已核同 SHA 的正式 DLL 后，仅重跑 App.Tests/Fixture Release build，均通过（8.07s，986 输入无漂、owned 清理为空）。原失败日志保留，不把恢复的 DLL 称本机 native 编译，也不把托管构建称 WPF/DOM/Qt/GTK 实测。
+当前 20 文件候选（15 代码/测试、5 文档）已完成源码审查。最终组合 5 个 Python 文件 Ruff/格式/AST、Browser JS 语法与 diff 检查通过；`test_build_bundle` 完整 51/51 通过（含新增 10 项资格/早失败回归），40.290s，983 个输入文件未变，检查进程已退出。General 单文件 folder-only whitespace 与 App.Tests Release build 新执行通过，57.25s；其源码末字节未变，不重跑同一构建。两处公共 runner 合并已核未覆盖各自新增行为。以上不等于 GTK/Qt native 编译或真实 WPF/DOM 验收。
 
-- 私有 SDK 10.0.401 已按官方元数据核完整 SHA512 恢复，Ruff 0.14.0/fontTools 4.61.1 按现锁安装；从已核正式包恢复 32 面字体并通过官方 verify，native DLL 核 SHA。工具恢复不是产品测试。两项目 locked restore 已过；原 NuGet 默认只读缓存失败保留，改用官方环境变量指定私有缓存，没有调整权限。
-- 当前没有可用 DISPLAY/WAYLAND 或 GTK/Qt 开发 SDK、真实 WPF。既有 socket、系统安装、project-based formatter 与超 512MiB artifact 拒绝不换路线绕过；只用独立 folder 格式检查，未请求过大 Linux 完整包。
+- 本地 SDK 10.0.401 已按官方元数据核完整 SHA512 恢复，Ruff 0.14.0/fontTools 4.61.1 按现锁安装；从已核正式包恢复 32 面字体并通过官方 verify，native DLL 核 SHA。工具恢复不是产品测试。两项目 locked restore 已过；原 NuGet 默认只读缓存失败保留，改用官方环境变量指定工作区缓存。
+- 当前没有可用 DISPLAY/WAYLAND 或 GTK/Qt 开发 SDK、真实 WPF。本地只执行 folder 格式检查和托管编译；DOM、GTK/Qt 与 WPF 运行依赖目标平台。Linux 完整 artifact 超过可读取的大小上限，当前采用独立 desktop/probe 原件。
 - 完整双端逐页/状态/真实键鼠与 IME 验收未完。Browser safe-false→retry、混版 GUI、非 Editing 确认和 changed-rich bookmark 体验仍未闭；S08 材质/中间组合像素、多 DPI 与跨页 Full 动效仍有差距。
 - 原 down+500ms、FirstWake 150ms、焦点/IME/源身份、接受资格、写回和 Undo 条件保持。安全退休与材质回退不能冒原型完整呈现；下一真实结果决定后继修复。

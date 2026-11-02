@@ -14,6 +14,9 @@ void tl_overlay_forget(Target *target);
 void tl_overlay_sync(void);
 /* Close child language popovers on real outside clicks without taking focus. */
 void tl_overlay_pointer(GdkEvent *event);
+/* Search-local physical presses. Owned but unconsumed input bypasses generic
+ * commands and still reaches GTK/Fcitx once; no source acceptance is created. */
+gboolean tl_overlay_language_search_key(GdkEvent *event, gboolean *owned);
 void tl_overlay_acceptance(void);
 gboolean tl_overlay_key(gboolean accept, gboolean exit, gboolean control, guint keycode, guint64 sequence);
 void tl_overlay_control_begin(guint keycode, guint64 sequence);

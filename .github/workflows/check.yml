@@ -1250,14 +1250,27 @@ jobs:
           export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
           export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
           python tests/linux/native_e2e.py --desktop --desktop-scope gtk4 --gtk-session-bindings --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/gtk4-desktop --fcitx-cooperative "artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative"
-      - name: Exercise relocated Qt6 widgets with the real local model
-        if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.qt.outcome == 'success' && steps.fcitx-package.outcome == 'success' }}
+      - name: Exercise Qt6 widgets with explicit bundle or build provenance
+        if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.models.outcome == 'success' && (steps.qt.outcome == 'success' || steps.qt.outcome == 'failure') && steps.fcitx-package.outcome == 'success' }}
+        env:
+          QT_PROBE_OUTCOME: ${{ steps.qt.outcome }}
         run: |
           export DISPLAY=:99
           export XDG_CONFIG_HOME="$PWD/artifacts/linux/qt-desktop-config"
           export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
           export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
-          python tests/linux/native_e2e.py --desktop --desktop-scope qt --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/qt-desktop --fcitx-cooperative "artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative" --qt-cooperative artifacts/linux/qt-cooperative
+          case "$QT_PROBE_OUTCOME" in
+            success)
+              fcitx_root="artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative"
+              ;;
+            failure)
+              fcitx_root=artifacts/linux/fcitx-cooperative-5.1.22
+              python tests/linux/qt_cooperative/desktop_admission.py --probe-outcome "$QT_PROBE_OUTCOME" --fcitx-root "$fcitx_root" --qt-output artifacts/linux/qt-cooperative --output artifacts/linux/qt-desktop/qt-desktop-admission.json
+              echo 'Qt probe remains failed. Qt desktop uses explicit unbundled build inputs, not distribution acceptance.' >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *) echo 'Qt desktop not run: probe outcome is neither success nor failure.'; exit 1 ;;
+          esac
+          python tests/linux/native_e2e.py --desktop --desktop-scope qt --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/qt-desktop --fcitx-cooperative "$fcitx_root" --qt-cooperative artifacts/linux/qt-cooperative
       - name: Verify installed VS Code command with the real local model
         if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.models.outcome == 'success' }}
         run: |

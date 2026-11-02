@@ -3771,6 +3771,93 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(self.accepted(), [])
 
+    def test_more_draft_echo_keeps_only_the_current_legal_editor_opening(self):
+        for phase in (
+            "current-draft",
+            "stale-draft",
+            "transport-revision",
+            "new-token",
+            "edit-revoked",
+            "readonly-view",
+            "status-changed",
+            "paused",
+        ):
+            with self.subTest(phase=phase):
+                self.page.reload()
+                _, data = self.open_editor("Tab", "Esc")
+                data["appearance"] = {"uiLanguage": "zh-CN", "motion": "reduce"}
+                # Pin the public host token; fixture defaults do not round-trip
+                # into Python and must not silently turn a draft echo into a new owner.
+                self.set_translation_menu(
+                    data, self.translation_menu_state(canChangeStyle=False, canInheritStyle=False)
+                )
+                self.page.keyboard.press("Control+A")
+                self.page.keyboard.insert_text("My protected draft")
+                self.page.keyboard.press("Shift+ArrowLeft")
+                editor = self.overlay_control("TypeLay 译文", "textbox")
+                before = self.overlay_dom(
+                    editor,
+                    """function() {
+                      return [this.value, this.readOnly, this.matches(':focus'), this.selectionStart, this.selectionEnd];
+                    }""",
+                )
+                self.assertEqual(before, ["My protected draft", False, True, 17, 18])
+                self.click_overlay_control("更多")
+                menu = self.overlay_control("更多操作", "group")
+                self.assertFalse(self.overlay_dom(menu, "function() { return this.hidden; }"))
+                data["view"]["text"] = "My protected draft"
+                if phase == "stale-draft":
+                    data["view"]["text"] = "My protected draf"
+                elif phase == "transport-revision":
+                    data["revision"] += 1
+                elif phase == "new-token":
+                    data["view"]["viewContext"]["token"]["revision"] += 1
+                elif phase == "edit-revoked":
+                    data["view"]["viewContext"]["canEdit"] = False
+                elif phase == "readonly-view":
+                    data["view"]["editable"] = False
+                elif phase == "status-changed":
+                    data["view"]["status"] = "新的会话状态"
+                elif phase == "paused":
+                    data["view"]["state"] = "Paused"
+                rendered = self.command("overlay-render", data)
+                if phase != "paused":
+                    self.assertTrue(rendered["visible"])
+                # One real More click, then one public render. No reopening,
+                # synthetic click, private ticket or extra renewal hides a failure.
+                self.assertEqual(
+                    self.overlay_dom(
+                        menu, "function() { return this.isConnected && !this.hidden; }"
+                    ),
+                    phase == "current-draft",
+                )
+                if phase == "current-draft":
+                    self.assertTrue(
+                        self.overlay_dom(
+                            menu,
+                            """function() {
+                              return this.getRootNode().querySelector('#more-actions') === this;
+                            }""",
+                        )
+                    )
+                    self.assertEqual(
+                        self.overlay_dom(
+                            editor,
+                            """function() {
+                              return [this.value, this.readOnly, this.matches(':focus'), this.selectionStart, this.selectionEnd];
+                            }""",
+                        ),
+                        before,
+                    )
+                self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+                self.assertEqual(self.page.evaluate("window.submitted"), 0)
+                self.assertEqual(self.accepted(), [])
+                self.assertEqual(
+                    self.page.evaluate("""fixtureMessages.filter(message => message.event === 'ui'
+                      && !['beginEdit', 'draft', 'focus', 'visible'].includes(message.data.operation))"""),
+                    [],
+                )
+
     def test_translation_menu_uses_shared_state_and_freezes_opened_settings_revision(self):
         data = self.motion_view()
         self.page.emulate_media(reduced_motion="reduce")
@@ -5113,7 +5200,13 @@ class BrowserContract(unittest.TestCase):
                 self.assertEqual(self.accepted(), [])
 
     def test_editing_retranslation_unknown_ime_and_new_view_retire_old_confirmation(self):
-        for phase in ("unknown-editor", "transport-refresh", "new-view", "changed-draft"):
+        for phase in (
+            "unknown-editor",
+            "transport-refresh",
+            "draft-echo",
+            "new-view",
+            "changed-draft",
+        ):
             with self.subTest(phase=phase):
                 self.page.reload()
                 self.page.locator("#source").focus()
@@ -5161,8 +5254,11 @@ class BrowserContract(unittest.TestCase):
                         editor,
                         "function() {this.dispatchEvent(new CompositionEvent('compositionstart'));}",
                     )
-                elif phase in ("transport-refresh", "new-view"):
-                    data["revision"] += 1
+                elif phase in ("transport-refresh", "draft-echo", "new-view"):
+                    if phase == "draft-echo":
+                        data["view"]["text"] = "My protected draft"
+                    else:
+                        data["revision"] += 1
                     if phase == "new-view":
                         data["view"]["viewContext"]["token"]["revision"] += 1
                     self.assertTrue(self.command("overlay-render", data)["visible"])
@@ -5176,7 +5272,7 @@ class BrowserContract(unittest.TestCase):
                         return [this.value, this.readOnly, this.matches(':focus'), this.selectionStart, this.selectionEnd];
                     }""",
                         ),
-                        ["My protected draft", False, phase == "transport-refresh", 17, 18],
+                        ["My protected draft", False, phase != "new-view", 17, 18],
                     )
                     self.assertFalse(
                         self.page.locator("#source").evaluate(
@@ -5199,9 +5295,12 @@ class BrowserContract(unittest.TestCase):
                 events = self.page.evaluate("""fixtureMessages.filter(m => m.event === 'ui'
                     && ['escape','return','regenerate'].includes(m.data.operation)).map(m=>m.data.operation)""")
                 self.assertEqual(
-                    events, ["escape"] if phase in ("changed-draft", "transport-refresh") else []
+                    events,
+                    ["escape"]
+                    if phase in ("changed-draft", "transport-refresh", "draft-echo")
+                    else [],
                 )
-                if phase == "transport-refresh":
+                if phase in ("transport-refresh", "draft-echo"):
                     self.assertEqual(
                         self.overlay_dom(
                             editor,

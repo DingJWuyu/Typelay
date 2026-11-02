@@ -2295,15 +2295,74 @@ static void language_configuration_trace(LanguageConfiguration *configuration, c
     GtkWidget *focus = configuration->top ? gtk_window_get_focus(GTK_WINDOW(configuration->top)) : NULL;
     const char *focus_kind = !focus ? "none" : focus == configuration->client ? "search"
         : language_configuration_contains(configuration, focus) ? "inside" : "outside";
+    GtkWidget *popup = configuration->popup;
+    GdkSurface *top_surface = configuration->top ? gtk_native_get_surface(GTK_NATIVE(configuration->top)) : NULL;
+    GdkSurface *popup_surface = popup ? gtk_native_get_surface(GTK_NATIVE(popup)) : NULL;
+    GtkNative *focus_native = focus ? gtk_widget_get_native(focus) : NULL;
+    GdkEvent *focus_event = NULL;
+    guint focus_controllers = 0, active_top = 0, active_other = 0;
+    gboolean ambiguous = FALSE, controllers_truncated = FALSE, windows_truncated = FALSE;
+    gboolean sampled = g_str_equal(stage, "signal-active") && configuration->top;
+    if (sampled) {
+        /* Read the event already on GTK's focus-controller stack. Do not add a
+         * controller or infer the destination of a leave from retained focus. */
+        GListModel *controllers = gtk_widget_observe_controllers(configuration->top);
+        guint total = g_list_model_get_n_items(controllers);
+        controllers_truncated = total > 16;
+        for (guint index = 0; index < MIN(total, 16u); index++) {
+            GtkEventController *controller = g_list_model_get_item(controllers, index);
+            GdkEvent *event = gtk_event_controller_get_current_event(controller);
+            if (event && gdk_event_get_event_type(event) == GDK_FOCUS_CHANGE) {
+                focus_controllers++;
+                if (!focus_event) focus_event = gdk_event_ref(event);
+                else if (focus_event != event) ambiguous = TRUE;
+            }
+            g_object_unref(controller);
+        }
+        g_object_unref(controllers);
+        GListModel *windows = gtk_window_get_toplevels();
+        total = g_list_model_get_n_items(windows);
+        windows_truncated = total > 16;
+        for (guint index = 0; index < MIN(total, 16u); index++) {
+            GtkWindow *window = g_list_model_get_item(windows, index);
+            if (gtk_window_is_active(window)) {
+                if (GTK_WIDGET(window) == configuration->top) active_top++;
+                else active_other++;
+            }
+            g_object_unref(window);
+        }
+    }
+    const char *event_status = !sampled ? "not-sampled" : controllers_truncated ? "truncated"
+        : ambiguous ? "ambiguous" : focus_event ? "current" : "absent";
+    gboolean current_event = focus_event && !ambiguous && !controllers_truncated;
+    GdkSurface *event_surface = current_event ? gdk_event_get_surface(focus_event) : NULL;
+    GtkNative *event_native = event_surface ? gtk_native_get_for_surface(event_surface) : NULL;
     g_printerr("TypeLay GTK4 language-opening stage=%s atMs=%" G_GINT64_FORMAT
         " deadlineMs=%" G_GINT64_FORMAT " same=%d retired=%d pending=%d opening=%d saving=%d"
-        " topMapped=%d topActive=%d popupMapped=%d popupVisible=%d focus=%s\n",
+        " topMapped=%d topActive=%d popupMapped=%d popupVisible=%d focus=%s"
+        " config=%p top=%p popup=%p topSurface=%p popupSurface=%p"
+        " popupRootTop=%d popupParentSurfaceTop=%d focusHasFocus=%d focusNativePopup=%d"
+        " focusEvent=%s focusEventControllers=%u eventIn=%d eventSurface=%p"
+        " eventSurfaceTop=%d eventSurfacePopup=%d eventRootTop=%d"
+        " activeTop=%u activeOther=%u activeWindowsTruncated=%d\n",
         stage, tl_now(), configuration->expires, language_configuration == configuration,
         configuration->retired, configuration->pending, configuration->opening, configuration->saving,
         configuration->top && gtk_widget_get_mapped(configuration->top),
         configuration->top && gtk_window_is_active(GTK_WINDOW(configuration->top)),
         configuration->popup && gtk_widget_get_mapped(configuration->popup),
-        configuration->popup && gtk_widget_get_visible(configuration->popup), focus_kind);
+        configuration->popup && gtk_widget_get_visible(configuration->popup), focus_kind,
+        (void *)configuration, (void *)configuration->top, (void *)popup,
+        (void *)top_surface, (void *)popup_surface,
+        popup && gtk_widget_get_root(popup) == GTK_ROOT(configuration->top),
+        popup_surface && GDK_IS_POPUP(popup_surface)
+            && gdk_popup_get_parent(GDK_POPUP(popup_surface)) == top_surface,
+        focus && gtk_widget_has_focus(focus), popup && focus_native == GTK_NATIVE(popup),
+        event_status, focus_controllers, current_event ? (int)gdk_focus_event_get_in(focus_event) : -1,
+        (void *)event_surface, event_surface && event_surface == top_surface,
+        event_surface && event_surface == popup_surface,
+        event_native && gtk_widget_get_root(GTK_WIDGET(event_native)) == GTK_ROOT(configuration->top),
+        active_top, active_other, windows_truncated);
+    if (focus_event) gdk_event_unref(focus_event);
 }
 static void language_configuration_emit(LanguageConfiguration *configuration, const char *operation,
         const char *source, const char *target) {

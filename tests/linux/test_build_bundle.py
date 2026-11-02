@@ -352,6 +352,242 @@ class FcitxTestManifestTests(unittest.TestCase):
             verify_fcitx_inputs(self.directory)
 
 
+class QtDesktopAdmissionTests(unittest.TestCase):
+    """Real file/child lifecycle contracts, not a Qt build or desktop result."""
+
+    def setUp(self):
+        from qt_cooperative import desktop_admission
+        from qt_cooperative.run import finish_async_client
+
+        self.admission = desktop_admission
+        self.finish = finish_async_client
+        temporary = tempfile.TemporaryDirectory(prefix="typelay-qt-admission-")
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+        self.qt = self.directory / "qt"
+        self.fcitx = self.directory / "fcitx"
+        self.qt.mkdir()
+        self.fcitx.mkdir()
+        for name in ("versions.json", "build-inputs.json", "test-inputs.json"):
+            (self.fcitx / name).write_text("{}\n")
+        self.versions = {
+            "qt_build_version": inputs.QT_VERSION,
+            "fcitx5_qt_source_version": inputs.QT_SOURCE_VERSION,
+            "source_commit": inputs.QT_PIN,
+            "source_sha256": inputs.QT_SHA256,
+            "build_inputs": inputs.hashes(inputs.QT_BUILD_INPUTS),
+            "test_inputs": inputs.hashes(inputs.QT_TEST_INPUTS),
+        }
+        self.binaries = (
+            "plugins/platforminputcontexts/libfcitx5platforminputcontextplugin.so",
+            "native/qt6/generic/libtypelay-qt6.so",
+            "qt-runtime-probe",
+            "fixture",
+            "qpa_ack",
+            "native/qt-native-fixture",
+            "font-order",
+        )
+        for name in self.binaries:
+            path = self.qt / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"inert identity fixture\n")
+        for key, names in (
+            ("binary_sha256", self.binaries[:3]),
+            ("test_binary_sha256", self.binaries[3:]),
+        ):
+            self.versions[key] = {name: inputs.sha256(self.qt / name) for name in names}
+        self.write_versions()
+        (self.qt / "async-runtime.json").write_text(
+            json.dumps({"build_version": "6.11.2", "runtime_version": "6.11.2", "platform": "xcb"})
+        )
+
+    def write_versions(self):
+        (self.qt / "versions.json").write_text(json.dumps(self.versions))
+
+    def complete_client(self, *, verified=True, code=0):
+        with subprocess.Popen(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                "-c",
+                "import sys; sys.exit(int(sys.argv[1]) if sys.stdin.readline() == 'quit\\n' else 9)",
+                str(code),
+            ],
+            stdin=subprocess.PIPE,
+            text=True,
+        ) as client:
+            self.finish(client, self.qt, self.fcitx, {}, verified_fcitx_build=verified)
+
+    def test_completed_async_record_binds_current_qt_and_fcitx_build_records(self):
+        self.complete_client()
+        identity = self.admission.verify_qt_desktop_inputs(self.qt, self.fcitx)
+        self.assertEqual(
+            identity,
+            {
+                "qt_versions_sha256": inputs.sha256(self.qt / "versions.json"),
+                "fcitx_versions_sha256": inputs.sha256(self.fcitx / "versions.json"),
+                "fcitx_build_inputs_sha256": inputs.sha256(self.fcitx / "build-inputs.json"),
+                "fcitx_test_inputs_sha256": inputs.sha256(self.fcitx / "test-inputs.json"),
+            },
+        )
+        # This Qt identity fixture is intentionally not a verified Fcitx build.
+        # The actual CI entry must still reject it through the original verifier.
+        with self.assertRaisesRegex(ValueError, "server_source_version must be"):
+            self.admission.admit_desktop(self.qt, self.fcitx, "failure")
+
+    def test_existing_unverified_iteration_cannot_gain_failed_probe_admission(self):
+        self.complete_client(verified=False)
+        result = json.loads((self.qt / "async-result.json").read_text())
+        self.assertIs(result["passed"], True)
+        self.assertNotIn("build_identity", result)
+        with self.assertRaisesRegex(ValueError, "not bound to this build"):
+            self.admission.verify_qt_desktop_inputs(self.qt, self.fcitx)
+
+    def test_failed_client_exit_does_not_publish_or_retain_qualified_async_record(self):
+        self.complete_client()
+        with self.assertRaises(AssertionError):
+            self.complete_client(code=7)
+        self.assertFalse((self.qt / "async-result.json").exists())
+
+    def test_early_session_launch_failure_cannot_reuse_previous_async_qualification(self):
+        from qt_cooperative.run import session
+
+        self.complete_client()
+        # Exercise the real session entry without starting Qt, a daemon or a bus.
+        # Its missing executable fails before any client or input can be created.
+        with self.assertRaises(FileNotFoundError):
+            session(self.qt, self.directory / "missing-fcitx", language_options_only=True)
+        self.assertFalse((self.qt / "async-result.json").exists())
+
+    def test_cli_invalidates_previous_async_before_verifying_or_building(self):
+        for session in (False, True):
+            with self.subTest(session=session):
+                self.complete_client()
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-I",
+                        "-B",
+                        str(ROOT / "tests/linux/qt_cooperative/run.py"),
+                        "--out",
+                        str(self.qt),
+                        "--fcitx-root",
+                        str(self.directory / "missing-fcitx"),
+                        "--verify-fcitx-build",
+                        *(["--session"] if session else []),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("versions.json", result.stderr)
+                self.assertFalse((self.qt / "async-result.json").exists())
+
+    def test_each_build_record_and_compiled_binary_remains_bound(self):
+        self.complete_client()
+        for path in (
+            *(
+                self.fcitx / name
+                for name in ("versions.json", "build-inputs.json", "test-inputs.json")
+            ),
+            *(self.qt / name for name in self.binaries),
+            self.qt / "versions.json",
+        ):
+            with self.subTest(path=path.relative_to(self.directory)):
+                original = path.read_bytes()
+                path.write_bytes(original + b"\n")
+                with self.assertRaisesRegex(
+                    ValueError, "changed after its build|not bound to this build"
+                ):
+                    self.admission.verify_qt_desktop_inputs(self.qt, self.fcitx)
+                path.write_bytes(original)
+
+    def test_partial_or_changed_checkout_inputs_and_binary_records_are_rejected(self):
+        self.complete_client()
+        for key in ("build_inputs", "test_inputs", "binary_sha256", "test_binary_sha256"):
+            original = self.versions[key]
+            first = next(iter(original))
+            for changed in (False, True):
+                with self.subTest(key=key, changed=changed):
+                    self.versions[key] = dict(original)
+                    if changed:
+                        self.versions[key][first] = "0" * 64
+                    else:
+                        self.versions[key].pop(first)
+                    self.write_versions()
+                    with self.assertRaises(ValueError):
+                        self.admission.verify_qt_desktop_inputs(self.qt, self.fcitx)
+            self.versions[key] = original
+        self.write_versions()
+
+    def test_missing_and_nondefault_async_evidence_are_rejected(self):
+        self.complete_client()
+        path = self.qt / "async-result.json"
+        original = path.read_bytes()
+        path.unlink()
+        with self.assertRaises(FileNotFoundError):
+            self.admission.verify_qt_desktop_inputs(self.qt, self.fcitx)
+        for key, value in (
+            ("passed", 1),
+            ("required", False),
+            ("mode", "sync"),
+            ("build_identity", {}),
+        ):
+            with self.subTest(key=key):
+                report = json.loads(original)
+                report[key] = value
+                path.write_text(json.dumps(report))
+                with self.assertRaisesRegex(ValueError, "not bound to this build"):
+                    self.admission.verify_qt_desktop_inputs(self.qt, self.fcitx)
+
+    def test_nonfailure_outcomes_and_explicit_bundles_never_select_build_inputs(self):
+        for outcome in ("success", "skipped", "cancelled", "", "unknown"):
+            with (
+                self.subTest(outcome=outcome),
+                self.assertRaisesRegex(ValueError, "explicit failed Qt probe"),
+            ):
+                self.admission.admit_desktop(self.qt, self.fcitx, outcome)
+        manifest = self.fcitx / "manifest.json"
+        manifest.write_text('{"schemaVersion": 1}')
+        with self.assertRaisesRegex(ValueError, "cannot fall back"):
+            self.admission.admit_desktop(self.qt, self.fcitx, "failure")
+        manifest.unlink()
+        manifest.symlink_to("missing-manifest")
+        with self.assertRaisesRegex(ValueError, "cannot fall back"):
+            self.admission.admit_desktop(self.qt, self.fcitx, "failure")
+
+    def test_cli_reports_missing_identity_as_not_run_without_distribution_acceptance(self):
+        output = self.directory / "desktop/qt-desktop-admission.json"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                str(ROOT / "tests/linux/qt_cooperative/desktop_admission.py"),
+                "--qt-output",
+                str(self.qt),
+                "--fcitx-root",
+                str(self.directory / "missing-fcitx"),
+                "--probe-outcome",
+                "failure",
+                "--output",
+                str(output),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        report = json.loads(output.read_text())
+        self.assertEqual(report["admission"], "not-run")
+        self.assertEqual(report["probeOutcome"], "failure")
+        self.assertIs(report["distributionAcceptance"], False)
+        self.assertIn("versions.json", report["reason"])
+        self.assertEqual(list(output.parent.iterdir()), [output])
+
+
 class WorkerBundleTests(unittest.TestCase):
     def test_argos_only_worker_has_runtime_python_and_locks_without_native_build_inputs(self):
         with tempfile.TemporaryDirectory(prefix="typelay-worker-") as directory:

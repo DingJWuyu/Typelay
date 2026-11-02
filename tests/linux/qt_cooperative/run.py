@@ -44,6 +44,28 @@ def verify_fcitx_inputs(fcitx):
     recipe.verify_sources(fcitx)
 
 
+def probe_build_identity(out, fcitx):
+    """Bind a completed async observation to the current local build records."""
+    return {
+        "qt_versions_sha256": sha256(out / "versions.json"),
+        "fcitx_versions_sha256": sha256(fcitx / "versions.json"),
+        "fcitx_build_inputs_sha256": sha256(fcitx / "build-inputs.json"),
+        "fcitx_test_inputs_sha256": sha256(fcitx / "test-inputs.json"),
+    }
+
+
+def finish_async_client(client, out, fcitx, observations, *, verified_fcitx_build=False):
+    """Publish qualified async evidence only after the original normal client exit."""
+    (out / "async-result.json").unlink(missing_ok=True)
+    client.stdin.write("quit\n")
+    client.stdin.flush()
+    assert client.wait(timeout=10) == 0
+    result = {"passed": True, "required": True, "mode": "async", "observations": observations}
+    if verified_fcitx_build:
+        result["build_identity"] = probe_build_identity(out, fcitx)
+    (out / "async-result.json").write_text(json.dumps(result, indent=2) + "\n")
+
+
 def run(args, **kwargs):
     return subprocess.check_output(
         [str(a) for a in args], text=True, timeout=kwargs.pop("timeout", 180), **kwargs
@@ -1024,20 +1046,114 @@ def ordered_controls(
                     and settled(),
                     "unpublished F12 passes its original pair",
                 )
-                fixture("on-selection", action="focus-second")
+                fixture("on-selection", action="focus-second", observeReentryKeys=True)
                 old_keys = state()["keys"]
                 publication = publish()
                 # The unbound sentinel follows the original F12 release in the
                 # same injected batch. Its actual destination-widget release is
                 # the barrier before asserting that neither F12 half leaked.
-                run(["xdotool", "key", "--delay", "0", "F12", "F23"], env=environment)
-                wait(
-                    lambda: state()["second"]["focused"]
-                    and state()["keys"].get("secondF23Release", 0)
-                    == old_keys.get("secondF23Release", 0) + 1
-                    and settled(),
-                    "ordinary selection callback moves focus and the trailing key retires",
-                )
+                try:
+                    run(["xdotool", "key", "--delay", "0", "F12", "F23"], env=environment)
+                    wait(
+                        lambda: state()["second"]["focused"]
+                        and state()["keys"].get("secondF23Release", 0)
+                        == old_keys.get("secondF23Release", 0) + 1
+                        and settled(),
+                        "ordinary selection callback moves focus and the trailing key retires",
+                    )
+                except AssertionError:
+                    # Keep the failed original batch, not another input, RPC or wait.
+                    # Whitelist identities/counters only, never source/plan/receipt text.
+                    try:
+                        current = state()
+                        fixture_evidence = {
+                            key: current.get(key)
+                            for key in (
+                                "pid",
+                                "qtVersion",
+                                "observedAtMs",
+                                "keys",
+                                "reentryKeys",
+                                "commandSequence",
+                                "focusTransitions",
+                                "selectionHandoff",
+                                "tlqtPendingDbus",
+                                "tlqtPendingForward",
+                                "tlqtOutputDepth",
+                                "tlqtEngine",
+                                "tlqtRetired",
+                                "tlqtKeyReplies",
+                                "tlqtCommits",
+                                "tlqtPreedits",
+                            )
+                        }
+                        for field in ("first", "second"):
+                            fixture_evidence[field] = {
+                                key: current.get(field, {}).get(key)
+                                for key in (
+                                    "focused",
+                                    "cursor",
+                                    "selectionStart",
+                                    "selectionLength",
+                                    "changes",
+                                    "edits",
+                                    "undoAvailable",
+                                )
+                            }
+                        recent_events = []
+                        for event in native.events[-16:]:
+                            data = event.get("data", {})
+                            recent_events.append(
+                                {
+                                    "event": event.get("event"),
+                                    "data": {
+                                        key: data[key]
+                                        for key in (
+                                            "target",
+                                            "planId",
+                                            "acceptedAtMs",
+                                            "textChanged",
+                                            "focusChanged",
+                                            "focused",
+                                            "inputRevision",
+                                            "contentRevision",
+                                            "focusRevision",
+                                        )
+                                        if key in data
+                                    },
+                                    "receipt": {
+                                        key: data.get("receipt", {}).get(key)
+                                        for key in ("status", "reason")
+                                    },
+                                }
+                            )
+                        result["reentryFailure"] = {
+                            "publication": {
+                                key: publication[key]
+                                for key in ("target", "generation", "authority")
+                            },
+                            "planId": publication["permit"]["plan"]["id"],
+                            "permit": {
+                                key: publication["permit"][key]
+                                for key in (
+                                    "inputEpoch",
+                                    "focusEpoch",
+                                    "observedAtMs",
+                                    "expiresAtMs",
+                                )
+                            },
+                            "oldKeys": old_keys,
+                            "fixture": fixture_evidence,
+                            # Already received events only; do not drain the socket on failure.
+                            "receivedNativeEventCount": len(native.events),
+                            "recentNativeEvents": recent_events,
+                        }
+                        (out / f"{mode}-result.json").write_text(
+                            json.dumps(result, indent=2) + "\n"
+                        )
+                    except (OSError, AttributeError, KeyError, TypeError, ValueError):
+                        pass  # Evidence I/O must not replace the original failed assertion.
+                    raise
                 native.describe()
                 accepted = [event for event in native.events if event.get("event") == "accepted"]
                 assert len(accepted) == 1, accepted
@@ -3054,7 +3170,16 @@ def observe_font_order(out, env):
         )
 
 
-def session(out, fcitx, forced_sync_diagnostic=False, language_options_only=False):
+def session(
+    out,
+    fcitx,
+    forced_sync_diagnostic=False,
+    language_options_only=False,
+    *,
+    verified_fcitx_build=False,
+):
+    # A failed new session must not leave an earlier same-build async result eligible.
+    (out / "async-result.json").unlink(missing_ok=True)
     children = []
     with tempfile.TemporaryDirectory(prefix="typelay-qt-research-") as temporary:
         env = os.environ.copy()
@@ -3379,23 +3504,30 @@ def session(out, fcitx, forced_sync_diagnostic=False, language_options_only=Fals
                         (out / f"{mode}-transition.json").write_text(
                             json.dumps(transition, indent=2) + "\n"
                         )
-                        (out / f"{mode}-result.json").write_text(
-                            json.dumps(
-                                {"passed": True, "required": True, "mode": mode, "observations": s}
-                                if mode == "async"
-                                else {
-                                    "status": "diagnostic-unsupported",
-                                    "supported": False,
-                                    "first_field_length_matches": True,
-                                    "observations": s,
-                                },
-                                indent=2,
+                        if mode == "async":
+                            finish_async_client(
+                                client,
+                                out,
+                                fcitx,
+                                s,
+                                verified_fcitx_build=verified_fcitx_build,
                             )
-                            + "\n"
-                        )
-                        client.stdin.write("quit\n")
-                        client.stdin.flush()
-                        assert client.wait(timeout=10) == 0
+                        else:
+                            (out / f"{mode}-result.json").write_text(
+                                json.dumps(
+                                    {
+                                        "status": "diagnostic-unsupported",
+                                        "supported": False,
+                                        "first_field_length_matches": True,
+                                        "observations": s,
+                                    },
+                                    indent=2,
+                                )
+                                + "\n"
+                            )
+                            client.stdin.write("quit\n")
+                            client.stdin.flush()
+                            assert client.wait(timeout=10) == 0
                 results["unmodified_reentry"] = ordered_controls(
                     out, env, children, unmodified_reentry=True
                 )
@@ -3449,11 +3581,19 @@ if __name__ == "__main__":
     args = parser.parse_args()
     out, fcitx = args.out.resolve(), args.fcitx_root.resolve()
     out.mkdir(parents=True, exist_ok=True)
+    # Invalidate this output's previous async qualification before build/validation too.
+    (out / "async-result.json").unlink(missing_ok=True)
+    if args.verify_fcitx_build:
+        verify_fcitx_inputs(fcitx)
     if args.session:
-        session(out, fcitx, args.forced_sync_diagnostic, args.language_options_only)
+        session(
+            out,
+            fcitx,
+            args.forced_sync_diagnostic,
+            args.language_options_only,
+            verified_fcitx_build=args.verify_fcitx_build,
+        )
     else:
-        if args.verify_fcitx_build:
-            verify_fcitx_inputs(fcitx)
         build(out, args.forced_sync_diagnostic)
         subprocess.run(
             [
@@ -3468,6 +3608,7 @@ if __name__ == "__main__":
                 str(out),
                 "--fcitx-root",
                 str(fcitx),
+                *(["--verify-fcitx-build"] if args.verify_fcitx_build else []),
                 *(["--forced-sync-diagnostic"] if args.forced_sync_diagnostic else []),
                 *(["--language-options-only"] if args.language_options_only else []),
             ],

@@ -132,6 +132,7 @@ static inline const char *tl_overlay_ui(const char *value, int english) {
         {"重译", "Retranslate"}, {"重新翻译", "Retranslate"}, {"展开", "Expand"}, {"收起", "Collapse"},
         {"恢复", "Resume"}, {"已暂停", "Paused"}, {"更多", "More"}, {"源语言", "From"}, {"目标语言", "To"},
         {"应用语言方向", "Apply languages"}, {"交换语言", "Swap languages"}, {"当前应用风格", "Style in this app"},
+        {"搜索语言", "Search languages"}, {"没有匹配的语言", "No matching languages"},
         {"继承", "Use default"}, {"自然", "Natural"}, {"正式", "Formal"},
         {"风格", "Style"}, {"简洁", "Concise"}, {"口语", "Casual"}, {"暂不可用", "Not available yet"}, {"✓ 继承", "✓ Use default"},
         {"✓ 自然", "✓ Natural"}, {"✓ 正式", "✓ Formal"}, {"换种说法", "Rephrase"},

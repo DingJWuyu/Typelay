@@ -965,6 +965,11 @@ def check_language_retention_refusal(
         "typelay-language-menu",
         "typelay-source-language",
     )
+    search_token_case = (
+        client.hello["backend"] == "gtk3" and stage == "language-retention-host-token"
+    )
+    if search_token_case:
+        control = "typelay-target-language"
     languages = {
         "sourceLanguage": "en",
         "targetLanguage": "ja",
@@ -1082,6 +1087,12 @@ def check_language_retention_refusal(
         token_revision=token_revision,
     )["visible"]
     wait_for(detached_menu, "read-only renewal changed source/menu focus")
+    if search_token_case:
+        wait_for(
+            lambda: controls().get("typelay-target-language-search", {}).get("focused")
+            and state().get("focusedImeClear"),
+            "new-view refusal did not begin at the real Clear search Entry",
+        )
     if stage == "language-retention-body":
         # A known host save failure changes only its read-only feedback label.
         # The same actual detached menu/source must survive, without capture or input.
@@ -1178,24 +1189,52 @@ def check_language_retention_refusal(
     if stage != "language-retention-expired-render":
         lease = evidence.get("retentionStatus", retained_render)
         assert now_ms() <= lease["expiresAtMs"], "retention refusal was masked by expiry"
-    result = render_preview(
-        client,
-        changed_source,
-        generation,
-        revision + 1,
-        "fixture exit",
-        language_view=languages,
-        status=status,
-        evidence=evidence.setdefault("retentionRefusal", {}),
-        **kwargs,
-    )
-    assert result == {"visible": False, "editing": False}, (stage, result)
+    try:
+        if search_token_case:
+            subprocess.run(["xdotool", "keydown", "Up"], check=True, timeout=2)
+            wait_for(
+                lambda: controls()[control]["selectedCode"] == "en",
+                "search navigation was not observed before the new host token",
+            )
+            search_source = state()
+            assert now_ms() <= lease["expiresAtMs"], "search token refusal was masked by expiry"
+        result = render_preview(
+            client,
+            changed_source,
+            generation,
+            revision + 1,
+            "fixture exit",
+            language_view=languages,
+            status=status,
+            evidence=evidence.setdefault("retentionRefusal", {}),
+            **kwargs,
+        )
+        assert result == {"visible": False, "editing": False}, (stage, result)
+        if search_token_case:
+            # This held press began in the retired search. Its repeat/release
+            # cannot be relabelled as a command on a new view or source.
+            subprocess.run(["xdotool", "keydown", "Up"], check=True, timeout=2)
+    finally:
+        if search_token_case:
+            subprocess.run(["xdotool", "keyup", "Up"], check=True, timeout=2)
+    if search_token_case:
+        client.call("describe")
     final = wait_for(
         lambda: (actual := state()) and actual.get("candidate") is None and actual,
         "refused language renewal left a preview visible",
     )
     assert final["first"] == expected_first and final["second"] == initial["second"]
     assert not any(event.get("event") == "accepted" for event in client.events)
+    if search_token_case:
+        for field in ("firstEntry", "secondEntry"):
+            for item in ("start", "end", "insertions", "deletions"):
+                assert final[field][item] == search_source[field][item], (field, item)
+        assert not any(
+            event.get("event") == "ui"
+            and event["data"].get("operation")
+            in ("languages", "accept", "return", "escape", "beginEdit", "regenerate")
+            for event in client.events
+        ), "retired search press emitted an old action"
     if stage == "language-retention-expired-render":
         # This is a new explicit source interaction/capture, not resurrection of
         # the expired detached menu. Preserve normal fresh read-only admission.
@@ -2193,10 +2232,15 @@ def run_owned_language_options(
                     return
                 current = overlay.language_configuration
                 phase = current.get("phase") if current else None
+                at = now_ms()
+                # Reuse the existing asynchronous compositor snapshot. This is
+                # not an atomic observation of the native focus signal.
+                compositor = input_service.niri
+                focused = compositor.focused or {}
                 rows.append(
                     {
                         "stage": stage,
-                        "atMs": now_ms(),
+                        "atMs": at,
                         "openingMatches": bool(current and current["openingId"] == opening_id),
                         "phase": phase
                         if phase in ("Pending", "Open", "Saving", "Retired")
@@ -2204,6 +2248,12 @@ def run_owned_language_options(
                         "peerAlive": peer.link.channel.alive,
                         "peerFocused": input_service.focused_peer() is peer,
                         "compositorFresh": input_service.fresh(),
+                        "compositorObservedAtMs": compositor.observed_at,
+                        "compositorAgeMs": at - compositor.observed_at,
+                        "compositorReady": compositor.ready,
+                        "compositorWindowId": focused.get("id"),
+                        "compositorPid": focused.get("pid"),
+                        "compositorPidIsPeer": focused.get("pid") == peer.pid,
                         **fields,
                     }
                 )
@@ -2493,6 +2543,16 @@ def run_owned_language_options(
                 return send(frame)
 
             def ui_event(owner, event):
+                if not configuration_stage and event.get("operation") in (
+                    "accept",
+                    "return",
+                    "escape",
+                    "beginEdit",
+                    "regenerate",
+                ):
+                    evidence["unexpectedOperation"] = (
+                        f"language controls emitted: {event['operation']}"
+                    )
                 if (
                     observing
                     and event.get("operation") == "visible"
@@ -2562,6 +2622,7 @@ def run_owned_language_options(
                     evidence,
                     native_events,
                     saves,
+                    environment,
                 )
                 assert saves == [{"source": "ko", "target": "en"}]
                 assert evidence["renewalSendCount"] > 0, (
@@ -2695,7 +2756,17 @@ def check_language_dto(client, source, generation, state, initial, evidence):
 
 
 async def check_language_options(
-    overlay, source, generation, state, initial, nested, dimensions, evidence, native_events, saves
+    overlay,
+    source,
+    generation,
+    state,
+    initial,
+    nested,
+    dimensions,
+    evidence,
+    native_events,
+    saves,
+    environment,
 ):
     """Real menu interactions under the production owner; no installed model claim."""
     peer = overlay.input.bound_observation["peer"]
@@ -2704,6 +2775,8 @@ async def check_language_options(
     menu = "typelay-language-menu"
     source_control, target_control = "typelay-source-language", "typelay-target-language"
     apply_control = "typelay-apply-languages"
+    search_control = "typelay-target-language-search"
+    empty_control = "typelay-target-language-empty"
     choices = {
         "source": [
             {"code": "auto", "label": "自动检测"},
@@ -2712,9 +2785,27 @@ async def check_language_options(
             {"code": "ko", "label": "한국어"},
         ],
         "target": [
-            {"code": "en", "label": "English"},
-            {"code": "ja", "label": "日本語"},
-            {"code": "ko", "label": "한국어"},
+            {
+                "code": "en",
+                "label": "English",
+                "labelZh": "英语",
+                "labelEn": "English",
+                "nativeLabel": "English",
+            },
+            {
+                "code": "ja",
+                "label": "日本語",
+                "labelZh": "日语",
+                "labelEn": "Japanese",
+                "nativeLabel": "日本語",
+            },
+            {
+                "code": "ko",
+                "label": "한국어",
+                "labelZh": "韩语",
+                "labelEn": "Korean",
+                "nativeLabel": "한국어",
+            },
         ],
     }
     view = {"sourceLanguage": "en", "targetLanguage": "ja", "languageChoices": choices}
@@ -2758,7 +2849,16 @@ async def check_language_options(
                     if key in control
                 }
                 for name, control in value.get("overlayControls", {}).items()
-                if name in (trigger, menu, source_control, target_control, apply_control)
+                if name
+                in (
+                    trigger,
+                    menu,
+                    source_control,
+                    target_control,
+                    apply_control,
+                    search_control,
+                    empty_control,
+                )
             },
         }
 
@@ -2955,9 +3055,15 @@ async def check_language_options(
                 lambda: controls().get(name, {}).get("popupFocused"),
                 "opened language popup did not acquire real list focus",
             )
-        await language_key("Home")
-        for _ in range(index):
-            await language_key("Down")
+        search_target = backend == "gtk3" and name == target_control
+        expected_code = view["languageChoices"]["target"][index]["code"] if search_target else None
+        if search_target:
+            await search_ready()
+            await search_query(expected_code, [expected_code])
+        else:
+            await language_key("Home")
+            for _ in range(index):
+                await language_key("Down")
         await language_key("Return")
         phases[-1]["keysReturnedAtMs"] = now_ms()
 
@@ -2968,7 +3074,11 @@ async def check_language_options(
             if "afterKeys" not in phases[-1]:
                 phases[-1]["afterKeys"] = observe(actual)
             control = value.get(name, {})
-            if control.get("selected") != index:
+            if (
+                control.get("selectedCode") != expected_code
+                if search_target
+                else control.get("selected") != index
+            ):
                 return None
             # Return selects a row before GTK finishes closing its child popup.
             # Do not start another click on a still-closing surface. This is the
@@ -2992,6 +3102,50 @@ async def check_language_options(
             lambda: state() and not overlay.pending, "language feedback render incomplete"
         )
         return list(native_events)
+
+    async def search_ready():
+        return await language_wait_for(
+            lambda: (value := state()).get("focusedImeClear")
+            and value.get("overlayControls", {}).get(search_control, {}).get("focused")
+            and value["overlayControls"][target_control].get("popupVisible")
+            and value,
+            "target search did not acquire actual focus and provider Clear",
+        )
+
+    async def search_query(text, codes):
+        await search_ready()
+        await language_key("ctrl+a")
+        if text:
+            await language_command(
+                "xdotool", "type", "--clearmodifiers", "--delay", "0", text, timeout=2
+            )
+        else:
+            await language_key("BackSpace")
+        return await language_wait_for(
+            lambda: (value := state()).get("focusedImeClear")
+            and value["overlayControls"][search_control]["focused"]
+            and value["overlayControls"][search_control]["text"] == text
+            and value["overlayControls"][target_control]["codes"] == codes
+            and value,
+            "real search input did not filter the expected catalogue codes",
+        )
+
+    def unchanged_search_source(before, after):
+        for name in ("first", "second"):
+            assert after[name] == before[name]
+        for name in ("firstEntry", "secondEntry"):
+            for field in ("start", "end", "insertions", "deletions"):
+                assert after[name][field] == before[name][field], (name, field)
+        for field in (
+            "instance",
+            "bufferInstance",
+            "text",
+            "selectionStart",
+            "selectionEnd",
+            "editable",
+            "focused",
+        ):
+            assert after["candidate"][field] == before["candidate"][field], field
 
     actual = await render()
     assert actual[trigger]["description"] == "English → 日本語"
@@ -3026,7 +3180,205 @@ async def check_language_options(
         )
     assert controls()[source_control]["selected"] == 2, "reopening retained an unapplied choice"
     await select(source_control, 3)
+    if backend == "gtk3":
+        await render()
+        await click(source_control)
+        await language_wait_for(
+            lambda: controls()[source_control]["popupFocused"],
+            "source list did not acquire its original keyboard focus",
+        )
+        await language_key("ctrl+space")
+        await language_wait_for(
+            lambda: controls()[source_control]["selected"] == -1
+            and not controls()[apply_control]["enabled"],
+            "real source deselection retained a stale unapplied code",
+        )
+        await language_key("Home")
+        for _ in range(3):
+            await language_key("Down")
+        await language_key("Return")
+        await language_wait_for(
+            lambda: controls()[source_control]["selectedCode"] == "ko"
+            and controls()[source_control]["buttonFocused"]
+            and not controls()[source_control]["popupVisible"],
+            "original source list could not restore its real selection",
+        )
+        before_search_events = await events()
+        await render()
+        await click(target_control)
+        opened_search = await search_ready()
+        before_search = state()
+        assert await overlay.input.request("capture", {}) is None, (
+            "configuration Entry became a source"
+        )
+        assert opened_search["overlayControls"][target_control]["codes"] == ["en", "ja", "ko"]
+        # These are actual search navigation keys, not Home misinterpreted as
+        # list focus. A held Down changes the unapplied row exactly once.
+        await language_key("Up")
+        await language_wait_for(
+            lambda: controls()[target_control]["selectedCode"] == "en",
+            "search Up did not navigate the real target list",
+        )
+        await language_command(
+            "xdotool", "keydown", "Down", "keydown", "Down", "keyup", "Down", timeout=2
+        )
+        navigation_finished = time.monotonic_ns() // 1_000_000
+        await language_wait_for(
+            lambda: (value := state()).get("observedAtMs", 0) > navigation_finished
+            and value["overlayControls"][target_control]["selectedCode"] == "ja",
+            "search Down repeat moved more than one row",
+        )
+        filtered = await search_query("KOREAN", ["ko"])
+        assert filtered["overlayControls"][target_control]["selectedCode"] is None
+        assert filtered["overlayControls"][target_control]["text"] == "日本語 ▾"
+        empty = await search_query("not-a-language", [])
+        assert empty["overlayControls"][empty_control]["visible"]
+        assert empty["overlayControls"][search_control]["placeholder"] == "搜索语言"
+        assert empty["overlayControls"][empty_control]["text"] == "没有匹配的语言"
+        search_identity = empty["overlayControls"][search_control]
+        for language, placeholder, feedback in (
+            ("en-US", "Search languages", "No matching languages"),
+            ("zh-CN", "搜索语言", "没有匹配的语言"),
+        ):
+            overlay.configure({**overlay.settings, "uiLanguage": language})
+            localized = await render("search-ui-language")
+            assert localized[search_control]["placeholder"] == placeholder
+            assert localized[empty_control]["text"] == feedback
+            assert localized[empty_control]["visible"]
+            for field in (
+                "instance",
+                "text",
+                "selectionStart",
+                "selectionEnd",
+                "cursor",
+                "focused",
+            ):
+                assert localized[search_control][field] == search_identity[field], field
+        await language_key("Return")
+        returned_at = time.monotonic_ns() // 1_000_000
+        empty = await language_wait_for(
+            lambda: (value := state()).get("observedAtMs", 0) > returned_at
+            and value["overlayControls"][search_control]["focused"]
+            and value["overlayControls"][target_control]["popupVisible"]
+            and value,
+            "empty search Enter closed the child or lost search focus",
+        )
+        assert empty["overlayControls"][target_control]["text"] == "日本語 ▾"
+        assert await events() == before_search_events
+        await search_query("ko", ["ko"])
+        await language_key("Return")
+        await language_wait_for(
+            lambda: controls()[target_control]["selectedCode"] == "ko"
+            and controls()[target_control]["buttonFocused"]
+            and not controls()[target_control]["popupVisible"],
+            "filtered non-first catalogue code was not selected without Apply",
+        )
+        assert await events() == before_search_events
+        await click(target_control)
+        reopened_search = await search_ready()
+        assert reopened_search["overlayControls"][search_control]["text"] == ""
+        assert reopened_search["overlayControls"][target_control]["selectedCode"] == "ko"
+        await search_query("Japanese", ["ja"])
+        await language_key("ctrl+a")
+        selected_search = await language_wait_for(
+            lambda: (value := state())["overlayControls"][search_control]["selectionStart"] == 0
+            and value["overlayControls"][search_control]["selectionEnd"] == len("Japanese")
+            and value,
+            "real search selection was not observed before same-view refresh",
+        )
+        refreshed = await render("search-same-opening-refresh")
+        for field in ("instance", "text", "selectionStart", "selectionEnd", "cursor", "focused"):
+            assert (
+                refreshed[search_control][field]
+                == selected_search["overlayControls"][search_control][field]
+            ), field
+        for field in ("instance", "listInstance", "modelInstance", "selectedCode"):
+            assert (
+                refreshed[target_control][field]
+                == selected_search["overlayControls"][target_control][field]
+            ), field
+        await search_query("日语", ["ja"])
+        await search_query("한국어", ["ko"])
+        await search_query("", ["en", "ja", "ko"])
+        # Real Fcitx preedit, not a stand-in for Unknown. IM candidate arrows
+        # and Return must stay with the original entry/IM route.
+        await language_command("fcitx5-remote", "-s", "pinyin", timeout=3, environment=environment)
+        await search_ready()
+        await language_command(
+            "xdotool", "type", "--clearmodifiers", "--delay", "0", "nihao", timeout=2
+        )
+        await language_wait_for(
+            lambda: state().get("focusedImeComposing"), "real search preedit missing"
+        )
+        composing_choice = controls()[target_control]["text"]
+        for key in ("Down", "Up"):
+            assert state()["focusedImeComposing"]
+            await language_key(key)
+            key_finished = time.monotonic_ns() // 1_000_000
+            await language_wait_for(
+                lambda: state().get("observedAtMs", 0) > key_finished,
+                "no fresh real search observation after IM candidate navigation",
+            )
+            assert controls()[target_control]["text"] == composing_choice
+            assert (
+                controls()[search_control]["focused"] and controls()[target_control]["popupVisible"]
+            )
+        await language_key("Return")
+        await search_ready()
+        assert controls()[search_control]["text"], "original IM Return did not commit search input"
+        assert controls()[target_control]["text"] == composing_choice
+        assert await events() == before_search_events
+        await language_key("ctrl+a")
+        await language_key("BackSpace")
+        await language_command(
+            "xdotool", "type", "--clearmodifiers", "--delay", "0", "nihao", timeout=2
+        )
+        await language_wait_for(
+            lambda: state().get("focusedImeComposing"), "second real search preedit missing"
+        )
+        await language_command("xdotool", "keydown", "Escape", timeout=2)
+        try:
+            await search_ready()  # The original IM Escape cleared preedit, not the child.
+            await language_command("xdotool", "keydown", "Escape", timeout=2)
+        finally:
+            await language_command("xdotool", "keyup", "Escape", timeout=2)
+        await search_ready()
+        assert controls()[target_control]["text"] == composing_choice
+        assert await events() == before_search_events, (
+            "late-Clear repeat performed an old search action"
+        )
+        await language_command(
+            "fcitx5-remote", "-s", "keyboard-us", timeout=3, environment=environment
+        )
+        await search_ready()
+        await language_key("Escape")
+        await language_wait_for(
+            lambda: controls()[target_control]["buttonFocused"]
+            and not controls()[target_control]["popupVisible"],
+            "fresh Clear search Escape did not close only its child",
+        )
+        unchanged_search_source(before_search, state())
+        assert await events() == before_search_events
+        evidence["targetSearch"] = {
+            "realEntry": True,
+            "filteredNonFirstCode": "ko",
+            "sourceCaptureRefused": True,
+            "sameOpeningSelectionRetained": True,
+            "composingKeysDelivered": True,
+            "unknownProvider": "not deterministically exercised; Composing is not Unknown",
+        }
     await select(target_control, 0)
+    if backend == "gtk3":
+        await click(target_control)
+        await search_query("Korean", ["ko"])
+        assert controls()[target_control]["selectedCode"] is None
+        assert controls()[target_control]["text"] == "English ▾"
+        await language_key("Escape")
+        await language_wait_for(
+            lambda: controls()[target_control]["buttonFocused"]
+            and not controls()[target_control]["popupVisible"],
+            "hidden unapplied choice did not survive child close",
+        )
     await render()
     apply_revision = overlay.revision
     await click(apply_control)
@@ -3125,6 +3477,38 @@ async def check_language_options(
             "last language in a scrolling popup was not keyboard reachable",
         )
         assert await events() == before_popup_events, "unapplied scrolling choice was saved"
+        if backend == "gtk3":
+            view["languageChoices"] = {
+                **choices,
+                "target": choices["target"]
+                + [{"code": f"lang-{index}", "label": f"Language {index}"} for index in range(29)],
+            }
+            long_target = await select(target_control, 31)
+            assert long_target[target_control]["selectedCode"] == "lang-28"
+            assert long_target[target_control]["codes"] == ["lang-28"]
+            assert await events() == before_popup_events, (
+                "filtered scrolling target was saved without Apply"
+            )
+            view.update(sourceLanguage="ja", targetLanguage="zz", languageChoices=choices)
+            missing_target = await render()
+            # Reset the filter through a real new child opening; the unknown
+            # saved code remains visible but is never a selectable save value.
+            await click(target_control)
+            await search_ready()
+            assert controls()[target_control]["selectedCode"] == "zz"
+            assert controls()[target_control]["codes"] == ["en", "ja", "ko", "zz"]
+            assert not missing_target[apply_control]["enabled"]
+            await language_key("Escape")
+            await language_wait_for(
+                lambda: controls()[target_control]["buttonFocused"]
+                and not controls()[target_control]["popupVisible"],
+                "unavailable target child did not close",
+            )
+            assert (await select(target_control, 0))[apply_control]["enabled"]
+            await toggle(False)
+            await toggle(True, renew=False)
+            assert controls()[target_control]["selectedCode"] == "zz"
+            assert not controls()[apply_control]["enabled"], "reopening lost unknown saved target"
 
     before_events = await events()
     view.update(sourceLanguage="ja", targetLanguage="ko")

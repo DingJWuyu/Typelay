@@ -9,7 +9,8 @@ void tl_overlay_prepare_fonts(void) { (void)tl_overlay_font_map(); }
  * GTK owns the parent surface, clipping, scaling and movement of its own popover. */
 typedef struct {
     JsonArray *choices;
-    char *saved, *label;
+    char *saved, *label, *selected;
+    gboolean filtering;
 } LanguageMenu;
 
 
@@ -83,10 +84,12 @@ static struct {
     char *generation;
     gint edit_offset, body_height, body_duration;
     gint64 revision, expires;
+    guint64 search_opening;
     guint expiry_timer, body_tick;
     gint64 body_frame;
     TlOverlaySpring body_spring;
 } overlay;
+static guint64 search_opening_sequence;
 
 /* Only the synchronous grab_focus call owns this proof. Keep its monotonic
  * failure outside overlay: hide/destroy clears overlay and must not revive it. */
@@ -320,6 +323,11 @@ static JsonArray *language_choices(JsonObject *view, const char *side) {
         JsonObject *entry = json_object_new();
         json_object_set_string_member(entry, "code", code);
         json_object_set_string_member(entry, "label", label);
+        const char *names[] = {"labelZh", "labelEn", "nativeLabel"};
+        for (guint name = 0; name < G_N_ELEMENTS(names); name++) {
+            const char *value = tl_string(choice, names[name]);
+            if (language_text(value, 80)) json_object_set_string_member(entry, names[name], value);
+        }
         json_array_add_object_element(result, entry);
     }
     return result;
@@ -342,7 +350,7 @@ static char *language_title(JsonObject *view, const char *key, const char *code,
 }
 static void clear_language_menu(LanguageMenu *menu) {
     if (menu->choices) json_array_unref(menu->choices);
-    g_free(menu->saved); g_free(menu->label);
+    g_free(menu->saved); g_free(menu->label); g_free(menu->selected);
     memset(menu, 0, sizeof *menu);
 }
 /* GtkComboBox opens a separate GtkMenu surface on Wayland. Its keyboard grab
@@ -350,25 +358,46 @@ static void clear_language_menu(LanguageMenu *menu) {
  * Keep language navigation in a nonmodal child popover instead; never exempt
  * menus from the normal active-window or source-identity checks. */
 static GtkTreeView *language_list(GtkWidget *widget) {
-    GtkWidget *popup = GTK_WIDGET(gtk_menu_button_get_popover(GTK_MENU_BUTTON(widget)));
-    return GTK_TREE_VIEW(gtk_bin_get_child(GTK_BIN(gtk_bin_get_child(GTK_BIN(popup)))));
+    return GTK_TREE_VIEW(g_object_get_data(G_OBJECT(widget), "typelay-language-list"));
 }
-static const char *selected_language(GtkWidget *widget, LanguageMenu *menu) {
-    GtkTreeModel *model;
-    GtkTreeIter iter;
-    if (!gtk_tree_selection_get_selected(gtk_tree_view_get_selection(language_list(widget)), &model, &iter)) return NULL;
-    GtkTreePath *path = gtk_tree_model_get_path(model, &iter);
-    gint index = gtk_tree_path_get_indices(path)[0];
-    gtk_tree_path_free(path);
-    return menu->choices && index >= 0 && (guint)index < json_array_get_length(menu->choices)
-        ? tl_string(json_array_get_object_element(menu->choices, (guint)index), "code") : NULL;
+static LanguageMenu *language_menu(GtkWidget *widget) {
+    return widget == overlay.source ? &overlay.source_languages
+        : widget == overlay.destination ? &overlay.target_languages : NULL;
 }
+static const char *selected_language(LanguageMenu *menu) {
+    /* Filtering changes display indices, never the unapplied language code. */
+    return language_index(menu->choices, menu->selected) >= 0 ? menu->selected : NULL;
+}
+static gboolean language_menu_current(GtkWidget *widget, LanguageMenu *menu, JsonObject *view);
 static void select_language(GtkWidget *widget, LanguageMenu *menu, const char *code) {
-    gint index = language_index(menu->choices, code);
-    if (index < 0) index = menu->choices ? (gint)json_array_get_length(menu->choices) : 0;
-    GtkTreePath *path = gtk_tree_path_new_from_indices(index, -1);
-    gtk_tree_view_set_cursor(language_list(widget), path, NULL, FALSE);
-    gtk_tree_path_free(path);
+    if (!overlay.view) return;
+    JsonObject *view = json_object_ref(overlay.view);
+    g_object_ref(widget);
+    char *selected = g_strdup(code);
+    g_free(menu->selected); menu->selected = selected;
+    gint index = language_index(menu->choices, selected);
+    const char *label = index >= 0 ? tl_string(json_array_get_object_element(menu->choices, (guint)index), "label") : menu->label;
+    char *title = g_strdup_printf("%s ▾", label ? label : "");
+    GtkTreeView *list = g_object_ref(language_list(widget));
+    GtkTreeModel *model = gtk_tree_view_get_model(list);
+    GtkTreeIter iter;
+    GtkTreePath *path = NULL;
+    if (gtk_tree_model_get_iter_first(model, &iter)) do {
+        char *value = NULL;
+        gtk_tree_model_get(model, &iter, 0, &value, -1);
+        gboolean matches = g_strcmp0(value, selected) == 0;
+        g_free(value);
+        if (matches) { path = gtk_tree_model_get_path(model, &iter); break; }
+    } while (gtk_tree_model_iter_next(model, &iter));
+    gboolean filtering = menu->filtering;
+    menu->filtering = TRUE;
+    if (path) { gtk_tree_view_set_cursor(list, path, NULL, FALSE); gtk_tree_path_free(path); }
+    else gtk_tree_selection_unselect_all(gtk_tree_view_get_selection(list));
+    if (language_menu_current(widget, menu, view)) {
+        menu->filtering = filtering;
+        gtk_button_set_label(GTK_BUTTON(widget), title);
+    }
+    g_free(title); g_object_unref(list); g_object_unref(widget); json_object_unref(view);
 }
 static gboolean language_menu_current(GtkWidget *widget, LanguageMenu *menu, JsonObject *view) {
     return overlay.view == view && overlay.popover
@@ -378,8 +407,8 @@ static gboolean language_menu_current(GtkWidget *widget, LanguageMenu *menu, Jso
 static void refresh_language_apply(void) {
     if (overlay.apply_languages)
         gtk_widget_set_sensitive(overlay.apply_languages, !overlay.setting_languages
-            && selected_language(overlay.source, &overlay.source_languages)
-            && selected_language(overlay.destination, &overlay.target_languages));
+            && selected_language(&overlay.source_languages)
+            && selected_language(&overlay.target_languages));
 }
 static gboolean active(void);
 static gboolean language_focus_current(void);
@@ -403,23 +432,36 @@ static void close_language_menu(JsonObject *view) {
 static void language_selection_changed(GtkTreeSelection *selection, gpointer data) {
     GtkWidget *button = data;
     if (!overlay.popover || (button != overlay.source && button != overlay.destination)) return;
+    LanguageMenu *menu = language_menu(button);
+    if (!menu || menu->filtering) return;
     GtkTreeModel *model;
     GtkTreeIter iter;
     if (gtk_tree_selection_get_selected(selection, &model, &iter)) {
-        char *label = NULL;
-        gtk_tree_model_get(model, &iter, 1, &label, -1);
+        char *code = NULL, *label = NULL;
+        gtk_tree_model_get(model, &iter, 0, &code, 1, &label, -1);
+        g_free(menu->selected); menu->selected = code;
         char *title = g_strdup_printf("%s ▾", label ? label : "");
         gtk_button_set_label(GTK_BUTTON(button), title);
         g_free(title); g_free(label);
-    }
+    } else g_clear_pointer(&menu->selected, g_free);
     refresh_language_apply();
 }
 static void language_popup_toggled(GtkToggleButton *button, gpointer data) {
     (void)data;
     GtkWidget *widget = GTK_WIDGET(button);
-    if (!overlay.popover || (widget != overlay.source && widget != overlay.destination) || !active()) return;
-    if (gtk_toggle_button_get_active(button))
-        gtk_widget_grab_focus(GTK_WIDGET(language_list(widget)));
+    if (!overlay.popover || !overlay.view || (widget != overlay.source && widget != overlay.destination) || !active()) return;
+    if (gtk_toggle_button_get_active(button)) {
+        GtkWidget *search = g_object_get_data(G_OBJECT(widget), "typelay-language-search");
+        if (search) {
+            overlay.search_opening = ++search_opening_sequence;
+            JsonObject *view = json_object_ref(overlay.view);
+            gtk_entry_set_text(GTK_ENTRY(search), "");
+            if (language_menu_current(widget, &overlay.target_languages, view)
+                && gtk_toggle_button_get_active(button) && language_handoff_current(view))
+                gtk_widget_grab_focus(search);
+            json_object_unref(view);
+        } else gtk_widget_grab_focus(GTK_WIDGET(language_list(widget)));
+    } else if (widget == overlay.destination) overlay.search_opening = ++search_opening_sequence;
 }
 static void language_row_activated(GtkTreeView *list, GtkTreePath *path, GtkTreeViewColumn *column, gpointer data) {
     (void)list; (void)path; (void)column;
@@ -457,33 +499,198 @@ static void language_row_activated(GtkTreeView *list, GtkTreePath *path, GtkTree
     json_object_unref(view);
     g_object_unref(button);
 }
+/* Only presses that began in the real search entry live here. They carry no
+ * source ticket and never authorize a later action. In particular, repeats
+ * of a denied Unknown/Composing press cannot become Clear after GTK/Fcitx. */
+static struct { guint keycode; guint64 sequence; gboolean consumed; } search_keys[5];
+static guint64 search_key_sequence;
+static gboolean search_keys_full;
+static gboolean language_search_focused(GtkWidget *button, GtkWidget *search, GtkWidget *popup) {
+    return button == overlay.destination && overlay.top
+        && search == g_object_get_data(G_OBJECT(button), "typelay-language-search")
+        && GTK_WIDGET(gtk_menu_button_get_popover(GTK_MENU_BUTTON(button))) == popup
+        && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(button))
+        && gtk_widget_get_mapped(popup) && gtk_widget_get_mapped(search)
+        && gtk_window_get_focus(GTK_WINDOW(overlay.top)) == search && gtk_widget_has_focus(search);
+}
+static gboolean language_search_current(GtkWidget *button, GtkWidget *search, GtkWidget *popup,
+    JsonObject *view, guint64 opening) {
+    return view && overlay.search_opening == opening && language_handoff_current(view)
+        && language_search_focused(button, search, popup);
+}
+gboolean tl_overlay_language_search_key(GdkEvent *event, gboolean *owned) {
+    *owned = FALSE;
+    if (!event || (event->type != GDK_KEY_PRESS && event->type != GDK_KEY_RELEASE)
+        || event->key.send_event || !event->key.hardware_keycode) return FALSE;
+    guint keycode = event->key.hardware_keycode, keyval = event->key.keyval;
+    gboolean down = event->type == GDK_KEY_PRESS;
+    gint empty = -1;
+    for (guint index = 0; index < G_N_ELEMENTS(search_keys); index++) {
+        if (search_keys[index].keycode == keycode) {
+            *owned = TRUE;
+            gboolean consumed = search_keys[index].consumed;
+            if (!down) memset(&search_keys[index], 0, sizeof search_keys[index]);
+            return consumed;
+        }
+        if (!search_keys[index].keycode && empty < 0) empty = (gint)index;
+    }
+    if (!down || (keyval != GDK_KEY_Return && keyval != GDK_KEY_KP_Enter
+        && keyval != GDK_KEY_Escape && keyval != GDK_KEY_Up && keyval != GDK_KEY_Down)) return FALSE;
+    GtkWidget *button = overlay.destination;
+    GtkWidget *search = button ? g_object_get_data(G_OBJECT(button), "typelay-language-search") : NULL;
+    GtkWidget *popup = button ? GTK_WIDGET(gtk_menu_button_get_popover(GTK_MENU_BUTTON(button))) : NULL;
+    JsonObject *view = overlay.view;
+    guint64 opening = overlay.search_opening;
+    if (!search || !popup || !language_search_focused(button, search, popup)) return FALSE;
+    /* Origin ownership is not permission. Even a denied or reentrantly
+     * retired press must bypass generic auxiliary Escape and reach GTK/IME. */
+    *owned = TRUE;
+    if (empty < 0) search_keys_full = TRUE;
+    if (search_keys_full) return FALSE;
+    guint64 sequence = ++search_key_sequence;
+    search_keys[empty].keycode = keycode;
+    search_keys[empty].sequence = sequence;
+    search_keys[empty].consumed = FALSE;
+    guint modifiers = event->key.state & (GDK_SHIFT_MASK | GDK_CONTROL_MASK | GDK_MOD1_MASK | GDK_MOD3_MASK
+        | GDK_MOD4_MASK | GDK_MOD5_MASK | GDK_SUPER_MASK | GDK_HYPER_MASK | GDK_META_MASK);
+    if (modifiers || !language_search_current(button, search, popup, view, opening)
+        || g_object_get_data(G_OBJECT(search), "typelay-language-composing")) return FALSE;
+    g_object_ref(button); g_object_ref(search); g_object_ref(popup); json_object_ref(view);
+    gboolean clear = tl_widget_ime_clear(search);
+    gboolean current = clear && search_keys[empty].keycode == keycode && search_keys[empty].sequence == sequence
+        && language_search_current(button, search, popup, view, opening)
+        && !g_object_get_data(G_OBJECT(search), "typelay-language-composing");
+    if (current) {
+        /* Claim before callbacks can close this opening or deliver a repeat. */
+        search_keys[empty].consumed = TRUE;
+        if (keyval == GDK_KEY_Escape) language_row_activated(NULL, NULL, NULL, button);
+        else {
+            GtkTreeView *list = language_list(button);
+            GtkTreeModel *model = gtk_tree_view_get_model(list);
+            GtkTreeSelection *selection = gtk_tree_view_get_selection(list);
+            GtkTreeIter iter;
+            gboolean selected = gtk_tree_selection_get_selected(selection, NULL, &iter);
+            gboolean found = selected;
+            if (!selected) found = gtk_tree_model_get_iter_first(model, &iter);
+            else if (keyval == GDK_KEY_Down) {
+                GtkTreeIter next = iter;
+                if (gtk_tree_model_iter_next(model, &next)) iter = next;
+            } else if (keyval == GDK_KEY_Up) {
+                GtkTreePath *path = gtk_tree_model_get_path(model, &iter);
+                if (gtk_tree_path_prev(path)) found = gtk_tree_model_get_iter(model, &iter, path);
+                gtk_tree_path_free(path);
+            }
+            char *code = NULL;
+            if (found) gtk_tree_model_get(model, &iter, 0, &code, -1);
+            /* A hidden draft is not a visible Enter result. Never translate a
+             * filtered display index into the unfiltered catalogue. */
+            if (language_index(overlay.target_languages.choices, code) >= 0) {
+                select_language(button, &overlay.target_languages, code);
+                if (language_search_current(button, search, popup, view, opening)) refresh_language_apply();
+                if ((keyval == GDK_KEY_Return || keyval == GDK_KEY_KP_Enter)
+                    && language_search_current(button, search, popup, view, opening))
+                    language_row_activated(NULL, NULL, NULL, button);
+            }
+            g_free(code);
+        }
+    }
+    json_object_unref(view); g_object_unref(popup); g_object_unref(search); g_object_unref(button);
+    return current;
+}
 static gboolean language_popup_key(GtkWidget *popup, GdkEventKey *event, gpointer data) {
     (void)popup;
     if (event->keyval != GDK_KEY_Escape) return FALSE;
+    if (data == overlay.destination) {
+        GtkWidget *search = g_object_get_data(G_OBJECT(data), "typelay-language-search");
+        /* GTK/IME has already processed this event. Never re-probe Clear or
+         * activate a denied search Escape from the popover fallback. */
+        if (search && gtk_widget_has_focus(search)) return TRUE;
+        for (guint index = 0; index < G_N_ELEMENTS(search_keys); index++)
+            if (event->hardware_keycode && search_keys[index].keycode == event->hardware_keycode) return TRUE;
+    }
     language_row_activated(NULL, NULL, NULL, data);
     return TRUE;
 }
-static GtkWidget *language_button(void) {
+static gboolean language_row_visible(GtkTreeModel *model, GtkTreeIter *iter, gpointer data) {
+    GtkWidget *search = g_object_get_data(G_OBJECT(data), "typelay-language-search");
+    if (!search) return TRUE;
+    char *query = g_utf8_casefold(gtk_entry_get_text(GTK_ENTRY(search)), -1), *terms = NULL;
+    g_strstrip(query);
+    gtk_tree_model_get(model, iter, 2, &terms, -1);
+    gboolean visible = !*query || (terms && strstr(terms, query));
+    g_free(query); g_free(terms);
+    return visible;
+}
+static void language_search_changed(GtkEditable *editable, gpointer data) {
+    GtkWidget *button = data;
+    LanguageMenu *menu = language_menu(button);
+    if (button != overlay.destination || !menu || menu->filtering || !overlay.view
+        || GTK_WIDGET(editable) != g_object_get_data(G_OBJECT(button), "typelay-language-search")) return;
+    g_object_ref(button); g_object_ref(editable);
+    JsonObject *view = json_object_ref(overlay.view);
+    GtkTreeModel *model = g_object_ref(gtk_tree_view_get_model(language_list(button)));
+    menu->filtering = TRUE;
+    gtk_tree_model_filter_refilter(GTK_TREE_MODEL_FILTER(model));
+    if (language_menu_current(button, menu, view)) select_language(button, menu, menu->selected);
+    if (language_menu_current(button, menu, view)) {
+        menu->filtering = FALSE;
+        GtkWidget *empty = g_object_get_data(G_OBJECT(button), "typelay-language-empty");
+        GtkTreeIter iter;
+        gtk_widget_set_visible(empty, !gtk_tree_model_get_iter_first(model, &iter));
+        if (language_menu_current(button, menu, view)) refresh_language_apply();
+    }
+    g_object_unref(model); json_object_unref(view); g_object_unref(editable); g_object_unref(button);
+}
+static void language_search_preedit(GtkEntry *entry, const char *text, gpointer data) {
+    (void)data;
+    g_object_set_data(G_OBJECT(entry), "typelay-language-composing", GINT_TO_POINTER(text && *text));
+}
+static GtkWidget *language_button(gboolean searchable) {
     GtkWidget *button = gtk_menu_button_new();
     GtkWidget *popup = gtk_popover_new(button);
     gtk_popover_set_modal(GTK_POPOVER(popup), FALSE);
     g_object_set_data(G_OBJECT(popup), "typelay-overlay", GINT_TO_POINTER(1));
-    GtkListStore *model = gtk_list_store_new(2, G_TYPE_STRING, G_TYPE_STRING);
-    GtkWidget *list = gtk_tree_view_new_with_model(GTK_TREE_MODEL(model));
+    GtkListStore *model = gtk_list_store_new(4, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING);
+    GtkTreeModel *display = searchable ? gtk_tree_model_filter_new(GTK_TREE_MODEL(model), NULL) : GTK_TREE_MODEL(g_object_ref(model));
+    if (searchable) gtk_tree_model_filter_set_visible_func(GTK_TREE_MODEL_FILTER(display), language_row_visible, button, NULL);
+    GtkWidget *list = gtk_tree_view_new_with_model(display);
+    g_object_set_data(G_OBJECT(button), "typelay-language-list", list);
+    g_object_set_data(G_OBJECT(button), "typelay-language-model", model);
+    gtk_widget_set_name(list, searchable ? "typelay-target-language-list" : "typelay-source-language-list");
+    g_object_unref(display);
     g_object_unref(model);
     gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(list), FALSE);
     gtk_tree_view_set_enable_search(GTK_TREE_VIEW(list), FALSE);
     gtk_tree_view_set_activate_on_single_click(GTK_TREE_VIEW(list), TRUE);
     gtk_tree_view_insert_column_with_attributes(GTK_TREE_VIEW(list), -1, "",
         gtk_cell_renderer_text_new(), "text", 1, NULL);
+    if (searchable) gtk_tree_view_insert_column_with_attributes(GTK_TREE_VIEW(list), -1, "",
+        gtk_cell_renderer_text_new(), "text", 3, NULL);
     GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
     gtk_widget_set_can_focus(scroll, FALSE);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     gtk_scrolled_window_set_max_content_height(GTK_SCROLLED_WINDOW(scroll), 240);
     gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(scroll), TRUE);
     gtk_container_add(GTK_CONTAINER(scroll), list);
-    gtk_container_add(GTK_CONTAINER(popup), scroll);
-    gtk_widget_show_all(scroll);
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    if (searchable) {
+        GtkWidget *search = gtk_entry_new(), *empty = gtk_label_new("没有匹配的语言");
+        gtk_widget_set_name(search, "typelay-target-language-search");
+        gtk_widget_set_name(empty, "typelay-target-language-empty");
+        gtk_widget_set_no_show_all(empty, TRUE);
+        gtk_entry_set_placeholder_text(GTK_ENTRY(search), "搜索语言");
+        gtk_entry_set_activates_default(GTK_ENTRY(search), FALSE);
+        g_object_set_data(G_OBJECT(button), "typelay-language-search", search);
+        g_object_set_data(G_OBJECT(button), "typelay-language-empty", empty);
+        gtk_box_pack_start(GTK_BOX(box), search, FALSE, FALSE, 0);
+        gtk_box_pack_end(GTK_BOX(box), empty, FALSE, FALSE, 0);
+        g_signal_connect_object(search, "changed", G_CALLBACK(language_search_changed), button, 0);
+        g_signal_connect(search, "preedit-changed", G_CALLBACK(language_search_preedit), NULL);
+    }
+    gtk_box_pack_start(GTK_BOX(box), scroll, TRUE, TRUE, 0);
+    gtk_container_add(GTK_CONTAINER(popup), box);
+    gtk_widget_show_all(box);
+    if (searchable) gtk_widget_hide(g_object_get_data(G_OBJECT(button), "typelay-language-empty"));
     gtk_menu_button_set_popover(GTK_MENU_BUTTON(button), popup);
     g_signal_connect_after(button, "toggled", G_CALLBACK(language_popup_toggled), NULL);
     g_signal_connect_object(gtk_tree_view_get_selection(GTK_TREE_VIEW(list)), "changed",
@@ -501,29 +708,53 @@ static gboolean sync_language(GtkWidget *widget, LanguageMenu *menu, JsonArray *
     gboolean was_missing = language_index(menu->choices, menu->saved) < 0;
     gboolean rebuild = !menu->saved || choices_changed || missing != was_missing
         || (missing && (saved_changed || g_strcmp0(menu->label, label) != 0));
-    char *selection = g_strdup(selected_language(widget, menu));
+    char *selection = g_strdup(menu->selected);
     clear_language_menu(menu);
     menu->choices = choices ? json_array_ref(choices) : NULL;
     menu->saved = g_strdup(saved); menu->label = g_strdup(label);
     if (rebuild) {
-        GtkListStore *model = GTK_LIST_STORE(gtk_tree_view_get_model(language_list(widget)));
+        GtkListStore *model = g_object_get_data(G_OBJECT(widget), "typelay-language-model");
+        menu->filtering = TRUE;
+        if (widget == overlay.destination) overlay.search_opening = ++search_opening_sequence;
         gtk_list_store_clear(model);
         if (!language_menu_current(widget, menu, view)) goto done;
         if (choices) for (guint index = 0; index < json_array_get_length(choices); index++) {
             JsonObject *choice = json_array_get_object_element(choices, index);
             GtkTreeIter iter;
-            gtk_list_store_insert_with_values(model, &iter, -1, 0, tl_string(choice, "code"), 1, tl_string(choice, "label"), -1);
+            char *names = g_strjoin("\n", text_or_empty(choice, "code"), text_or_empty(choice, "label"),
+                text_or_empty(choice, "labelZh"), text_or_empty(choice, "labelEn"), text_or_empty(choice, "nativeLabel"), NULL);
+            char *terms = g_utf8_casefold(names, -1);
+            const char *native = text_or_empty(choice, "nativeLabel");
+            if (g_strcmp0(native, tl_string(choice, "label")) == 0) native = "";
+            gtk_list_store_insert_with_values(model, &iter, -1, 0, tl_string(choice, "code"), 1, tl_string(choice, "label"),
+                2, terms, 3, native, -1);
+            g_free(terms); g_free(names);
             if (!language_menu_current(widget, menu, view)) goto done;
         }
         if (missing) {
             GtkTreeIter iter;
-            gtk_list_store_insert_with_values(model, &iter, -1, 0, saved, 1, label, -1);
+            char *names = g_strjoin("\n", saved, label, NULL), *terms = g_utf8_casefold(names, -1);
+            gtk_list_store_insert_with_values(model, &iter, -1, 0, saved, 1, label, 2, terms, 3, "", -1);
+            g_free(terms); g_free(names);
         }
     }
     if (!language_menu_current(widget, menu, view)) goto done;
+    GtkWidget *search = g_object_get_data(G_OBJECT(widget), "typelay-language-search");
+    if (reset && search) {
+        menu->filtering = TRUE;
+        gtk_entry_set_text(GTK_ENTRY(search), "");
+        if (!language_menu_current(widget, menu, view)) goto done;
+        gtk_tree_model_filter_refilter(GTK_TREE_MODEL_FILTER(gtk_tree_view_get_model(language_list(widget))));
+        if (!language_menu_current(widget, menu, view)) goto done;
+    }
     /* Renewals must not discard an unapplied choice while the menu is open. */
     if (reset || saved_changed || rebuild)
         select_language(widget, menu, !reset && !saved_changed && language_index(choices, selection) >= 0 ? selection : saved);
+    else menu->selected = g_strdup(selection);
+    if (language_menu_current(widget, menu, view)) {
+        menu->filtering = FALSE;
+        if (search) language_search_changed(GTK_EDITABLE(search), widget);
+    }
 done:
     g_free(selection);
     return language_menu_current(widget, menu, view);
@@ -533,6 +764,10 @@ static gboolean reset_language_selection(JsonObject *view) {
     char *source_code = g_strdup(overlay.source_languages.saved), *target_code = g_strdup(overlay.target_languages.saved);
     overlay.setting_languages = TRUE;
     select_language(source, &overlay.source_languages, source_code);
+    if (overlay.view == view && overlay.destination == target) {
+        GtkWidget *search = g_object_get_data(G_OBJECT(target), "typelay-language-search");
+        if (search) gtk_entry_set_text(GTK_ENTRY(search), "");
+    }
     if (overlay.view == view && overlay.destination == target)
         select_language(target, &overlay.target_languages, target_code);
     gboolean current = overlay.view == view && overlay.source == source && overlay.destination == target;
@@ -1992,8 +2227,8 @@ static void button_clicked(GtkButton *button, gpointer data) {
         if (overlay.view == clicked_view && overlay.more_popup == clicked_popup
             && overlay.menu_token == clicked_token) close_more(FALSE);
     } else if (strcmp(operation, "languages") == 0) {
-        const char *source = selected_language(overlay.source, &overlay.source_languages);
-        const char *target = selected_language(overlay.destination, &overlay.target_languages);
+        const char *source = selected_language(&overlay.source_languages);
+        const char *target = selected_language(&overlay.target_languages);
         if (overlay.setting_languages || !overlay.source_languages.choices || !overlay.target_languages.choices || !source || !target) {
             goto done;
         }
@@ -2046,10 +2281,17 @@ static gboolean localize_widgets(GtkWidget *card, JsonObject *view) {
     collect_ui_widgets(card, widgets);
     if (overlay.more_popup && !gtk_widget_is_ancestor(overlay.more_popup, card))
         collect_ui_widgets(overlay.more_popup, widgets);
+    GtkWidget *language_popup = overlay.destination
+        ? GTK_WIDGET(gtk_menu_button_get_popover(GTK_MENU_BUTTON(overlay.destination))) : NULL;
+    if (language_popup && !gtk_widget_is_ancestor(language_popup, card))
+        collect_ui_widgets(language_popup, widgets);
     for (guint i = 0; i < widgets->len && overlay.card == card && overlay.view == view; i++) {
         GtkWidget *widget = g_ptr_array_index(widgets, i);
+        gboolean search = overlay.destination && GTK_IS_ENTRY(widget)
+            && widget == g_object_get_data(G_OBJECT(overlay.destination), "typelay-language-search");
         const char *label = GTK_IS_BUTTON(widget) ? gtk_button_get_label(GTK_BUTTON(widget))
-            : GTK_IS_LABEL(widget) ? gtk_label_get_text(GTK_LABEL(widget)) : NULL;
+            : GTK_IS_LABEL(widget) ? gtk_label_get_text(GTK_LABEL(widget))
+            : search ? gtk_entry_get_placeholder_text(GTK_ENTRY(widget)) : NULL;
         if (widget == overlay.more) {
             const char *name = tl_overlay_ui("更多", overlay.english);
             gtk_widget_set_tooltip_text(widget, name);
@@ -2060,6 +2302,7 @@ static gboolean localize_widgets(GtkWidget *card, JsonObject *view) {
         if (strcmp(label, translated) == 0) continue;
         char *copy = g_strdup(translated);
         if (GTK_IS_BUTTON(widget)) gtk_button_set_label(GTK_BUTTON(widget), copy);
+        else if (search) gtk_entry_set_placeholder_text(GTK_ENTRY(widget), copy);
         else gtk_label_set_text(GTK_LABEL(widget), copy);
         g_free(copy);
     }
@@ -2398,8 +2641,8 @@ static void create(Target *target) {
     overlay.menu = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_widget_set_name(overlay.menu, "typelay-language-menu");
     gtk_container_set_border_width(GTK_CONTAINER(overlay.menu), 12);
-    overlay.source = language_button();
-    overlay.destination = language_button();
+    overlay.source = language_button(FALSE);
+    overlay.destination = language_button(TRUE);
     gtk_widget_set_name(overlay.source, "typelay-source-language");
     gtk_widget_set_name(overlay.destination, "typelay-target-language");
     gtk_box_pack_start(GTK_BOX(overlay.menu), gtk_label_new("源语言"), FALSE, FALSE, 0);

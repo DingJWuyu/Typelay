@@ -122,6 +122,8 @@ public:
     QJsonArray motionInputs;
     bool observeMotionInputs = false;
     QJsonObject counts;
+    QJsonArray reentryKeys;
+    quint64 reentryKeyCommand = 0;
     QJsonArray providerEvents;
     quint64 providerSequence = 0;
     quint64 commandSequence = 0;
@@ -287,6 +289,16 @@ public:
         }
         if (event->type() != QEvent::KeyPress && event->type() != QEvent::KeyRelease) return false;
         const auto *key = static_cast<QKeyEvent *>(event);
+        // Only the opted-in command's one F12/F23 batch, on its two owned fields.
+        // Do not filter by Qt key: a wrong translation is what this evidence must expose.
+        if (reentryKeyCommand && reentryKeyCommand == commandSequence && reentryKeys.size() < 4
+            && (object == first || object == second)) {
+            reentryKeys.append(QJsonObject{{"field", object == first ? "first" : "second"},
+                {"phase", event->type() == QEvent::KeyPress ? "press" : "release"},
+                {"qtKey", key->key()}, {"nativeVirtualKey", qint64(key->nativeVirtualKey())},
+                {"nativeScanCode", qint64(key->nativeScanCode())},
+                {"timestamp", qint64(key->timestamp())}, {"observedAtMs", observedAtMs()}});
+        }
         if (plainPendingSwitch && object == plain && event->type() == QEvent::KeyPress
             && qApp->property("tlqtPendingForward").toInt() > 0) {
             plainPendingSwitch = false;
@@ -659,6 +671,7 @@ int main(int argc, char **argv) {
             {"editorUndoAvailable", editor && editor->document()->isUndoAvailable()},
             {"editorRedoAvailable", editor && editor->document()->isRedoAvailable()},
             {"editorGeometry", editor ? rectangle(editor) : QJsonObject()}};
+        if (observer.reentryKeyCommand) state.insert("reentryKeys", observer.reentryKeys);
         if (observeFonts) {
             state.insert("editorFontRuns", renderedFontRuns(editor, fontIdentities));
             state.insert("applicationFontFamily", QApplication::font().family());
@@ -893,7 +906,12 @@ int main(int argc, char **argv) {
                     if (clippedPositions.isEmpty()) { layout->setEnabled(true); layout->invalidate(); layout->activate(); }
                 }
             }
-            else if (op == "on-selection") selectionAction = command.value("action").toString();
+            else if (op == "on-selection") {
+                selectionAction = command.value("action").toString();
+                if (command.value("observeReentryKeys").toBool() && !observer.reentryKeyCommand
+                    && selectionAction == "focus-second")
+                    observer.reentryKeyCommand = observer.commandSequence + 1;
+            }
             else if (op == "on-text") textAction = command.value("action").toString();
             else if (op == "on-command-queued") observer.commandQueuedAction = command.value("action").toString();
             else if (op == "on-command-dispatched") observer.commandDispatchedAction = command.value("action").toString();

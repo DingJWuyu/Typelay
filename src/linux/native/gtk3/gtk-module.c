@@ -1577,7 +1577,9 @@ static void dispatch(GdkEvent *event, gpointer data) {
         shortcut_key = 0; shortcut_consumed = FALSE;
     }
     tl_overlay_pointer(event);
-    if (tl_dispatch_key(event)) return;
+    gboolean search_owned = FALSE;
+    if (tl_overlay_language_search_key(event, &search_owned)
+        || (!search_owned && tl_dispatch_key(event))) return;
     OrderedTicket *prefix = event->type == GDK_KEY_PRESS && ordered && !ordered->finished
         && ordered->keycode == event->key.hardware_keycode && ordered->time == event->key.time
         ? ordered_ref(ordered) : NULL;

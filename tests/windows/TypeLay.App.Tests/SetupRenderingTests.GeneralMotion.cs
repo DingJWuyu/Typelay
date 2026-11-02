@@ -43,8 +43,11 @@ public sealed partial class SetupRenderingTests
         var firstImage = ThumbImage(scene.Window);
         Assert.True(oldChoice.Focus());
         var oldProvider = GeneralSelection(oldChoice);
+        long selectStartedTimestamp = Stopwatch.GetTimestamp();
         oldProvider.Select();
+        long selectReturnedTimestamp = Stopwatch.GetTimestamp();
         scene.Window.UpdateLayout();
+        long layoutFinishedTimestamp = Stopwatch.GetTimestamp();
         Assert.Equal(WorkMode.OnDemand, WindowsRuntime.CreateSettings(scene.Path).Value.Mode);
         var current = GeneralElement<Border>(scene.Window, "GeneralModeThumb");
         var choice = GeneralElement<RadioButton>(scene.Window, "GeneralMode_OnDemand");
@@ -54,7 +57,46 @@ public sealed partial class SetupRenderingTests
         Assert.Same(choice, Keyboard.FocusedElement);
         var destination = ChoiceBounds(choice, current);
         Assert.True(destination.Left > start.Left + 1);
-        Assert.InRange(ThumbBounds(current).Left, start.Left, destination.Left - .01);
+        long boundsReadStartedTimestamp = Stopwatch.GetTimestamp();
+        var initialBounds = ThumbBounds(current);
+        try
+        {
+            Assert.InRange(initialBounds.Left, start.Left, destination.Left - .01);
+        }
+        catch
+        {
+            try
+            {
+                // These bracket existing synchronous calls and precede the
+                // original geometry read; none proves a rendered first frame.
+                TestContext.Current.TestOutputHelper?.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    operation = "general-mode-thumb-initial-boundary",
+                    timestampFrequency = Stopwatch.Frequency,
+                    selectStartedTimestamp,
+                    selectReturnedTimestamp,
+                    layoutFinishedTimestamp,
+                    boundsReadStartedTimestamp,
+                    start = new
+                    {
+                        left = start.Left,
+                        width = start.Width
+                    },
+                    destination = new
+                    {
+                        left = destination.Left,
+                        width = destination.Width
+                    },
+                    bounds = new
+                    {
+                        left = initialBounds.Left,
+                        width = initialBounds.Width
+                    }
+                }));
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { }
+            throw;
+        }
         var retired = ThumbBounds(original);
         var samples = new List<(double Left, double Width)>();
         BitmapSource? middleImage = null;
