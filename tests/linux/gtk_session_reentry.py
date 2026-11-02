@@ -197,6 +197,8 @@ def run_case(
         verify_bundle(font_root)
         child_environment["TYPELAY_UI_FONT_ROOT"] = str(font_root)
     child_environment.pop("TYPELAY_FIXTURE_TWO_WINDOWS", None)
+    if language_configuration and stage == "language-configuration-window-focus":
+        child_environment["TYPELAY_FIXTURE_TWO_WINDOWS"] = "1"
 
     if stage == "footer":
         child_environment["G_DEBUG"] = "fatal-criticals"
@@ -1915,7 +1917,7 @@ async def check_language_configuration(
     opening_instance = controls[popup_name]["instance"]
     focus_instances.update({name: item["instance"] for name, item in controls.items()})
     assert controls[popup_name]["width"] == 264, controls[popup_name]
-    assert controls[popup_name]["autohide"] is True and controls[popup_name]["hasArrow"] is False
+    assert controls[popup_name]["autohide"] is False and controls[popup_name]["hasArrow"] is False
     assert "typelay-source-language" not in controls and "typelay-apply-languages" not in controls
     assert not actual["firstEntry"]["focused"] and not actual["imeClear"]
     assert await overlay.input.request("capture", {}) is None, (
@@ -1923,7 +1925,104 @@ async def check_language_configuration(
     )
     assert not calls["save"]
 
-    if stage in ("language-configuration-swap", "language-configuration-swap-auto"):
+    if stage in ("language-configuration-tab-exit", "language-configuration-shift-tab-exit"):
+        backward = stage.endswith("shift-tab-exit")
+        key_name = "shift+Tab" if backward else "Tab"
+        path = (
+            ("typelay-language-swap",)
+            if backward
+            else tuple(f"typelay-language-choice-{code}" for code in ("en", "ja", "ko"))
+        )
+        previous = search_name
+        for destination in path:
+            await config_key(key_name, previous, composing=None)
+            await language_wait_for(
+                lambda destination=destination: (value := config_current())
+                and value["overlayControls"][destination].get("focused"),
+                f"{key_name} did not reach the next owned configuration control",
+            )
+            assert not calls["cancel"] and not calls["save"]
+            previous = destination
+        # One further original key leaves the nonmodal child naturally. Do not
+        # trap Tab, refocus the root, or manufacture a configuration focus ACK.
+        await config_key(key_name, previous, composing=None)
+        final = await closed()
+        assert final["firstEntry"]["topActive"]
+        assert final["focus"] and final["focus"] != search_name
+        assert len(calls["cancel"]) == 1 and not calls["save"]
+    elif stage == "language-configuration-outside-blank":
+        await click(search_name)
+        await language_command("xdotool", "click", "4", timeout=3)
+        await peer.link.ask("describe")
+        assert config_current()["overlayControls"][popup_name]["instance"] == opening_instance
+        assert not calls["cancel"] and not calls["save"]
+        actual = config_current()
+        point = click_point(actual, (actual["width"] - 4, actual["height"] - 4), dimensions)
+        await language_command(
+            "xdotool", "mousemove", "--window", nested, *map(str, point), timeout=3
+        )
+        moved = time.monotonic_ns() // 1_000_000
+
+        def blank_hit():
+            current = config_current()
+            pointer = current["overlayControls"][popup_name].get("pointerObservation", {})
+            ancestors = pointer.get("pickedAncestors", [])
+            return (
+                current["observedAtMs"] >= moved
+                and pointer.get("status") == "captured"
+                and pointer.get("surface") == "fixture-window"
+                and pointer.get("nativeInstance") == top_instance
+                and pointer.get("x", -1) * current["scale"] == point[0]
+                and pointer.get("y", -1) * current["scale"] == point[1]
+                and len(ancestors) == 1
+                and ancestors[0]["type"] == "GtkWindow"
+                and ancestors[0]["instance"] == top_instance
+            )
+
+        await language_wait_for(blank_hit, "fixed blank point did not pick the owned root alone")
+        input_target(search_name)
+        await language_command("xdotool", "click", "1", timeout=3)
+        final = await closed()
+        assert final["firstEntry"]["topActive"]
+        assert len(calls["cancel"]) == 1 and not calls["save"]
+    elif stage == "language-configuration-window-focus":
+        other = await language_wait_for(
+            lambda: next(
+                (
+                    item
+                    for item in overlay.input.niri.windows
+                    if item.get("pid") == peer.pid
+                    and item.get("title") == "TypeLay GTK4 second window"
+                ),
+                None,
+            ),
+            "owned second GTK window missing",
+        )
+        original = overlay.input.niri.focused
+        assert original and original["pid"] == peer.pid and original["id"] != other["id"]
+        switched = asyncio.get_running_loop().create_future()
+        overlay.input.niri.focus(
+            other["id"], lambda ok: None if switched.done() else switched.set_result(ok)
+        )
+        assert await asyncio.wait_for(switched, 5), "real second-window activation refused"
+        await language_wait_for(
+            lambda: overlay.input.fresh()
+            and overlay.input.niri.focused
+            and overlay.input.niri.focused["id"] == other["id"],
+            "compositor did not observe the exact second window",
+        )
+        await language_wait_for(
+            lambda: (value := observe())
+            and value["firstEntry"]["topActive"] is False
+            and value["focus"] == "fixture-other-window",
+            "native focus did not reach the owned second window",
+        )
+        final = await closed()
+        assert peer.link.channel.alive and peer.lifetime == peer_lifetime
+        assert final["firstEntry"]["topActive"] is False
+        assert final["focus"] == "fixture-other-window"
+        assert len(calls["cancel"]) == 1 and not calls["save"]
+    elif stage in ("language-configuration-swap", "language-configuration-swap-auto"):
         swap = controls["typelay-language-swap"]
         assert swap["visible"] is True and swap["enabled"] is (not automatic_source)
         if automatic_source:
@@ -2103,7 +2202,12 @@ async def check_language_configuration(
         await config_key("Escape")
         await closed()
         # There is no collapsed live source-preview/trigger after cancellation.
-        # An ordinary source key cannot obtain the old editing/acceptance ticket.
+        # Cancellation must not restore authority or force focus to the retired
+        # source. A new real source click establishes this key's destination,
+        # but still cannot obtain the old editing/acceptance ticket.
+        assert not overlay.acceptance_ready
+        assert not any(event.get("operation") in ("accept", "beginEdit") for event in native_events)
+        await source_click("firstEntry")
         await source_key("F1")
         await peer.link.ask("describe")
         assert observe().get("candidate") is None and not overlay.acceptance_ready
@@ -2421,7 +2525,15 @@ def run_owned_language_options(
                 assert peer.backend == "gtk4", "configuration migration is GTK4-only"
             window = await language_wait_for(
                 lambda: next(
-                    (item for item in input_service.niri.windows if item.get("pid") == peer.pid),
+                    (
+                        item
+                        for item in input_service.niri.windows
+                        if item.get("pid") == peer.pid
+                        and (
+                            configuration_stage != "language-configuration-window-focus"
+                            or item.get("title") == "TypeLay GTK4 contract fixture"
+                        )
+                    ),
                     None,
                 ),
                 "language fixture window missing",
@@ -3113,6 +3225,52 @@ async def check_language_options(
         )
 
     async def search_query(text, codes):
+        if not text.isascii():
+            # Nested Wayland need not see xdotool's temporary outer-X Unicode
+            # keymap. Use the existing GTK/Fcitx Unicode composition route,
+            # not a direct Entry setter or paste. One budget covers every
+            # character and the exact final filter observation, with no retry.
+            async with asyncio.timeout(5):
+                before = await search_ready()
+                instance = before["overlayControls"][search_control]["instance"]
+
+                def same_search():
+                    value = state()
+                    search = value["overlayControls"][search_control]
+                    assert search["instance"] == instance and search["focused"]
+                    assert value["overlayControls"][target_control]["popupVisible"]
+                    return value
+
+                await language_key("ctrl+a")
+                for index, character in enumerate(text):
+                    same_search()
+                    await language_key("ctrl+shift+u")
+                    await language_command(
+                        "xdotool",
+                        "type",
+                        "--clearmodifiers",
+                        "--delay",
+                        "0",
+                        f"{ord(character):x}",
+                        timeout=2,
+                    )
+                    await language_wait_for(
+                        lambda: same_search().get("focusedImeComposing"),
+                        "real search Unicode composition was not observed",
+                    )
+                    await language_key("space")
+                    await language_wait_for(
+                        lambda: (value := same_search()).get("focusedImeClear")
+                        and value["overlayControls"][search_control]["text"] == text[: index + 1],
+                        "Unicode composition did not commit the exact search prefix",
+                    )
+                return await language_wait_for(
+                    lambda: (value := same_search()).get("focusedImeClear")
+                    and value["overlayControls"][search_control]["text"] == text
+                    and value["overlayControls"][target_control]["codes"] == codes
+                    and value,
+                    "real search input did not filter the expected catalogue codes",
+                )
         await search_ready()
         await language_key("ctrl+a")
         if text:

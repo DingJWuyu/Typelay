@@ -2094,7 +2094,16 @@ def run(arguments):
                         if gtk4:
                             # Independent, pre-registered configuration openings.
                             # No retry, old-source renewal or private activation.
-                            for action in ("swap", "swap-auto", "enter", "empty-recovery"):
+                            for action in (
+                                "swap",
+                                "swap-auto",
+                                "enter",
+                                "empty-recovery",
+                                "tab-exit",
+                                "shift-tab-exit",
+                                "outside-blank",
+                                "window-focus",
+                            ):
                                 with tempfile.TemporaryDirectory(
                                     prefix="tl-gtk-language-action-"
                                 ) as directory:
@@ -2110,7 +2119,7 @@ def run(arguments):
                                         language_configuration=True,
                                     )
                             evidence.append(
-                                "GTK4 configuration: real swap/search Enter, disabled Auto swap and empty/unavailable search recovery"
+                                "GTK4 configuration: swap/search, empty recovery, natural Tab exit, outside click and second-window retirement"
                             )
                         refusals = [
                             "body",

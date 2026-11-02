@@ -2246,6 +2246,7 @@ static GtkWidget *more_icon(const char *operation) {
 typedef struct {
     guint refs, timeout;
     GtkWidget *top, *popup, *search, *client, *list, *feedback, *swap;
+    GtkEventController *pointer;
     GtkCssProvider *css;
     GdkDisplay *display;
     GtkIMContext *context; /* weak existing provider binding, never our own IM */
@@ -2385,6 +2386,12 @@ static void language_configuration_close(gboolean notify) {
     if (configuration->timeout) g_source_remove(configuration->timeout);
     configuration->timeout = 0;
     g_signal_handlers_disconnect_by_data(configuration->top, configuration);
+    if (configuration->pointer) {
+        g_signal_handlers_disconnect_by_data(configuration->pointer, configuration);
+        if (gtk_event_controller_get_widget(configuration->pointer) == configuration->top)
+            gtk_widget_remove_controller(configuration->top, configuration->pointer);
+        g_clear_object(&configuration->pointer);
+    }
     if (configuration->context) {
         if (configuration->ime_handler) g_signal_handler_disconnect(configuration->context, configuration->ime_handler);
         g_object_remove_weak_pointer(G_OBJECT(configuration->context), (gpointer *)&configuration->context);
@@ -2402,6 +2409,37 @@ static void language_configuration_close(gboolean notify) {
         gtk_style_context_remove_provider_for_display(configuration->display, GTK_STYLE_PROVIDER(configuration->css));
     g_clear_object(&configuration->css); g_clear_object(&configuration->display);
     language_configuration_unref(configuration);
+}
+static gboolean language_configuration_pointer(GtkEventControllerLegacy *controller, GdkEvent *event, gpointer data) {
+    GdkEventType type = gdk_event_get_event_type(event);
+    if (type != GDK_BUTTON_PRESS && type != GDK_TOUCH_BEGIN) return FALSE;
+    LanguageConfiguration *configuration = language_configuration_ref(data);
+    g_object_ref(controller);
+    if (language_configuration == configuration && !configuration->retired
+        && configuration->pointer == GTK_EVENT_CONTROLLER(controller)) {
+        GdkSurface *surface = gdk_event_get_surface(event);
+        GtkNative *native = surface ? gtk_native_get_for_surface(surface) : NULL;
+        double x, y, offset_x, offset_y;
+        if (native && gtk_widget_get_root(GTK_WIDGET(native)) == GTK_ROOT(configuration->top)
+            && gdk_event_get_position(event, &x, &y)) {
+            g_object_ref(native); /* Host native/contains vfuncs may retire this opening. */
+            gtk_native_get_surface_transform(native, &offset_x, &offset_y);
+            if (language_configuration == configuration && !configuration->retired
+                && configuration->pointer == GTK_EVENT_CONTROLLER(controller)
+                && gtk_widget_get_root(GTK_WIDGET(native)) == GTK_ROOT(configuration->top)) {
+                GtkWidget *receiver = gtk_widget_pick(GTK_WIDGET(native), x + offset_x, y + offset_y, GTK_PICK_DEFAULT);
+                if (language_configuration == configuration && !configuration->retired
+                    && configuration->pointer == GTK_EVENT_CONTROLLER(controller)
+                    && gtk_widget_get_root(GTK_WIDGET(native)) == GTK_ROOT(configuration->top)
+                    && !language_configuration_contains(configuration, receiver))
+                    language_configuration_close(TRUE);
+            }
+            g_object_unref(native);
+        }
+    }
+    g_object_unref(controller);
+    language_configuration_unref(configuration);
+    return FALSE; /* Cancel only this opening; preserve the host's original click. */
 }
 static void language_configuration_changed(GtkWidget *widget, GParamSpec *spec, gpointer data) {
     (void)widget;
@@ -2694,7 +2732,9 @@ static gboolean language_configuration_show(LanguageConfiguration *configuration
     gtk_widget_set_name(popup, "typelay-language-configuration");
     g_object_set_data(G_OBJECT(popup), "typelay-overlay", GINT_TO_POINTER(1));
     gtk_popover_set_has_arrow(GTK_POPOVER(popup), FALSE);
-    gtk_popover_set_autohide(GTK_POPOVER(popup), TRUE);
+    /* Keep native keyboard ownership on our root. A modal Wayland grab queues
+     * a synthetic popup focus-out/in pair; never exempt it from is-active. */
+    gtk_popover_set_autohide(GTK_POPOVER(popup), FALSE);
     gtk_popover_set_pointing_to(GTK_POPOVER(popup), &configuration->anchor);
     gtk_popover_set_position(GTK_POPOVER(popup), GTK_POS_BOTTOM);
     if (!language_configuration_replace_default_keys(popup, configuration)) goto failed;
@@ -2884,6 +2924,20 @@ static void begin_language_configuration(GtkWidget *trigger, JsonObject *view) {
     language_configuration_signal(top, "notify::is-active", G_CALLBACK(language_configuration_changed), configuration);
     language_configuration_signal(top, "notify::focus-widget", G_CALLBACK(language_configuration_changed), configuration);
     language_configuration_signal(top, "unmap", G_CALLBACK(language_configuration_unmapped), configuration);
+    GtkEventController *pointer = gtk_event_controller_legacy_new();
+    gtk_event_controller_set_propagation_phase(pointer, GTK_PHASE_CAPTURE);
+    gtk_event_controller_set_propagation_limit(pointer, GTK_LIMIT_NONE);
+    language_configuration_signal(pointer, "event", G_CALLBACK(language_configuration_pointer), configuration);
+    configuration->pointer = g_object_ref(pointer);
+    language_configuration_ref(configuration); /* Controller-model notification can retire it synchronously. */
+    gtk_widget_add_controller(top, pointer);
+    if (language_configuration != configuration || configuration->retired
+        || configuration->pointer != pointer || gtk_event_controller_get_widget(pointer) != top) {
+        json_object_unref(event);
+        if (language_configuration == configuration) language_configuration_close(TRUE);
+        language_configuration_unref(configuration);
+        goto done;
+    }
     configuration->timeout = g_timeout_add_full(G_PRIORITY_DEFAULT,
         (guint)MAX(1, configuration->expires - tl_now()), language_configuration_timeout,
         language_configuration_ref(configuration), language_configuration_unref);
@@ -2893,6 +2947,7 @@ static void begin_language_configuration(GtkWidget *trigger, JsonObject *view) {
         json_object_unref(event);
         if (language_configuration == configuration) language_configuration_close(TRUE);
     }
+    language_configuration_unref(configuration);
 done:
     g_object_unref(focus); g_object_unref(top);
 }

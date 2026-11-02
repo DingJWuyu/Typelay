@@ -787,6 +787,180 @@ def language_options(native, captured, generation, state, window, environment, n
     }
 
 
+def stop_child(child):
+    if child.poll() is None:
+        child.terminate()
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait()
+
+
+def prepare_reentry_f23(resources, out):
+    """Keep the isolated Xvfb sentinel mapping alive until its Qt child exits."""
+    import ctypes
+
+    from support.xtest import prepare_xtest
+
+    evidence = out / "unmodified-reentry-keymap.json"
+    evidence.unlink(missing_ok=True)
+    x11, _, display = prepare_xtest(resources)
+    pointer = ctypes.c_void_p
+    integer = ctypes.c_int
+    symbol = ctypes.c_ulong
+
+    class ModifierMap(ctypes.Structure):
+        _fields_ = [("count", integer), ("keys", ctypes.POINTER(ctypes.c_ubyte))]
+
+    x11.XDisplayKeycodes.argtypes = [pointer, ctypes.POINTER(integer), ctypes.POINTER(integer)]
+    x11.XDisplayKeycodes.restype = integer
+    x11.XGetKeyboardMapping.argtypes = [pointer, ctypes.c_ubyte, integer, ctypes.POINTER(integer)]
+    x11.XGetKeyboardMapping.restype = ctypes.POINTER(symbol)
+    x11.XChangeKeyboardMapping.argtypes = [
+        pointer,
+        integer,
+        integer,
+        ctypes.POINTER(symbol),
+        integer,
+    ]
+    x11.XChangeKeyboardMapping.restype = integer
+    x11.XFree.argtypes = [pointer]
+    x11.XFree.restype = integer
+    x11.XGetModifierMapping.argtypes = [pointer]
+    x11.XGetModifierMapping.restype = ctypes.POINTER(ModifierMap)
+    x11.XFreeModifiermap.argtypes = [ctypes.POINTER(ModifierMap)]
+    x11.XFreeModifiermap.restype = integer
+    x11.XkbGetMap.argtypes = [pointer, ctypes.c_uint, ctypes.c_uint]
+    x11.XkbGetMap.restype = pointer
+    x11.XkbTranslateKeyCode.argtypes = [
+        pointer,
+        ctypes.c_ubyte,
+        ctypes.c_uint,
+        ctypes.POINTER(ctypes.c_uint),
+        ctypes.POINTER(symbol),
+    ]
+    x11.XkbTranslateKeyCode.restype = integer
+    x11.XkbFreeKeyboard.argtypes = [pointer, ctypes.c_uint, integer]
+    x11.XkbFreeKeyboard.restype = None
+    low, high = integer(), integer()
+    x11.XDisplayKeycodes(display, ctypes.byref(low), ctypes.byref(high))
+    assert 0 < low.value <= high.value <= 255, "Invalid isolated Xvfb keycode range"
+
+    def rows(first, count):
+        width = integer()
+        mapping = x11.XGetKeyboardMapping(display, first, count, ctypes.byref(width))
+        assert mapping and width.value > 0, "Cannot read isolated Xvfb keymap"
+        try:
+            return [
+                list(mapping[index * width.value : (index + 1) * width.value])
+                for index in range(count)
+            ]
+        finally:
+            x11.XFree(mapping)
+
+    def unmodified_symbols():
+        # XkbAllClientInfoMask, XkbUseCoreKbd. Fetch a fresh server map, not a
+        # client cache that may still predate our one mapping change.
+        mapping = x11.XkbGetMap(display, 7, 0x100)
+        assert mapping, "Cannot read isolated Xvfb XKB map"
+        try:
+            result = {}
+            for code in range(low.value, high.value + 1):
+                modifiers, value = ctypes.c_uint(), symbol()
+                if x11.XkbTranslateKeyCode(
+                    mapping, code, 0, ctypes.byref(modifiers), ctypes.byref(value)
+                ):
+                    result[code] = value.value
+            return result
+        finally:
+            x11.XkbFreeKeyboard(mapping, 0, 1)
+
+    modifier_map = x11.XGetModifierMapping(display)
+    assert modifier_map, "Cannot read isolated Xvfb modifier map"
+    try:
+        modifiers = set(modifier_map.contents.keys[: 8 * modifier_map.contents.count])
+    finally:
+        x11.XFreeModifiermap(modifier_map)
+    original_rows = rows(low.value, high.value - low.value + 1)
+    f23 = x11.XStringToKeysym(b"F23")
+    assert f23, "X11 does not recognize F23"
+    plain = unmodified_symbols()
+    keycode = next(
+        (
+            code
+            for code, value in plain.items()
+            if value == f23 and original_rows[code - low.value][0] == f23 and code not in modifiers
+        ),
+        None,
+    )
+    changed = keycode is None
+    if changed:
+        keycode = next(
+            (
+                low.value + index
+                for index, row in enumerate(original_rows)
+                if not any(row) and low.value + index not in modifiers
+            ),
+            None,
+        )
+    assert keycode is not None, "No unmodified F23 or wholly unused isolated Xvfb keycode"
+    original = original_rows[keycode - low.value]
+    report = {"keysym": "F23", "keycode": keycode, "changed": changed, "original": original}
+
+    def restore(_kind, primary, _traceback):
+        failure = None
+        try:
+            if changed:
+                x11.XChangeKeyboardMapping(
+                    display, keycode, len(original), (symbol * len(original))(*original), 1
+                )
+                x11.XSync(display, 0)
+            report["restored"] = rows(keycode, 1)[0]
+            report["restoredOriginal"] = report["restored"] == original
+            assert report["restoredOriginal"], "Isolated Xvfb sentinel mapping was not restored"
+        except BaseException as error:
+            failure = error
+        try:
+            evidence.write_text(json.dumps(report, indent=2) + "\n")
+        except BaseException as error:
+            if failure is None:
+                failure = error
+            else:
+                failure.add_note(f"F23 cleanup evidence also failed: {error!r}")
+        if failure is not None:
+            if primary is None:
+                raise failure
+            primary.add_note(f"F23 cleanup failed: {failure!r}")
+            for note in getattr(failure, "__notes__", ()):
+                primary.add_note(note)
+        return False
+
+    # LIFO: the caller registers its Qt child after this mapping; child exit
+    # therefore precedes restoration and the existing X connection close.
+    resources.push(restore)
+    if changed:
+        x11.XChangeKeyboardMapping(display, keycode, 1, (symbol * 1)(f23), 1)
+        x11.XSync(display, 0)
+    bound_rows = rows(low.value, high.value - low.value + 1)
+    report["bound"] = bound_rows[keycode - low.value]
+    report["firstF23Keycode"] = next(
+        (low.value + index for index, row in enumerate(bound_rows) if f23 in row), None
+    )
+    report["unmodifiedKeysym"] = unmodified_symbols().get(keycode)
+    evidence.write_text(json.dumps(report, indent=2) + "\n")
+    assert report["unmodifiedKeysym"] == f23 and report["bound"][0] == f23, (
+        "Isolated Xvfb F23 binding readback failed"
+    )
+    # xdotool enumerates keycode, group, then level and uses the first F23.
+    # Do not claim this unmodified row if an earlier row could take precedence.
+    assert report["firstF23Keycode"] == keycode, (
+        "An earlier F23 mapping would shadow the isolated sentinel"
+    )
+    if changed:
+        assert all(value in (0, f23) for value in report["bound"]), "Unexpected sentinel keymap row"
+
+
 def ordered_controls(
     out, env, children, delay_finished=False, language_options_only=False, unmodified_reentry=False
 ):
@@ -831,6 +1005,7 @@ def ordered_controls(
     with (
         socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server,
         (out / f"{mode}-native.log").open("w") as log,
+        ExitStack() as reentry_resources,
     ):
         server.bind(str(path))
         path.chmod(0o600)
@@ -850,6 +1025,11 @@ def ordered_controls(
             environment["TYPELAY_QT_DELAY_FIRST_FINISHED"] = "1"
         else:
             environment.pop("TYPELAY_QT_DELAY_FIRST_FINISHED", None)
+        if unmodified_reentry:
+            # xdotool otherwise removes a temporary F23 mapping before Qt
+            # necessarily translates the queued XTest event. Do not change the
+            # original F12/F23 batch, strict sentinel barrier, or wait budget.
+            prepare_reentry_f23(reentry_resources, out)
         client = subprocess.Popen(
             [str(out / "native/qt-native-fixture")],
             stdin=subprocess.PIPE,
@@ -859,6 +1039,8 @@ def ordered_controls(
             stderr=subprocess.STDOUT,
         )
         children.append(client)
+        if unmodified_reentry:
+            reentry_resources.callback(stop_child, client)
         connection, _ = server.accept()
         with connection, ExitStack() as input_resources:
             native = Native(connection)
@@ -3557,13 +3739,7 @@ def session(
                 )
             finally:
                 for child in reversed(children):
-                    if child.poll() is None:
-                        child.terminate()
-                        try:
-                            child.wait(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            child.kill()
-                            child.wait()
+                    stop_child(child)
 
 
 if __name__ == "__main__":

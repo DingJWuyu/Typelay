@@ -3784,6 +3784,7 @@ class BrowserContract(unittest.TestCase):
         ):
             with self.subTest(phase=phase):
                 self.page.reload()
+                self.page.locator("#source").focus()
                 _, data = self.open_editor("Tab", "Esc")
                 data["appearance"] = {"uiLanguage": "zh-CN", "motion": "reduce"}
                 # Pin the public host token; fixture defaults do not round-trip
@@ -5203,7 +5204,6 @@ class BrowserContract(unittest.TestCase):
         for phase in (
             "unknown-editor",
             "transport-refresh",
-            "draft-echo",
             "new-view",
             "changed-draft",
         ):
@@ -5254,11 +5254,8 @@ class BrowserContract(unittest.TestCase):
                         editor,
                         "function() {this.dispatchEvent(new CompositionEvent('compositionstart'));}",
                     )
-                elif phase in ("transport-refresh", "draft-echo", "new-view"):
-                    if phase == "draft-echo":
-                        data["view"]["text"] = "My protected draft"
-                    else:
-                        data["revision"] += 1
+                elif phase in ("transport-refresh", "new-view"):
+                    data["revision"] += 1
                     if phase == "new-view":
                         data["view"]["viewContext"]["token"]["revision"] += 1
                     self.assertTrue(self.command("overlay-render", data)["visible"])
@@ -5296,11 +5293,9 @@ class BrowserContract(unittest.TestCase):
                     && ['escape','return','regenerate'].includes(m.data.operation)).map(m=>m.data.operation)""")
                 self.assertEqual(
                     events,
-                    ["escape"]
-                    if phase in ("changed-draft", "transport-refresh", "draft-echo")
-                    else [],
+                    ["escape"] if phase in ("changed-draft", "transport-refresh") else [],
                 )
-                if phase in ("transport-refresh", "draft-echo"):
+                if phase == "transport-refresh":
                     self.assertEqual(
                         self.overlay_dom(
                             editor,
@@ -5311,6 +5306,145 @@ class BrowserContract(unittest.TestCase):
                         before_editor,
                     )
                 self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+                self.assertEqual(self.accepted(), [])
+
+    def test_editing_confirmation_keeps_only_the_same_unedited_draft_echo(self):
+        for phase in (
+            "echo-before-opening",
+            "echo-after-opening",
+            "stale-echo",
+            "draft-aba",
+            "new-token",
+            "edit-revoked",
+            "readonly-view",
+            "action-settings-changed",
+            "unknown-editor",
+            "paused",
+            "expired",
+            "pending-intent",
+        ):
+            with self.subTest(phase=phase):
+                self.page.reload()
+                self.page.locator("#source").focus()
+                snapshot, data = self.open_editor("Tab", "Esc")
+                data["appearance"] = {"uiLanguage": "zh-CN", "motion": "reduce"}
+                self.set_translation_menu(
+                    data, self.translation_menu_state(canChangeStyle=False, canInheritStyle=False)
+                )
+                self.page.keyboard.press("Control+A")
+                self.page.keyboard.insert_text("My protected draft")
+                self.page.keyboard.press("Shift+ArrowLeft")
+                editor = self.overlay_control("TypeLay 译文", "textbox")
+                if phase in ("echo-before-opening", "action-settings-changed"):
+                    data["view"]["text"] = "My protected draft"
+                self.assertTrue(self.command("overlay-render", data)["visible"])
+                self.click_overlay_control("更多")
+                self.click_overlay_control("重新翻译")
+                if phase == "pending-intent":
+                    self.click_overlay_control("替换")
+                    self.assertIn(
+                        "editorRegenerate", self.command("describe", {"target": snapshot["target"]})
+                    )
+                    self.click_overlay_control("更多")
+                    self.click_overlay_control("重新翻译")
+                else:
+                    # Opening the real question has not issued a Replace intention.
+                    self.assertNotIn(
+                        "editorRegenerate", self.command("describe", {"target": snapshot["target"]})
+                    )
+                question = self.overlay_control("替换你修改过的译文？", "group")
+                self.assertTrue(
+                    self.overlay_dom(
+                        self.overlay_control("保留"),
+                        "function() { return this.matches(':focus'); }",
+                    )
+                )
+                data["view"]["text"] = "My protected draft"
+                if phase == "stale-echo":
+                    data["view"]["text"] = "My protected draf"
+                elif phase == "draft-aba":
+                    self.overlay_dom(editor, "function() { this.focus(); }")
+                    self.page.keyboard.press("End")
+                    self.page.keyboard.insert_text("!")
+                    self.page.keyboard.press("Backspace")
+                    self.assertEqual(
+                        self.overlay_dom(editor, "function() { return this.value; }"),
+                        "My protected draft",
+                    )
+                    self.assertFalse(
+                        self.overlay_dom(question, "function() { return this.isConnected; }")
+                    )
+                elif phase == "new-token":
+                    data["view"]["viewContext"]["token"]["revision"] += 1
+                elif phase == "edit-revoked":
+                    data["view"]["viewContext"]["canEdit"] = False
+                elif phase == "readonly-view":
+                    data["view"]["editable"] = False
+                elif phase == "action-settings-changed":
+                    data["view"]["viewContext"]["translationActions"]["settingsRevision"] += 1
+                elif phase == "unknown-editor":
+                    self.overlay_dom(
+                        editor,
+                        "function() { this.dispatchEvent(new CompositionEvent('compositionstart')); }",
+                    )
+                elif phase == "paused":
+                    data["view"]["state"] = "Paused"
+                elif phase == "expired":
+                    # Refusal after the existing display lease, not an echo wait
+                    # or a new confirmation timeout. No host renewal is supplied.
+                    self.page.wait_for_timeout(850)
+                if phase != "echo-before-opening":
+                    rendered = self.command("overlay-render", data)
+                    if phase not in ("paused", "expired"):
+                        self.assertTrue(rendered["visible"])
+                preserved = phase in ("echo-before-opening", "echo-after-opening")
+                self.assertEqual(
+                    self.overlay_dom(question, "function() { return this.isConnected; }"),
+                    preserved,
+                )
+                if preserved:
+                    # Same real controls, draft and selection, not a reopened prompt.
+                    self.assertTrue(
+                        self.overlay_dom(
+                            question,
+                            """function() {
+                              return this.contains(this.getRootNode().activeElement)
+                                && this.getRootNode().activeElement === this.querySelector('button');
+                            }""",
+                        )
+                    )
+                    self.assertEqual(
+                        self.overlay_dom(
+                            editor,
+                            "function() { return [this.value, this.readOnly, this.selectionStart, this.selectionEnd]; }",
+                        ),
+                        ["My protected draft", False, 17, 18],
+                    )
+                    self.assertNotIn(
+                        "editorRegenerate", self.command("describe", {"target": snapshot["target"]})
+                    )
+                    # Only this new trusted activation creates one intention.
+                    if phase == "echo-after-opening":
+                        self.page.keyboard.press("Tab")
+                        self.page.keyboard.press("Enter")
+                    else:
+                        self.click_overlay_control("替换")
+                    self.assertFalse(
+                        self.overlay_dom(question, "function() { return this.isConnected; }")
+                    )
+                events = self.page.evaluate("""fixtureMessages.filter(m => m.event === 'ui'
+                    && m.data.operation === 'regenerate').map(m => m.data.value)""")
+                self.assertEqual(len(events), 1 if preserved or phase == "pending-intent" else 0)
+                if preserved:
+                    self.assertEqual(events[0]["draft"], "My protected draft")
+                    self.assertIsInstance(events[0]["queuedAtMs"], int)
+                elif phase == "pending-intent":
+                    # A new view still retires the already-sent original intent.
+                    self.assertNotIn(
+                        "editorRegenerate", self.command("describe", {"target": snapshot["target"]})
+                    )
+                self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+                self.assertEqual(self.page.evaluate("window.submitted"), 0)
                 self.assertEqual(self.accepted(), [])
 
     def test_editing_regenerate_requires_negotiated_version_but_legacy_host_keeps_plain_action(

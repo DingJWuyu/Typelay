@@ -131,9 +131,11 @@ Windows 自有练习源的人工稿进入 More 时，旧编辑 attempt 永久退
 
 Browser 的 `EditingTranslation` 重译确认使用独立于 owned 练习源的[一次操作关联](../../src/shared/TypeLay.Runtime/SessionController.EditorRegenerate.cs)。Host 配置 `editorRegenerateVersion=1`，只在当前 DOM 的实际 `sessionBindings` 与 fresh describe 同样回显版本 1 时消费专用对象；缺省或未知版本不算支持。旧版未协商 Editing 与原非 Editing 的 plain 操作保持兼容，已协商的 plain 或任何状态的畸形对象不能降级为旧重译入口。非浏览器消费者不接入这个协议。
 
+Browser 的确认框在用户实际点击或按键选择 Replace 前只是显示，不创建返回意图或许可。同一合法 field/view/token 下，Host 对当前人工稿的精确回显可以保留原确认：原编辑序列未变、当前/原确认/回显三稿一致，且除 text 外的完整视图身份（含动作设置）不变。后来编辑含 ABA、撤权、新 owner 或失效 lease 仍关闭；已发出的 intent 继续按原规则退休。显示沿既有 owner 的合法续租，不增加人类确认超时；回显不重开提示、不授新票或延长操作期限。真实 Replace 才按下面的单次操作规则受理。
+
 Host 在真实受理点冻结本次 Action、原 view/peer/document/route/target 与操作时间；Runtime 产生实际 Returning Operation 后，通过既有 Return 请求传递关联，不从 token 加一或最新全局状态猜身份。原操作起 500ms 不续期，关联不是读取、编辑、接受或写回许可。UI 受理到异步调用、Returning Render 到 Return RPC 的间隙内，后来稿仅作为该 exact owner 的本地观察暂存；实际请求匹配后才送入同一 Runtime 操作，失权则丢弃旧关联。真实 DraftChanged（含 ABA 及协议允许范围内的超长稿）永久废弃旧 Replace 意图，成功回源后走当前稿的普通路径；非法稿仍沿既有 Core 规则，不新增接受承诺。没有后来编辑时，ACK 也只说明这次返回，必须再 fresh Capture 当前合法原源并经 Core 判定才重译；合法正文改变可翻译完整当前源，已退休旧会话不得复活或重复调度。全局焦点/源 epoch 如实推进，后继观察 receipt 仅能关联本次实际返回，不能代替 fresh 身份或 IME 校验。
 
-只有已证明尚未派发且原 editor 仍合法，或 exact 回执明确返回失败且未失权时，才保留最新稿并一次迁移后继 Editing token；sent unknown、坏回执和明确失权沿既有退休。早期 null-id 终结仅清该未受理的 exact pending，不能撤销另一个已派发动作。标准 input/textarea 是本切片的完整当前源路径；未变化 rich editor 沿原 provider 的合法 bookmark/focus，正文改变使旧 bookmark 失效时仍安全拒绝，不绕过富文本结构保护。两端消费者见 [Windows](../../src/windows/TypeLay.App/Windows/BrowserInput.EditorRegenerate.cs) 与 [Linux](../../src/linux/desktop/input.py)，实际平台证据与未验边界见[当前状态](development-state.md#当前真实平台依据)和[原型对照](../design/prototype-parity.md)。
+只有已证明尚未派发且原 editor 仍合法，或 exact 回执明确返回失败且未失权时，才保留最新稿并一次迁移后继 Editing token；sent unknown、坏回执和明确失权沿既有退休。早期 null-id 终结仅清该未受理的 exact pending，不能撤销另一个已派发动作。标准 input/textarea 是本切片的完整当前源路径；未变化 rich editor 沿原 provider 的合法 bookmark/focus，正文改变使旧 bookmark 失效时仍安全拒绝，不绕过富文本结构保护。两端消费者见 [Windows](../../src/windows/TypeLay.App/Windows/BrowserInput.EditorRegenerate.cs) 与 [Linux](../../src/linux/desktop/input.py)，实际平台证据与未验边界见[当前状态](development-state.md#最近真实平台结果)和[原型对照](../design/prototype-parity.md)。
 
 GTK、Qt 和共享浏览器沿用现有视图状态，在 `Translating`、正文非空且 `editorOwnsText=false` 时以现有弱化文字色显示旧译文，与 Windows 更新态对齐；新结果恢复正常色，编辑与回源人工稿保持原色，不增加协议字段或接受资格。
 
@@ -154,6 +156,8 @@ worker 入口在加载模型依赖前保存不可继承的专用二进制输出�
 浮层语言呈现复用准备状态中的 `languageChoices`，GTK3、GTK4 和 Qt 按 code 映射现有菜单，浏览器与 Windows 显示真实语言名称；未知值不再回退显示为英语或自动识别。原生浮层缺失或不合法的选项数据时关闭语言修改。浮层保存复用现有 `traySettings` 的 source/target 局部更新，失败保留最后确认值，结果未知不声称保存成功；不再提交旧的全量设置。原生模块须由目标应用重启后加载同期版本。
 
 GTK3 的目标搜索属于既有语言 child 的未应用配置，不建立新会话协议：真实 Entry 始终位于已标记的 overlay 子树，排除源发现；过滤消费当前目录的 code 与既有多语显示名，选择按 model code 校验当前目录，而非筛选后的行号。源选择与显式 Apply 保留，隐藏的目标草案可保留，普通取消选中仍禁用 Apply。搜索按次 ownership 与是否消费分离：只有原次实际 IME Clear、同 opening/view/控件及原期限才执行选择/关闭；Unknown/Composing 或重入退休的原事件仍交 GTK/Fcitx，且不再作为通用 auxiliary Escape 补执行。普通源 Enter 不加入会话接受链，显示本地化不重建输入控件或续许可。
+
+GTK4 语言配置使用同 root 的非模态 child，避免 autohide 原生 keyboard grab 的合成焦点出入与现失权门冲突。配置 opening 内的捕获观察只对真实外部点击/触摸取消并透传原事件，内部点击与滚动保留；退出移除该观察。Tab/ShiftTab 正常移动，越出配置由既有焦点门取消；Escape 只关闭配置，不主动恢复旧源焦点或接受票。新源点击之后仍不能用旧票，合法捕获须独立重建。原 top inactive、opening、IME 与操作期限不变；此行为与 modal 的自动回焦不同，真实平台验收见[当前状态](development-state.md#最近真实平台结果)。
 
 既有安装、修复、选择与移除动作携带完整、冻结的 format1 请求与 `expectedCurrent`，确认后仍校验视图是否过期，再由同一准备任务传给安装器；暂停、继续及重试不会读取最新控件重建请求。已有包库存不再使用旧方向修复入口；损坏库存不提供任何修改动作。Hy 准备入口根据各平台的只读 native 组件检查呈现；真正准备和模型加载仍独立完整验证，不能把组件存在当作模型就绪。下载大小取嵌入的同一 `model.lock.json`，不将下载大小误作安装峰值空间。
 

@@ -1433,15 +1433,37 @@
       && view.state === "EditingTranslation" && view.presentation.editorOwnsText && !paused
       && editorConfigured(field) && view.editable && view.viewContext?.canEdit === true
       && view.text === overlay.editor.value;
-    if (overlay.viewIdentity !== viewIdentity) {
+    const regenerateDraftView = {...view};
+    delete regenerateDraftView.text;
+    // Unlike inert More, a confirmation also keeps the exact action settings.
+    const regenerateDraftIdentity = JSON.stringify({generation: data.generation, revision: data.revision, view: regenerateDraftView});
+    const confirmation = overlay.regenerateConfirmation;
+    const keepConfirmationForDraftEcho = confirmation && !overlay.editorReturn
+      && menuActionCurrent(overlay, confirmation.opened)
+      && confirmation.draftIdentity === overlay.regenerateDraftIdentity
+      && confirmation.draftIdentity === regenerateDraftIdentity
+      && overlay.field === field && overlay.generation === data.generation && overlay.revision === data.revision
+      && JSON.stringify(overlay.viewToken) === JSON.stringify(view.viewContext?.token)
+      && overlay.state === "EditingTranslation" && overlay.editing && overlay.editable && !overlay.editor.readOnly
+      && view.state === "EditingTranslation" && view.presentation.editorOwnsText && !paused
+      && editorConfigured(field) && view.editable && view.viewContext?.canEdit === true
+      && overlay.draftRevision === confirmation.draftRevision
+      && view.text === confirmation.draft && overlay.editor.value === confirmation.draft;
+    const newView = overlay.viewIdentity !== viewIdentity;
+    if (newView) {
       overlay.retryPending = false;
       if (!keepMoreForDraftEcho) closeMore(overlay);
-      // A transport refresh of the same legal editor retires the question, not
-      // its editor focus/selection. A new owner or revoked editor never gets focus.
+    }
+    // This question has not issued Replace. Only its unchanged draft's exact
+    // echo may keep the same DOM; a later input (including ABA) cannot revive it.
+    // Keep the existing display lease/renewal. Only a real Replace makes t0.
+    if (confirmation && (newView || confirmation.draftIdentity !== regenerateDraftIdentity)
+      && !keepConfirmationForDraftEcho)
       closeRegenerate(overlay, overlay.editing && view.state === "EditingTranslation"
         && editorConfigured(field) && view.editable && view.viewContext?.canEdit === true
         && JSON.stringify(view.viewContext?.token) === JSON.stringify(overlay.viewToken)
         && liveDeadline(overlay));
+    if (newView) {
       // Retain only the receipt of this already requested handoff. No new view
       // gets an action until the host supplies the actual operation identity.
       if (overlay.editorReturn && (view.state !== "ReturningToSource"
@@ -1455,6 +1477,7 @@
     }
     overlay.viewIdentity = viewIdentity;
     overlay.moreDraftIdentity = moreDraftIdentity;
+    overlay.regenerateDraftIdentity = regenerateDraftIdentity;
     // Only successful display updates set the bounds for a future Ctrl. An
     // existing editor ticket keeps its original copied bounds through renewal.
     overlay.expiresAtPerformanceMs = deadline(data.expiresAtMs, 800);
@@ -1643,7 +1666,8 @@
     box.className = "more-actions"; box.setAttribute("role", "group");
     box.setAttribute("aria-label", uiText("替换你修改过的译文？"));
     label.textContent = uiText("替换你修改过的译文？"); box.append(label);
-    const confirmation = {box, draft, draftRevision: current.draftRevision, opened, buttons: []};
+    const confirmation = {box, draft, draftRevision: current.draftRevision,
+      draftIdentity: current.regenerateDraftIdentity, opened, buttons: []};
     for (const [text, replace] of [["保留", false], ["替换", true]]) {
       const button = document.createElement("button"); button.textContent = uiText(text);
       button.addEventListener("pointerdown", event => event.preventDefault());

@@ -1055,6 +1055,7 @@ jobs:
             artifacts/linux/qt-cooperative/async-result.json
             artifacts/linux/qt-cooperative/async-client.log
             artifacts/linux/qt-cooperative/unmodified-reentry-result.json
+            artifacts/linux/qt-cooperative/unmodified-reentry-keymap.json
             artifacts/linux/qt-cooperative/unmodified-reentry-native-state.json
             artifacts/linux/qt-cooperative/unmodified-reentry-native.log
             artifacts/linux/qt-cooperative/ordered-result.json

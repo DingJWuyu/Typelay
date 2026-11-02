@@ -497,7 +497,7 @@
 +            data.event = tlCopyKey(keyEvent);
  #else
              data.event = std::make_unique<QKeyEvent>(keyEvent);
-@@ -1306,3 +1620,618 @@
+@@ -1306,3 +1620,628 @@
  }
  
 +// TypeLay 2026-10-12: exact-object cooperation for the original async IM path.
@@ -1047,6 +1047,16 @@
 +        static unsigned lines = 0;
 +        if (!traceCandidate || !qEnvironmentVariableIsSet("TYPELAY_TRACE") || lines++ >= 96) return;
 +        auto *owner = qApp->property(TypeLayFcitxQtConsumerPropertyV1).value<QObject *>();
++        if (release && qstrcmp(phase, "paired") == 0) {
++            std::fprintf(stderr, "typelay-qt-control phase=%s release=%d candidate=%d bound=%d consumer=%d result=%d scanZero=%d dbus=%d forward=%d output=%d qtKey=%d nativeVirtualKey=%u nativeScanCode=%u timestamp=%llu autoRepeat=%d\n",
++                phase, int(release), int(traceCandidate), int(tlBound_ && tlBound_ == focusObjectWrapper()),
++                int(owner && qobject_cast<TypeLayFcitxQtControlV1 *>(owner)), result,
++                int(!event->nativeScanCode()), tlPendingDbus, tlPendingForward, tlOutputDepth,
++                event->key(), static_cast<unsigned>(event->nativeVirtualKey()),
++                static_cast<unsigned>(event->nativeScanCode()),
++                static_cast<unsigned long long>(event->timestamp()), int(event->isAutoRepeat()));
++            return;
++        }
 +        std::fprintf(stderr, "typelay-qt-control phase=%s release=%d candidate=%d bound=%d consumer=%d result=%d scanZero=%d dbus=%d forward=%d output=%d\n",
 +            phase, int(release), int(traceCandidate), int(tlBound_ && tlBound_ == focusObjectWrapper()),
 +            int(owner && qobject_cast<TypeLayFcitxQtControlV1 *>(owner)), result,
