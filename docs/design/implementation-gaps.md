@@ -26,9 +26,10 @@ macOS 菜单栏、红黄绿窗口按钮、模拟聊天应用、场景控制器�
 - 字体包提供Inter、Source Serif 4.004R派生的16个TypeLay Serif静态角色，以及SC/JP/KR的Noto Sans/Serif面，共32面；不是全CJK字符地区覆盖，TC/HK专用面未捆绑。光学角色按逻辑字号选择，不代表所有平台逐像素已验收；系统字体模式仍使用平台字体。
 - WPF浮层语言选择先退休原翻译会话，在原位置保留纯配置面板，清除旧接受许可；不把旧译文和原输入目标带入新的配置操作。它与原型保留背景译文的持续呈现仍有差异，其他消费者的具体差距见[原型对照](prototype-parity.md)。
 - GTK4 合作浮层保留已验证的即时尺寸变化，未为了弹簧动画引入已知编辑焦点丢失风险。GTK3 / Qt6 只对安全长文高度使用可中断弹簧，宽度和胶囊切形仍为即时变化。
-- GTK / Qt 跨应用浮层没有原型的背景模糊，使用可读的暖纸半透明回退；逐词模糊、写回飞入、拖动及完整菜单仍有差异。Qt 当前源码已拆分 More/语言 child，保四段风格及未开放禁用项；目标搜索与完整菜单键盘尚未实现，CI573 已真实编译，但菜单内点击被误判外点；最小修已发布，CI574 同 cooperative probe 步骤成功，正式 desktop 后继 source-auto 控件不可用仍在定位；不据 probe 关闭全部真实几何/材质/交互验收。GTK使用私有字体配置与映射，不改变宿主默认映射；版本与系统字体行为见[合作组件说明](../platforms/linux/fcitx.md)。GTK3设置语言弹层采用对应浅深实底避免透字，不声称已有背景模糊。
-- WPF普通编辑态与普通源字段待返回状态的重译确认键盘路径已有真实合同通过；CI571五个owned相关场景已逐名实际通过，包含Keep保稿/Undo与fresh source重新绑定子项；owned Replace 当前本地源码已接真实 click/Enter/Space、独立 500ms 意图及 fresh 原源重译，475 项 Runtime/318 项 Core 与托管消费者构建通过；CI574 新 Click Keep、长按/重复拒绝及 Replace click/Enter/Space/空稿等 WPF 回归已过，迟消费重试与管道邻近也通过，不称完整交付。同壳340px确认呈现仍未等同原型中心modal、backdrop和完整动效。现有鼠标与无障碍操作不代替未完键盘路径，不放宽编辑或写回许可。
-- Browser 的新重译确认当前只闭合版本协商的 Editing 实现与本地共享/Host 检查：后来稿（含 ABA）优先、ACK 后 fresh 当前原源、明确拒绝与 unknown 分开；两端消费者已同 schema 合并。真实 DOM/键鼠/IME、Windows 明确失败后再试及混版 GUI 仍待平台。非 Editing 的完整确认状态和 rich 正文变化后旧 bookmark 失效的重译体验未齐，不能称全部浏览器确认完成。
+- GTK / Qt 跨应用浮层没有原型的背景模糊，使用可读的暖纸半透明回退；逐词模糊、写回飞入、拖动及完整菜单仍有差异。Qt 当前源码已拆分 More/语言 child，保四段风格及未开放禁用项；目标搜索与完整菜单键盘尚未实现，CI573 已真实编译，但菜单内点击被误判外点；最小修已发布，CI574 同 cooperative probe 步骤成功，CI575 正式 desktop 已越过 Auto/English 与编辑态 Copy，后继长稿收起后的主题几何失败正在按实际 spring settled 修测试前置；不据 probe 关闭全部真实几何/材质/交互验收。GTK使用私有字体配置与映射，不改变宿主默认映射；版本与系统字体行为见[合作组件说明](../platforms/linux/fcitx.md)。GTK3设置语言弹层采用对应浅深实底避免透字，不声称已有背景模糊。
+- WPF普通编辑态与普通源字段待返回状态的重译确认键盘路径已有真实合同通过；CI571五个owned相关场景已逐名实际通过，包含Keep保稿/Undo与fresh source重新绑定子项；owned Replace 已发布源码已接真实 click/Enter/Space、独立 500ms 意图及 fresh 原源重译，475 项 Runtime/318 项 Core 与托管消费者构建通过；CI574 新 Click Keep、长按/重复拒绝及 Replace click/Enter/Space/空稿等 WPF 回归已过，迟消费重试与管道邻近也通过，不称完整交付。同壳340px确认呈现仍未等同原型中心modal、backdrop和完整动效。现有鼠标与无障碍操作不代替未完键盘路径，不放宽编辑或写回许可。
+- Browser 的新重译确认已发布版本协商的 Editing 实现与两端消费者，但未闭合最终平台验收：后来稿（含 ABA）优先、ACK 后 fresh 当前原源、明确拒绝与 unknown 分开；两端消费者已同 schema 合并。CI575 Linux DOM 两处测试构造失败已有窄修候选，Windows 新确认场 Enter 轮前半超时，具体断点待取证；完整键鼠/IME、Windows 明确失败后再试及混版 GUI 仍待平台。非 Editing 的完整确认状态和 rich 正文变化后旧 bookmark 失效的重译体验未齐，不能称全部浏览器确认完成。
+- GTK4 首 map 的完整 CSS 加载顺序修正已有同实例尺寸证据与静态审查，仍须真实 min/allocation/paint 和配置交互验收；GTK3/Qt 目标搜索后继原件缺失，当前不计已交付。
 - WPF 保留单一真实编辑控件与无障碍值语义；逐词模糊入场、跨进程向源框落入的装饰动画尚未等同原型。动画不足不能解释为已完整复刻。
 
 Linux 的全局暂停通过目标 niri 的显式系统键绑定调用 `typelay --toggle-pause`。界面录制与保存快捷键不等于所有 Wayland 合成器都自动注册成功，不修改用户已有合成器配置。

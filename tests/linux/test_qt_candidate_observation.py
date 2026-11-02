@@ -9,7 +9,84 @@ from unittest.mock import Mock, call, patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 from qt_cooperative.run import prepare_source_glossary_capture_basis  # noqa: E402
-from qt_desktop import displayed_wake_candidate  # noqa: E402
+from qt_desktop import displayed_wake_candidate, settled_overlay_motion  # noqa: E402
+
+
+class OverlayMotionTraceTests(unittest.TestCase):
+    # Native public output from the completed motion immediately before the
+    # CI575 theme failure. This tests trace correlation, not Qt GUI behaviour.
+    completed = (
+        "tlqt-motion phase=attempt time=701 running=0 revision=93 incoming=-1 from=-1 continuation=-1\n"
+        "tlqt-motion phase=started time=0 running=1 revision=93 incoming=-1 from=-1 continuation=-1\n"
+        "tlqt-motion phase=render time=38 running=1 revision=93 incoming=94 from=93 continuation=1\n"
+        "tlqt-motion-identity sameView=1 sameTheme=1 sameAppearance=1 sameGeneration=1 nextRevision=1 sameDocument=1 sameDocumentRevision=1 sameGeometry=1\n"
+        "tlqt-motion phase=settled time=752 running=1 revision=94 incoming=-1 from=-1 continuation=-1\n"
+    )
+    unfinished_collapse = (
+        "tlqt-motion phase=attempt time=862 running=0 revision=94 incoming=-1 from=-1 continuation=-1\n"
+        "tlqt-motion phase=started time=0 running=1 revision=94 incoming=-1 from=-1 continuation=-1\n"
+        "tlqt-motion phase=render time=4 running=1 revision=94 incoming=95 from=94 continuation=1\n"
+    )
+
+    def test_completed_native_motion_reports_its_actual_continuation(self):
+        self.assertEqual(settled_overlay_motion(self.completed), {"revision": 94, "elapsedMs": 752})
+
+    def test_ci_collapse_without_settlement_is_not_a_compact_baseline(self):
+        self.assertIsNone(settled_overlay_motion(self.unfinished_collapse))
+        self.assertIsNone(settled_overlay_motion(self.completed + self.unfinished_collapse))
+
+    def test_complete_looking_unterminated_settlement_is_not_a_complete_record(self):
+        self.assertIsNone(settled_overlay_motion(self.completed.removesuffix("\n")))
+        for phase in ("attempt", "layout-stop"):
+            self.assertIsNone(settled_overlay_motion(self.completed + f"tlqt-motion phase={phase}"))
+        self.assertEqual(settled_overlay_motion(self.completed), {"revision": 94, "elapsedMs": 752})
+
+    def test_successive_continuations_must_each_link_to_the_current_revision(self):
+        terminal = "tlqt-motion phase=settled time=752 running=1 revision=94 incoming=-1 from=-1 continuation=-1\n"
+        continuation = "tlqt-motion phase=render time=68 running=1 revision=94 incoming=95 from=94 continuation=1\n"
+        chain = self.completed.replace(
+            terminal, continuation + terminal.replace("revision=94", "revision=95")
+        )
+        self.assertEqual(settled_overlay_motion(chain), {"revision": 95, "elapsedMs": 752})
+        for changed in (
+            chain.replace("incoming=95 from=94", "incoming=95 from=93"),
+            chain.replace("incoming=95 from=94", "incoming=96 from=94"),
+            chain.replace("running=1 revision=94 incoming=95", "running=1 revision=93 incoming=95"),
+            chain.replace(
+                "settled time=752 running=1 revision=95", "settled time=752 running=1 revision=94"
+            ),
+            self.completed + continuation,
+        ):
+            with self.subTest(trace=changed):
+                self.assertIsNone(settled_overlay_motion(changed))
+
+    def test_missing_or_reordered_motion_events_cannot_prove_settlement(self):
+        lines = self.completed.splitlines(keepends=True)
+        for index in (0, 1, 2, 4):
+            with self.subTest(missing=index):
+                self.assertIsNone(
+                    settled_overlay_motion("".join(lines[:index] + lines[index + 1 :]))
+                )
+        self.assertIsNone(settled_overlay_motion("".join([lines[1], lines[0], *lines[2:]])))
+
+    def test_wrong_continuation_identity_or_stale_settlement_is_rejected(self):
+        for before, after in (
+            ("incoming=94 from=93", "incoming=97 from=93"),
+            ("incoming=94 from=93", "incoming=94 from=92"),
+            ("continuation=1", "continuation=0"),
+            ("settled time=752 running=1 revision=94", "settled time=752 running=1 revision=93"),
+            ("started time=0 running=1 revision=93", "started time=0 running=1 revision=92"),
+            ("settled time=752", "settled time=20"),
+        ):
+            with self.subTest(after=after):
+                self.assertIsNone(settled_overlay_motion(self.completed.replace(before, after)))
+
+    def test_stop_retirement_and_malformed_or_truncated_records_are_not_settlement(self):
+        for phase in ("layout-stop", "frame-guard-stop", "hide-stop", "size-or-style-skip"):
+            with self.subTest(phase=phase):
+                self.assertIsNone(settled_overlay_motion(self.completed.replace("settled", phase)))
+        self.assertIsNone(settled_overlay_motion(self.completed + "tlqt-motion incomplete\n"))
+        self.assertIsNone(settled_overlay_motion(self.completed[:-3]))
 
 
 class SourceGlossaryCaptureBasisTests(unittest.TestCase):

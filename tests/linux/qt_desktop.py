@@ -42,6 +42,55 @@ def displayed_wake_candidate(value, source, ready):
     return value if ready() else None
 
 
+def settled_overlay_motion(trace):
+    """Read one post-click native trace, not a visited height or IME queue state."""
+    if trace and not trace.endswith("\n"):
+        return None
+    events = []
+    # A regular-file read can end before the writer finishes its current line.
+    # Even a complete-looking settled payload needs its terminating newline.
+    for line in trace.split("\n")[:-1]:
+        if not line.startswith("tlqt-motion "):
+            continue
+        match = re.fullmatch(
+            r"tlqt-motion phase=([a-z-]+) time=(\d+) running=([01]) "
+            r"revision=(\d+) incoming=(-?\d+) from=(-?\d+) continuation=(-?[01])",
+            line,
+        )
+        if match is None:
+            return None
+        events.append((match[1], *(int(value) for value in match.groups()[1:])))
+    # The byte checkpoint precedes the single original collapse click. A new
+    # attempt, stop, missing continuation or truncated trace is not settlement.
+    if (
+        len(events) < 4
+        or [event[0] for event in events[:2]] != ["attempt", "started"]
+        or events[-1][0] != "settled"
+    ):
+        return None
+    attempt, started = events[:2]
+    revision = attempt[3]
+    if not (attempt[2:] == (0, revision, -1, -1, -1) and started[2:] == (1, revision, -1, -1, -1)):
+        return None
+    elapsed = started[1]
+    for render in events[2:-1]:
+        incoming = render[4]
+        if not (
+            render[0] == "render"
+            and render[2:] == (1, revision, incoming, revision, 1)
+            # Every native continuation is old+1, but the actual incoming
+            # revision must be observed at each link rather than invented.
+            and incoming == revision + 1
+            and render[1] >= elapsed
+        ):
+            return None
+        revision, elapsed = incoming, render[1]
+    settled = events[-1]
+    if settled[2:] != (1, revision, -1, -1, -1) or settled[1] < elapsed:
+        return None
+    return {"revision": revision, "elapsedMs": settled[1]}
+
+
 def run_qt(
     arguments,
     environment,
@@ -1323,6 +1372,9 @@ def run_qt(
                         "overlayVisible": value["overlayVisible"],
                         "editorVisible": value["editorVisible"],
                         "editorReadOnly": value["editorReadOnly"],
+                        "editorInstance": value["editorInstance"],
+                        "editorDocument": value["editorDocument"],
+                        "editorDocumentRevision": value["editorDocumentRevision"],
                         "expand": {key: expand[key] for key in ("instance", "visible", "enabled")},
                         "motionArmed": value["motionArmed"],
                         "motionRecording": value["motionRecording"],
@@ -1605,18 +1657,86 @@ def run_qt(
                     assert frame["text"] == long_draft + " MARK"
                     assert frame["cursor"] == draft_length - 1 and frame["anchor"] == draft_length
                     assert frame["editorFocused"]
+                collapse_before = state()
+                editing_theme_trace = trace_checkpoint()
+                collapse_trace = arguments.output / "qt-desktop-fixture.log"
+                collapse_checkpoint = collapse_trace.stat().st_size
+                collapse_observation = {
+                    "observation": "editing-collapse",
+                    "checkpoint": collapse_checkpoint,
+                    "before": theme_geometry(collapse_before),
+                }
+                theme_observations.append(collapse_observation)
+                settled_observed_at = None
+
+                def compact_draft_after_settlement():
+                    nonlocal settled_observed_at
+                    with collapse_trace.open("rb") as trace:
+                        trace.seek(collapse_checkpoint)
+                        motion = trace.read().decode("utf-8", errors="replace")
+                    collapse_observation["motion"] = motion
+                    terminal = settled_overlay_motion(motion)
+                    if terminal is None:
+                        return None
+                    if settled_observed_at is None:
+                        # Both the fixture snapshot and now_ms use BOOTTIME.
+                        # A cached height=167 frame from before settled cannot
+                        # become the theme baseline after the log catches up.
+                        settled_observed_at = now_ms()
+                    value = state()
+                    if value.get("observedAtMs", 0) <= settled_observed_at:
+                        return None
+                    collapse_observation["settled"] = terminal
+                    collapse_observation["after"] = theme_geometry(value)
+                    for name in (
+                        "editorInstance",
+                        "editorDocument",
+                        "editorDocumentRevision",
+                        "editorText",
+                        "editorCursor",
+                        "editorAnchor",
+                        "editorFocused",
+                        "editorReadOnly",
+                        "editorUndoRedoEnabled",
+                        "editorUndoSteps",
+                        "editorUndoAvailable",
+                        "editorRedoAvailable",
+                    ):
+                        assert value[name] == collapse_before[name], name
+                    assert (
+                        value["overlayControls"]["typelay-expand"]["instance"]
+                        == collapse_before["overlayControls"]["typelay-expand"]["instance"]
+                    ), "Qt collapse replaced its expansion control"
+                    unchanged_theme_input(collapse_before, value)
+                    return (
+                        value
+                        if value["editorGeometry"]["height"] == 167
+                        and value["overlayVisible"]
+                        and value["editorVisible"]
+                        and value["editorFocused"]
+                        and not value["editorReadOnly"]
+                        else None
+                    )
+
                 click_overlay("typelay-expand")
-                wait_for(
-                    lambda: state()["editorGeometry"]["height"] == 167,
-                    "Qt draft did not return to compact height",
+                editing_theme_before = wait_for(
+                    compact_draft_after_settlement,
+                    "Qt draft had no same-editor compact frame after its collapse settled",
                 )
                 # The existing Ctrl+Z and two-stage Tab assertions below now
                 # validate the same editor after both animated size changes.
-                editing_theme_before = state()
-                editing_theme_trace = trace_checkpoint()
+                assert not new_write_outcomes(editing_theme_trace)
                 for appearance in ("light", "dark"):
                     application_theme(appearance)
                     actual = themed_overlay(appearance)
+                    theme_observations.append(
+                        {
+                            "observation": "editing-theme-geometry",
+                            "applicationAppearance": appearance,
+                            "before": theme_geometry(editing_theme_before),
+                            "after": theme_geometry(actual),
+                        }
+                    )
                     unchanged_theme_input(editing_theme_before, actual)
                     for name in (
                         "editorText",

@@ -232,7 +232,9 @@ public sealed partial class SetupRenderingTests
         Assert.True(changed);
         Assert.NotNull(firstAfterSecond);
         Assert.Contains(samples, value => value > .5 && value < firstAfterSecond.Value);
-        Assert.Equal(.5, samples[^1]);
+        // Watch resumes on the UI dispatcher after the completing Rendering event,
+        // whose product handler runs after the observer that collected samples.
+        Assert.Equal(.5, AppearanceLayer(AppearancePaintedTile(scene.Window, "theme", "dark"), "selection").BorderThickness.Left);
         Assert.Equal("light", WindowsRuntime.CreateSettings(scene.Path).Value.Theme);
         Assert.Equal(2.5, AppearanceLayer(AppearancePaintedTile(scene.Window, "theme", "light"), "selection").BorderThickness.Left);
     });

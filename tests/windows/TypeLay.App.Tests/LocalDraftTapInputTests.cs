@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -49,6 +50,8 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
         var captures = new List<KeyboardHook.LocalDraftPress?>();
         var downTimes = new List<uint>();
         var upTimes = new List<uint>();
+        int cancellations = 0;
+        object? firstCancellation = null;
         KeyEventHandler down = (_, e) =>
         {
             e.Handled = true;
@@ -73,7 +76,23 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
         {
             await Until(() => hook.ShortcutsReady && Native.GetForegroundWindow() == hwnd && editor.IsKeyboardFocused);
             Assert.All(new[] { 9, 0x77, 0x10, 0x11, 0x12, 0x5b, 0x5c }, key => Assert.False(Native.GetAsyncKeyState(key) < 0));
-            hook.BeginLocalDraftAnchor(opening, hwnd, hwnd, _ => { });
+            hook.BeginLocalDraftAnchor(opening, hwnd, hwnd, id =>
+            {
+                if (Interlocked.Increment(ref cancellations) != 1 || change != "unarmed-prefix")
+                    return;
+                try
+                {
+                    long observedAtTimestamp = Stopwatch.GetTimestamp();
+                    nint foreground = Native.GetForegroundWindow();
+                    Volatile.Write(ref firstCancellation, new
+                    {
+                        observedAtTimestamp,
+                        openingMatches = id == opening,
+                        foreground = foreground == hwnd ? "overlay" : foreground == 0 ? "none" : "other"
+                    });
+                }
+                catch (Exception error) when (error is not OutOfMemoryException) { }
+            });
             ushort tab = Scan(9), otherScan = Scan(0x77); // F8 never inserts editor text.
             Input[] pair = [Edge(tab, false), Edge(tab, true)];
             if (change == "unarmed-prefix")
@@ -81,7 +100,33 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                 Send(pair);
                 await Until(() => upTimes.Count == 1);
                 Assert.Null(captures.Single());
-                Assert.True(hook.LocalDraftAnchorCurrent(opening));
+                long anchorCallTimestamp = Stopwatch.GetTimestamp();
+                bool anchorCurrent = hook.LocalDraftAnchorCurrent(opening);
+                long anchorObservedTimestamp = Stopwatch.GetTimestamp();
+                if (!anchorCurrent)
+                {
+                    try
+                    {
+                        // This is a public cancellation callback, not the original
+                        // WinEvent. Its foreground and these reads are not atomic
+                        // observations or proof of the cancellation cause.
+                        TestContext.Current.TestOutputHelper?.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
+                        {
+                            operation = "local-draft-unarmed-prefix-anchor-retired",
+                            anchorCurrent,
+                            anchorCallTimestamp,
+                            anchorObservedTimestamp,
+                            timestampFrequency = Stopwatch.Frequency,
+                            cancelCallbacksAtDiagnostic = Volatile.Read(ref cancellations),
+                            firstCancellation = Volatile.Read(ref firstCancellation),
+                            captures = captures.Count,
+                            downs = downTimes.Count,
+                            ups = upTimes.Count
+                        }));
+                    }
+                    catch (Exception error) when (error is not OutOfMemoryException) { }
+                }
+                Assert.True(anchorCurrent);
                 captures.Clear();
                 downTimes.Clear();
                 upTimes.Clear();

@@ -455,7 +455,15 @@ internal static partial class BrowserCooperationCheck
             {
                 await PrepareInputAsync(cdp!, windows!, "", "", selectSource: false, ct);
                 await WaitPreviewAsync(cdp!, ct);
-                regenerate.EditorRegenerateObservation = await cdp!.VerifyEditorRegenerateAsync(trace, cleanupErrors, ct);
+                try
+                {
+                    regenerate.EditorRegenerateObservation = await cdp!.VerifyEditorRegenerateAsync(trace, cleanupErrors, ct);
+                }
+                finally
+                {
+                    regenerate.EditorRegenerateObservation ??= cdp!.LastEditorRegenerateObservation;
+                    regenerate.OverlayMenuObservation = cdp!.LastOverlayMenuObservation;
+                }
             });
             await Phase(glossary, "preview-editor-more-glossary", 30, async ct =>
             {

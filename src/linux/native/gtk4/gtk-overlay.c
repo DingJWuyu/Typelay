@@ -2947,27 +2947,23 @@ static void toggle_more(JsonObject *view) {
     g_object_unref(popup); g_object_unref(card); g_object_unref(trigger);
 }
 
-static gboolean theme(JsonObject *data, gboolean stale_preview, gboolean capsule) {
+static gboolean load_css(GtkCssProvider *provider, JsonObject *data, JsonObject *view,
+    gboolean stale_preview, gboolean capsule, gboolean reduce_motion, gint text_size) {
     JsonObject *appearance = tl_object(data, "appearance");
-    const char *choice = text_or_empty(data, "theme"), *language = text_or_empty(appearance, "uiLanguage");
+    const char *choice = text_or_empty(data, "theme");
     gboolean dark = FALSE;
     char *name = NULL;
     g_object_get(gtk_settings_get_default(), "gtk-application-prefer-dark-theme", &dark, "gtk-theme-name", &name, NULL);
     if (*choice && strcmp(choice, "system") != 0) dark = strcmp(choice, "dark") == 0;
     else if (name) { char *lower = g_ascii_strdown(name, -1); dark |= strstr(lower, "dark") != NULL; g_free(lower); }
     g_free(name);
-    if (!*language || strcmp(language, "system") == 0) language = g_get_language_names()[0];
-    overlay.english = !g_str_has_prefix(language, "zh");
-    overlay.reduce_motion = tl_overlay_gtk_motion_reduced(overlay.card,
-        tl_overlay_motion(tl_string(appearance, "motion"), boolean(appearance, "reduceMotion")));
-    overlay.text_size = (gint)CLAMP(tl_integer(appearance, "textSize", 15), 13, 19);
     TlOverlayPalette palette = tl_overlay_palette(dark, tl_string(appearance, "accent"), boolean(appearance, "reduceTransparency"));
     char css[16384];
     char content_font[128];
     int count = tl_overlay_gtk_css(css, sizeof css, palette,
-        tl_overlay_content_font(tl_string(appearance, "font"), tl_string(overlay.view, "targetLanguage"),
-            overlay.text_size, content_font, sizeof content_font),
-        tl_overlay_ui_font(tl_string(appearance, "font")), overlay.text_size, capsule, stale_preview, overlay.reduce_motion, GTK_MAJOR_VERSION == 4);
+        tl_overlay_content_font(tl_string(appearance, "font"), tl_string(view, "targetLanguage"),
+            text_size, content_font, sizeof content_font),
+        tl_overlay_ui_font(tl_string(appearance, "font")), text_size, capsule, stale_preview, reduce_motion, GTK_MAJOR_VERSION == 4);
     if (count < 0 || (gsize)count >= sizeof css) return FALSE;
     int more_count = tl_overlay_gtk_more_css(css + count, sizeof css - (gsize)count, palette,
         tl_overlay_ui_font(tl_string(appearance, "font")), tl_string(appearance, "accent"));
@@ -2988,6 +2984,22 @@ static gboolean theme(JsonObject *data, gboolean stale_preview, gboolean capsule
         "border-bottom-color,border-left-color,opacity; }",
         palette.surface, palette.ink, palette.line);
     if (contents_count < 0 || (gsize)contents_count >= sizeof css - (gsize)count) return FALSE;
+#if GTK_CHECK_VERSION(4, 12, 0)
+    gtk_css_provider_load_from_string(provider, css);
+#else
+    gtk_css_provider_load_from_data(provider, css, -1);
+#endif
+    return TRUE;
+}
+
+static gboolean theme(JsonObject *data, gboolean stale_preview, gboolean capsule) {
+    JsonObject *appearance = tl_object(data, "appearance");
+    const char *language = text_or_empty(appearance, "uiLanguage");
+    if (!*language || strcmp(language, "system") == 0) language = g_get_language_names()[0];
+    overlay.english = !g_str_has_prefix(language, "zh");
+    overlay.reduce_motion = tl_overlay_gtk_motion_reduced(overlay.card,
+        tl_overlay_motion(tl_string(appearance, "motion"), boolean(appearance, "reduceMotion")));
+    overlay.text_size = (gint)CLAMP(tl_integer(appearance, "textSize", 15), 13, 19);
     JsonObject *view = json_object_ref(overlay.view);
     GtkWidget *card = g_object_ref(overlay.card);
     GtkCssProvider *provider = g_object_ref(overlay.css);
@@ -2995,12 +3007,9 @@ static gboolean theme(JsonObject *data, gboolean stale_preview, gboolean capsule
     if (overlay.view != view || overlay.card != card) {
         g_object_unref(provider); g_object_unref(card); json_object_unref(view); return FALSE;
     }
-#if GTK_CHECK_VERSION(4, 12, 0)
-    gtk_css_provider_load_from_string(provider, css);
-#else
-    gtk_css_provider_load_from_data(provider, css, -1);
-#endif
-    gboolean current = overlay.view == view && overlay.card == card && localize_widgets(card, view);
+    gboolean loaded = load_css(provider, data, view, stale_preview, capsule,
+        overlay.reduce_motion, overlay.text_size);
+    gboolean current = loaded && overlay.view == view && overlay.card == card && localize_widgets(card, view);
     g_object_unref(provider); g_object_unref(card); json_object_unref(view);
     return current;
 }
@@ -3065,7 +3074,23 @@ static void update_popup_layout(GdkFrameClock *clock, gpointer unused) {
 done:
     json_object_unref(view); g_object_unref(popover);
 }
-static void create(Target *target) {
+static gboolean create(Target *target, JsonObject *data, JsonObject *view,
+    gboolean stale_preview, gboolean capsule) {
+    JsonObject *appearance = tl_object(data, "appearance");
+    gboolean reduce_motion = tl_overlay_gtk_motion_reduced(target->widget,
+        tl_overlay_motion(tl_string(appearance, "motion"), boolean(appearance, "reduceMotion")));
+    gint text_size = (gint)CLAMP(tl_integer(appearance, "textSize", 15), 13, 19);
+    GtkCssProvider *provider = gtk_css_provider_new();
+    if (!load_css(provider, data, view, stale_preview, capsule, reduce_motion, text_size)) {
+        g_object_unref(provider);
+        return FALSE;
+    }
+    overlay.css = provider;
+    overlay.display = g_object_ref(gtk_widget_get_display(target->widget));
+    /* Install the complete style before the popover can cache its initial
+     * shadow extents. Later renders keep updating this same provider. */
+    gtk_style_context_add_provider_for_display(overlay.display, GTK_STYLE_PROVIDER(overlay.css),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
     overlay.target = target;
     overlay.top = GTK_WIDGET(gtk_widget_get_root(target->widget));
     g_object_add_weak_pointer(G_OBJECT(overlay.top), (gpointer *)&overlay.top);
@@ -3200,10 +3225,6 @@ static void create(Target *target) {
     overlay.apply_languages = button(menu_content, "应用语言方向", "languages");
     gtk_widget_set_name(overlay.apply_languages, "typelay-apply-languages");
     gtk_box_append(GTK_BOX(overlay.card), overlay.menu);
-    overlay.css = gtk_css_provider_new();
-    overlay.display = g_object_ref(gtk_widget_get_display(overlay.popover));
-    gtk_style_context_add_provider_for_display(overlay.display, GTK_STYLE_PROVIDER(overlay.css),
-        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
     gtk_widget_set_visible(overlay.menu, FALSE);
     GtkEventController *pointer = gtk_event_controller_legacy_new();
     gtk_event_controller_set_propagation_phase(pointer, GTK_PHASE_CAPTURE);
@@ -3218,6 +3239,7 @@ static void create(Target *target) {
         overlay.layout_clock = g_object_ref(clock);
         overlay.layout_handler = g_signal_connect_after(clock, "update", G_CALLBACK(update_popup_layout), NULL);
     }
+    return TRUE;
 }
 static gboolean pause_render_result(gboolean is_paused, const char *stage, gint64 revision, gboolean result) {
     static guint count;
@@ -3383,7 +3405,14 @@ static gboolean render(Target *target, JsonObject *data) {
         || !json_object_equal(overlay.glossary->token, tl_object(tl_object(value, "viewContext"), "token"))))
         glossary_close(FALSE, TRUE);
     if (overlay.revision != tl_integer(data, "revision", -1)) overlay.pending_glossary = FALSE;
-    if (overlay.target != target || overlay.top != top) { hide_overlay("render-owner-changed"); create(target); }
+    const char *state = tl_string(value, "state");
+    gboolean stale_preview = g_strcmp0(state, "Translating") == 0
+        && *text_or_empty(value, "text") && !boolean(presentation, "editorOwnsText");
+    gboolean capsule = is_paused || g_strcmp0(state, "IdleCapsule") == 0;
+    if (overlay.target != target || overlay.top != top) {
+        hide_overlay("render-owner-changed");
+        if (!create(target, data, value, stale_preview, capsule)) { json_object_unref(geometry); return FALSE; }
+    }
     g_free(overlay.generation);
     overlay.generation = g_strdup(generation);
     overlay.expires = until;
@@ -3457,16 +3486,12 @@ static gboolean render(Target *target, JsonObject *data) {
     gtk_widget_remove_css_class(overlay.status, "ready"); gtk_widget_remove_css_class(overlay.status, "pending");
     if (g_strcmp0(tl_string(presentation, "dot"), "Green") == 0) gtk_widget_add_css_class(overlay.status, "ready");
     if (g_strcmp0(tl_string(presentation, "dot"), "Yellow") == 0) gtk_widget_add_css_class(overlay.status, "pending");
-    const char *state = tl_string(value, "state");
     gboolean editable_preview = boolean(value, "editable") && tl_view_context_matches(target, value)
         && boolean(tl_object(value, "viewContext"), "canEdit")
         && (g_strcmp0(state, "ValidTranslation") == 0 || g_strcmp0(state, "EditedTranslationPending") == 0);
     if (editable_preview) gtk_widget_add_css_class(overlay.text, "editable-preview");
     else gtk_widget_remove_css_class(overlay.text, "editable-preview");
     gtk_widget_set_tooltip_text(overlay.text, editable_preview ? tl_overlay_ui("点击译文编辑", overlay.english) : NULL);
-    gboolean stale_preview = g_strcmp0(state, "Translating") == 0
-        && *text_or_empty(value, "text") && !boolean(presentation, "editorOwnsText");
-    gboolean capsule = is_paused || g_strcmp0(tl_string(value, "state"), "IdleCapsule") == 0;
     if (!theme(data, stale_preview, capsule)) { json_object_unref(geometry); return FALSE; }
     gint source_width = gtk_widget_get_width(target->widget);
     gint width = capsule ? 160 : overlay.expanded ? CLAMP(source_width, 300, 560)

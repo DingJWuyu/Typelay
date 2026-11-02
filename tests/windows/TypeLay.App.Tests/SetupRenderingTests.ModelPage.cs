@@ -205,7 +205,7 @@ public sealed partial class SetupRenderingTests
         scene.Host.ShowPage("model");
         AssertRetiredTrayAction(scene, staleResume);
         Assert.Single(transfers);
-        RenderTray(scene.Host, "model-paused.png");
+        RenderTray(scene.Host, $"model-paused-{(knownTotal ? "known" : "unknown")}.png");
         TrayInvoke(Named<Button>(scene.Host, "PreparationPrimaryAction"));
         await Until(() => transfers.Count == 2 && transfers[1].Body.Started.Task.IsCompleted);
         Assert.Equal(transfers[0].BodyUri, transfers[1].BodyUri);

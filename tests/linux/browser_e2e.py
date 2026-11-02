@@ -5113,14 +5113,32 @@ class BrowserContract(unittest.TestCase):
                 self.assertEqual(self.accepted(), [])
 
     def test_editing_retranslation_unknown_ime_and_new_view_retire_old_confirmation(self):
-        for phase in ("unknown-editor", "new-view", "changed-draft"):
+        for phase in ("unknown-editor", "transport-refresh", "new-view", "changed-draft"):
             with self.subTest(phase=phase):
                 self.page.reload()
                 self.page.locator("#source").focus()
                 _, data = self.open_editor("Tab", "Esc")
+                # page.evaluate copies data: TRANSPORT's default context does
+                # not return to Python. Pin the editor token so a transport
+                # revision change below is not accidentally a new owner.
+                data["view"]["viewContext"] = {
+                    "token": {
+                        "target": {
+                            "backend": "linux-browser",
+                            "value": data["target"],
+                            "lifetime": "test",
+                        },
+                        "commandGeneration": self.page.evaluate("fixtureBindings.generation"),
+                        "revision": data["revision"],
+                    },
+                    "bindings": {"accept": "Tab", "exit": "Esc"},
+                    "canEdit": True,
+                }
                 data["appearance"] = {"uiLanguage": "zh-CN", "motion": "reduce"}
                 self.command("overlay-render", data)
+                self.page.keyboard.press("Control+A")
                 self.page.keyboard.insert_text("My protected draft")
+                self.page.keyboard.press("Shift+ArrowLeft")
                 self.command("overlay-render", data)
                 editor = self.overlay_control("TypeLay 译文", "textbox")
                 before_editor = self.overlay_dom(
@@ -5129,20 +5147,50 @@ class BrowserContract(unittest.TestCase):
                     return [this.value, this.readOnly, this.matches(':focus'), this.selectionStart, this.selectionEnd];
                 }""",
                 )
+                self.assertEqual(before_editor, ["My protected draft", False, True, 17, 18])
                 self.click_overlay_control("更多")
                 self.click_overlay_control("重新翻译")
                 question = self.overlay_control("替换你修改过的译文？", "group")
+                self.assertTrue(
+                    self.overlay_dom(
+                        self.overlay_control("保留"), "function() {return this.matches(':focus');}"
+                    )
+                )
                 if phase == "unknown-editor":
                     self.overlay_dom(
                         editor,
                         "function() {this.dispatchEvent(new CompositionEvent('compositionstart'));}",
                     )
-                elif phase == "new-view":
+                elif phase in ("transport-refresh", "new-view"):
                     data["revision"] += 1
-                    self.command("overlay-render", data)
+                    if phase == "new-view":
+                        data["view"]["viewContext"]["token"]["revision"] += 1
+                    self.assertTrue(self.command("overlay-render", data)["visible"])
+                    self.assertFalse(
+                        self.overlay_dom(question, "function() {return this.isConnected;}")
+                    )
+                    self.assertEqual(
+                        self.overlay_dom(
+                            editor,
+                            """function() {
+                        return [this.value, this.readOnly, this.matches(':focus'), this.selectionStart, this.selectionEnd];
+                    }""",
+                        ),
+                        ["My protected draft", False, phase == "transport-refresh", 17, 18],
+                    )
+                    self.assertFalse(
+                        self.page.locator("#source").evaluate(
+                            "element => document.activeElement === element"
+                        )
+                    )
                 else:
                     self.overlay_dom(editor, "function() {this.focus();}")
+                    self.page.keyboard.press("End")
                     self.page.keyboard.insert_text("!")
+                    self.assertEqual(
+                        self.overlay_dom(editor, "function() {return this.value;}"),
+                        "My protected draft!",
+                    )
                 self.page.keyboard.press("Escape")
                 self.assertEqual(
                     self.overlay_dom(question, "function() {return this.isConnected;}"),
@@ -5151,9 +5199,9 @@ class BrowserContract(unittest.TestCase):
                 events = self.page.evaluate("""fixtureMessages.filter(m => m.event === 'ui'
                     && ['escape','return','regenerate'].includes(m.data.operation)).map(m=>m.data.operation)""")
                 self.assertEqual(
-                    events, ["escape"] if phase in ("changed-draft", "new-view") else []
+                    events, ["escape"] if phase in ("changed-draft", "transport-refresh") else []
                 )
-                if phase == "new-view":
+                if phase == "transport-refresh":
                     self.assertEqual(
                         self.overlay_dom(
                             editor,
@@ -5176,8 +5224,16 @@ class BrowserContract(unittest.TestCase):
                 snapshot, data = self.open_editor("Tab", "Esc", regenerate_version=version)
                 data["appearance"] = {"uiLanguage": "zh-CN", "motion": "reduce"}
                 self.command("overlay-render", data)
+                self.page.keyboard.press("Control+A")
                 self.page.keyboard.insert_text("Versioned draft")
                 self.command("overlay-render", data)
+                self.assertEqual(
+                    self.overlay_dom(
+                        self.overlay_control("TypeLay 译文", "textbox"),
+                        "function() {return [this.value, this.readOnly, this.matches(':focus')];}",
+                    ),
+                    ["Versioned draft", False, True],
+                )
                 self.click_overlay_control("更多")
                 self.click_overlay_control("重新翻译")
                 self.click_overlay_control("替换")
