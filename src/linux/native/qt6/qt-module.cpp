@@ -3114,7 +3114,8 @@ private:
                     && data.value("appearance").toObject() == overlayAppearance_
                     && (!glossary_ || !glossary_->source || retainedSourceForm)
                     && overlayView_ != view && editorViewIdentity(overlayView_) == editorViewIdentity(view);
-                if (menuView_ && (menuView_->revision != integer(data, "revision", 0)
+                const bool retainLanguageMenu = menuOnly && menu_ && menu_->isVisible() && overlayMenuCurrent(menu_);
+                if (menuView_ && !retainLanguageMenu && (menuView_->revision != integer(data, "revision", 0)
                     || menuView_->generation != data.value("generation") || menuView_->view != view)) {
                     const QPointer<QWidget> observedMenu = qEnvironmentVariableIsSet("TYPELAY_QT_PROBE")
                         && openedMenu_ == menu_ && menu_ && menu_->isVisible() ? menu_ : nullptr;
@@ -3136,6 +3137,9 @@ private:
                     // Only the new read-only menu subtree changed; do not touch
                     // editor text, focus, IME or its document in this repaint.
                     overlayView_ = view; overlayAuthority_ = basis; overlayUntil_ = until;
+                    // Only the still-current language menu follows unrelated
+                    // More metadata. Never retarget a translation-action ticket.
+                    if (retainLanguageMenu) menuView_->view = view;
                     if (renderTranslationActions() && status_) {
                         auto status = view.value("status").toString();
                         if (status.isEmpty()) status = translationActions(view).value("feedback").toString();

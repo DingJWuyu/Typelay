@@ -327,6 +327,75 @@ class PipeTransportTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def test_owned_approval_timing_never_changes_the_correlated_reply(self):
+        self.channel.close()
+        link = Link(GLib, self.input_read, self.output_write, lambda *_: None, None, lambda: None)
+        self.addCleanup(link.close)
+        timing = {"processingStartedAtMs": 101, "replyQueuedAtMs": 102}
+
+        async def exercise():
+            context = GLib.MainContext.default()
+            cases = (
+                (True, True, "allowField", True, timing),
+                (True, True, "allowField", False, timing),
+                (True, True, "allowField", None, None),
+                (True, True, "allowField", True, {"processingStartedAtMs": True}),
+                (True, False, "allowField", True, timing),
+                (False, True, "allowField", False, timing),
+                (True, True, "allowPauseField", True, timing),
+            )
+            for enabled, marked, operation, data, reply_timing in cases:
+                diagnostics = {}
+                with patch.dict(os.environ, {"TYPELAY_TRACE": "1" if enabled else ""}):
+                    with patch("link.now_ms", return_value=100):
+                        task = asyncio.create_task(
+                            link.ask(
+                                operation,
+                                {},
+                                owned_approval_timing=diagnostics if marked else None,
+                            )
+                        )
+                        await asyncio.sleep(0)
+                    request = Decoder().feed(os.read(self.output_read, MAX_FRAME))[0]
+                    selected = enabled and marked and operation == "allowField"
+                    self.assertEqual(request.get("traceOwnedApproval"), True if selected else None)
+                    frame = {"reply": request["id"], "data": data}
+                    if reply_timing is not None:
+                        frame["ownedApprovalTiming"] = {**reply_timing, "text": "not telemetry"}
+                    os.write(self.input_write, encode(frame))
+                    context.iteration(False)
+                    with patch("link.now_ms", return_value=103):
+                        self.assertIs(await task, data)
+                    expected = (
+                        {"requestId": request["id"], "sentAtMs": 100, "returnedAtMs": 103}
+                        if selected
+                        else {}
+                    )
+                    if selected and reply_timing == timing:
+                        expected.update(timing)
+                    self.assertEqual(diagnostics, expected)
+                    self.assertTrue(link.channel.alive)
+
+            with patch.dict(os.environ, {"TYPELAY_TRACE": "1"}):
+                diagnostics = {}
+                task = asyncio.create_task(
+                    link.ask("allowField", {}, timeout=0.001, owned_approval_timing=diagnostics)
+                )
+                await asyncio.sleep(0)
+                request = Decoder().feed(os.read(self.output_read, MAX_FRAME))[0]
+                with self.assertRaises(TimeoutError):
+                    await task
+                before = dict(diagnostics)
+                os.write(
+                    self.input_write,
+                    encode({"reply": request["id"], "data": True, "ownedApprovalTiming": timing}),
+                )
+                context.iteration(False)
+                self.assertEqual(diagnostics, before, "a late reply annotated a retired request")
+                self.assertTrue(link.channel.alive)
+
+        asyncio.run(exercise())
+
     def test_writable_pipe_receives_frame_without_event_dispatch(self):
         message = {"event": "publish", "data": {"generation": 7}}
         self.channel.send(message)

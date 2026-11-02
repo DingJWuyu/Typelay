@@ -424,7 +424,7 @@ public sealed partial class SettingsRenderingTests
             return Task.CompletedTask;
         });
 
-    private static void ApplicationDialogActionAsync(SettingsWindow owner, Action open, string id, Func<Window, CancellationToken, Task> interact, bool awaitEntrance = true)
+    private static void ApplicationDialogActionAsync(SettingsWindow owner, Action open, string id, Func<Window, CancellationToken, Task> interact, bool awaitEntrance = true, bool observeNativeInput = false)
     {
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         limit.CancelAfter(TimeSpan.FromSeconds(3));
@@ -437,6 +437,12 @@ public sealed partial class SettingsRenderingTests
         int rightDowns = 0, rightUps = 0;
         object? lastRightDown = null, lastRightUp = null;
         bool failureRecorded = false;
+        HwndSource? nativeSource = null;
+        HwndSourceHook? nativeHook = null;
+        nint nativeOwner = 0;
+        string nativeObserverState = "not-requested";
+        int nativeMessages = 0, nativeDowns = 0, nativeUps = 0, nativeDoubleClicks = 0;
+        var nativeSamples = observeNativeInput ? new List<object>(4) : null;
         static string? InputTarget(object source)
         {
             for (int depth = 0; depth < 8 && source is DependencyObject element; depth++)
@@ -530,6 +536,22 @@ public sealed partial class SettingsRenderingTests
                     LastObservedCandidateCount = lastCandidateCount,
                     Readiness = ReadReadiness()
                 }));
+                if (observeNativeInput)
+                    TestContext.Current.TestOutputHelper?.WriteLine("Application dialog native input: " + JsonSerializer.Serialize(new
+                    {
+                        Id = id,
+                        Observer = nativeObserverState,
+                        Owner = nativeOwner.ToInt64(),
+                        NativeMessages = nativeMessages,
+                        NativeDowns = nativeDowns,
+                        NativeUps = nativeUps,
+                        NativeDoubleClicks = nativeDoubleClicks,
+                        Samples = nativeSamples,
+                        Omitted = Math.Max(0, nativeMessages - (nativeSamples?.Count ?? 0)),
+                        RightDowns = rightDowns,
+                        RightUps = rightUps,
+                        MouseActivateFinalResultObserved = false
+                    }));
             }
             catch (Exception error) when (error is not OutOfMemoryException) { }
         }
@@ -608,6 +630,58 @@ public sealed partial class SettingsRenderingTests
         owner.AddHandler(Mouse.PreviewMouseUpEvent, rightUp, true);
         try
         {
+            if (observeNativeInput)
+            {
+                try
+                {
+                    nativeOwner = new WindowInteropHelper(owner).Handle;
+                    nativeSource = HwndSource.FromHwnd(nativeOwner);
+                    nativeObserverState = "source-missing";
+                    if (nativeSource is not null)
+                    {
+                        nativeHook = (nint hwnd, int message, nint wParam, nint lParam, ref bool handled) =>
+                        {
+                            if (hwnd != nativeOwner || message is not (0x0204 or 0x0205 or 0x0206 or 0x0021))
+                                return 0;
+                            if (message == 0x0021 && ((int)((long)lParam >> 16) & 0xffff) is not (0x0204 or 0x0206))
+                                return 0;
+                            nativeMessages++;
+                            if (message == 0x0204)
+                                nativeDowns++;
+                            if (message == 0x0205)
+                                nativeUps++;
+                            if (message == 0x0206)
+                                nativeDoubleClicks++;
+                            try
+                            {
+                                if (nativeSamples!.Count < 4)
+                                    nativeSamples.Add(new
+                                    {
+                                        At = Environment.TickCount64,
+                                        Message = message,
+                                        OwnerMatches = hwnd == nativeOwner,
+                                        HandledAtObserverEntry = handled,
+                                        MouseActivateParentMatches = message == 0x0021 ? wParam == nativeOwner : (bool?)null,
+                                        HitTest = message == 0x0021 ? (short)((long)lParam & 0xffff) : (int?)null,
+                                        MouseActivateTrigger = message == 0x0021 ? (int)((long)lParam >> 16) & 0xffff : (int?)null,
+                                        ClientX = message != 0x0021 ? (short)((long)lParam & 0xffff) : (int?)null,
+                                        ClientY = message != 0x0021 ? (short)((long)lParam >> 16 & 0xffff) : (int?)null
+                                    });
+                            }
+                            catch (Exception error) when (error is not OutOfMemoryException) { }
+                            // This observes entry only. Do not change handled or
+                            // treat this ignored zero as the final WindowProc result.
+                            return 0;
+                        };
+                        nativeSource.AddHook(nativeHook);
+                        nativeObserverState = "attached";
+                    }
+                }
+                catch (Exception error) when (error is not OutOfMemoryException)
+                {
+                    nativeObserverState = "attach-failed";
+                }
+            }
             timeout.Start();
             ct.ThrowIfCancellationRequested();
             open();
@@ -615,18 +689,32 @@ public sealed partial class SettingsRenderingTests
         }
         finally
         {
-            limit.Cancel();
-            // Drain the already-cancelled callback on this same dispatcher;
-            // never grant it a fresh input deadline after the modal returns.
             try
             {
-                owner.Dispatcher.Invoke(() => { }, DispatcherPriority.SystemIdle);
+                limit.Cancel();
+                // Drain the already-cancelled callback on this same dispatcher;
+                // never grant it a fresh input deadline after the modal returns.
+                try
+                {
+                    owner.Dispatcher.Invoke(() => { }, DispatcherPriority.SystemIdle);
+                }
+                finally
+                {
+                    timeout.Stop();
+                    owner.RemoveHandler(Mouse.PreviewMouseDownEvent, rightDown);
+                    owner.RemoveHandler(Mouse.PreviewMouseUpEvent, rightUp);
+                }
             }
             finally
             {
-                timeout.Stop();
-                owner.RemoveHandler(Mouse.PreviewMouseDownEvent, rightDown);
-                owner.RemoveHandler(Mouse.PreviewMouseUpEvent, rightUp);
+                if (nativeSource is not null && nativeHook is not null)
+                {
+                    try
+                    {
+                        nativeSource.RemoveHook(nativeHook);
+                    }
+                    catch (Exception error) when (error is not OutOfMemoryException) { }
+                }
             }
         }
         if (action.Status == DispatcherOperationStatus.Pending)

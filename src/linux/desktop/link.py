@@ -1,8 +1,9 @@
 """Request/reply ownership over inherited pipes and authenticated local streams."""
 
 import asyncio
+import os
 
-from wire import Channel
+from wire import Channel, now_ms
 
 
 class RoutedReply(dict):
@@ -75,11 +76,19 @@ class Link:
         self.pending = {}
         self.capture_traces = {}
         self.capture_continuities = {}
+        self.owned_approval_timings = {}
         self.tasks = set()
         self.channel = Channel(glib, read_fd, write_fd, self.receive, self.disconnected, owner)
 
     async def ask(
-        self, operation, data=None, timeout=0.6, *, capture_trace=None, capture_continuity=None
+        self,
+        operation,
+        data=None,
+        timeout=0.6,
+        *,
+        capture_trace=None,
+        capture_continuity=None,
+        owned_approval_timing=None,
     ):
         if len(self.pending) >= 16:
             raise OSError("request-capacity")
@@ -91,13 +100,36 @@ class Link:
             self.capture_traces[identity] = capture_trace
         if operation == "capture" and type(capture_continuity) is dict:
             self.capture_continuities[identity] = capture_continuity
+        timing = (
+            owned_approval_timing
+            if operation == "allowField"
+            and self.response_key == "reply"
+            and os.environ.get("TYPELAY_TRACE")
+            and type(owned_approval_timing) is dict
+            else None
+        )
         try:
-            self.channel.send({"id": identity, "op": operation, "data": data})
-            return await asyncio.wait_for(future, timeout)
+            frame = {"id": identity, "op": operation, "data": data}
+            if timing is not None:
+                try:
+                    timing.update(requestId=identity, sentAtMs=now_ms())
+                    self.owned_approval_timings[identity] = timing
+                    frame["traceOwnedApproval"] = True
+                except OSError:
+                    timing = None
+            self.channel.send(frame)
+            result = await asyncio.wait_for(future, timeout)
+            if timing is not None:
+                try:
+                    timing["returnedAtMs"] = now_ms()
+                except OSError:
+                    pass
+            return result
         finally:
             self.pending.pop(identity, None)
             self.capture_traces.pop(identity, None)
             self.capture_continuities.pop(identity, None)
+            self.owned_approval_timings.pop(identity, None)
 
     def send(self, operation, data=None):
         self.channel.send({"event": operation, "data": data})
@@ -117,6 +149,17 @@ class Link:
                     if self.routed and isinstance(data, dict)
                     else data
                 )
+                timing = self.owned_approval_timings.get(frame[self.response_key])
+                value = frame.get("ownedApprovalTiming")
+                if timing is not None and isinstance(value, dict):
+                    started = value.get("processingStartedAtMs")
+                    queued = value.get("replyQueuedAtMs")
+                    if (
+                        type(started) is int
+                        and type(queued) is int
+                        and 0 < started <= queued < 2**53
+                    ):
+                        timing.update(processingStartedAtMs=started, replyQueuedAtMs=queued)
                 continuity = self.capture_continuities.get(frame[self.response_key])
                 value = frame.get("captureContinuity")
                 if continuity is not None and frame.get("data") is None and isinstance(value, dict):

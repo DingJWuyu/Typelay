@@ -431,7 +431,7 @@ def language_options(native, captured, generation, state, window, environment, n
     def controls():
         return state().get("overlayControls", {})
 
-    def render(advance_revision=True):
+    def render(advance_revision=True, can_edit=False):
         nonlocal revision
         if advance_revision:
             revision += 1
@@ -446,7 +446,7 @@ def language_options(native, captured, generation, state, window, environment, n
                 "revision": revision,
             },
             "bindings": {"accept": "Ctrl+F7", "exit": "Ctrl+F8"},
-            "canEdit": False,
+            "canEdit": can_edit,
         }
         if menu_actions is not None:
             view["viewContext"]["translationActions"] = menu_actions
@@ -574,7 +574,8 @@ def language_options(native, captured, generation, state, window, environment, n
     for name in ("first", "second", "editorText", "editorDocumentRevision", "focusTransitions"):
         assert padded[name] == opened[name], name
     # Production keeps the native revision when only translationActions change.
-    # This public DTO update must retire the menu, without a full editor render.
+    # An unrelated More update must preserve the current language menu and
+    # its real choice callback, without a full editor render.
     menu_actions = {
         "settingsRevision": 12,
         "styleReleased": False,
@@ -589,7 +590,7 @@ def language_options(native, captured, generation, state, window, environment, n
         "feedback": None,
     }
     menu_update = render(advance_revision=False)
-    assert not menu_update["overlayMenuVisible"]
+    assert menu_update["overlayMenuVisible"]
     assert not menu_update["overlayMoreMenuVisible"]
     for name in (
         "first",
@@ -602,7 +603,7 @@ def language_options(native, captured, generation, state, window, environment, n
         "focusTransitions",
     ):
         assert menu_update[name] == opened[name], name
-    toggle(True, renew=False)
+    assert menu_update["overlayMenuGeometry"] == opened["overlayMenuGeometry"]
     actual = controls()
     for side in ("source", "target"):
         items = {
@@ -612,15 +613,6 @@ def language_options(native, captured, generation, state, window, environment, n
         }
         assert items == {choice["code"]: choice["label"] for choice in choices[side]}
     chosen("en", "ja")
-    before = state()
-    renewed = render()
-    for name, control in before["overlayControls"].items():
-        for field in ("instance", "focused", "checked"):
-            assert renewed["overlayControls"][name][field] == control[field], (name, field)
-    assert renewed["first"]["focused"] == before["first"]["focused"]
-    assert renewed["focusTransitions"] == before["focusTransitions"]
-    assert not renewed["overlayMenuVisible"], "new view must retire the old menu"
-    toggle(True, renew=False)
     before_events = events()
     click("typelay-source-ko")
     wait(lambda: not state().get("overlayMenuVisible"), "immediate source choice")
@@ -632,8 +624,17 @@ def language_options(native, captured, generation, state, window, environment, n
     # as saved, even without an intervening render.
     toggle(True, renew=False)
     chosen("en", "ja")
+    before = state()
+    renewed = render()
+    for name, control in before["overlayControls"].items():
+        for field in ("instance", "focused", "checked"):
+            assert renewed["overlayControls"][name][field] == control[field], (name, field)
+    assert renewed["first"]["focused"] == before["first"]["focused"]
+    assert renewed["focusTransitions"] == before["focusTransitions"]
+    assert not renewed["overlayMenuVisible"], "new view must retire the old menu"
+    toggle(True, renew=False)
     view["sourceLanguage"] = "ko"
-    render()
+    render(advance_revision=False)
     chosen("ko", "ja")
     assert not state()["overlayMenuVisible"]
     toggle(True, renew=False)
@@ -643,7 +644,7 @@ def language_options(native, captured, generation, state, window, environment, n
     toggle(True, renew=False)
     chosen("ko", "ja")
     view["targetLanguage"] = "en"
-    render()
+    render(advance_revision=False)
     chosen("ko", "en")
     assert not state()["overlayMenuVisible"]
     toggle(True, renew=False)
@@ -735,10 +736,21 @@ def language_options(native, captured, generation, state, window, environment, n
     click("typelay-more-trigger")
     wait(lambda: not state()["overlayMoreMenuVisible"], "cancel More from its trigger")
     before_events = events()
+    toggle(True, renew=False)
+    permissions = render(advance_revision=False, can_edit=True)
+    assert not permissions["overlayMenuVisible"], "changed editor permission must retire language"
+    assert not permissions["overlayMoreMenuVisible"]
     view.update(sourceLanguage="ja", targetLanguage="ko")
+    render(advance_revision=False)
     for invalid in (None, {**choices, "target": choices["target"] * 2}):
+        view["languageChoices"] = choices
+        render(advance_revision=False)
+        toggle(True, renew=False)
         view["languageChoices"] = invalid
-        actual = render()["overlayControls"]
+        retired = render(advance_revision=False)
+        assert not retired["overlayMenuVisible"], "changed catalog must retire language"
+        assert not retired["overlayMoreMenuVisible"]
+        actual = retired["overlayControls"]
         assert not any(
             value["enabled"]
             for name, value in actual.items()

@@ -225,6 +225,7 @@ class Input:
         self.shortcut_diagnostic_count = 0
         self.publish_diagnostics = []
         self.practice_failures = []
+        self.practice_approval_trace_run = None
         self.practice_authorization = None
         self.practice_pending = None
         self.practice_retirement = None
@@ -1482,10 +1483,17 @@ class Input:
             return None
         return acknowledgement
 
-    async def approve(self, peer, description):
+    async def approve(self, peer, description, *, owned_approval_timing=None):
         if not description:
             return False
         metadata = {**description["metadata"], "process": peer.application}
+        if owned_approval_timing is not None:
+            return (
+                await self.host.ask(
+                    "allowField", metadata, owned_approval_timing=owned_approval_timing
+                )
+                is True
+            )
         return await self.host.ask("allowField", metadata) is True
 
     def timing(self, name, value):
@@ -1993,7 +2001,22 @@ class Input:
         policy_record = peer.shortcut
         if native_timing is not None:
             native_timing["approvalStartedMs"] = now_ms()
-        approved = await self.approve(peer, description)
+        approval_timing = None
+        if (
+            native_timing is not None
+            and practice is not None
+            and practice is self.practice_continuity
+            and focus == "Source"
+            and editor is None
+            and returning is None
+            and practice["runId"] != self.practice_approval_trace_run
+        ):
+            # One existing allowField request in this run's first waiting read.
+            # Timing is not continuity evidence and never grants or retries a read.
+            self.practice_approval_trace_run = practice["runId"]
+            approval_timing = {}
+            native_timing["ownedApproval"] = approval_timing
+        approved = await self.approve(peer, description, owned_approval_timing=approval_timing)
         if native_timing is not None:
             native_timing["approvalReturnedMs"] = now_ms()
         if not approved:
@@ -2072,6 +2095,18 @@ class Input:
             capture_data["ownedSource"] = True
         if native_timing is not None:
             native_timing["captureStartedMs"] = now_ms()
+        # Evidence for this new bound Overlay read, never a replacement for the
+        # snapshot clock or a timestamp supplied by the document.
+        source_read_started_at = (
+            now_ms()
+            if peer.backend == "browser"
+            and focus == "Overlay"
+            and target is not None
+            and context.get("boundTarget") == self.bound
+            and description.get("target") == target
+            and description.get("focused") is False
+            else None
+        )
         native = await peer.link.ask(
             "capture", capture_data, capture_trace=native_failure, capture_continuity=continuity
         )
@@ -2318,6 +2353,34 @@ class Input:
                 "application": peer.application,
                 "userEpoch": self.user_epoch,
                 "foregroundEpoch": self.foreground_epoch,
+                **(
+                    {"sourceReadStartedAtMs": source_read_started_at}
+                    if source_read_started_at is not None
+                    and capture_generation == self.browser_capture_generation
+                    and identity == self.browser_capture_identity(peer)
+                    and self.overlay_focused
+                    and native.get("focused") is False
+                    and native.get("target") == target
+                    and native.get("ime") == "Clear"
+                    and native.get("metadata") == description.get("metadata")
+                    and all(
+                        key in native["authority"]
+                        and key in description["authority"]
+                        and native["authority"][key] == description["authority"][key]
+                        for key in (
+                            "target",
+                            "metadataKey",
+                            "contentRevision",
+                            "inputRevision",
+                            "focusRevision",
+                        )
+                    )
+                    and acknowledgement
+                    and acknowledgement["sourceReady"]
+                    and acknowledgement["editorReady"]
+                    and self.browser_source_local(peer, native)
+                    else {}
+                ),
             },
         )
 

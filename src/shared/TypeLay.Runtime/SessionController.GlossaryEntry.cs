@@ -227,7 +227,12 @@ public sealed partial class SessionController
                 : source.Selection != handoff.Source.Selection ? "selection"
                 : source.TranslationScope != handoff.Source.TranslationScope ? "scope"
                 : source.Multiline != handoff.Source.Multiline ? "multiline"
-                : source.ObservedAtMs < requestedAt ? "observed-before-request"
+                // Browser clock lower bounds can precede this request even for
+                // its new read. Only this invocation's platform-owned dispatch
+                // evidence can prove ordering; the snapshot's age stays unchanged.
+                : source.ObservedAtMs < requestedAt
+                    && (capture.SourceReadStartedAtMs is not { } readStarted
+                        || readStarted < requestedAt || readStarted > now) ? "observed-before-request"
                 : now < source.ObservedAtMs ? "observed-in-future"
                 : source.ObservedAtMs < now - Limits.ObservationMaxAgeMs ? "observation-expired"
                 : capture.SessionShortcuts is not { SourceReady: true, EditorReady: true } acknowledgement ? "shortcut-acknowledgement"

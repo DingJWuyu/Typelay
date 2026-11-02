@@ -78,6 +78,7 @@ class Host:
     def __init__(self):
         self.events = []
         self.requests = []
+        self.owned_approval_timings = []
         self.pause_allowed = True
         self.capture_allowed = False
         self.begin_edit = None
@@ -86,8 +87,10 @@ class Host:
     def send(self, operation, data=None):
         self.events.append((operation, data))
 
-    async def ask(self, operation, data=None):
+    async def ask(self, operation, data=None, *, owned_approval_timing=None):
         self.requests.append((operation, data))
+        if owned_approval_timing is not None:
+            self.owned_approval_timings.append((operation, owned_approval_timing))
         if operation == "traySettings":
             if isinstance(self.settings_result, Exception):
                 raise self.settings_result
@@ -488,6 +491,113 @@ class InputFeedbackTests(unittest.TestCase):
         self.input.suspend_browser("chromium")
         capture = asyncio.run(self.capture_browser())
         self.assertEqual(capture["sessionShortcuts"]["sourceLocalAcceptanceVersion"], 0)
+
+    def test_browser_editor_read_causality_belongs_to_the_new_capture_response(self):
+        self.connect_registered_browser()
+
+        async def exercise():
+            changes = (
+                "current",
+                "page-stamp",
+                "route",
+                "authority",
+                "missing-metadata-key",
+                "missing-content-revision",
+                "epoch",
+                "focused",
+                "declined",
+            )
+            for index, change in enumerate(changes):
+                with self.subTest(change=change):
+                    base = 1000 + index * 10
+                    self.clock.return_value = base
+                    self.input.set_overlay_focus(False)
+                    first = await self.capture_browser()
+                    self.assertNotIn("sourceReadStartedAtMs", first)
+                    self.input.set_overlay_focus(True)
+                    self.native_frames(self.peer)
+                    description = {
+                        key: copy.deepcopy(value)
+                        for key, value in self.browser_native.items()
+                        if key not in ("text", "selection", "ime", "observedAtMs", "writeSupported")
+                    }
+                    description["focused"] = False
+                    native = {
+                        **copy.deepcopy(self.browser_native),
+                        "focused": False,
+                        "observedAtMs": base + 1,
+                    }
+                    if change == "page-stamp":
+                        native["sourceReadStartedAtMs"] = 999999  # Not host-owned evidence.
+                    route = self.route
+                    if change == "route":
+                        route = {**route, "documentId": "different-document"}
+                    if change == "authority":
+                        native["authority"]["inputRevision"] += 1
+                    if change in ("missing-metadata-key", "missing-content-revision"):
+                        key = (
+                            "metadataKey" if change == "missing-metadata-key" else "contentRevision"
+                        )
+                        description["authority"].pop(key)
+                        native["authority"].pop(key)
+                    if change == "focused":
+                        native["focused"] = True
+                    self.clock.return_value = base + 1
+                    task = asyncio.create_task(
+                        self.input.request("capture", {"boundTarget": first["snapshot"]["target"]})
+                    )
+                    operations = []
+                    async with asyncio.timeout(1):
+                        while not task.done():
+                            await asyncio.sleep(0)
+                            for frame in self.native_frames(self.peer):
+                                operations.append(frame["op"])
+                                self.assertIn(frame["op"], ("describe", "capture"))
+                                self.assertEqual(frame["data"]["target"], description["target"])
+                                capture = frame["op"] == "capture"
+                                if capture:
+                                    self.assertFalse(frame["data"]["requireFocused"])
+                                    if change == "epoch":
+                                        self.peer.link.receive(
+                                            {
+                                                "event": "input",
+                                                "data": {
+                                                    "target": description["target"],
+                                                    "focused": False,
+                                                    "focusChanged": False,
+                                                    "textChanged": True,
+                                                },
+                                                "route": self.route,
+                                            }
+                                        )
+                                # Dispatch occurs after the describe reply, before
+                                # the capture reply. Neither adjacent time is its stamp.
+                                self.clock.return_value = base + (3 if capture else 2)
+                                self.peer.link.receive(
+                                    {
+                                        "id": frame["id"],
+                                        "data": (
+                                            (None if change == "declined" else native)
+                                            if capture
+                                            else description
+                                        ),
+                                        "route": route if capture else self.route,
+                                    }
+                                )
+                    self.assertEqual(operations, ["describe", "capture"])
+                    result = task.result()
+                    if change == "declined":
+                        self.assertIsNone(result)
+                        continue
+                    self.assertEqual(result["snapshot"]["observedAtMs"], base + 1)
+                    self.assertEqual(result["focus"], "Overlay")
+                    if change in ("current", "page-stamp"):
+                        self.assertEqual(result["sourceReadStartedAtMs"], base + 2)
+                    else:
+                        self.assertNotIn("sourceReadStartedAtMs", result)
+                    self.assertEqual(self.host.notices, [])
+
+        asyncio.run(exercise())
 
     def test_browser_remove_during_capture_cannot_bind_a_late_snapshot(self):
         self.connect_registered_browser()
@@ -1612,6 +1722,17 @@ class InputFeedbackTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def test_only_first_owned_waiting_approval_per_run_requests_timing(self):
+        with patch.dict(os.environ, {"TYPELAY_TRACE": "1"}):
+            self.owned_context_advance(resume=True, age_gap=True)
+        self.assertEqual(len(self.host.owned_approval_timings), 1)
+        self.assertEqual(self.host.owned_approval_timings[0][0], "allowField")
+
+    def test_untraced_owned_waiting_approval_does_not_request_timing(self):
+        with patch.dict(os.environ, {"TYPELAY_TRACE": ""}):
+            self.owned_context_advance(resume=True, age_gap=True)
+        self.assertEqual(self.host.owned_approval_timings, [])
+
     def test_complete_waiting_capture_reports_only_its_first_identity_refusal(self):
         for fault in (
             "missing-read",
@@ -2255,6 +2376,8 @@ class InputFeedbackTests(unittest.TestCase):
         }
         await asyncio.wait_for(reply_to("capture", native), 1)
         capture = await asyncio.wait_for(operation, 1)
+        # Native Source reads supply no Browser-only read evidence.
+        self.assertNotIn("sourceReadStartedAtMs", capture)
         plan_id = str(uuid.uuid4())
         generation = self.generation
         if before_publish:

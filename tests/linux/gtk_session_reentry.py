@@ -1904,12 +1904,20 @@ async def check_language_configuration(
         evidence["pendingRetired"] = True
         return
 
+    # An acknowledged focus can precede the new popup's first allocation.
+    # Use the same observation budget and each current control's completed frame.
     actual = await language_wait_for(
         lambda: (value := observe())
         and configuration["phase"] == "Open"
         and value.get("overlayControls", {}).get(search_name, {}).get("focused")
+        and all(
+            glossary_painted_geometry(
+                value.get("overlayControls", {}).get(name, {}), value.get("observedAtMs")
+            )
+            for name in (popup_name, search_name)
+        )
         and value,
-        "configuration search did not acquire its own acknowledged focus",
+        "configuration search did not acquire acknowledged focus and current painted geometry",
     )
     assert now_ms() <= configuration["expiresAtMs"], "open observation crossed handshake deadline"
     config_current()

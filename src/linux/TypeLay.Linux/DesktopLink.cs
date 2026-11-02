@@ -149,7 +149,10 @@ internal sealed class DesktopLink : IDisposable
             else if (frame.TryGetProperty("event", out var notification))
                 Notification?.Invoke(notification.GetString()!, frame.GetProperty("data"));
             else if (_serving < 16 && frame.TryGetProperty("op", out var operation))
-                _ = Serve(frame.GetProperty("id").GetInt64(), operation.GetString()!, frame.GetProperty("data"));
+                _ = Serve(frame.GetProperty("id").GetInt64(), operation.GetString()!, frame.GetProperty("data"),
+                    operation.GetString() == "allowField"
+                    && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TYPELAY_TRACE"))
+                    && frame.TryGetProperty("traceOwnedApproval", out var trace) && trace.ValueKind == JsonValueKind.True);
             else
                 Fail();
         }
@@ -158,17 +161,41 @@ internal sealed class DesktopLink : IDisposable
             Fail();
         }
     }
-    private async Task Serve(long id, string operation, JsonElement data)
+    private long? ApprovalTraceTime()
+    {
+        try
+        {
+            return _loop.NowMs;
+        }
+        catch (Exception ex) when (ex is IOException or OverflowException) { return null; }
+    }
+    private async Task Serve(long id, string operation, JsonElement data, bool traceOwnedApproval)
     {
         _serving++;
         try
         {
+            // Owner-loop processing entry, not physical pipe receipt. Use the
+            // same CLOCK_BOOTTIME as desktop; timing never changes the response.
+            long? started = traceOwnedApproval && id > 0 ? ApprovalTraceTime() : null;
             var value = Request is null ? null : await Request(operation, data);
-            Enqueue(new
-            {
-                reply = id,
-                data = value
-            });
+            long? queued = started.HasValue ? ApprovalTraceTime() : null;
+            if (started is > 0 && queued >= started)
+                Enqueue(new
+                {
+                    reply = id,
+                    data = value,
+                    ownedApprovalTiming = new
+                    {
+                        processingStartedAtMs = started,
+                        replyQueuedAtMs = queued
+                    }
+                });
+            else
+                Enqueue(new
+                {
+                    reply = id,
+                    data = value
+                });
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {

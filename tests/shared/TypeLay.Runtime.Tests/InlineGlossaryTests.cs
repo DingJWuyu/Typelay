@@ -49,6 +49,63 @@ public sealed class InlineGlossaryTests
     }
 
     [Theory]
+    [InlineData("current", true)]
+    [InlineData("missing", false)]
+    [InlineData("before-request", false)]
+    [InlineData("future-read", false)]
+    [InlineData("negative-read", false)]
+    [InlineData("expired-snapshot", false)]
+    [InlineData("future-snapshot", false)]
+    [InlineData("unknown-ime", false)]
+    [InlineData("old-ack", false)]
+    public void EditorHandoffUsesOnlyThisReadCausalityWithoutRenewingTheSnapshot(string change, bool allowed)
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: new([]));
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        var editing = s.View.Token;
+        string draft = s.View.Draft;
+        s.Input.UserEpoch += 2;
+        s.Input.SourceUserEpoch++;
+        s.Input.ForegroundEpoch += 2;
+        s.Input.InEditor = true;
+        s.Service.PendingCapture = new();
+        int captures = s.Service.Captures, publications = s.Input.PublishedLeases.Count;
+        s.Tick();
+        long requestedAt = s.Loop.NowMs;
+        s.Tick(5);
+        long now = s.Loop.NowMs;
+        var source = s.Fresh with
+        {
+            ObservedAtMs = change == "expired-snapshot" ? now - Limits.ObservationMaxAgeMs - 1
+                : change == "future-snapshot" ? now + 1 : requestedAt - 1,
+            Ime = change == "unknown-ime" ? ImeState.Unknown : ImeState.Clear
+        };
+        long? startedAt = change switch
+        {
+            "missing" => null,
+            "before-request" => requestedAt - 1,
+            "future-read" => now + 1,
+            "negative-read" => -1,
+            _ => requestedAt + 1
+        };
+        s.CompleteCapture(new(source, FocusMember.Overlay, s.Service.Application,
+            s.Input.UserEpoch, s.Input.ForegroundEpoch,
+            new(s.Source.Target, change == "old-ack" ? Guid.NewGuid() : s.Input.CommandGeneration,
+                s.Input.SessionBindings, true, true), SourceReadStartedAtMs: startedAt));
+
+        Assert.Equal(allowed, s.View.Context!.TranslationActions!.CanOpenGlossary);
+        Assert.Equal(editing, s.View.Token);
+        Assert.Equal(draft, s.View.Draft);
+        Assert.Equal(publications, s.Input.PublishedLeases.Count);
+        Assert.Null(s.Input.Permit);
+        Assert.False(s.View.CanAccept);
+        Assert.Empty(s.Service.Writes);
+        s.Tick();
+        Assert.Equal(captures + 1, s.Service.Captures);
+    }
+
+    [Theory]
     [InlineData("stale-before-edit")]
     [InlineData("extra-source-event")]
     [InlineData("late-ack")]

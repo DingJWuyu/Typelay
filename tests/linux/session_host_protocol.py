@@ -107,6 +107,42 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
                 else:
                     self.assertIn("event", value)
 
+    async def test_owned_approval_timing_is_opt_in_and_keeps_policy_results(self):
+        await self.send({"event": "quit", "data": None})
+        await asyncio.wait_for(self.process.communicate(), 3)
+        for enabled in (False, True):
+            with mock.patch.dict(
+                os.environ, {"TYPELAY_TRACE": str(self.home / "trace") if enabled else ""}
+            ):
+                await self.start_host()
+            for marker in (None, False, "true", True):
+                for password in (False, True):
+                    self.sequence += 1
+                    identity = self.sequence
+                    frame = {
+                        "id": identity,
+                        "op": "allowField",
+                        "data": {"process": "fixture", "enabled": True, "password": password},
+                    }
+                    if marker is not None:
+                        frame["traceOwnedApproval"] = marker
+                    await self.send(frame)
+                    reply = await self.receive_until(lambda value: value.get("reply") == identity)
+                    self.assertIs(reply["data"], not password)
+                    timing = reply.get("ownedApprovalTiming")
+                    if enabled and marker is True:
+                        self.assertEqual(set(timing), {"processingStartedAtMs", "replyQueuedAtMs"})
+                        self.assertTrue(
+                            all(type(value) is int and value > 0 for value in timing.values())
+                        )
+                        self.assertGreaterEqual(
+                            timing["replyQueuedAtMs"], timing["processingStartedAtMs"]
+                        )
+                    else:
+                        self.assertIsNone(timing)
+            await self.send({"event": "quit", "data": None})
+            await asyncio.wait_for(self.process.communicate(), 3)
+
     def model_generation(
         self,
         *,

@@ -277,6 +277,11 @@ internal sealed partial class BrowserInput : IDisposable
         if (descriptionNow - describedAt > Limits.ObservationMaxAgeMs)
             return CaptureRejected(ObservationReason.SnapshotExpired, description, editor, descriptionNow - describedAt);
         TraceObservation(ObservationStage.Describe, ObservationReason.Ready, description.Data, editor);
+        // The separate read is request-owned, not the older metadata observation.
+        // Keep its causal lower bound apart from the snapshot/permit clock.
+        long? sourceReadStartedAt = editor && bound!.Target == id
+            && description.Data.TryGetProperty("focused", out var describedFocus) && describedFocus.ValueKind == JsonValueKind.False
+            ? WindowsInterruptClock.NowMs : null;
         var result = await peer.RequestAsync("capture", new
         {
             target = id.Value,
@@ -338,7 +343,10 @@ internal sealed partial class BrowserInput : IDisposable
         RememberPublication(peer, result.Route, result.Data);
         TraceObservation(ObservationStage.Capture, ObservationReason.Ready, result.Data, editor,
             observationAgeMs: now - snapshot.ObservedAtMs);
-        return new(snapshot, editor ? FocusMember.Overlay : FocusMember.Source, "chrome", epochs.User, epochs.Foreground, ack);
+        return new(snapshot, editor ? FocusMember.Overlay : FocusMember.Source, "chrome", epochs.User, epochs.Foreground, ack,
+            SourceReadStartedAtMs: snapshot.Ime == ImeState.Clear && ack is { SourceReady: true, EditorReady: true }
+                && result.Data.TryGetProperty("focused", out var capturedFocus) && capturedFocus.ValueKind == JsonValueKind.False
+                ? sourceReadStartedAt : null);
     }
     private bool Approved(BrowserPeer peer, BrowserReply? reply, string[] excluded,
         out JsonElement authority, out FieldMetadata? metadata, out TargetId id, out SessionShortcutAcknowledgement? acknowledgement,

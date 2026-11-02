@@ -335,7 +335,7 @@ public sealed partial class SettingsRenderingTests
             Assert.True(dialog.IsVisible);
             Assert.Equal(before, File.ReadAllText(scene.Path));
             InvokeApplicationButton(ApplicationButton(dialog, "ApplicationRemovalCancel"));
-        });
+        }, observeNativeInput: retirement == "hide");
         Assert.Equal(before, File.ReadAllText(scene.Path));
     });
 
@@ -445,14 +445,14 @@ public sealed partial class SettingsRenderingTests
         finally { CompositionTarget.Rendering -= Frame; }
     }
 
-    private static void ApplicationRemovalDialogAsync(SettingsWindow owner, string application, Func<Window, CancellationToken, Task> interact, bool awaitEntrance = true)
+    private static void ApplicationRemovalDialogAsync(SettingsWindow owner, string application, Func<Window, CancellationToken, Task> interact, bool awaitEntrance = true, bool observeNativeInput = false)
     {
         var row = ApplicationElement(owner, "ApplicationRow_" + application);
         Assert.Null(row.ContextMenu);
         Assert.True(Native.GetCursorPos(out var previous));
         try
         {
-            ApplicationDialogActionAsync(owner, () => RightClickApplicationRow(owner, row), "ApplicationRemovalConfirmation", interact, awaitEntrance);
+            ApplicationDialogActionAsync(owner, () => RightClickApplicationRow(owner, row), "ApplicationRemovalConfirmation", interact, awaitEntrance, observeNativeInput);
         }
         finally { SetCursorPos(previous.X, previous.Y); }
     }

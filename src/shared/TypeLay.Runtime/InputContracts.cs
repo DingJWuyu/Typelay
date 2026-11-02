@@ -52,10 +52,14 @@ public sealed record InputContext(long UserEpoch, long ForegroundEpoch, long Sou
 // FencedPracticeRead identifies only an old read superseded by that exact
 // owned source's foreground-age suspension. It is neither an observation nor
 // a retirement ACK and cannot renew freshness, a baseline or any authority.
+// SourceReadStartedAtMs is optional platform-owned causal evidence for this
+// invocation's new target-bound Overlay read. It is not a source timestamp,
+// lease or permit and must never be copied from a cached or page-provided reply.
 public sealed record InputCapture(InputSnapshot? Snapshot, FocusMember Focus = FocusMember.Other,
     string? Application = null, long UserEpoch = 0, long ForegroundEpoch = 0,
     SessionShortcutAcknowledgement? SessionShortcuts = null, OwnedSourceEvidence? OwnedSource = null,
-    bool ForegroundExpired = false, OwnedPracticeBinding? FencedPracticeRead = null);
+    bool ForegroundExpired = false, OwnedPracticeBinding? FencedPracticeRead = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? SourceReadStartedAtMs = null);
 
 // Body-free evidence for an existing owned lesson only. ContextAdvanced implies
 // this read was refused and its original executor acknowledged revocation.
