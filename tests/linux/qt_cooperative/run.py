@@ -3729,6 +3729,9 @@ def session(
                 results["ordered_delayed"] = ordered_controls(
                     out, env, children, delay_finished=True
                 )
+                results["language_options"] = ordered_controls(
+                    out, env, children, language_options_only=True
+                )
                 if "error" in baseline:
                     raise RuntimeError(
                         "Unmodified sync diagnostic infrastructure failed: " + baseline["error"]

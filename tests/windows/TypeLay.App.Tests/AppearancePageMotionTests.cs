@@ -479,7 +479,9 @@ public sealed partial class SetupRenderingTests
             if (!changed && scene.Settings.Value.Font == "sans")
             {
                 var ring = AppearanceLayer(AppearancePaintedTile(scene.Window, "font", "sans"), "selection");
-                if (ring.BorderThickness.Left is not (> .6 and < 2.4))
+                // Retirement needs a genuinely in-flight paint, not an arbitrary
+                // middle band that a real rendering cadence can skip.
+                if (ring.BorderThickness.Left is not (> .5001 and < 2.5))
                     return;
                 retired = ring;
                 changed = true;

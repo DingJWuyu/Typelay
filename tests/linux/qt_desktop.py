@@ -856,11 +856,40 @@ def run_qt(
                     planned = click_motion_control(expected_instance=instance)
                     return before["motionRecordings"], [planned]
 
-                def finish_motion(recording, name, *, clicks=1):
+                def finish_motion(recording, name, *, clicks=1, sensitive_during_resize=False):
                     recording, planned = recording
+                    metadata_sent = False
 
                     def completed():
+                        nonlocal metadata_sent
                         value = state()
+                        if sensitive_during_resize and not metadata_sent:
+                            assert value["motionRecordings"] == recording, (
+                                "Qt safety-hide missed the original resize recording"
+                            )
+                            assert value.get("motionArmedCurrent") is True and (
+                                value.get("motionArmedInstance") == planned[0]
+                            ), "Qt safety-hide control retired before its real resize"
+                            inputs = value["motionInputs"]
+                            expected = ["mouse-press", "mouse-release", "clicked"]
+                            assert [event["event"] for event in inputs] == expected[: len(inputs)]
+                            assert all(
+                                event["role"] == "typelay-expand"
+                                and event["instance"] == planned[0]
+                                for event in inputs
+                            ), "Qt safety-hide input did not reach the original armed control"
+                            if len(inputs) == len(expected):
+                                assert value["motionRecording"], (
+                                    "Qt safety-hide recording did not start"
+                                )
+                                height = value["editorGeometry"]["height"]
+                                assert height < 360, "Qt safety-hide missed the expanding surface"
+                                if height > 167:
+                                    # XSync does not acknowledge Qt receiving pointer input.
+                                    # Invalidate only after that exact click has begun resizing,
+                                    # within this same wait and the original 800ms recording.
+                                    metadata_sent = True
+                                    command("metadata", text="Password")
                         if value["motionRecordings"] == recording + 1:
                             return value
                         if not value["motionRecording"]:
@@ -1314,12 +1343,9 @@ def run_qt(
                 # Existing metadata invalidation must withdraw a resizing
                 # surface, then stay hidden beyond its original finish time.
                 recording = start_motion("qt-motion-safety-hide")
-                command("metadata", text="Password")
-                wait_for(
-                    lambda: not state()["overlayVisible"] and state()["editorText"] == "",
-                    "sensitive metadata did not clear the resizing overlay",
+                hidden_frames = finish_motion(
+                    recording, "qt-motion-safety-hide", sensitive_during_resize=True
                 )
-                hidden_frames = finish_motion(recording, "qt-motion-safety-hide")
                 hidden = next(i for i, frame in enumerate(hidden_frames) if not frame["visible"])
                 assert all(
                     not frame["visible"] and frame["text"] == "" for frame in hidden_frames[hidden:]

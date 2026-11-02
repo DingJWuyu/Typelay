@@ -667,6 +667,42 @@ static JsonNode *control_surface_geometry(GtkWidget *widget) {
     json_builder_set_member_name(builder, "width"); json_builder_add_int_value(builder, gtk_widget_get_width(widget));
     json_builder_set_member_name(builder, "height"); json_builder_add_int_value(builder, gtk_widget_get_height(widget));
     json_builder_set_member_name(builder, "instance"); json_builder_add_int_value(builder, language_instance(G_OBJECT(widget)));
+    if (GTK_IS_POPOVER(widget)
+        && g_strcmp0(gtk_widget_get_name(widget), "typelay-language-configuration") == 0) {
+        GtkWidget *child = gtk_popover_get_child(GTK_POPOVER(widget));
+        GtkWidget *contents = child ? gtk_widget_get_parent(child) : NULL;
+        graphene_rect_t bounds, child_bounds;
+        json_builder_set_member_name(builder, "contents");
+        /* Public border bounds, not the native surface's shadow extent. This
+         * same node/allocation is captured by the existing after-paint observer;
+         * no measure, resize, new frame request or production style is involved. */
+        if (contents && gtk_widget_get_parent(contents) == widget
+            && g_strcmp0(gtk_widget_get_css_name(contents), "contents") == 0
+            && gtk_widget_get_native(contents) == native
+            && gtk_widget_get_mapped(contents) && gtk_widget_get_mapped(child)
+            && gtk_widget_compute_bounds(contents, widget, &bounds)
+            && gtk_widget_compute_bounds(child, widget, &child_bounds)) {
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "instance");
+            json_builder_add_int_value(builder, language_instance(G_OBJECT(contents)));
+            json_builder_set_member_name(builder, "parentInstance");
+            json_builder_add_int_value(builder, language_instance(G_OBJECT(widget)));
+            json_builder_set_member_name(builder, "childInstance");
+            json_builder_add_int_value(builder, language_instance(G_OBJECT(child)));
+            json_builder_set_member_name(builder, "x"); json_builder_add_double_value(builder, bounds.origin.x);
+            json_builder_set_member_name(builder, "y"); json_builder_add_double_value(builder, bounds.origin.y);
+            json_builder_set_member_name(builder, "width"); json_builder_add_double_value(builder, bounds.size.width);
+            json_builder_set_member_name(builder, "height"); json_builder_add_double_value(builder, bounds.size.height);
+            json_builder_set_member_name(builder, "childBounds");
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "x"); json_builder_add_double_value(builder, child_bounds.origin.x);
+            json_builder_set_member_name(builder, "y"); json_builder_add_double_value(builder, child_bounds.origin.y);
+            json_builder_set_member_name(builder, "width"); json_builder_add_double_value(builder, child_bounds.size.width);
+            json_builder_set_member_name(builder, "height"); json_builder_add_double_value(builder, child_bounds.size.height);
+            json_builder_end_object(builder);
+            json_builder_end_object(builder);
+        } else json_builder_add_null_value(builder);
+    }
     json_builder_end_object(builder);
     JsonNode *result = json_builder_get_root(builder);
     g_object_unref(builder);

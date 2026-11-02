@@ -126,6 +126,124 @@ public sealed partial class OverlayTranslationMenuTests
         catch (Exception error) when (error is not OutOfMemoryException) { return null; }
     }
 
+    private static void ObserveOwnedBrokerTrace(string path, long? offset)
+    {
+        try
+        {
+            if (!File.Exists(path) || offset is null)
+            {
+                TestContext.Current.TestOutputHelper?.WriteLine("{\"operation\":\"owned-confirmation-broker-trace\",\"observation\":\"unavailable\"}");
+                return;
+            }
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            long length = stream.Length;
+            if (offset.Value < 0 || offset.Value > length)
+            {
+                TestContext.Current.TestOutputHelper?.WriteLine("{\"operation\":\"owned-confirmation-broker-trace\",\"observation\":\"offset-unavailable\"}");
+                return;
+            }
+            stream.Position = offset.Value;
+            byte[] bytes = new byte[(int)Math.Min(length - offset.Value, 65536)];
+            stream.ReadExactly(bytes);
+            string text = System.Text.Encoding.UTF8.GetString(bytes);
+            int completeLength = text.LastIndexOf('\n') + 1;
+            using var reader = new StringReader(text[..completeLength]);
+            var first = new List<object>();
+            var last = new Queue<object>();
+            var results = new Dictionary<string, int>();
+            object? firstRefusal = null;
+            int lines = 0, dropped = 0, malformedLines = 0, unknownResults = 0;
+            while (lines < 256 && reader.ReadLine() is { } line)
+            {
+                lines++;
+                JsonDocument document;
+                try
+                {
+                    document = JsonDocument.Parse(line);
+                }
+                catch (JsonException)
+                {
+                    malformedLines++;
+                    continue;
+                }
+                using (document)
+                {
+                    var row = document.RootElement;
+                    if (row.ValueKind != JsonValueKind.Object || !row.TryGetProperty("operation", out var operation)
+                        || operation.ValueKind != JsonValueKind.String)
+                        continue;
+                    string? result;
+                    var stages = new Dictionary<string, double>();
+                    if (operation.GetString() == "capture" && row.TryGetProperty("stages", out var recordedStages)
+                        && recordedStages.ValueKind == JsonValueKind.Object && recordedStages.TryGetProperty("owned-identity", out _))
+                    {
+                        result = row.TryGetProperty("result", out var outcome) && outcome.ValueKind == JsonValueKind.String
+                            ? outcome.GetString() : null;
+                        if (result is not ("observed-owned-native" or "owned-identity-changed" or "owned-bound-identity-changed"
+                            or "owned-metadata-refresh-failed" or "owned-field-metadata-missing" or "owned-process-changed"
+                            or "owned-provider-identity-changed" or "quarantined-target" or "owned-style-unavailable"
+                            or "field-policy" or "invalid-bounds" or "owned-native-unavailable" or "owned-focus-changed" or "exception"))
+                        {
+                            unknownResults++;
+                            continue;
+                        }
+                        foreach (string name in new[] { "start", "owned-identity", "owned-field-metadata", "process-identity", "native-capture" })
+                            if (recordedStages.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number
+                                && value.TryGetDouble(out double elapsed) && double.IsFinite(elapsed) && elapsed >= 0)
+                                stages[name] = elapsed;
+                    }
+                    else if (operation.GetString() == "capture-owned" && row.TryGetProperty("errorType", out var errorType)
+                        && errorType.ValueKind == JsonValueKind.String)
+                        result = "broker-exception"; // Never emit arbitrary exception type names or messages.
+                    else
+                        continue;
+                    var record = new Dictionary<string, object> { ["result"] = result!, ["stages"] = stages };
+                    foreach (string name in new[] { "atMs", "responseCompletedAtMs", "droppedCount" })
+                        if (row.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number
+                            && value.TryGetInt64(out long number) && number >= 0)
+                            record[name] = number;
+                    if (row.TryGetProperty("durationMs", out var duration) && duration.ValueKind == JsonValueKind.Number
+                        && duration.TryGetDouble(out double milliseconds) && double.IsFinite(milliseconds) && milliseconds >= 0)
+                        record["durationMs"] = milliseconds;
+                    results[result!] = results.GetValueOrDefault(result!) + 1;
+                    if (result != "observed-owned-native")
+                        firstRefusal ??= record;
+                    if (first.Count < 8)
+                        first.Add(record);
+                    else
+                    {
+                        if (last.Count == 8)
+                        {
+                            last.Dequeue();
+                            dropped++;
+                        }
+                        last.Enqueue(record);
+                    }
+                }
+            }
+            // Existing Broker samples have no request, target or run IDs. The
+            // unique case path and pre-click offset scope them, but timestamps
+            // alone do not prove which sample supplied Runtime's refused read.
+            TestContext.Current.TestOutputHelper?.WriteLine(JsonSerializer.Serialize(new
+            {
+                operation = "owned-confirmation-broker-trace",
+                records = first.Concat(last).ToArray(),
+                firstRefusal,
+                resultCounts = results,
+                dropped,
+                malformedLines,
+                unknownResults,
+                retained = "first-eight-last-eight-and-first-refusal",
+                byteLimitReached = length - offset.Value > bytes.Length,
+                lineLimitReached = reader.Peek() >= 0,
+                incompleteTail = completeLength != text.Length,
+                requestIdentityAvailable = false,
+                offsetCapturedBeforeEditorClick = true
+            }));
+        }
+        catch (Exception error) when (error is not OutOfMemoryException) { /* Preserve the original failure and cleanup. */ }
+    }
+
     private static void ObserveOwnedKeyTrace(string path, long? offset)
     {
         try

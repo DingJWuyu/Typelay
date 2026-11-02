@@ -1916,6 +1916,7 @@ async def check_language_configuration(
             )
             for name in (popup_name, search_name)
         )
+        and value["overlayControls"][popup_name]["surfaceGeometry"].get("contents")
         and value,
         "configuration search did not acquire acknowledged focus and current painted geometry",
     )
@@ -1924,7 +1925,22 @@ async def check_language_configuration(
     controls = actual["overlayControls"]
     opening_instance = controls[popup_name]["instance"]
     focus_instances.update({name: item["instance"] for name, item in controls.items()})
-    assert controls[popup_name]["width"] == 264, controls[popup_name]
+    popup = controls[popup_name]["surfaceGeometry"]
+    contents = popup["contents"]
+    evidence["configurationGeometry"] = popup
+    # O04's 264px is the visible menu border box, not GtkPopover's native
+    # shadow allocation. Both identities/bounds belong to the completed frame
+    # already checked above; keep the outer surface facts unchanged.
+    assert contents["parentInstance"] == opening_instance
+    assert contents["instance"] > 0 and contents["childInstance"] > 0
+    assert contents["width"] == 264, popup
+    for axis, extent in (("x", "width"), ("y", "height")):
+        start, size = contents[axis], contents[extent]
+        child = contents["childBounds"]
+        assert size > 0 and child[extent] > 0, popup
+        assert 0 <= start and start + size <= popup[extent], popup
+        assert 0 <= popup[axis] + start and popup[axis] + start + size <= actual[extent], popup
+        assert start <= child[axis] and child[axis] + child[extent] <= start + size, popup
     assert controls[popup_name]["autohide"] is False and controls[popup_name]["hasArrow"] is False
     assert "typelay-source-language" not in controls and "typelay-apply-languages" not in controls
     assert not actual["firstEntry"]["focused"] and not actual["imeClear"]

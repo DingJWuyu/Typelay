@@ -303,14 +303,17 @@ class Input:
         if not self.closing:
             self.changed()
 
-    def fresh(self):
-        return self.niri.ready and 0 <= now_ms() - self.niri.observed_at <= 150
+    def fresh(self, *, now=None):
+        return (
+            self.niri.ready
+            and 0 <= (now_ms() if now is None else now) - self.niri.observed_at <= 150
+        )
 
-    def foreground_expired(self):
-        return self.niri.ready and now_ms() - self.niri.observed_at > 150
+    def foreground_expired(self, *, now=None):
+        return self.niri.ready and (now_ms() if now is None else now) - self.niri.observed_at > 150
 
-    def focused_peer(self):
-        if not self.fresh() or not self.niri.focused:
+    def focused_peer(self, *, now=None):
+        if not self.fresh(now=now) or not self.niri.focused:
             return None
         pid = self.niri.focused.get("pid")
         peers = [
@@ -638,7 +641,7 @@ class Input:
             "commandGeneration": self.shortcut_config.get("generation"),
         }
 
-    def practice_waiting(self, run, *, acknowledged=True, require_fresh=True):
+    def practice_waiting(self, run, *, acknowledged=True, require_fresh=True, now=None):
         returned = self.practice_return
         if returned is not None:
             return bool(
@@ -657,9 +660,9 @@ class Input:
                 and returned["windowEpoch"] == self.window_epoch
                 and returned["foregroundEpoch"] == self.foreground_epoch
                 and self.bound == returned["target"]
-                and self.focused_peer() is returned["peer"]
+                and self.focused_peer(now=now) is returned["peer"]
                 and not self.overlay_focused
-                and self.fresh()
+                and self.fresh(now=now)
                 and self.enabled is True
             )
         value = self.practice_continuity
@@ -669,7 +672,10 @@ class Input:
             and (
                 (
                     not acknowledged
-                    and (self.fresh() or (not require_fresh and self.foreground_expired()))
+                    and (
+                        self.fresh(now=now)
+                        or (not require_fresh and self.foreground_expired(now=now))
+                    )
                 )
                 or (self.practice_retirement is None and self.practice_retirement_ack == run)
             )
@@ -681,10 +687,10 @@ class Input:
             and value["foregroundEpoch"] == self.foreground_epoch
             and self.bound == value["target"]
             and (
-                (self.fresh() and self.focused_peer() is value["peer"])
+                (self.fresh(now=now) and self.focused_peer(now=now) is value["peer"])
                 or (
                     not require_fresh
-                    and self.foreground_expired()
+                    and self.foreground_expired(now=now)
                     and self.niri.focused
                     and [
                         peer
@@ -928,7 +934,7 @@ class Input:
             },
         }
 
-    def practice_editing(self, run):
+    def practice_editing(self, run, *, now=None):
         value = self.practice_editor
         return bool(
             value
@@ -940,9 +946,11 @@ class Input:
             and value["commandGeneration"] == self.shortcut_config.get("generation")
             and value["foregroundEpoch"] == self.foreground_epoch
             and self.bound == value["target"]
-            and self.focused_peer() is value["peer"]
+            and self.focused_peer(now=now) is value["peer"]
             and self.enabled is not False
-            and (value["phase"] == "editor" or now_ms() < value["deadline"])
+            and (
+                value["phase"] == "editor" or (now_ms() if now is None else now) < value["deadline"]
+            )
         )
 
     def begin_practice_edit(self, authorization, token, deadline):
@@ -1001,20 +1009,22 @@ class Input:
         self.set_overlay_focus(True)
         return True
 
-    def check_practice(self):
+    def check_practice(self, *, now=None):
         returned = self.practice_return
         if returned is not None and not self.practice_waiting(
-            returned["runId"], acknowledged=False
+            returned["runId"], acknowledged=False, now=now
         ):
             self.retire_practice(returned["runId"])
         editor = self.practice_editor
-        if editor is not None and not self.practice_editing(editor["runId"]):
+        if editor is not None and not self.practice_editing(editor["runId"], now=now):
             self.retire_practice(editor["runId"])
         waiting = self.practice_continuity
         if waiting is not None:
-            if not self.practice_waiting(waiting["runId"], acknowledged=False, require_fresh=False):
+            if not self.practice_waiting(
+                waiting["runId"], acknowledged=False, require_fresh=False, now=now
+            ):
                 self.retire_practice(waiting["runId"])
-            elif self.foreground_expired() and self.practice_retirement is None:
+            elif self.foreground_expired(now=now) and self.practice_retirement is None:
                 if not waiting.get("foregroundExpired"):
                     # Replace the waiting token to fence reads begun before this
                     # gap. Keep only the immutable baseline and verified steps.
@@ -1040,10 +1050,10 @@ class Input:
             or self.enabled is False
             or self.shortcut_config.get("generation") != authorization["commandGeneration"]
             or (
-                self.fresh()
+                self.fresh(now=now)
                 and (
                     self.bound != authorization["target"]
-                    or self.focus() not in ("Source", "Overlay")
+                    or self.focus(now=now) not in ("Source", "Overlay")
                 )
             )
         ):
@@ -1051,7 +1061,7 @@ class Input:
             return
         if (
             authorization is self.practice_authorization
-            and self.foreground_expired()
+            and self.foreground_expired(now=now)
             and not self.overlay_focused
             and self.bound == authorization["target"]
             and authorization["settingsGeneration"] == self.settings_generation
@@ -1087,20 +1097,23 @@ class Input:
             and authorization["commandGeneration"] == lease.get("commandGeneration")
         )
 
-    def focus(self):
-        if self.bound and self.overlay_focused and self.fresh():
+    def focus(self, *, now=None):
+        if self.bound and self.overlay_focused and self.fresh(now=now):
             return "Overlay"
-        peer = self.focused_peer()
+        peer = self.focused_peer(now=now)
         if peer and self.bound and peer.lifetime == self.bound["lifetime"]:
             return "Source"
         return "Other"
 
     def state(self):
-        self.check_practice()
-        paused = self.current_pause_record()
+        # One synchronous publication must not mix opposite sides of the
+        # compositor age limit. This timestamp is never cached or sent as authority.
+        now = now_ms()
+        self.check_practice(now=now)
+        paused = self.current_pause_record(now=now)
         value = {
-            "ready": self.fresh(),
-            "foregroundExpired": self.foreground_expired(),
+            "ready": self.fresh(now=now),
+            "foregroundExpired": self.foreground_expired(now=now),
             "practiceForegroundSuspension": {
                 key: self.practice_continuity[key]
                 for key in (
@@ -1120,25 +1133,25 @@ class Input:
             and self.bound_observation["target"] == self.bound
             else self.practice_return["connectionId"]
             if self.practice_return
-            and self.practice_waiting(self.practice_return["runId"], acknowledged=False)
+            and self.practice_waiting(self.practice_return["runId"], acknowledged=False, now=now)
             else self.practice_continuity["connectionId"]
             if self.practice_continuity
             and self.practice_waiting(
-                self.practice_continuity["runId"], acknowledged=False, require_fresh=False
+                self.practice_continuity["runId"], acknowledged=False, require_fresh=False, now=now
             )
             else "00000000-0000-0000-0000-000000000000",
             "sourceGlossaryTarget": self.bound
-            if self.source_glossary_supported(self.bound_observation)
+            if self.source_glossary_supported(self.bound_observation, now=now)
             else None,
             "sourceGlossaryGeneration": self.shortcut_config.get("generation"),
-            "nativeReady": self.focused_peer() is not None,
+            "nativeReady": self.focused_peer(now=now) is not None,
             "sessionShortcuts": self.current_session_acknowledgement(self.bound_observation)
             if self.bound_observation
-            and self.bound_observation["peer"] is self.focused_peer()
+            and self.bound_observation["peer"] is self.focused_peer(now=now)
             and self.bound_observation["target"] == self.bound
             else None,
             "target": paused["target"] if paused else self.bound,
-            "focus": "Source" if paused else self.focus(),
+            "focus": "Source" if paused else self.focus(now=now),
             "userEpoch": self.user_epoch,
             "sourceUserEpoch": self.source_epoch,
             "foregroundEpoch": self.foreground_epoch,
@@ -1278,7 +1291,7 @@ class Input:
             collection.popitem(last=False)
         return snapshot, record
 
-    def source_glossary_supported(self, record):
+    def source_glossary_supported(self, record, *, now=None):
         # Display capability only. Native and browser origins keep separate
         # identity checks; neither can borrow the other's route or readiness.
         current = bool(
@@ -1288,8 +1301,8 @@ class Input:
             and record["target"] == self.bound
             and record.get("commandGeneration") == self.shortcut_config.get("generation")
             and record["peer"] in self.peers
-            and record["peer"] is self.focused_peer()
-            and self.fresh()
+            and record["peer"] is self.focused_peer(now=now)
+            and self.fresh(now=now)
         )
         if not current:
             return False
@@ -1722,7 +1735,7 @@ class Input:
         self.pause_generation += 1
         self.pause_observation = None
 
-    def current_pause_record(self):
+    def current_pause_record(self, *, now=None):
         record = self.pause_observation
         if (
             self.enabled is not False
@@ -1731,9 +1744,9 @@ class Input:
             or record["windowEpoch"] != self.window_epoch
             or record["foregroundEpoch"] != self.foreground_epoch
             or record["userEpoch"] != self.user_epoch
-            or not 0 <= now_ms() - record["anchor"]["observedAtMs"] <= 150
+            or not 0 <= (now_ms() if now is None else now) - record["anchor"]["observedAtMs"] <= 150
             or record["peer"] not in self.peers
-            or self.focused_peer() is not record["peer"]
+            or self.focused_peer(now=now) is not record["peer"]
             or self.overlay_focused
         ):
             return None

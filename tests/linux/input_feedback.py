@@ -1299,6 +1299,7 @@ class InputFeedbackTests(unittest.TestCase):
         awaiting_refusal_gap=False,
         awaiting_fault=None,
         complete_fault=None,
+        after_waiting=None,
     ):
         self.clock.return_value = 1000
         self.peer = self.connect_peer("gtk3")
@@ -1560,6 +1561,8 @@ class InputFeedbackTests(unittest.TestCase):
                 self.native_frames(self.peer), [], "a repeated witness issued another revoke"
             )
             self.assertIsNone(self.input.practice_authorization)
+            if after_waiting:
+                await after_waiting(second)
             if resume:
                 # A complete new capture with the new target-bound ACK is the
                 # only route back to a newly constructed private authorization.
@@ -1721,6 +1724,61 @@ class InputFeedbackTests(unittest.TestCase):
             )
 
         asyncio.run(exercise())
+
+    def test_waiting_source_state_is_coherent_across_foreground_age_boundary(self):
+        async def inspect_waiting(binding):
+            self.assertTrue(self.input.practice_waiting(binding["runId"]))
+            self.assertIsNone(self.input.practice_authorization)
+            self.assertIsNone(self.input.practice_pending)
+            self.assertEqual(self.input.niri.observed_at, 1000)
+            self.clock.return_value = 1150
+            self.input.state()
+            state = [data for operation, data in self.host.events if operation == "state"][-1]
+            self.assertEqual(
+                tuple(state[key] for key in ("ready", "foregroundExpired", "nativeReady", "focus")),
+                (True, False, True, "Source"),
+            )
+            ticks = iter((1150,) * 5)
+            observed = []
+
+            def crossing_clock():
+                value = next(ticks, 1151)
+                observed.append(value)
+                return value
+
+            self.clock.side_effect = crossing_clock
+            try:
+                self.input.state()
+            finally:
+                self.clock.side_effect = None
+                self.clock.return_value = 1151
+            state = [data for operation, data in self.host.events if operation == "state"][-1]
+            self.assertEqual(state["connectionId"], binding["connectionId"])
+            # Either side of the unchanged 150ms limit is valid. A single
+            # publication must not combine fresh readiness with expired focus.
+            self.assertIn(
+                tuple(state[key] for key in ("ready", "foregroundExpired", "nativeReady", "focus")),
+                ((True, False, True, "Source"), (False, True, False, "Other")),
+                {"clock": observed, "state": state},
+            )
+            # A later state and capture use their own current time. Neither a
+            # prior coherent state nor retained lesson intent grants a fresh read.
+            self.input.state()
+            state = [data for operation, data in self.host.events if operation == "state"][-1]
+            self.assertEqual(
+                tuple(state[key] for key in ("ready", "foregroundExpired", "nativeReady", "focus")),
+                (False, True, False, "Other"),
+            )
+            self.assertEqual(state["connectionId"], binding["connectionId"])
+            self.assertEqual(
+                await self.input.request("capture", {"practiceRead": binding}),
+                {"snapshot": None, "foregroundExpired": True},
+            )
+            self.assertIsNone(self.input.practice_authorization)
+            self.assertIsNone(self.input.practice_pending)
+            self.assertEqual(self.native_frames(self.peer), [])
+
+        self.owned_context_advance(after_waiting=inspect_waiting)
 
     def test_only_first_owned_waiting_approval_per_run_requests_timing(self):
         with patch.dict(os.environ, {"TYPELAY_TRACE": "1"}):

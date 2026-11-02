@@ -191,6 +191,8 @@ Qt 的语言 child 与 More child 分别退休。仅原 `valid/menuOnly` 合同�
 
 Browser 术语 handoff 的新鲜只读捕获有独立可选 `InputCapture.SourceReadStartedAtMs` 因果证据。仅 Browser Host 在该次 target-bound Overlay capture 实际派发前取本 Host 时钟，完整响应、身份、IME 与 ACK 合格后附于本次结果外壳；不是页面自报字段，不写入 snapshot、remember、lease 或 permit。仅 Glossary recheck 在原观测下界早于请求时可用 request ≤ read-start ≤ completion 证明读取先后；原观测 age/future 与所有源身份门不变。缺字段或坏界限沿原拒绝，其他消费者忽略；不能把因果下界当新的观测时间或续期。
 
+Linux `Input.state()` 的一次同步状态构造只取一次局部时间，供该状态的前台新鲜度、焦点、暂停、练习与显示能力判断共同使用，避免跨过原 150ms 边界时发布互相矛盾的字段。时间不跨调用缓存、不作为观测或授权发送；后继状态和异步 capture 仍按各自真实时刻重新校验，原观测、期限、身份和退休规则不变。
+
 Linux owned 练习的 `allowField` 诊断仅在 TRACE 开启且当前合法 run 的首个等待态 Source 读取采一次，复用原请求 ID。发送、Host 处理入口、回复入队前与调用恢复四点属于同机 `CLOCK_BOOTTIME`，只定位前向传输/排队、服务及后向派发区间，不冒物理接收。外层可选时刻不改变原 boolean、超时、输入顺序或连续性资格；失败时并入已有有界捕获记录，无正文、额外 RPC 或逐请求 flush。
 
 浮层主动加词保留普通 `EditingTranslation` 会话，并在双端标准浏览器 `input`/`textarea`、Windows 非自有标准原生 `Edit` 及 Linux GTK3 标准 `GtkEntry`、GTK4 标准 `GtkEntry`（同一标准 `GtkEntryBuffer` 与其直属 `GtkText` delegate）、Qt6 标准 `QLineEdit`/`QPlainTextEdit` 接入 `ValidTranslation` 与 `EditedTranslationPending` 来源；新增入口仍受共享发布策略及来源资格限制，自有教程、GTK4 `TextView` 及其它非上述标准控件、通用 UIA/WPF 虚拟控件、其它 Qt 控件及富文本的源侧入口不开放。GTK4 源侧加词已在隔离 niri、真实 GTK4/Fcitx 组件与受控公开浮层协议下通过 14 项交互检查：上述两个源状态各覆盖保存、取消、源文变化、buffer 替换、输入法 reset、外部失焦及无点击重放拒绝。该证据不包含真实模型术语质量；用户机器上的 niri 实测与产品整体验收仍未完成。用户明确填写源词、译词与全局或有向范围，不从人工改稿自动学习。表单拥有独立 form ID、原 view token、设置版本与取消请求，单规则追加复用原完整保存资格，不全表覆盖；精确重复规则确认无额外落盘，冲突或失败保留表单，结果未知不自动重试。原译文控件、稿件、选区及撤销历史保留，辅助焦点不是译文快捷键资格；仅精确表单控件及实际 IME Clear 可保存，Tab 在表单内导航，Esc 先遵守输入法再取消表单。关闭仅在仍属原会话的实际辅助焦点时恢复原编辑器或原源字段，外部失焦不抢回；离开原状态或原 token 失效由控制器主动退休表单，迟到提交不复活。源侧表单由控制器标记，平台默认拒绝；打开不借用编辑态，撤销旧接受许可并保持原状态、候选和人工稿。保存仅从当前辅助控件的实际 IME Clear 发起零写入回源，再用新捕获核验原目标生命周期、窗口、输入版本、文本、选区、语言、风格、术语与模型身份。
