@@ -39,11 +39,8 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
         deadline.CancelAfter(TimeSpan.FromSeconds(3));
         var editor = new TextBox { Text = "Synthetic local draft", AcceptsTab = true };
         var window = new Window { Content = editor, Width = 420, Height = 160 };
-        window.Show();
-        Assert.True(window.Activate());
-        Assert.True(editor.Focus());
-        nint hwnd = new WindowInteropHelper(window).Handle;
-        using var hook = new KeyboardHook(allowInjectedInput: true, editorHwnd: hwnd);
+        nint hwnd = new WindowInteropHelper(window).EnsureHandle();
+        using var hook = new KeyboardHook(allowInjectedInput: true, editorHwnd: hwnd, observeEditorForegroundDelivery: true);
         hook.ConfigureShortcuts(false, "Ctrl+Shift+F9", "Ctrl+Shift+F10", SessionShortcutBindings.Default, true);
         Guid opening = Guid.NewGuid();
         var held = new HashSet<ushort>();
@@ -74,7 +71,15 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
         window.AddHandler(Keyboard.PreviewKeyUpEvent, up, true);
         try
         {
-            await Until(() => hook.ShortcutsReady && Native.GetForegroundWindow() == hwnd && editor.IsKeyboardFocused);
+            // Install before the original activation, then consume that exact
+            // event only after the product callback stack has fully processed it.
+            // No extra activation, queue drain, timestamp inference or retry.
+            await Until(() => hook.ShortcutsReady);
+            window.Show();
+            Assert.True(window.Activate());
+            Assert.True(editor.Focus());
+            await Until(() => hook.ShortcutsReady && hook.EditorForegroundDelivered is { IsCompletedSuccessfully: true }
+                && Native.GetForegroundWindow() == hwnd && editor.IsKeyboardFocused);
             Assert.All(new[] { 9, 0x77, 0x10, 0x11, 0x12, 0x5b, 0x5c }, key => Assert.False(Native.GetAsyncKeyState(key) < 0));
             hook.BeginLocalDraftAnchor(opening, hwnd, hwnd, id =>
             {

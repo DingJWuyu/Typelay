@@ -351,73 +351,83 @@ internal sealed partial class BrowserInput : IDisposable
     private bool Approved(BrowserPeer peer, BrowserReply? reply, string[] excluded,
         out JsonElement authority, out FieldMetadata? metadata, out TargetId id, out SessionShortcutAcknowledgement? acknowledgement,
         ObservationStage stage = ObservationStage.None, SessionGlossaryFocus? glossary = null,
-        SessionGlossaryEntry? returnedGlossary = null)
+        SessionGlossaryEntry? returnedGlossary = null, Action<ObservationReason>? rejected = null)
     {
+        bool Reject(ObservationReason reason, BrowserReply? rejectedReply = null)
+        {
+            // Optional projection of this original decision, never another approval.
+            try
+            {
+                rejected?.Invoke(reason);
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { }
+            return ApprovalRejected(stage, reason, rejectedReply);
+        }
         authority = default;
         metadata = null;
         id = default;
         acknowledgement = null;
         if (reply is null)
-            return ApprovalRejected(stage, ObservationReason.ReplyMissing);
+            return Reject(ObservationReason.ReplyMissing);
         if (reply.Data.ValueKind != JsonValueKind.Object)
-            return ApprovalRejected(stage, ObservationReason.ReplyNotObject, reply);
+            return Reject(ObservationReason.ReplyNotObject, reply);
         if (!peer.Alive)
-            return ApprovalRejected(stage, ObservationReason.PeerDisconnected, reply);
+            return Reject(ObservationReason.PeerDisconnected, reply);
         if (!_sessionEnabled)
-            return ApprovalRejected(stage, ObservationReason.SessionDisabled, reply);
+            return Reject(ObservationReason.SessionDisabled, reply);
         var data = reply.Data;
         try
         {
             string? target = data.GetProperty("target").GetString();
             if (target is null)
-                return ApprovalRejected(stage, ObservationReason.TargetMissing, reply);
+                return Reject(ObservationReason.TargetMissing, reply);
             if (!reply.Route.Contains(target))
-                return ApprovalRejected(stage, ObservationReason.TargetOutsideRoute, reply);
+                return Reject(ObservationReason.TargetOutsideRoute, reply);
             metadata = data.GetProperty("metadata").Deserialize<FieldMetadata>(BrowserServer.Json) is { } field
                 ? field with
                 {
                     Process = "chrome"
                 } : null;
             if (metadata is null)
-                return ApprovalRejected(stage, ObservationReason.MetadataMissing, reply);
+                return Reject(ObservationReason.MetadataMissing, reply);
             if (!FieldPolicy.Allows(metadata, excluded))
-                return ApprovalRejected(stage, ObservationReason.FieldPolicy, reply);
+                return Reject(ObservationReason.FieldPolicy, reply);
             if (!metadata.InDocument)
-                return ApprovalRejected(stage, ObservationReason.OutsideDocument, reply);
+                return Reject(ObservationReason.OutsideDocument, reply);
             if (!metadata.HasValue)
-                return ApprovalRejected(stage, ObservationReason.ValueUnavailable, reply);
+                return Reject(ObservationReason.ValueUnavailable, reply);
             authority = data.GetProperty("authority").Clone();
             if (String(authority, "target") != target)
-                return ApprovalRejected(stage, ObservationReason.AuthorityTarget, reply);
+                return Reject(ObservationReason.AuthorityTarget, reply);
             if (!ValidAuthority(authority))
-                return ApprovalRejected(stage, ObservationReason.AuthorityInvalid, reply);
+                return Reject(ObservationReason.AuthorityInvalid, reply);
             var applied = data.GetProperty("sessionBindings");
             if (String(applied, "shortcutDispatch") != "source-local")
-                return ApprovalRejected(stage, ObservationReason.DispatchMismatch, reply);
+                return Reject(ObservationReason.DispatchMismatch, reply);
             if (!Guid.TryParse(String(applied, "generation"), out var generation))
-                return ApprovalRejected(stage, ObservationReason.AcknowledgementGenerationInvalid, reply);
+                return Reject(ObservationReason.AcknowledgementGenerationInvalid, reply);
             if (generation != _configurationGeneration)
-                return ApprovalRejected(stage, ObservationReason.ConfigurationGenerationMismatch, reply);
+                return Reject(ObservationReason.ConfigurationGenerationMismatch, reply);
             if (generation != _hook.CommandGeneration)
-                return ApprovalRejected(stage, ObservationReason.CommandGenerationChanged, reply);
+                return Reject(ObservationReason.CommandGenerationChanged, reply);
             if (String(applied, "accept") != _bindings.Accept)
-                return ApprovalRejected(stage, ObservationReason.AcceptKeyMismatch, reply);
+                return Reject(ObservationReason.AcceptKeyMismatch, reply);
             if (String(applied, "exit") != _bindings.Exit)
-                return ApprovalRejected(stage, ObservationReason.ExitKeyMismatch, reply);
+                return Reject(ObservationReason.ExitKeyMismatch, reply);
             id = new("windows-browser", target, peer.ConnectionId);
             if ((glossary is not null || returnedGlossary is not null) && (_current is not { } current || current.Peer != peer
                 || current.Route != reply.Route || current.Target != id))
-                return ApprovalRejected(stage, ObservationReason.EditorAcknowledgement, reply);
+                return Reject(ObservationReason.EditorAcknowledgement, reply);
             if (returnedGlossary is not null && (_returnedGlossary != returnedGlossary || _glossaryEntry != returnedGlossary))
-                return ApprovalRejected(stage, ObservationReason.EditorAcknowledgement, reply);
+                return Reject(ObservationReason.EditorAcknowledgement, reply);
             acknowledgement = ApproveObservationRoles(data, id, generation, _bindings, _glossaryEntry, glossary, GlossaryFocus, returnedGlossary);
-            return acknowledgement is not null || ApprovalRejected(stage, glossary is not null
+            return acknowledgement is not null || Reject(glossary is not null
                 ? ObservationReason.EditorAcknowledgement : !Boolean(applied, "sourceReady")
                     ? ObservationReason.SourceNotReady : ObservationReason.EditorNotReady, reply);
         }
         catch (Exception error) when (error is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
         {
-            return ApprovalRejected(stage, ObservationReason.MalformedReply, reply);
+            return Reject(ObservationReason.MalformedReply, reply);
         }
     }
     // The caller already authenticated the peer/route, source authority, current

@@ -1904,12 +1904,13 @@ async def check_language_configuration(
         evidence["pendingRetired"] = True
         return
 
-    # An acknowledged focus can precede the new popup's first allocation.
-    # Use the same observation budget and each current control's completed frame.
+    # Acknowledged focus can precede both first paint and the new search's IME proof.
+    # Require actual Clear in the same observation budget; Unknown admits no input.
     actual = await language_wait_for(
         lambda: (value := observe())
         and configuration["phase"] == "Open"
         and value.get("overlayControls", {}).get(search_name, {}).get("focused")
+        and value.get("focusedImeClear") is True
         and all(
             glossary_painted_geometry(
                 value.get("overlayControls", {}).get(name, {}), value.get("observedAtMs")
@@ -1918,7 +1919,7 @@ async def check_language_configuration(
         )
         and value["overlayControls"][popup_name]["surfaceGeometry"].get("contents")
         and value,
-        "configuration search did not acquire acknowledged focus and current painted geometry",
+        "configuration search did not acquire acknowledged focus, IME Clear and painted geometry",
     )
     assert now_ms() <= configuration["expiresAtMs"], "open observation crossed handshake deadline"
     config_current()

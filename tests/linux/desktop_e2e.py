@@ -231,11 +231,36 @@ def select_session_keys(paths, host_pid, accept, exit_key, send_key):
         visible_named,
     )
 
-    select_settings_page(host_pid, "快捷键")
-    for title, field, chord in (
+    # This runner consumes canonical product spellings, not arbitrary chords.
+    # Match SessionShortcutBindings' physical main-key rule only after checking
+    # its supported per-role set; unknown input must not become a guessed key.
+    function_keys = {f"F{number}" for number in range(1, 25)}
+
+    def main_key(chord, default):
+        assert isinstance(chord, str), "unsupported canonical session key"
+        if chord == default:
+            return chord
+        key = chord.removeprefix("Ctrl+")
+        assert key in function_keys, "unsupported canonical session key: " + chord
+        return key
+
+    current = json.loads(paths.settings.read_text())
+    current_accept = main_key(current["AcceptShortcut"], "Tab")
+    current_exit = main_key(current["ExitShortcut"], "Esc")
+    requested_accept = main_key(accept, "Tab")
+    requested_exit = main_key(exit_key, "Esc")
+    assert current_accept != current_exit and requested_accept != requested_exit, (
+        "session key pairs must have different main keys"
+    )
+    fields = [
         ("接受译文", "AcceptShortcut", accept),
         ("退出当前翻译", "ExitShortcut", exit_key),
-    ):
+    ]
+    if requested_accept == current_exit:
+        assert requested_exit != current_accept, "session key change has no valid intermediate pair"
+        fields.reverse()  # Release the old exit before assigning its key to accept.
+    select_settings_page(host_pid, "快捷键")
+    for title, field, chord in fields:
         if json.loads(paths.settings.read_text()).get(field) == chord:
             continue
         before = paths.settings.read_bytes()

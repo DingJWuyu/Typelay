@@ -213,8 +213,11 @@ internal sealed partial class KeyboardHook : IInputMonitor
             && GetGUIThreadInfo(thread, ref info) && info.Focus == field && Native.GetForegroundWindow() == field;
     }
     public bool ShortcutsReady => _ready && _mouseHook != 0;
-    public KeyboardHook(bool allowInjectedInput = false, nint editorHwnd = 0)
+    public KeyboardHook(bool allowInjectedInput = false, nint editorHwnd = 0, bool observeEditorForegroundDelivery = false)
     {
+        if (observeEditorForegroundDelivery && editorHwnd == 0)
+            throw new ArgumentException("Foreground delivery requires an editor window.", nameof(editorHwnd));
+        _editorForegroundDelivery = observeEditorForegroundDelivery ? new(editorHwnd) : null;
         _editorHwnd = editorHwnd;
         _hotkeys = new OnDemandHotkeys(editorHwnd);
         _allowInjectedInput = allowInjectedInput;
@@ -224,26 +227,33 @@ internal sealed partial class KeyboardHook : IInputMonitor
         _mouseCallback = OnMouse;
         _focusCallback = (_, ev, window, _, _, _, eventTime) =>
         {
-            lock (_sourceGlossarySync)
+            _editorForegroundDelivery?.Enter(ev, window);
+            bool handled = false;
+            try
             {
+                lock (_sourceGlossarySync)
+                {
+                    if (ev == 3)
+                        Interlocked.Increment(ref _windowEpoch);
+                    Interlocked.Increment(ref _foregroundEpoch);
+                    RetireSourceAcceptanceControl();
+                    RevokeStockCandidate();
+                    _gate.Revoke();
+                    _ownedGate.Revoke();
+                    RevokeOwnedPrefix();
+                    InvalidateOrdinaryChord();
+                    if (ev == 3)
+                        ObserveSourceGlossaryForeground(window, eventTime);
+                }
                 if (ev == 3)
-                    Interlocked.Increment(ref _windowEpoch);
-                Interlocked.Increment(ref _foregroundEpoch);
-                RetireSourceAcceptanceControl();
-                RevokeStockCandidate();
-                _gate.Revoke();
-                _ownedGate.Revoke();
-                RevokeOwnedPrefix();
-                InvalidateOrdinaryChord();
-                if (ev == 3)
-                    ObserveSourceGlossaryForeground(window, eventTime);
+                {
+                    ObserveSourceReturnForeground(window);
+                    ObserveEditorForeground(window);
+                    ObserveLocalDraftForeground(window);
+                }
+                handled = true;
             }
-            if (ev == 3)
-            {
-                ObserveSourceReturnForeground(window);
-                ObserveEditorForeground(window);
-                ObserveLocalDraftForeground(window);
-            }
+            finally { _editorForegroundDelivery?.Leave(handled); }
         };
         _thread = new Thread(Run) { IsBackground = true, Name = "TypeLay.Input" };
         _thread.Start();

@@ -32,6 +32,7 @@ class ShortcutScene:
         self.focus = None
         self.recording = None
         self.confirming = False
+        self.invalid = False
         self.refuse = refuse
         self.premature_save = premature_save
         self.unacknowledged = unacknowledged
@@ -110,11 +111,18 @@ class ShortcutScene:
     def send_key(self, chord):
         assert self.recording is not None
         self.keys.append(chord)
-        self.draft[self.recording.field] = {"Escape": "Esc"}.get(chord, chord)
+        canonical = chord.replace("ctrl+", "Ctrl+", 1)
+        self.draft[self.recording.field] = {"Escape": "Esc"}.get(canonical, canonical)
         self.recording = None
+        # The external settings endpoint rejects a shared physical function key,
+        # retaining the draft without a force-save action. This is not a warning.
+        self.invalid = len({key.removeprefix("Ctrl+") for key in self.draft.values()}) < 2
+        if self.invalid:
+            self.confirming = False
+            return
         # The external settings endpoint confirms the complete group, including
-        # an unchanged F1. This is not the runner's own risk policy.
-        self.confirming = "F1" in self.draft.values()
+        # an unchanged F1/F12. This is not the runner's own risk policy.
+        self.confirming = any(key in ("F1", "F12") for key in self.draft.values())
         if self.confirming and self.premature_save:
             self.paths.settings.write_text(json.dumps(self.draft))
         if not self.confirming:
@@ -148,7 +156,9 @@ class ShortcutScene:
             patch.object(access, "time", clock),
             patch.object(desktop_e2e, "time", clock),
             patch.object(
-                desktop_e2e, "control", lambda *_: {"setup": {"settingsDraft": self.confirming}}
+                desktop_e2e,
+                "control",
+                lambda *_: {"setup": {"settingsDraft": self.confirming or self.invalid}},
             ),
         ):
             desktop_e2e.select_session_keys(self.paths, 42, accept, exit_key, self.send_key)
@@ -167,6 +177,64 @@ class SessionKeySettingsTests(unittest.TestCase):
                     {"AcceptShortcut": "F1", "ExitShortcut": "F24"},
                 ],
             )
+            self.assertEqual(scene.saved, {"AcceptShortcut": "F1", "ExitShortcut": "F24"})
+
+    def test_exit_is_saved_first_when_accept_reuses_its_current_main_key(self):
+        for before, requested in (
+            (("F1", "F24"), ("F24", "F12")),
+            (("F24", "F12"), ("F12", "F1")),
+        ):
+            with (
+                self.subTest(before=before, requested=requested),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                scene = ShortcutScene(Path(directory), accept=before[0], exit_key=before[1])
+                scene.run(*requested)
+                self.assertEqual(scene.keys, [requested[1], requested[0]])
+                self.assertEqual(
+                    scene.confirmations,
+                    [
+                        {"AcceptShortcut": before[0], "ExitShortcut": requested[1]},
+                        {"AcceptShortcut": requested[0], "ExitShortcut": requested[1]},
+                    ],
+                )
+                self.assertEqual(
+                    scene.saved,
+                    {"AcceptShortcut": requested[0], "ExitShortcut": requested[1]},
+                )
+
+    def test_ctrl_and_plain_function_keys_share_the_ordering_constraint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scene = ShortcutScene(Path(directory), accept="Ctrl+F7", exit_key="Ctrl+F24")
+            scene.run("F24", "Ctrl+F8")
+            self.assertEqual(scene.keys, ["ctrl+F8", "F24"])
+            self.assertEqual(scene.saved, {"AcceptShortcut": "F24", "ExitShortcut": "Ctrl+F8"})
+
+    def test_two_way_main_key_exchange_is_rejected_before_recording(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scene = ShortcutScene(Path(directory), accept="F7", exit_key="F8")
+            with self.assertRaisesRegex(AssertionError, "no valid intermediate"):
+                scene.run("Ctrl+F8", "Ctrl+F7")
+            self.assertEqual(scene.keys, [])
+            self.assertEqual(scene.confirmations, [])
+            self.assertEqual(scene.saved, {"AcceptShortcut": "F7", "ExitShortcut": "F8"})
+
+    def test_unknown_session_key_spelling_is_rejected_before_recording(self):
+        for unknown in ("F25", "Ctrl+Tab", "Shift+F7", "Ctrl+Ctrl+F7"):
+            with self.subTest(key=unknown), tempfile.TemporaryDirectory() as directory:
+                scene = ShortcutScene(Path(directory))
+                with self.assertRaisesRegex(AssertionError, "unsupported canonical session key"):
+                    scene.run(unknown, "F24")
+                self.assertEqual(scene.keys, [])
+                self.assertEqual(scene.saved, {"AcceptShortcut": "Tab", "ExitShortcut": "Esc"})
+
+    def test_exit_first_confirmation_refusal_never_sends_accept(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scene = ShortcutScene(Path(directory), accept="F1", exit_key="F24", refuse=True)
+            with self.assertRaises(AssertionError):
+                scene.run("F24", "F12")
+            self.assertEqual(scene.keys, ["F12"])
+            self.assertEqual(len(scene.confirmations), 1)
             self.assertEqual(scene.saved, {"AcceptShortcut": "F1", "ExitShortcut": "F24"})
 
     def test_unwarned_group_saves_without_a_confirmation_action(self):

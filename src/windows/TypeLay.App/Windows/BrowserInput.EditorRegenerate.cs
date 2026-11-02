@@ -127,67 +127,165 @@ internal sealed partial class BrowserInput
         }
         catch (JsonException) { return false; }
     }
+    private enum EditorReturnStage
+    {
+        Preflight, Describe, Dispatch, Reply
+    }
+    private enum EditorReturnReason
+    {
+        None, OriginMissing, ActionMismatch, OperationAssigned, ContextMismatch, OperationMismatch,
+        EditorNotCurrent, ApprovalRejected, RouteChanged, TargetChanged, VersionUnsupported, PendingEditorMismatch,
+        ExpiredBeforeDispatch, OwnerChanged, PresentedOperationChanged, ReplyMissing, ReplyNotObject,
+        ReceiptMismatch, ContextLostMissing, ContextLost, ContextLostInvalid, ReturnedMissing,
+        UnexpectedSourceFocus, EditorNotFocused, ExplicitFalse, ReturnedInvalid, SourceFocusUnobserved,
+        ExpiredAfterDispatch, Exception
+    }
     private async Task<InputReturn> ReturnEditorRegenerateAsync(InputContext context, EditorSourceReturnRequest operation)
     {
-        if (_editorRegenerate is not { } origin || !ReferenceEquals(origin.Action, operation.Action)
-            || origin.Operation is not null || context.BoundTarget != origin.Record.Target
-            || operation.Operation != origin.PresentedToken
-            || operation.Operation.Target != origin.Record.Target
-            || operation.Operation.CommandGeneration != origin.Action.Token.CommandGeneration
-            || operation.ExpiresAtMs != origin.Action.QueuedAtMs + 500 || !EditorRegenerateEditorCurrent(origin.Action))
-            return new(false, ContextLost: true);
-        origin.Operation = operation;
-        var record = origin.Record;
-        // Read current safe metadata, not the old draft's source text. A changed
-        // legal source may still be the source of this newly requested translation.
-        var description = await record.Peer.RequestAsync("describe", new
+        var stage = EditorReturnStage.Preflight;
+        var reason = EditorReturnReason.None;
+        ObservationReason? approvalReason = null;
+        bool? sent = null;
+        long? remainingMs = null;
+        bool contextLost = true;
+        InputReturn Refuse(EditorReturnReason failure, bool lost = true)
         {
-            target = record.Target.Value
-        });
-        if (!EditorRegenerateEditorCurrent(origin.Action)
-            || !Approved(record.Peer, description, context.Excluded, out var authority, out _, out var target, out _)
-            || description!.Route != record.Route || target != record.Target || !SupportsEditorRegenerate(description.Data)
-            || !EditorRegenerateDescription(description.Data, origin))
-            return new(false, ContextLost: true);
-        long remaining = operation.ExpiresAtMs - WindowsInterruptClock.NowMs;
-        if (remaining <= 0)
-        {
-            origin.Refused = true;
-            return new(false); // Fresh exact editor proof, and return has never been sent.
+            reason = failure;
+            contextLost = lost;
+            return new(false, ContextLost: lost);
         }
-        origin.Sent = true;
-        var reply = await record.Peer.RequestAsync("return", new
+        try
         {
-            target = record.Target.Value,
-            authority,
-            generation = operation.Operation.CommandGeneration,
-            revision = origin.Action.Token.Revision,
-            editorReturn = operation
-        }, (int)Math.Min(200, remaining));
-        if (!EditorRegenerateOwnerCurrent(origin) || origin.PresentedToken != operation.Operation
-            || reply is null || reply.Route != record.Route || reply.Data.ValueKind != JsonValueKind.Object
-            || !MatchesEditorReturn(reply.Data, operation)
-            || !reply.Data.TryGetProperty("contextLost", out var lost) || lost.ValueKind != JsonValueKind.False
-            || !reply.Data.TryGetProperty("returned", out var returned))
-            return new(false, ContextLost: true); // Sent unknown/lost never resumes or retries.
-        if (returned.ValueKind == JsonValueKind.False)
-        {
-            // The same DOM operation explicitly refused while its complete
-            // editor policy remained legal. Focus alone is never that proof.
-            // BrowserPeer's preceding-event barrier has already delivered every
-            // earlier real draft event; do not synthesize a draft from this ACK.
-            if (origin.SourceFocusObserved || !EditorRegenerateEditorCurrent(origin.Action)
-                || !Boolean(reply.Data, "editorFocused"))
-                return new(false, ContextLost: true);
-            origin.Refused = true;
-            return new(false);
+            if (_editorRegenerate is not { } origin)
+                return Refuse(EditorReturnReason.OriginMissing);
+            if (!ReferenceEquals(origin.Action, operation.Action))
+                return Refuse(EditorReturnReason.ActionMismatch);
+            sent = origin.Sent;
+            if (origin.Operation is not null)
+                return Refuse(EditorReturnReason.OperationAssigned);
+            if (context.BoundTarget != origin.Record.Target)
+                return Refuse(EditorReturnReason.ContextMismatch);
+            if (operation.Operation != origin.PresentedToken
+                || operation.Operation.Target != origin.Record.Target
+                || operation.Operation.CommandGeneration != origin.Action.Token.CommandGeneration
+                || operation.ExpiresAtMs != origin.Action.QueuedAtMs + 500)
+                return Refuse(EditorReturnReason.OperationMismatch);
+            if (!EditorRegenerateEditorCurrent(origin.Action))
+                return Refuse(EditorReturnReason.EditorNotCurrent);
+            origin.Operation = operation;
+            var record = origin.Record;
+            // Read current safe metadata, not the old draft's source text. A changed
+            // legal source may still be the source of this newly requested translation.
+            stage = EditorReturnStage.Describe;
+            var description = await record.Peer.RequestAsync("describe", new
+            {
+                target = record.Target.Value
+            });
+            if (!EditorRegenerateEditorCurrent(origin.Action))
+                return Refuse(EditorReturnReason.EditorNotCurrent);
+            if (!Approved(record.Peer, description, context.Excluded, out var authority, out _, out var target, out _,
+                rejected: value => approvalReason = value))
+                return Refuse(EditorReturnReason.ApprovalRejected);
+            if (description!.Route != record.Route)
+                return Refuse(EditorReturnReason.RouteChanged);
+            if (target != record.Target)
+                return Refuse(EditorReturnReason.TargetChanged);
+            if (!SupportsEditorRegenerate(description.Data))
+                return Refuse(EditorReturnReason.VersionUnsupported);
+            if (!EditorRegenerateDescription(description.Data, origin))
+                return Refuse(EditorReturnReason.PendingEditorMismatch);
+            long remaining = operation.ExpiresAtMs - WindowsInterruptClock.NowMs;
+            remainingMs = remaining;
+            if (remaining <= 0)
+            {
+                origin.Refused = true;
+                // Fresh exact editor proof, and return has never been sent.
+                return Refuse(EditorReturnReason.ExpiredBeforeDispatch, lost: false);
+            }
+            origin.Sent = true;
+            sent = true;
+            stage = EditorReturnStage.Dispatch;
+            var reply = await record.Peer.RequestAsync("return", new
+            {
+                target = record.Target.Value,
+                authority,
+                generation = operation.Operation.CommandGeneration,
+                revision = origin.Action.Token.Revision,
+                editorReturn = operation
+            }, (int)Math.Min(200, remaining));
+            stage = EditorReturnStage.Reply;
+            if (!EditorRegenerateOwnerCurrent(origin))
+                return Refuse(EditorReturnReason.OwnerChanged);
+            if (origin.PresentedToken != operation.Operation)
+                return Refuse(EditorReturnReason.PresentedOperationChanged);
+            if (reply is null)
+                return Refuse(EditorReturnReason.ReplyMissing);
+            if (reply.Route != record.Route)
+                return Refuse(EditorReturnReason.RouteChanged);
+            if (reply.Data.ValueKind != JsonValueKind.Object)
+                return Refuse(EditorReturnReason.ReplyNotObject);
+            if (!MatchesEditorReturn(reply.Data, operation))
+                return Refuse(EditorReturnReason.ReceiptMismatch);
+            if (!reply.Data.TryGetProperty("contextLost", out var lost))
+                return Refuse(EditorReturnReason.ContextLostMissing);
+            if (lost.ValueKind != JsonValueKind.False)
+                return Refuse(lost.ValueKind == JsonValueKind.True ? EditorReturnReason.ContextLost : EditorReturnReason.ContextLostInvalid);
+            if (!reply.Data.TryGetProperty("returned", out var returned))
+                return Refuse(EditorReturnReason.ReturnedMissing);
+            if (returned.ValueKind == JsonValueKind.False)
+            {
+                // The same DOM operation explicitly refused while its complete
+                // editor policy remained legal. Focus alone is never that proof.
+                // BrowserPeer's preceding-event barrier has already delivered every
+                // earlier real draft event; do not synthesize a draft from this ACK.
+                if (origin.SourceFocusObserved)
+                    return Refuse(EditorReturnReason.UnexpectedSourceFocus);
+                if (!EditorRegenerateEditorCurrent(origin.Action))
+                    return Refuse(EditorReturnReason.EditorNotCurrent);
+                if (!Boolean(reply.Data, "editorFocused"))
+                    return Refuse(EditorReturnReason.EditorNotFocused);
+                origin.Refused = true;
+                return Refuse(EditorReturnReason.ExplicitFalse, lost: false);
+            }
+            if (returned.ValueKind != JsonValueKind.True)
+                return Refuse(EditorReturnReason.ReturnedInvalid);
+            if (!origin.SourceFocusObserved)
+                return Refuse(EditorReturnReason.SourceFocusUnobserved);
+            if (WindowsInterruptClock.NowMs >= operation.ExpiresAtMs)
+                return Refuse(EditorReturnReason.ExpiredAfterDispatch);
+            origin.Returned = true;
+            _editorFocused = false;
+            return new(true, EditorReturn: new(operation, _hook.WindowEpoch));
         }
-        if (returned.ValueKind != JsonValueKind.True || !origin.SourceFocusObserved
-            || WindowsInterruptClock.NowMs >= operation.ExpiresAtMs)
-            return new(false, ContextLost: true);
-        origin.Returned = true;
-        _editorFocused = false;
-        return new(true, EditorReturn: new(operation, _hook.WindowEpoch));
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            reason = EditorReturnReason.Exception;
+            throw; // Preserve Runtime's existing unknown/lost handling, without exception text.
+        }
+        finally
+        {
+            if (reason != EditorReturnReason.None && TraceEnabled)
+            {
+                try
+                {
+                    // One failed terminal decision, using only this operation's existing
+                    // samples. Sent means dispatch was attempted, not page receipt proof.
+                    // No new clock/owner read, request, flush or trace budget.
+                    Trace("browser-editor-return", new
+                    {
+                        editorRevision = operation.Action.Token.Revision,
+                        returnRevision = operation.Operation.Revision,
+                        stage,
+                        reason,
+                        approvalReason,
+                        sent,
+                        remainingMs,
+                        contextLost
+                    });
+                }
+                catch (Exception error) when (error is not OutOfMemoryException) { }
+            }
+        }
     }
     private static bool MatchesEditorReturn(JsonElement value, EditorSourceReturnRequest expected)
     {
