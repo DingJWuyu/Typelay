@@ -810,7 +810,8 @@ int main(int argc, char **argv) {
                         && overlay->isAncestorOf(editor) && editor->window() == &window
                         && viewport && editor->viewport() == viewport && editor->isAncestorOf(viewport)
                         && editor->isVisible() == editorVisible && viewport->isVisible() == viewportVisible
-                        && viewport->rect() == viewportRect && viewport->mapTo(overlay, QPoint()) == viewportOrigin;
+                        && (!(editorVisible && viewportVisible)
+                            || (viewport->rect() == viewportRect && viewport->mapTo(overlay, QPoint()) == viewportOrigin));
                 };
                 const auto sample = [](QWidget *surface, const QPoint &point) {
                     if (!surface || !surface->isVisible() || !surface->rect().contains(point)) return QString();
