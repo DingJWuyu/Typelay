@@ -215,11 +215,17 @@ public sealed partial class NativeSourceControllerTests
                 keepHeld = false;
                 await Until(() =>
                 {
-                    // Preserve the original focus condition and short-circuiting.
-                    // Retain its one native observation, not a second focus read.
+                    // Ordinary native return also permits the exact original Edit
+                    // as raw foreground, with the full original binding identity.
                     var focus = N.ReadFocus();
                     lastFocus = focus;
-                    return (focus.Root, focus.Control) == (native.Root, native.A)
+                    return (focus.Root == native.Root || focus.Root == native.A)
+                        && N.GetAncestor(focus.Root, 2) == native.Root
+                        && sourceProcess != 0 && focus.ProcessId == sourceProcess
+                        && sourceThread != 0 && focus.ThreadId == sourceThread
+                        && focus.GuiThreadInfoSucceeded == true && focus.Control == native.A
+                        && originalCookie != 0
+                        && N.GetProp(native.A, "TypeLay.NativeInput.Lifetime.v2") == originalCookie
                         && !RuntimeDescendants(overlay).OfType<FrameworkElement>().Any(element => AutomationProperties.GetAutomationId(element) == "RegenerateConfirmation")
                         && Bounds().Width == compactWidth;
                 }, deadline.Token);

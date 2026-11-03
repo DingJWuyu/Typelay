@@ -1189,6 +1189,7 @@
       for (const kind of ["beforeinput", "input"]) editor.addEventListener(kind, event => {
         retireEditorControl();
         if (overlay?.editor !== editor) return;
+        if (overlay.editorReturn) overlay.editorReturn.echo = null;
         if (event.isComposing) overlay.composing = true;
         if (kind === "input" && overlay.editing) {
           closeRegenerate(overlay);
@@ -1203,6 +1204,7 @@
         editor.addEventListener(kind, event => {
           retireEditorControl();
           if (overlay?.editor !== editor) return;
+          if (overlay.editorReturn) overlay.editorReturn.echo = null;
           // A synthetic notification can revoke but cannot establish Clear.
           overlay.composing = !(event.isTrusted && kind === "compositionend");
           if (event.isTrusted) ui("composition", overlay.composing);
@@ -1213,6 +1215,7 @@
       });
       editor.addEventListener("blur", event => {
         retireEditorControl();
+        if (overlay?.editor === editor && overlay.editorReturn) overlay.editorReturn.echo = null;
         // A verified move to this approved form stays in the overlay family.
         // The auxiliary field is never registered as a translation editor.
         if (!glossaryControl(overlay?.glossary, event.relatedTarget)
@@ -1449,6 +1452,27 @@
       && editorConfigured(field) && view.editable && view.viewContext?.canEdit === true
       && overlay.draftRevision === confirmation.draftRevision
       && view.text === confirmation.draft && overlay.editor.value === confirmation.draft;
+    const pending = overlay.editorReturn, echo = pending?.echo;
+    // Preserve only this real Replace's unchanged draft echo while awaiting the
+    // host operation. This is correlation, not an action grant or lease renewal.
+    const keepPendingForDraftEcho = echo && pending.actionId === null && pending.operation === null && !pending.returned
+      && echo.configuration === configuration && echo.field === field && fields.get(field.element) === field
+      && !field.dead && !field.quarantined && field.element.getRootNode() === document
+      && overlay.field === field && overlay.generation === data.generation && pending.revision === data.revision
+      && overlay.revision === pending.revision && pending.tokenKey === JSON.stringify(overlay.viewToken)
+      && pending.tokenKey === JSON.stringify(view.viewContext?.token)
+      && echo.draftIdentity === overlay.regenerateDraftIdentity && echo.draftIdentity === regenerateDraftIdentity
+      && overlay.state === "EditingTranslation" && overlay.editing && overlay.editable && !overlay.editor.readOnly
+      && view.state === "EditingTranslation" && view.presentation.editorOwnsText && !paused
+      && editorConfigured(field) && configuration.editorRegenerateVersion === 1
+      && view.editable && view.viewContext?.canEdit === true && !overlay.composing && field.ime === "Clear"
+      && document.hasFocus() && document.activeElement === overlay.host && overlay.shadow.activeElement === overlay.editor
+      && overlay.draftRevision === echo.draftRevision && overlay.editor.value === echo.draft && view.text === echo.draft
+      && liveDeadline(overlay) && liveDeadline(echo);
+    if (!overlay) return {visible: false}; // Clock discontinuity retires the document observation.
+    // Once interrupted, even an identical later render cannot revive the echo.
+    // Keep the old return receipt for the existing late-Draft/ACK settlement.
+    if (pending && !keepPendingForDraftEcho) pending.echo = null;
     const newView = overlay.viewIdentity !== viewIdentity;
     if (newView) {
       overlay.retryPending = false;
@@ -1466,7 +1490,7 @@
     if (newView) {
       // Retain only the receipt of this already requested handoff. No new view
       // gets an action until the host supplies the actual operation identity.
-      if (overlay.editorReturn && (view.state !== "ReturningToSource"
+      if (pending && !keepPendingForDraftEcho && (view.state !== "ReturningToSource"
         || view.viewContext?.token?.target?.value !== overlay.field.id
         || view.viewContext?.token?.commandGeneration !== overlay.generation)) overlay.editorReturn = null;
       retireEditorControl();
@@ -1646,15 +1670,26 @@
     const queuedAtMs = clockValid() && Number.isFinite(event?.timeStamp)
       && event.timeStamp >= 0 && event.timeStamp <= monoNow()
       ? Math.floor(clock.lower + event.timeStamp) : NaN;
+    const echo = editing && Number.isSafeInteger(queuedAtMs)
+      ? {field: current.field, configuration, draft: confirmation.draft,
+        draftRevision: confirmation.draftRevision, draftIdentity: confirmation.draftIdentity,
+        expiresAtPerformanceMs: queuedAtMs + 500 - clock.upper,
+        expiresAtWallMs: queuedAtMs + 500 - clock.upperWall} : null;
     closeRegenerate(current, true);
     // One pending handoff keeps its original identity/time until its exact
     // terminal reply or a new view retires it. Expiry alone is not settlement.
     if (replace && current.editorReturn) { if (overlay === current) position(); return; }
     if (replace && allowed && (!editing || Number.isSafeInteger(queuedAtMs))) {
       if (editing) {
+        // Restoring focus can synchronously change this same DOM/view. The old
+        // choice cannot inherit a newer token, settings or a later (even ABA) draft.
+        if (overlay !== current || !echo || echo.configuration !== configuration || !current.editing || !current.editable
+          || current.editor.readOnly || !menuActionCurrent(current, confirmation.opened)
+          || current.regenerateDraftIdentity !== echo.draftIdentity
+          || current.draftRevision !== echo.draftRevision || current.editor.value !== echo.draft) return;
         current.editorReturn = {token: current.viewToken, tokenKey: JSON.stringify(current.viewToken),
-          revision: current.revision, queuedAtMs, actionId: null, operation: null, returned: false};
-        ui("regenerate", {draft: current.editor.value, queuedAtMs});
+          revision: current.revision, queuedAtMs, actionId: null, operation: null, returned: false, echo};
+        ui("regenerate", {draft: echo.draft, queuedAtMs});
       } else ui("regenerate");
     }
     if (overlay === current) position();

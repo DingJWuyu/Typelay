@@ -131,7 +131,9 @@ Windows 自有练习源的人工稿进入 More 时，旧编辑 attempt 永久退
 
 Browser 的 `EditingTranslation` 重译确认使用独立于 owned 练习源的[一次操作关联](../../src/shared/TypeLay.Runtime/SessionController.EditorRegenerate.cs)。Host 配置 `editorRegenerateVersion=1`，只在当前 DOM 的实际 `sessionBindings` 与 fresh describe 同样回显版本 1 时消费专用对象；缺省或未知版本不算支持。旧版未协商 Editing 与原非 Editing 的 plain 操作保持兼容，已协商的 plain 或任何状态的畸形对象不能降级为旧重译入口。非浏览器消费者不接入这个协议。
 
-Browser 的确认框在用户实际点击或按键选择 Replace 前只是显示，不创建返回意图或许可。同一合法 field/view/token 下，Host 对当前人工稿的精确回显可以保留原确认：原编辑序列未变、当前/原确认/回显三稿一致，且除 text 外的完整视图身份（含动作设置）不变。后来编辑含 ABA、撤权、新 owner 或失效 lease 仍关闭；已发出的 intent 继续按原规则退休。显示沿既有 owner 的合法续租，不增加人类确认超时；回显不重开提示、不授新票或延长操作期限。真实 Replace 才按下面的单次操作规则受理。
+Browser 的确认框在用户实际点击或按键选择 Replace 前只是显示，不创建返回意图或许可。同一合法 field/view/token 下，Host 对当前人工稿的精确回显可以保留原确认：原编辑序列未变、当前/原确认/回显三稿一致，且除 text 外的完整视图身份（含动作设置）不变。后来编辑含 ABA、撤权、新 owner 或失效 lease 仍关闭。显示沿既有 owner 的合法续租，不增加人类确认超时；回显不重开提示、不授新票或延长操作期限。真实 Replace 才按下面的单次操作规则受理。
+
+真实 Replace 发出后，在 Host 关联实际 Returning 操作之前，DOM 只保留原 pending 的精确当前稿回显：本次动作冻结的 field、配置、token、revision、完整非 text 身份（含动作设置）、稿件版本与三份稿件均未变，实际编辑器仍聚焦、Clear 且合法，原 500ms 仍有效。该回显不重发、续期或创建关联。真实编辑含 ABA、组合输入及离焦永久撤销这项回显例外；既有 receipt 仍可结算，不代表旧重译意图继续有效。新 view、撤权、超期、已退休或已返源的动作不能由后来回显复活，原 Return/fresh/Core 门保持。
 
 Host 在真实受理点冻结本次 Action、原 view/peer/document/route/target 与操作时间；Runtime 产生实际 Returning Operation 后，通过既有 Return 请求传递关联，不从 token 加一或最新全局状态猜身份。原操作起 500ms 不续期，关联不是读取、编辑、接受或写回许可。UI 受理到异步调用、Returning Render 到 Return RPC 的间隙内，后来稿仅作为该 exact owner 的本地观察暂存；实际请求匹配后才送入同一 Runtime 操作，失权则丢弃旧关联。真实 DraftChanged（含 ABA 及协议允许范围内的超长稿）永久废弃旧 Replace 意图，成功回源后走当前稿的普通路径；非法稿仍沿既有 Core 规则，不新增接受承诺。没有后来编辑时，ACK 也只说明这次返回，必须再 fresh Capture 当前合法原源并经 Core 判定才重译；合法正文改变可翻译完整当前源，已退休旧会话不得复活或重复调度。全局焦点/源 epoch 如实推进，后继观察 receipt 仅能关联本次实际返回，不能代替 fresh 身份或 IME 校验。
 

@@ -57,7 +57,7 @@ internal sealed partial class SettingsWindow
         // Navigation may retire its peer and animation, but not an accepted save.
         bool saved = await SaveAsync(proposed);
         // SaveAsync still retires and rebuilds the real RadioButtons. Only numbers
-        // and the original start instant cross that rebuild, never an old peer or permission.
+        // and an already-rendered start instant cross that rebuild, never an old peer or permission.
         if (saved && travel is not null && IsVisible && _page == "general" && !_emergencyShutdown && _closeDialog is null
             && visibility == _generalModeVisibility && geometry == _generalModeWindowGeometry
             && ReferenceEquals(navigation, _pageNavigation) && appearance == _appearanceStamp
@@ -67,7 +67,15 @@ internal sealed partial class SettingsWindow
             originalThumb?.Settle();
     }
 
-    private sealed record GeneralModeTravel(long Started, double Left, double Width, double TargetLeft, double TargetWidth, double TrackWidth);
+    private sealed record GeneralModeTravel(double Left, double Width, double TargetLeft, double TargetWidth, double TrackWidth)
+    {
+        // A synchronous save can rebuild the controls before WPF renders at all.
+        // Only the first rendering callback starts this shared travel's clock.
+        public long? Started
+        {
+            get; set;
+        }
+    }
 
     // One bounded decoration on this page, not an animation/interaction framework.
     private sealed class GeneralModeThumb : IDisposable
@@ -136,7 +144,7 @@ internal sealed partial class SettingsWindow
                 Settle();
                 left = Canvas.GetLeft(_thumb);
             }
-            var travel = new GeneralModeTravel(Stopwatch.GetTimestamp(), left, _thumb.Width,
+            var travel = new GeneralModeTravel(left, _thumb.Width,
                 target.Left, target.Width, _choices.ActualWidth);
             Continue(travel);
             return travel;
@@ -155,14 +163,23 @@ internal sealed partial class SettingsWindow
                 Settle();
                 return;
             }
-            if (UiTheme.ReduceMotion || Stopwatch.GetElapsedTime(travel.Started).TotalMilliseconds >= 300)
+            if (UiTheme.ReduceMotion || travel.Started is { } started && Stopwatch.GetElapsedTime(started).TotalMilliseconds >= 300)
             {
                 Position(travel.TargetLeft, travel.TargetWidth);
                 return;
             }
             _travel = travel;
-            CompositionTarget.Rendering += Frame;
-            Draw(travel);
+            try
+            {
+                Draw(travel);
+                if (_travel is not null)
+                    CompositionTarget.Rendering += Frame;
+            }
+            catch
+            {
+                Stop();
+                throw;
+            }
         }
 
         private void Frame(object? sender, EventArgs args)
@@ -185,12 +202,22 @@ internal sealed partial class SettingsWindow
             if (_lastFrame == frame)
                 return;
             _lastFrame = frame;
-            Draw(travel);
+            travel.Started ??= Stopwatch.GetTimestamp();
+            try
+            {
+                Draw(travel);
+            }
+            catch
+            {
+                Stop();
+                throw;
+            }
         }
 
         private void Draw(GeneralModeTravel travel)
         {
-            double progress = Math.Clamp(Stopwatch.GetElapsedTime(travel.Started).TotalMilliseconds / 300, 0, 1);
+            double progress = travel.Started is { } started
+                ? Math.Clamp(Stopwatch.GetElapsedTime(started).TotalMilliseconds / 300, 0, 1) : 0;
             double eased = Ease(progress);
             Position(travel.Left + (travel.TargetLeft - travel.Left) * eased,
                 travel.Width + (travel.TargetWidth - travel.Width) * eased);
@@ -227,11 +254,17 @@ internal sealed partial class SettingsWindow
         {
             if (_disposed)
                 return;
-            Settle();
-            _disposed = true;
-            _surface.Loaded -= Loaded;
-            _surface.Unloaded -= Unloaded;
-            _choices.SizeChanged -= SizeChanged;
+            try
+            {
+                Settle();
+            }
+            finally
+            {
+                _disposed = true;
+                _surface.Loaded -= Loaded;
+                _surface.Unloaded -= Unloaded;
+                _choices.SizeChanged -= SizeChanged;
+            }
         }
     }
 }

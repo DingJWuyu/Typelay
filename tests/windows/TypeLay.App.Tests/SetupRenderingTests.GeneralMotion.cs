@@ -20,7 +20,14 @@ public sealed partial class SetupRenderingTests
     [InlineData("zh-CN", "dark")]
     [InlineData("en", "light")]
     [InlineData("en", "dark")]
-    public Task GeneralModeThumbSlidesAcrossRetiredControlsWithoutRetainingTheirPermission(string language, string theme) => desktop.RunAsync(async () =>
+    public Task GeneralModeThumbSlidesAcrossRetiredControlsWithoutRetainingTheirPermission(string language, string theme) =>
+        GeneralModeThumbTransition(language, theme);
+
+    [Fact]
+    public Task GeneralModeThumbStillSlidesAfterASynchronousSaveNotificationBlocksItsFirstFrame() =>
+        GeneralModeThumbTransition("en", "light", slowNotification: true);
+
+    private Task GeneralModeThumbTransition(string language, string theme, bool slowNotification = false) => desktop.RunAsync(async () =>
     {
         await using var scene = new GeneralScene(language, theme);
         scene.Settings.Update(scene.Settings.Value with
@@ -43,72 +50,59 @@ public sealed partial class SetupRenderingTests
         var firstImage = ThumbImage(scene.Window);
         Assert.True(oldChoice.Focus());
         var oldProvider = GeneralSelection(oldChoice);
-        long selectStartedTimestamp = Stopwatch.GetTimestamp();
-        oldProvider.Select();
-        long selectReturnedTimestamp = Stopwatch.GetTimestamp();
-        scene.Window.UpdateLayout();
-        long layoutFinishedTimestamp = Stopwatch.GetTimestamp();
-        Assert.Equal(WorkMode.OnDemand, WindowsRuntime.CreateSettings(scene.Path).Value.Mode);
-        var current = GeneralElement<Border>(scene.Window, "GeneralModeThumb");
-        var choice = GeneralElement<RadioButton>(scene.Window, "GeneralMode_OnDemand");
-        Assert.NotSame(original, current);
-        Assert.NotSame(oldChoice, choice);
-        Assert.False(oldChoice.IsDescendantOf(scene.Window));
-        Assert.Same(choice, Keyboard.FocusedElement);
-        var destination = ChoiceBounds(choice, current);
-        Assert.True(destination.Left > start.Left + 1);
-        long boundsReadStartedTimestamp = Stopwatch.GetTimestamp();
-        var initialBounds = ThumbBounds(current);
-        try
-        {
-            Assert.InRange(initialBounds.Left, start.Left, destination.Left - .01);
-        }
-        catch
-        {
-            try
-            {
-                // These bracket existing synchronous calls and precede the
-                // original geometry read; none proves a rendered first frame.
-                TestContext.Current.TestOutputHelper?.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
-                {
-                    operation = "general-mode-thumb-initial-boundary",
-                    timestampFrequency = Stopwatch.Frequency,
-                    selectStartedTimestamp,
-                    selectReturnedTimestamp,
-                    layoutFinishedTimestamp,
-                    boundsReadStartedTimestamp,
-                    start = new
-                    {
-                        left = start.Left,
-                        width = start.Width
-                    },
-                    destination = new
-                    {
-                        left = destination.Left,
-                        width = destination.Width
-                    },
-                    bounds = new
-                    {
-                        left = initialBounds.Left,
-                        width = initialBounds.Width
-                    }
-                }));
-            }
-            catch (Exception error) when (error is not OutOfMemoryException) { }
-            throw;
-        }
-        var retired = ThumbBounds(original);
+        Border? current = null;
+        RadioButton? choice = null;
+        (double Left, double Width) destination = default, retired = default;
         var samples = new List<(double Left, double Width)>();
         BitmapSource? middleImage = null;
-        await ObserveThumbFrames(() =>
+        int notifications = 0;
+        void SlowCommittedNotification()
         {
-            scene.Window.UpdateLayout();
-            Assert.Equal(retired, ThumbBounds(original));
-            var bounds = ThumbBounds(current);
-            samples.Add(bounds);
-            if (middleImage is null && bounds.Left > start.Left + 1 && bounds.Left < destination.Left - 1)
-                middleImage = ThumbImage(scene.Window);
-        });
+            notifications++;
+            // Reproduce the measured synchronous save boundary, not a wait for
+            // animation to pass. No rendering can run during this UI-thread stall.
+            Thread.Sleep(250);
+        }
+        if (slowNotification)
+            scene.Settings.Changed += SlowCommittedNotification;
+        try
+        {
+            await ObserveThumbFrames(() =>
+            {
+                if (current is null)
+                    return;
+                scene.Window.UpdateLayout();
+                Assert.Equal(retired, ThumbBounds(original));
+                var bounds = ThumbBounds(current);
+                samples.Add(bounds);
+                if (middleImage is null && bounds.Left > start.Left + 1 && bounds.Left < destination.Left - 1)
+                    middleImage = ThumbImage(scene.Window);
+            }, trigger: () =>
+            {
+                oldProvider.Select();
+                scene.Window.UpdateLayout();
+                Assert.Equal(WorkMode.OnDemand, WindowsRuntime.CreateSettings(scene.Path).Value.Mode);
+                var selectedThumb = GeneralElement<Border>(scene.Window, "GeneralModeThumb");
+                choice = GeneralElement<RadioButton>(scene.Window, "GeneralMode_OnDemand");
+                Assert.NotSame(original, selectedThumb);
+                Assert.NotSame(oldChoice, choice);
+                Assert.False(oldChoice.IsDescendantOf(scene.Window));
+                Assert.Same(choice, Keyboard.FocusedElement);
+                destination = ChoiceBounds(choice, selectedThumb);
+                Assert.True(destination.Left > start.Left + 1);
+                Assert.InRange(ThumbBounds(selectedThumb).Left, start.Left, destination.Left - .01);
+                retired = ThumbBounds(original);
+                current = selectedThumb;
+            });
+        }
+        finally
+        {
+            if (slowNotification)
+                scene.Settings.Changed -= SlowCommittedNotification;
+        }
+        Assert.Equal(slowNotification ? 1 : 0, notifications);
+        Assert.NotNull(current);
+        Assert.NotNull(choice);
         Assert.Contains(samples, point => point.Left > start.Left + 1 && point.Left < destination.Left - 1);
         // The accepted CSS curve rises above one before settling; a linear/ease-out
         // replacement would not satisfy this visible geometry contract.
@@ -128,9 +122,70 @@ public sealed partial class SetupRenderingTests
         catch (ElementNotAvailableException) { }
         catch (ElementNotEnabledException) { }
         Assert.Equal(saved, File.ReadAllText(scene.Path));
-        SaveThumbImage(firstImage, $"general-mode-thumb-{language}-{theme}-start.png");
-        SaveThumbImage(middleImage, $"general-mode-thumb-{language}-{theme}-middle.png");
-        SaveThumbImage(ThumbImage(scene.Window), $"general-mode-thumb-{language}-{theme}-end.png");
+        string suffix = slowNotification ? "-slow-save" : "";
+        SaveThumbImage(firstImage, $"general-mode-thumb-{language}-{theme}{suffix}-start.png");
+        SaveThumbImage(middleImage, $"general-mode-thumb-{language}-{theme}{suffix}-middle.png");
+        SaveThumbImage(ThumbImage(scene.Window), $"general-mode-thumb-{language}-{theme}{suffix}-end.png");
+    });
+
+    [Fact]
+    public Task GeneralModeThumbDoesNotReplayAnAlreadyRenderedTravelWhenItsSaveFinallyCompletes() => desktop.RunAsync(async () =>
+    {
+        await using var scene = new GeneralScene("en", "light");
+        scene.Settings.Update(scene.Settings.Value with
+        {
+            Motion = "full"
+        });
+        scene.Window.UpdateLayout();
+        var original = GeneralElement<Border>(scene.Window, "GeneralModeThumb");
+        var oldChoice = GeneralElement<RadioButton>(scene.Window, "GeneralMode_OnDemand");
+        var start = ThumbBounds(original);
+        var destination = ChoiceBounds(oldChoice, original);
+        string saved = File.ReadAllText(scene.Path);
+        var acknowledgement = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        scene.Window.PrepareSettingsChange = _ => acknowledgement.Task;
+        bool sawMiddle = false, sawOvershoot = false, acknowledged = false, committed = false;
+        try
+        {
+            await ObserveThumbFrames(() =>
+            {
+                scene.Window.UpdateLayout();
+                var current = GeneralElement<Border>(scene.Window, "GeneralModeThumb");
+                if (scene.Settings.Value.Mode == WorkMode.Automatic)
+                {
+                    Assert.Same(original, current);
+                    var bounds = ThumbBounds(current);
+                    sawMiddle |= bounds.Left > start.Left + 1 && bounds.Left < destination.Left - 1;
+                    sawOvershoot |= bounds.Left > destination.Left + .25;
+                    if (!acknowledged && sawOvershoot && Math.Abs(bounds.Left - destination.Left) <= .01
+                        && Math.Abs(bounds.Width - destination.Width) <= .01)
+                    {
+                        acknowledged = true;
+                        acknowledgement.SetResult(true);
+                    }
+                    return;
+                }
+                committed = true;
+                Assert.NotSame(original, current);
+                Assert.False(oldChoice.IsDescendantOf(scene.Window));
+                AssertThumbAt(GeneralElement<RadioButton>(scene.Window, "GeneralMode_OnDemand"), current);
+            }, trigger: () =>
+            {
+                GeneralSelection(oldChoice).Select();
+                Assert.Equal(WorkMode.Automatic, scene.Settings.Value.Mode);
+                Assert.Equal(saved, File.ReadAllText(scene.Path));
+            });
+            Assert.True(sawMiddle);
+            Assert.True(sawOvershoot);
+            Assert.True(acknowledged);
+            Assert.True(committed);
+            Assert.Equal(WorkMode.OnDemand, WindowsRuntime.CreateSettings(scene.Path).Value.Mode);
+        }
+        finally
+        {
+            acknowledgement.TrySetResult(false);
+            await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        }
     });
 
     [Theory]
@@ -258,16 +313,17 @@ public sealed partial class SetupRenderingTests
         Assert.InRange(Math.Abs(expected.Left - actual.Left), 0, .01);
         Assert.InRange(Math.Abs(expected.Width - actual.Width), 0, .01);
     }
-    private static async Task ObserveThumbFrames(Action observe)
+    private static async Task ObserveThumbFrames(Action observe, Action? trigger = null)
     {
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var clock = Stopwatch.StartNew();
+        TimeSpan observationStarted = TimeSpan.Zero;
         void Frame(object? sender, EventArgs args)
         {
             try
             {
                 observe();
-                if (clock.ElapsedMilliseconds >= 400)
+                if ((clock.Elapsed - observationStarted).TotalMilliseconds >= 400)
                     done.TrySetResult();
             }
             catch (Exception error)
@@ -278,7 +334,12 @@ public sealed partial class SetupRenderingTests
         CompositionTarget.Rendering += Frame;
         try
         {
-            await done.Task.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+            trigger?.Invoke();
+            observationStarted = clock.Elapsed;
+            TimeSpan remaining = TimeSpan.FromSeconds(3) - clock.Elapsed;
+            if (remaining <= TimeSpan.Zero)
+                throw new TimeoutException("The General thumb selection exceeded its rendering deadline.");
+            await done.Task.WaitAsync(remaining, TestContext.Current.CancellationToken);
         }
         finally
         {

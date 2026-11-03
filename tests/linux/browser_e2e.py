@@ -5321,7 +5321,6 @@ class BrowserContract(unittest.TestCase):
             "unknown-editor",
             "paused",
             "expired",
-            "pending-intent",
         ):
             with self.subTest(phase=phase):
                 self.page.reload()
@@ -5340,18 +5339,10 @@ class BrowserContract(unittest.TestCase):
                 self.assertTrue(self.command("overlay-render", data)["visible"])
                 self.click_overlay_control("更多")
                 self.click_overlay_control("重新翻译")
-                if phase == "pending-intent":
-                    self.click_overlay_control("替换")
-                    self.assertIn(
-                        "editorRegenerate", self.command("describe", {"target": snapshot["target"]})
-                    )
-                    self.click_overlay_control("更多")
-                    self.click_overlay_control("重新翻译")
-                else:
-                    # Opening the real question has not issued a Replace intention.
-                    self.assertNotIn(
-                        "editorRegenerate", self.command("describe", {"target": snapshot["target"]})
-                    )
+                # Opening the real question has not issued a Replace intention.
+                self.assertNotIn(
+                    "editorRegenerate", self.command("describe", {"target": snapshot["target"]})
+                )
                 question = self.overlay_control("替换你修改过的译文？", "group")
                 self.assertTrue(
                     self.overlay_dom(
@@ -5434,15 +5425,335 @@ class BrowserContract(unittest.TestCase):
                     )
                 events = self.page.evaluate("""fixtureMessages.filter(m => m.event === 'ui'
                     && m.data.operation === 'regenerate').map(m => m.data.value)""")
-                self.assertEqual(len(events), 1 if preserved or phase == "pending-intent" else 0)
+                self.assertEqual(len(events), 1 if preserved else 0)
                 if preserved:
                     self.assertEqual(events[0]["draft"], "My protected draft")
                     self.assertIsInstance(events[0]["queuedAtMs"], int)
-                elif phase == "pending-intent":
-                    # A new view still retires the already-sent original intent.
-                    self.assertNotIn(
-                        "editorRegenerate", self.command("describe", {"target": snapshot["target"]})
+                self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+                self.assertEqual(self.page.evaluate("window.submitted"), 0)
+                self.assertEqual(self.accepted(), [])
+
+    def begin_pending_editor_replace(self, activation="click"):
+        snapshot, data = self.open_editor("Tab", "Esc")
+        data["appearance"] = {"uiLanguage": "zh-CN", "motion": "reduce"}
+        self.set_translation_menu(
+            data, self.translation_menu_state(canChangeStyle=False, canInheritStyle=False)
+        )
+        editor = self.overlay_control("TypeLay 译文", "textbox")
+        self.page.keyboard.press("Control+A")
+        self.page.keyboard.insert_text("My pending draft")
+        self.click_overlay_control("更多")
+        self.click_overlay_control("重新翻译")
+        if activation == "click":
+            self.click_overlay_control("替换")
+        else:
+            self.page.keyboard.press("Tab")
+            self.page.keyboard.down(activation)
+            self.page.keyboard.down(activation)  # Held repeats cannot issue another action.
+        # Host echo is deliberately still pending; do not replace its old view text.
+        return snapshot, data, editor
+
+    def test_replace_focus_restore_cannot_adopt_a_changed_view_or_later_draft(self):
+        for phase in ("new-token", "new-view-draft", "action-settings", "draft-aba"):
+            with self.subTest(phase=phase):
+                self.page.reload()
+                self.page.locator("#source").focus()
+                snapshot, data = self.open_editor("Tab", "Esc")
+                data["appearance"] = {"uiLanguage": "zh-CN", "motion": "reduce"}
+                self.set_translation_menu(
+                    data, self.translation_menu_state(canChangeStyle=False, canInheritStyle=False)
+                )
+                editor = self.overlay_control("TypeLay 译文", "textbox")
+                self.page.keyboard.press("Control+A")
+                self.page.keyboard.insert_text("My pending draft")
+                self.click_overlay_control("更多")
+                self.click_overlay_control("重新翻译")
+                self.sequence += 1
+                self.cdp.send(
+                    "Runtime.callFunctionOn",
+                    {
+                        "objectId": editor,
+                        "arguments": [{"value": data}, {"value": phase}, {"value": self.sequence}],
+                        "functionDeclaration": """function(data, phase, id) {
+                      this.addEventListener('focus', event => {
+                        const host = this.getRootNode().host;
+                        if (phase === 'draft-aba') {
+                          // Public DOM edit notifications revoke even when untrusted.
+                          // Chromium supplies the real focus event; no adapter state is accessed.
+                          for (const text of ['My pending draft!', 'My pending draft']) {
+                            this.value = text;
+                            this.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText'}));
+                          }
+                        } else {
+                          if (phase === 'new-token') {
+                            data.revision++;
+                            data.view.viewContext.token.revision++;
+                          } else if (phase === 'new-view-draft') {
+                            data.view.presentation.editorOwnsText = false;
+                            data.view.state = 'ValidTranslation';
+                            data.view.text = 'A newer rendered draft';
+                          } else data.view.viewContext.translationActions.settingsRevision++;
+                          fixtureCommand({id, op:'overlay-render', data});
+                        }
+                        window.fixtureReplaceFocus = {trusted:event.isTrusted,
+                          sameEditor:this.isConnected && this.getRootNode().host === host};
+                      }, {once:true});
+                    }""",
+                    },
+                )
+                self.click_overlay_control("替换")
+                self.assertEqual(
+                    self.page.evaluate("window.fixtureReplaceFocus"),
+                    {"trusted": True, "sameEditor": True},
+                )
+                self.assertNotIn(
+                    "editorRegenerate", self.command("describe", {"target": snapshot["target"]})
+                )
+                self.assertEqual(
+                    self.page.evaluate("""fixtureMessages.filter(m => m.event==='ui'
+                      && m.data.operation==='regenerate').length"""),
+                    0,
+                )
+                self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+                self.assertEqual(self.page.evaluate("window.submitted"), 0)
+                self.assertEqual(self.accepted(), [])
+
+    def test_pending_replace_keeps_only_its_exact_echo_before_and_after_key_release(self):
+        for activation in ("click", "Enter", "Space"):
+            with self.subTest(activation=activation):
+                self.page.reload()
+                self.page.locator("#source").focus()
+                snapshot, data, editor = self.begin_pending_editor_replace(activation)
+                data["view"]["text"] = "My pending draft"
+                self.sequence += 3
+                before_release = self.page.evaluate(
+                    """({id, data}) => {
+                      const before = fixtureCommand({id, op:'describe', data:{target:data.target}});
+                      const rendered = fixtureCommand({id:id+1, op:'overlay-render', data});
+                      const after = fixtureCommand({id:id+2, op:'describe', data:{target:data.target}});
+                      return {before:before?.editorRegenerate, after:after?.editorRegenerate, rendered};
+                    }""",
+                    {"id": self.sequence - 2, "data": data},
+                )
+                fact = before_release["before"]
+                self.assertTrue(fact["editorFocused"])
+                self.assertIsNone(fact["actionId"])
+                self.assertEqual(before_release.get("after"), fact)
+                self.assertTrue(before_release["rendered"]["visible"])
+                if activation != "click":
+                    self.page.keyboard.up(activation)
+                self.sequence += 8
+                result = self.page.evaluate(
+                    """({id, data, fact}) => {
+                      const repeated = fixtureCommand({id, op:'overlay-render', data});
+                      const after = fixtureCommand({id:id+1, op:'describe', data:{target:data.target}});
+                      const action = {actionId:crypto.randomUUID(), token:fact.token, queuedAtMs:fact.queuedAtMs};
+                      const operation = {...fact.token, revision:fact.token.revision+1};
+                      const request = {action, operation, expiresAtMs:fact.queuedAtMs+500};
+                      const returning = structuredClone(data);
+                      returning.revision = operation.revision;
+                      returning.view.state = 'ReturningToSource';
+                      returning.view.viewContext.token = operation;
+                      fixtureCommand({id:id+2, op:'overlay-render', data:returning});
+                      const proof = fixtureCommand({id:id+3, op:'describe', data:{target:data.target}});
+                      const reply = fixtureCommand({id:id+4, op:'return', data:{target:data.target,
+                        authority:proof.authority, editorReturn:request}});
+                      const description = fixtureCommand({id:id+5, op:'describe', data:{target:data.target}});
+                      const fresh = fixtureCommand({id:id+6, op:'capture', data:{target:data.target,
+                        authority:description.authority, requireFocused:true}});
+                      const duplicate = fixtureCommand({id:id+7, op:'return', data:{target:data.target,
+                        authority:description.authority, editorReturn:request}});
+                      return {repeated, after:after?.editorRegenerate, reply, request, fresh, duplicate,
+                        events:fixtureMessages.filter(m => m.event==='ui' && m.data.operation==='regenerate').map(m=>m.data)};
+                    }""",
+                    {"id": self.sequence - 7, "data": data, "fact": fact},
+                )
+                self.assertEqual(result.get("after"), fact)
+                self.assertTrue(result["reply"]["returned"], result)
+                self.assertEqual(result["reply"]["editorReturn"], result["request"])
+                self.assertEqual(result["request"]["expiresAtMs"], fact["queuedAtMs"] + 500)
+                self.assertFalse(result["duplicate"]["returned"])
+                self.assertTrue(result["fresh"]["focused"])
+                self.assertEqual(result["fresh"]["text"], "Hello")
+                self.assertEqual(len(result["events"]), 1)
+                self.assertEqual(result["events"][0]["value"]["queuedAtMs"], fact["queuedAtMs"])
+                self.assertEqual(
+                    self.overlay_dom(editor, "function() {return [this.value,this.readOnly];}"),
+                    ["My pending draft", True],
+                )
+                self.assertEqual(self.page.evaluate("window.submitted"), 0)
+                self.assertEqual(self.accepted(), [])
+
+    def test_pending_replace_echo_cannot_survive_an_interruption_or_revive_after_retirement(self):
+        for phase in (
+            "stale-text",
+            "draft",
+            "draft-aba",
+            "blur-refocus",
+            "composition",
+            "token-lifetime",
+            "new-revision",
+            "action-settings",
+            "edit-revoked",
+            "readonly-view",
+            "paused",
+            "expired",
+            "source-policy",
+            "reopened-confirmation",
+        ):
+            with self.subTest(phase=phase):
+                self.page.reload()
+                self.page.locator("#source").focus()
+                snapshot, data, editor = self.begin_pending_editor_replace()
+                fact = self.command("describe", {"target": snapshot["target"]})["editorRegenerate"]
+                data["view"]["text"] = "My pending draft"
+                changed = json.loads(json.dumps(data))
+                if phase == "stale-text":
+                    changed["view"]["text"] = "My pending draf"
+                elif phase in ("draft", "draft-aba"):
+                    self.page.keyboard.insert_text("!")
+                    if phase == "draft-aba":
+                        self.page.keyboard.press("Backspace")
+                elif phase == "blur-refocus":
+                    self.page.locator("#other").focus()
+                    self.overlay_dom(editor, "function() {this.focus();}")
+                elif phase == "composition":
+                    self.overlay_dom(
+                        editor,
+                        "function() {this.dispatchEvent(new CompositionEvent('compositionstart'));}",
                     )
+                elif phase == "token-lifetime":
+                    changed["view"]["viewContext"]["token"]["target"]["lifetime"] = "new-owner"
+                elif phase == "new-revision":
+                    changed["revision"] += 1
+                    changed["view"]["viewContext"]["token"]["revision"] += 1
+                elif phase == "action-settings":
+                    changed["view"]["viewContext"]["translationActions"]["settingsRevision"] += 1
+                elif phase == "edit-revoked":
+                    changed["view"]["viewContext"]["canEdit"] = False
+                elif phase == "readonly-view":
+                    changed["view"]["editable"] = False
+                elif phase == "paused":
+                    changed["view"]["state"] = "Paused"
+                elif phase == "expired":
+                    # Renew only the display, then cross the action's original 500ms.
+                    # The still-visible editor must not turn that renewal into a new action.
+                    self.command(
+                        "overlay-renew",
+                        {
+                            "target": snapshot["target"],
+                            "authority": snapshot["authority"],
+                            "revision": data["revision"],
+                        },
+                    )
+                    self.page.wait_for_timeout(520)
+                    self.assertEqual(
+                        self.overlay_dom(
+                            editor,
+                            "function() {return [this.isConnected,this.readOnly,this.matches(':focus')];}",
+                        ),
+                        [True, False, True],
+                    )
+                elif phase == "source-policy":
+                    self.page.locator("#source").evaluate("element => {element.readOnly = true;}")
+                elif phase == "reopened-confirmation":
+                    self.click_overlay_control("更多")
+                    self.click_overlay_control("重新翻译")
+                self.command("overlay-render", changed)
+                self.assertNotIn(
+                    "editorRegenerate",
+                    self.command("describe", {"target": snapshot["target"]}) or {},
+                )
+                if phase == "source-policy":
+                    self.page.locator("#source").evaluate("element => {element.readOnly = false;}")
+                self.command("overlay-render", data)
+                self.assertNotIn(
+                    "editorRegenerate",
+                    self.command("describe", {"target": snapshot["target"]}) or {},
+                )
+                self.sequence += 2
+                rejected = self.page.evaluate(
+                    """({id, target, fact}) => {
+                      const proof = fixtureCommand({id, op:'describe', data:{target}});
+                      if (!proof) return {returned:false};
+                      const action = {actionId:crypto.randomUUID(), token:fact.token, queuedAtMs:fact.queuedAtMs};
+                      return fixtureCommand({id:id+1, op:'return', data:{target, authority:proof.authority,
+                        editorReturn:{action, operation:{...fact.token, revision:fact.token.revision+1},
+                          expiresAtMs:fact.queuedAtMs+500}}});
+                    }""",
+                    {"id": self.sequence - 1, "target": snapshot["target"], "fact": fact},
+                )
+                self.assertFalse(rejected["returned"])
+                self.assertEqual(
+                    self.page.evaluate("""fixtureMessages.filter(m => m.event==='ui'
+                      && m.data.operation==='regenerate').length"""),
+                    1,
+                )
+                self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+                self.assertEqual(self.page.evaluate("window.submitted"), 0)
+                self.assertEqual(self.accepted(), [])
+
+    def test_later_draft_retires_echo_but_keeps_the_original_no_write_return_receipt(self):
+        for changed_back in (False, True):
+            with self.subTest(changed_back=changed_back):
+                self.page.reload()
+                self.page.locator("#source").focus()
+                snapshot, data, editor = self.begin_pending_editor_replace()
+                fact = self.command("describe", {"target": snapshot["target"]})["editorRegenerate"]
+                self.page.keyboard.insert_text("!")
+                if changed_back:
+                    self.page.keyboard.press("Backspace")
+                latest = "My pending draft" + ("" if changed_back else "!")
+                # No Editing echo is supplied. Retirement of its preservation
+                # exception must not destroy the already-requested return receipt.
+                self.assertEqual(
+                    self.command("describe", {"target": snapshot["target"]})["editorRegenerate"],
+                    fact,
+                )
+                data["view"]["text"] = latest
+                self.sequence += 6
+                result = self.page.evaluate(
+                    """({id, data, fact}) => {
+                      const operation = {...fact.token, revision:fact.token.revision+1};
+                      const action = {actionId:crypto.randomUUID(), token:fact.token, queuedAtMs:fact.queuedAtMs};
+                      const request = {action, operation, expiresAtMs:fact.queuedAtMs+500};
+                      data.revision = operation.revision;
+                      data.view.state = 'ReturningToSource';
+                      data.view.viewContext.token = operation;
+                      fixtureCommand({id, op:'overlay-render', data});
+                      const proof = fixtureCommand({id:id+1, op:'describe', data:{target:data.target}});
+                      const reply = fixtureCommand({id:id+2, op:'return', data:{target:data.target,
+                        authority:proof.authority, editorReturn:request}});
+                      const completed = fixtureCommand({id:id+3, op:'describe', data:{target:data.target}});
+                      // The old editor view is stale, not a way to restore this action.
+                      const old = structuredClone(data);
+                      old.revision = fact.token.revision;
+                      old.view.state = 'EditingTranslation';
+                      old.view.viewContext.token = fact.token;
+                      fixtureCommand({id:id+4, op:'overlay-render', data:old});
+                      const duplicate = fixtureCommand({id:id+5, op:'return', data:{target:data.target,
+                        authority:completed.authority, editorReturn:request}});
+                      return {reply, request, completed:completed.editorRegenerate, duplicate,
+                        drafts:fixtureMessages.filter(m=>m.event==='ui' && m.data.operation==='draft').map(m=>m.data.value),
+                        actions:fixtureMessages.filter(m=>m.event==='ui' && m.data.operation==='regenerate').length};
+                    }""",
+                    {"id": self.sequence - 5, "data": data, "fact": fact},
+                )
+                self.assertTrue(result["reply"]["returned"], result)
+                self.assertEqual(result["reply"]["draft"], latest)
+                self.assertEqual(result["reply"]["editorReturn"], result["request"])
+                self.assertEqual(
+                    result["completed"]["actionId"], result["request"]["action"]["actionId"]
+                )
+                self.assertFalse(result["completed"]["editorFocused"])
+                self.assertEqual(
+                    result["drafts"][-2:] if changed_back else result["drafts"][-1:],
+                    ["My pending draft!", "My pending draft"]
+                    if changed_back
+                    else ["My pending draft!"],
+                )
+                self.assertFalse(result["duplicate"]["returned"])
+                self.assertEqual(result["actions"], 1)
                 self.assertEqual(self.page.locator("#source").input_value(), "Hello")
                 self.assertEqual(self.page.evaluate("window.submitted"), 0)
                 self.assertEqual(self.accepted(), [])

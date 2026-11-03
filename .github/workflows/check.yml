@@ -1124,6 +1124,67 @@ jobs:
         with:
           path: artifacts/linux/target-packages
           key: ${{ steps.ime-package-cache.outputs.cache-primary-key }}
+      - name: Reclaim completed private build intermediates
+        # The installed runtime is packed, relocated and checked. Keep all source,
+        # runtime, cache and diagnostic siblings of these completed build trees.
+        if: ${{ !cancelled() && steps.fcitx-package.outcome == 'success' }}
+        timeout-minutes: 1
+        run: |
+          python - <<'PY_STORAGE'
+          import os
+          import shutil
+          import stat
+          import subprocess
+          from contextlib import ExitStack
+
+          names = ("core-build", "libime-build", "fcitx5-chinese-addons-build")
+          flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+          if not shutil.rmtree.avoids_symlink_attacks:
+              raise RuntimeError("fd-based build cleanup is required")
+          with ExitStack() as resources:
+              parent = os.open(".", flags)
+              resources.callback(os.close, parent)
+              for part in ("artifacts", "linux", "fcitx-cooperative-5.1.22"):
+                  parent = os.open(part, flags, dir_fd=parent)
+                  resources.callback(os.close, parent)
+              # Validate every fixed target before removing any; do not resolve links.
+              for name in names:
+                  if not stat.S_ISDIR(os.stat(name, dir_fd=parent, follow_symlinks=False).st_mode):
+                      raise RuntimeError(f"build cleanup requires a regular directory: {name}")
+
+              def measure(stage):
+                  print(f"Linux build storage {stage}", flush=True)
+                  commands = [("df", "-Pk", "."), ("df", "-Pi", ".")]
+                  remaining = [
+                      name for name in names
+                      if os.path.lexists(f"/proc/self/fd/{parent}/{name}")
+                  ]
+                  if remaining:
+                      commands.append(("du", "-P", "-x", "-sk", "--", *remaining))
+                  for command in commands:
+                      try:
+                          result = subprocess.run(
+                              command, cwd=f"/proc/self/fd/{parent}", pass_fds=(parent,),
+                              timeout=5, check=False,
+                          )
+                          if result.returncode:
+                              print(
+                                  f"Storage measurement failed: {command[0]} ({result.returncode})",
+                                  flush=True,
+                              )
+                      except (OSError, subprocess.TimeoutExpired) as error:
+                          print(
+                              f"Storage measurement unavailable: {command[0]} ({type(error).__name__})",
+                              flush=True,
+                          )
+
+              measure("before cleanup")
+              try:
+                  for name in names:
+                      shutil.rmtree(name, dir_fd=parent)
+              finally:
+                  measure("after cleanup")
+          PY_STORAGE
       - name: Attach the matching desktop components to the main distribution
         id: complete-package
         if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.fcitx-package.outcome == 'success' && steps.qt.outcome == 'success' }}

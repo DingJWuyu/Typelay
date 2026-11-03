@@ -1646,6 +1646,7 @@ async def check_language_configuration(
             assert item.get("visible") is True and item.get("enabled") is True
         if composing is not None:
             assert actual.get("focusedImeComposing" if composing else "focusedImeClear")
+        return actual
 
     async def config_key(key_name, target=search_name, *, composing=False):
         input_target(target, composing=composing)
@@ -1746,10 +1747,11 @@ async def check_language_configuration(
             assert overlay.visible and overlay.current_record() is not None
             assert now_ms() <= evidence["configurationRender"]["expiresAtMs"]
         owned(actual)
+        pre_send = None
         if opening:
             assert actual["firstEntry"]["focused"]
         else:
-            input_target(search_name)
+            pre_send = input_target(search_name)
         phase = {
             "name": name,
             "instance": before["instance"],
@@ -1761,6 +1763,8 @@ async def check_language_configuration(
         assert len(actions) <= 4
         await language_command("xdotool", "click", "1", timeout=3)
         phase["clickFinishedAtMs"] = now_ms()
+        # Retain only the two already-observed states; this is not button delivery.
+        return actual, pre_send
 
     async def source_click(name):
         actual = owned(observe())
@@ -2156,9 +2160,120 @@ async def check_language_configuration(
         await language_wait_for(
             lambda: observe().get("focusedImeComposing"), "real search preedit missing"
         )
-        await click("typelay-language-choice-en")
+        hover, pre_send = await click("typelay-language-choice-en")
         await peer.link.ask("describe")
         composed = observe()
+        try:
+            if not (
+                composed["focusedImeComposing"]
+                and composed["overlayControls"][search_name]["focused"]
+            ):
+                # Failure-only projection of existing observations. No body,
+                # extra sample, event listener or claim about button reception.
+                def fields(record, names):
+                    result = {}
+                    for name in names:
+                        value = record.get(name)
+                        result[name] = (
+                            value
+                            if type(value) is bool
+                            or (type(value) in (int, float) and -(2**63) <= value < 2**63)
+                            else None
+                        )
+                    return result
+
+                def projection(actual):
+                    controls = actual["overlayControls"]
+                    row = controls["typelay-language-choice-en"]
+                    pointer = row["pointerObservation"]
+                    dispatch = row["pointerDispatchObservation"]
+                    result = fields(
+                        actual, ("observedAtMs", "focusedImeClear", "focusedImeComposing")
+                    )
+                    result["controls"] = {}
+                    for name in (popup_name, search_name, "typelay-language-choice-en"):
+                        control = controls[name]
+                        result["controls"][name] = fields(
+                            control, ("instance", "visible", "enabled", "focused")
+                        )
+                        surface = control.get("surfaceGeometry")
+                        result["controls"][name]["surfaceGeometry"] = (
+                            fields(
+                                surface,
+                                (
+                                    "instance",
+                                    "surfaceInstance",
+                                    "x",
+                                    "y",
+                                    "width",
+                                    "height",
+                                    "scale",
+                                ),
+                            )
+                            if surface is not None
+                            else None
+                        )
+                    result["rowPointer"] = fields(
+                        row, ("pointerInside", "pointerEnteredAtMonoMs", "pointerLeftAtMonoMs")
+                    )
+                    result["rowPointer"]["observation"] = fields(
+                        pointer, ("surfaceInstance", "nativeInstance", "x", "y")
+                    )
+                    for name, allowed in (
+                        ("status", ("captured", "unavailable")),
+                        ("surface", ("control-native", "fixture-window", "other")),
+                    ):
+                        value = pointer.get(name)
+                        result["rowPointer"]["observation"][name] = (
+                            value if type(value) is str and value in allowed else None
+                        )
+                    result["rowPointer"]["pickedAncestors"] = [
+                        fields(
+                            ancestor,
+                            (
+                                "instance",
+                                "isObservedControl",
+                                "canTarget",
+                                "canFocus",
+                                "visible",
+                                "mapped",
+                            ),
+                        )
+                        for ancestor in pointer.get("pickedAncestors", [])[:8]
+                    ]
+                    result["rowPointer"]["motionDispatch"] = fields(
+                        dispatch,
+                        (
+                            "widgetInstance",
+                            "eventWidgetInstance",
+                            "nativeInstance",
+                            "eventSurfaceInstance",
+                            "eventNativeInstance",
+                            "observedAtMonoMs",
+                            "eventType",
+                            "signalCount",
+                        ),
+                    )
+                    signal = dispatch.get("lastSignal")
+                    result["rowPointer"]["motionDispatch"]["lastSignal"] = (
+                        signal
+                        if type(signal) is str and signal in ("enter", "leave", "motion", "unmap")
+                        else None
+                    )
+                    return result
+
+                evidence["composingClickFailure"] = {
+                    "snapshotClock": "CLOCK_MONOTONIC",
+                    "buttonReceiver": "not-observed",
+                    "hover": projection(hover),
+                    "preSend": projection(pre_send),
+                }
+        except Exception:
+            # Malformed diagnostics must not replace the original assertion.
+            evidence["composingClickFailure"] = {
+                "diagnosticFailed": True,
+                "buttonReceiver": "not-observed",
+            }
         assert (
             composed["focusedImeComposing"] and composed["overlayControls"][search_name]["focused"]
         )
