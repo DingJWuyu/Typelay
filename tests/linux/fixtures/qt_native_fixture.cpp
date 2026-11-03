@@ -119,6 +119,10 @@ public:
     QHash<QObject *, OverlayObject> overlayObjects;
     quint64 overlayInstance = 0, overlayEventCount = 0, languageEventCount = 0;
     bool languageOpeningObserved = false;
+    QString overlayHideFocusAction;
+    QJsonObject configurationReceipts;
+    QPointer<QObject> configurationPreeditField;
+    bool configurationPreedit = false;
     QJsonArray motionInputs;
     bool observeMotionInputs = false;
     QJsonObject counts;
@@ -183,6 +187,16 @@ public:
         extra.insert("instance", qint64(object.instance));
         extra.insert("geometry", QJsonObject{{"x", bounds.x()}, {"y", bounds.y()},
             {"width", bounds.width()}, {"height", bounds.height()}});
+        // Independent actual-widget receipts survive the earlier menu cases' log
+        // budget. Counts contain no input text and cannot authorize product actions.
+        if (object.role.startsWith(QStringLiteral("typelay-language-choice-"))
+            || object.role == QStringLiteral("typelay-language-swap")) {
+            if (qstrcmp(event, "mouse-press") == 0 || qstrcmp(event, "clicked") == 0) {
+                auto receipt = configurationReceipts.value(object.role).toObject();
+                receipt.insert(QLatin1String(event), receipt.value(QLatin1String(event)).toInt() + 1);
+                configurationReceipts.insert(object.role, receipt);
+            }
+        }
         // Independent finite evidence for the two real motion clicks. The
         // earlier desktop cases may have exhausted the general event budget.
         if (observeMotionInputs && motionInputs.size() < 8
@@ -244,6 +258,13 @@ public:
                     overlayEvent("view-retired", overlayObjects.value(object), retirement);
             }
         }
+        if (type == QEvent::Hide && object->objectName() == QStringLiteral("typelay-overlay")
+            && !overlayHideFocusAction.isEmpty()) {
+            const auto action = std::exchange(overlayHideFocusAction, QString());
+            counts.insert("overlayHideFocusChanges", counts.value("overlayHideFocusChanges").toInt() + 1);
+            second->setFocus(Qt::OtherFocusReason); // Real host callback inside the original hide.
+            if (action == QStringLiteral("focus-second-back")) first->setFocus(Qt::OtherFocusReason);
+        }
         if (type == QEvent::Show || type == QEvent::Hide || type == QEvent::Move || type == QEvent::Resize
             || type == QEvent::MouseButtonPress || type == QEvent::MouseButtonRelease) {
             auto *widget = qobject_cast<QWidget *>(object);
@@ -278,6 +299,9 @@ public:
             else if (object == second) secondPreedit = composing;
             else if (object == plain) plainPreedit = composing;
             else if (object->objectName() == QStringLiteral("typelay-editor")) editorPreedit = composing;
+            else if (object->objectName() == QStringLiteral("typelay-language-search")) {
+                configurationPreeditField = object; configurationPreedit = composing;
+            }
         }
         const bool editor = object->objectName() == QStringLiteral("typelay-editor");
         if (object != first && object != second && object != plain && !editor) return false;
@@ -485,7 +509,8 @@ int main(int argc, char **argv) {
         return QJsonObject{{"x", origin.x()}, {"y", origin.y()},
                            {"width", widget->width()}, {"height", widget->height()}};
     };
-    QPointer<QObject> savedEditorProvider;
+    QPointer<QObject> savedEditorProvider, savedConfigurationProvider;
+    QPointer<QLineEdit> savedConfigurationSearch;
     QObject unavailableEditorProvider;
     QString editorProviderAction;
     QJsonArray motionFrames;
@@ -549,6 +574,26 @@ int main(int argc, char **argv) {
         auto *editor = window.findChild<QPlainTextEdit *>(QStringLiteral("typelay-editor"));
         auto *menu = window.findChild<QWidget *>(QStringLiteral("typelay-menu"));
         auto *moreMenu = window.findChild<QWidget *>(QStringLiteral("typelay-more-menu"));
+        QJsonObject configuration;
+        QWidget *configurationPanel = nullptr;
+        int configurationCount = 0;
+        for (auto *candidate : window.findChildren<QWidget *>(QStringLiteral("typelay-language-configuration")))
+            if (candidate->isVisible()) { configurationPanel = candidate; ++configurationCount; }
+        configuration.insert("visible", configurationCount == 1);
+        configuration.insert("visibleCount", configurationCount);
+        if (configurationPanel && configurationCount == 1) {
+            auto *search = configurationPanel->findChild<QLineEdit *>(QStringLiteral("typelay-language-search"));
+            auto *message = configurationPanel->findChild<QLabel *>(QStringLiteral("typelay-language-feedback"));
+            configuration.insert("geometry", rectangle(configurationPanel));
+            configuration.insert("searchText", search ? search->text() : QString());
+            configuration.insert("searchFocused", search && search->hasFocus());
+            configuration.insert("providerPresent", search && search->property("typelay.fcitx.qt.provider.v1").value<QObject *>());
+            configuration.insert("providerOriginal", search && search == savedConfigurationSearch && savedConfigurationProvider
+                && search->property("typelay.fcitx.qt.provider.v1").value<QObject *>() == savedConfigurationProvider);
+            configuration.insert("searchGeometry", search ? rectangle(search) : QJsonObject());
+            configuration.insert("preedit", search && observer.configurationPreeditField == search && observer.configurationPreedit);
+            configuration.insert("feedback", message ? message->text() : QString());
+        }
         QJsonObject glossary;
         auto *form = window.findChild<QWidget *>(QStringLiteral("typelay-glossary"));
         glossary.insert("visible", form && form->isVisible());
@@ -602,7 +647,9 @@ int main(int argc, char **argv) {
                     {"width", local.width()}, {"height", local.height()}});
             }
             if (button == visibleExpand) visibleExpandControl = control;
-            overlayControls.insert(name, control);
+            if (!name.startsWith(QStringLiteral("typelay-language-")) || button->isVisible()
+                || !overlayControls.value(name).toObject().value("visible").toBool())
+                overlayControls.insert(name, control);
         }
         // A hidden retired namesake must not overwrite the one current
         // control selected by the same ownership/visibility predicate.
@@ -634,6 +681,7 @@ int main(int argc, char **argv) {
             {"plain", plainState},
             {"first", field(first, firstChanges, firstEdits)},
             {"second", field(second, secondChanges, secondEdits)},
+            {"languageConfiguration", configuration}, {"configurationReceipts", observer.configurationReceipts},
             {"glossary", glossary}, {"providerEvents", observer.providerEvents},
             {"providerSequence", qint64(observer.providerSequence)},
             {"overlayVisible", overlay && overlay->isVisible()},
@@ -920,6 +968,32 @@ int main(int argc, char **argv) {
             else if (op == "plain-handoff") observer.plainHandoffAction = command.value("action").toString();
             else if (op == "plain-pending-switch") observer.plainPendingSwitch = true;
             else if (op == "on-control") observer.controlAction = command.value("action").toString();
+            else if (op == "on-overlay-hide") {
+                const auto action = command.value("action").toString();
+                observer.overlayHideFocusAction = action == QStringLiteral("focus-second")
+                    || action == QStringLiteral("focus-second-back") ? action : QString();
+            }
+            else if (op == "configuration-screenshot") {
+                QPointer<QWidget> panel;
+                for (auto *candidate : window.findChildren<QWidget *>(QStringLiteral("typelay-language-configuration")))
+                    if (candidate->isVisible()) { if (panel) qFatal("Multiple current configuration panels"); panel = candidate; }
+                if (!panel || !panel->grab().save(command.value("path").toString()))
+                    qFatal("Current configuration screenshot unavailable");
+            }
+            else if (op == "configuration-provider") {
+                QPointer<QLineEdit> search;
+                for (auto *candidate : window.findChildren<QLineEdit *>(QStringLiteral("typelay-language-search")))
+                    if (candidate->isVisible()) { if (search) qFatal("Multiple current language searches"); search = candidate; }
+                const auto action = command.value("action").toString();
+                if (search && action == "clear") {
+                    savedConfigurationSearch = search;
+                    savedConfigurationProvider = search->property("typelay.fcitx.qt.provider.v1").value<QObject *>();
+                    search->setProperty("typelay.fcitx.qt.provider.v1", QVariant());
+                } else if (search && action == "restore" && search == savedConfigurationSearch && savedConfigurationProvider
+                    && !search->property("typelay.fcitx.qt.provider.v1").value<QObject *>()) {
+                    search->setProperty("typelay.fcitx.qt.provider.v1", QVariant::fromValue(savedConfigurationProvider.data()));
+                }
+            }
             else if (op == "editor-provider") {
                 auto *editor = window.findChild<QPlainTextEdit *>(QStringLiteral("typelay-editor"));
                 if (editor) {

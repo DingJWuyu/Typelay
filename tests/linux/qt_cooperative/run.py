@@ -863,6 +863,509 @@ def language_options(native, captured, generation, state, window, environment, n
     }
 
 
+def language_configuration(native, generation, state, window, environment, fixture, out):
+    """Actual Qt/Fcitx search input and config-only messages, with a controlled Host."""
+    from wire import now_ms
+
+    revision = 1000
+    start_events = len(native.events)
+    original = state()
+    invariant = ("text", "undoAvailable", "changes", "edits")
+    selection = ("cursor", "selectionStart", "selectionLength")
+    source_selection = {}
+    choices = [
+        {"code": "en", "label": "英语", "nativeLabel": "English", "selectable": True},
+        {"code": "ja", "label": "日语", "nativeLabel": "日本語", "selectable": True},
+        {"code": "ko", "label": "韩语", "nativeLabel": "한국어", "selectable": False},
+    ]
+
+    def settled():
+        value = state()
+        return all(
+            value.get(name) == 0
+            for name in ("tlqtPendingDbus", "tlqtPendingForward", "tlqtOutputDepth")
+        )
+
+    def configuration():
+        return state().get("languageConfiguration", {})
+
+    def events(operation, opening=None):
+        native.call("describe")  # Public read drains replies; the search must not become a source.
+        return [
+            event["data"]
+            for event in native.events[start_events:]
+            if event.get("event") == "ui"
+            and event["data"].get("operation") == operation
+            and (opening is None or event["data"].get("value", {}).get("openingId") == opening)
+        ]
+
+    def unchanged(check_selection=True):
+        for name in ("first", "second"):
+            assert {key: state()[name][key] for key in invariant} == {
+                key: original[name][key] for key in invariant
+            }
+            if check_selection:
+                assert {key: state()[name][key] for key in selection} == source_selection[name]
+        assert not [
+            event for event in native.events[start_events:] if event.get("event") == "accepted"
+        ]
+        assert not any(
+            event.get("event") == "ui"
+            and event["data"].get("operation") in ("languages", "accept", "draft", "beginEdit")
+            for event in native.events[start_events:]
+        )
+
+    def click(name, phase="click", *, enabled=True):
+        value = state()
+        control = value["overlayControls"][name]
+        assert control["visible"] and control["enabled"] is enabled, control
+        bounds = control["geometry"]
+        run(
+            [
+                "xdotool",
+                "mousemove",
+                "--window",
+                window,
+                str(int((bounds["x"] + bounds["width"] / 2) * value["scale"])),
+                str(int((bounds["y"] + bounds["height"] / 2) * value["scale"])),
+                phase,
+                "1",
+            ],
+            env=environment,
+        )
+
+    def key(value, phase="key"):
+        run(["xdotool", phase, "--clearmodifiers", value], env=environment)
+        fixture("observe")
+        wait(settled, "configuration key's real provider queue retired")
+
+    def query(value):
+        key("ctrl+a")
+        key("BackSpace")
+        if value:
+            run(["xdotool", "type", "--delay", "0", value], env=environment)
+        wait(
+            lambda: configuration().get("searchText") == value and settled(),
+            "actual search text and queue",
+        )
+
+    def configure(enabled, *, next_generation=None):
+        nonlocal generation
+        if next_generation is not None:
+            generation = next_generation
+        native.call(
+            "configure-shortcuts",
+            {
+                "generation": generation,
+                "enabled": enabled,
+                "sessionEnabled": True,
+                "accept": "Ctrl+F7",
+                "exit": "Ctrl+F8",
+                "wake": {"keyval": 0xFFC6, "modifiers": 5},
+                "direct": {"keyval": 0xFFC7, "modifiers": 5},
+            },
+        )
+
+    def begin(
+        open_now=True,
+        theme="light",
+        change_focus_on_hide=False,
+        disabled=False,
+        replace_configuration=False,
+    ):
+        nonlocal revision, source_selection
+        fixture("focus", field="first")
+        wait(
+            lambda: state()["first"]["focused"] and settled(),
+            "source focus before independent configuration",
+        )
+        source_selection = {
+            name: {key: state()[name][key] for key in selection} for name in ("first", "second")
+        }
+        description = native.describe()
+        captured = native.call(
+            "capture", {"target": description["target"], "authority": description["authority"]}
+        )
+        assert captured and captured["ime"] == "Clear"
+        revision += 1
+        view = {
+            "state": "ValidTranslation",
+            "text": "Read-only fixture preview.",
+            "editable": False,
+            "sourceLanguage": "en",
+            "targetLanguage": "ja",
+            "languageChoices": {
+                side: [{"code": choice["code"], "label": choice["label"]} for choice in choices]
+                for side in ("source", "target")
+            },
+            "presentation": {"visible": True, "editorOwnsText": False},
+            "viewContext": {
+                "token": {
+                    "target": {
+                        "backend": "linux-qt6",
+                        "value": captured["target"],
+                        "lifetime": native.hello["lifetime"],
+                    },
+                    "commandGeneration": generation,
+                    "revision": revision,
+                },
+                "bindings": {"accept": "Ctrl+F7", "exit": "Ctrl+F8"},
+                "canEdit": False,
+            },
+        }
+        assert native.call(
+            "overlay-render",
+            {
+                "target": captured["target"],
+                "authority": captured["authority"],
+                "generation": generation,
+                "revision": revision,
+                "expiresAtMs": now_ms() + 800,
+                "theme": theme,
+                "view": view,
+            },
+        )["visible"]
+        wait(lambda: state().get("overlayVisible"), "source view before configuration")
+        click("typelay-menu-trigger")
+        wait(lambda: state().get("overlayMenuVisible"), "old language child remains available")
+        before = len(events("languageConfigurationBegin"))
+        if disabled:
+            entry = state()["overlayControls"]["typelay-language-search-open"]
+            assert not entry["enabled"] and entry["toolTip"]
+            click("typelay-language-search-open", enabled=False)
+            fixture("observe")
+            assert len(events("languageConfigurationBegin")) == before
+            assert state()["overlayMenuVisible"] and not configuration().get("visible")
+            unchanged()
+            return None, None
+        if replace_configuration:
+            click("typelay-language-search-open", "mousedown")
+            configure(True, next_generation=generation + "-replacement")
+            run(["xdotool", "mouseup", "1"], env=environment)
+            fixture("observe")
+            assert len(events("languageConfigurationBegin")) == before
+            assert not state()["overlayVisible"] and not configuration().get("visible")
+            unchanged()
+            return None, None
+        if change_focus_on_hide:
+            hide_changes = state().get("keys", {}).get("overlayHideFocusChanges", 0)
+            focus_changes = state()["focusTransitions"]
+            fixture("on-overlay-hide", action=change_focus_on_hide)
+        click("typelay-language-search-open")
+        if change_focus_on_hide:
+            wait(
+                lambda: state().get("keys", {}).get("overlayHideFocusChanges", 0)
+                == hide_changes + 1
+                and state()["first" if change_focus_on_hide == "focus-second-back" else "second"][
+                    "focused"
+                ],
+                "real source hide callback changes focus before Begin",
+            )
+            assert state()["focusTransitions"] >= focus_changes + (
+                2 if change_focus_on_hide == "focus-second-back" else 1
+            )
+            assert len(events("languageConfigurationBegin")) == before
+            assert not configuration().get("visible")
+            unchanged(check_selection=False)
+            return None, None
+        request = wait(
+            lambda: (found := events("languageConfigurationBegin"))[before:] and found[-1],
+            "explicit configuration Begin",
+        )
+        assert (
+            request["target"] == captured["target"]
+            and request["generation"] == generation
+            and request["revision"] == revision
+        )
+        assert set(request["value"]) == {"openingId"}
+        opening = request["value"]["openingId"]
+        payload = {
+            "openingId": opening,
+            "settingsRevision": 4,
+            "source": "en",
+            "target": "ja",
+            "sourceLabel": "英语",
+            "targetLabel": "日语",
+            "swapAllowed": True,
+            "choices": choices,
+            "theme": theme,
+            "appearance": {"uiLanguage": "en"},
+        }
+        # Host retirement may hide the old source view again. This must not
+        # retire the distinct pending opening.
+        native.call("overlay-hide")
+        if open_now:
+            assert native.call("overlay-language-configuration-open", payload)["opened"]
+            opened = wait(
+                lambda: configuration().get("searchFocused") and configuration(),
+                "actual config search focus",
+            )
+            assert opened["visibleCount"] == 1 and opened["geometry"]["width"] == 264
+            for name, control in state()["overlayControls"].items():
+                if name.startswith("typelay-language-choice-") or name == "typelay-language-swap":
+                    assert control["focusPolicy"] == 0 and not control["focused"]
+            assert native.call("describe") is None
+            assert native.call("capture") is None
+            assert configuration()["visible"] and not state()["overlayVisible"]
+        return opening, payload
+
+    def close(opening):
+        native.call("overlay-language-configuration-close", {"openingId": opening})
+        wait(lambda: not configuration().get("visible"), "owned shell closed")
+        unchanged()
+
+    configure(False)
+    begin(disabled=True)
+    configure(True)
+    begin(replace_configuration=True)
+    begin(change_focus_on_hide="focus-second")
+    begin(change_focus_on_hide="focus-second-back")
+    opening, payload = begin()
+    mapped_at = state()["observedAtMs"]
+    wait(
+        lambda: state()["observedAtMs"] > mapped_at + 600,
+        "first-presentation budget does not expire open search",
+    )
+    assert configuration()["visible"] and configuration()["searchFocused"]
+    # Same-language remains in the Host catalog. Up/Down address stable codes;
+    # filtering out the highlight must never select its old positional index.
+    key("Down")
+    key("Down")
+    query("en")
+    key("Return")
+    saved = events("languageConfigurationSave", opening)
+    assert len(saved) == 1 and saved[0]["value"] == {
+        "openingId": opening,
+        "source": "en",
+        "target": "en",
+    }
+    assert set(saved[0]) == {"operation", "value"}
+    close(opening)
+
+    opening, _ = begin()
+    query("missing-language")
+    key("Return")
+    assert not events("languageConfigurationSave", opening)
+    assert configuration()["feedback"] == "No matching languages"
+    query("")
+    key("Down")
+    key("Down")
+    key("Up")
+    key("Down")
+    key("Return", "keydown")
+    assert events("languageConfigurationSave", opening)[0]["value"]["target"] == "ja"
+    native.call(
+        "overlay-language-configuration-result",
+        {"openingId": opening, "saved": False, "reason": "save-unconfirmed"},
+    )
+    key("Return", "keydown")  # The same held scan is not a new Clear action.
+    key("Return", "keyup")
+    assert len(events("languageConfigurationSave", opening)) == 1
+    key("Return")
+    assert len(events("languageConfigurationSave", opening)) == 2
+    close(opening)
+
+    opening, _ = begin()
+    query("韩语")
+    assert state()["overlayControls"]["typelay-language-choice-ko"]["visible"]
+    assert not state()["overlayControls"]["typelay-language-choice-ko"]["enabled"]
+    assert not state()["overlayControls"]["typelay-language-choice-ja"]["visible"]
+    key("Return")
+    assert not events("languageConfigurationSave", opening)
+    query("日本語")
+    control = "typelay-language-choice-ja"
+    before_receipt = state().get("configurationReceipts", {}).get(control, {}).get("clicked", 0)
+    click(control)
+    wait(
+        lambda: state().get("configurationReceipts", {}).get(control, {}).get("clicked", 0)
+        == before_receipt + 1,
+        "real target row click receipt",
+    )
+    assert events("languageConfigurationSave", opening)[0]["value"]["target"] == "ja"
+    native.call(
+        "overlay-language-configuration-result",
+        {"openingId": opening, "saved": False, "reason": "unsupported-direction"},
+    )
+    click("typelay-language-swap")
+    assert events("languageConfigurationSave", opening)[-1]["value"] == {
+        "openingId": opening,
+        "source": "ja",
+        "target": "en",
+    }
+    close(opening)
+
+    opening, _ = begin()
+    assert configuration()["providerPresent"]
+    fixture("configuration-provider", action="clear")
+    assert not configuration()["providerPresent"]
+    key("Return", "keydown")
+    assert not events("languageConfigurationSave", opening)
+    fixture("configuration-provider", action="restore")
+    assert configuration()["providerOriginal"]
+    key("Return", "keydown")
+    key("Return", "keyup")
+    assert not events("languageConfigurationSave", opening)
+    key("Return")
+    assert len(events("languageConfigurationSave", opening)) == 1
+    close(opening)
+
+    for shortcut in ("Tab", "shift+Tab", "Escape"):
+        opening, _ = begin()
+        key(shortcut)
+        wait(
+            lambda: not configuration().get("visible"),
+            "natural Tab/ShiftTab or original Clear Escape closes config",
+        )
+        assert len(events("languageConfigurationCancel", opening)) == 1
+        assert not events("languageConfigurationSave", opening)
+        # Native Tab may select the newly focused application field according
+        # to Qt's ordinary focus policy; it still must not edit or accept text.
+        unchanged(check_selection=False)
+
+    opening, _ = begin()
+    outside = state()
+    bounds = outside["second"]["geometry"]
+    panel = outside["languageConfiguration"]["geometry"]
+    x, y = bounds["x"] + bounds["width"] - 2, bounds["y"] + bounds["height"] / 2
+    assert not (
+        panel["x"] <= x < panel["x"] + panel["width"]
+        and panel["y"] <= y < panel["y"] + panel["height"]
+    )
+    run(
+        [
+            "xdotool",
+            "mousemove",
+            "--window",
+            window,
+            str(int(x * outside["scale"])),
+            str(int(y * outside["scale"])),
+            "click",
+            "1",
+        ],
+        env=environment,
+    )
+    wait(
+        lambda: state()["second"]["focused"] and not configuration().get("visible"),
+        "outside click reaches actual source and cancels config",
+    )
+    assert len(events("languageConfigurationCancel", opening)) == 1
+    assert not events("languageConfigurationSave", opening)
+    unchanged(check_selection=False)
+
+    opening, pending = begin(False)
+    fixture("focus", field="second")
+    fixture("focus", field="first")
+    assert events("languageConfigurationCancel", opening)
+    assert not native.call("overlay-language-configuration-open", pending)["opened"]
+    assert not configuration().get("visible")
+    opening, stale = begin(False)
+    wait(
+        lambda: events("languageConfigurationCancel", opening),
+        "original pending presentation budget retires",
+    )
+    assert not native.call("overlay-language-configuration-open", stale)["opened"]
+    assert not configuration().get("visible")
+    fresh, _ = begin()
+    assert fresh != opening
+    for operation, data in (
+        ("open", stale),
+        ("close", {"openingId": opening}),
+        ("result", {"openingId": opening, "saved": False, "reason": "save-unconfirmed"}),
+    ):
+        native.call("overlay-language-configuration-" + operation, data)
+        assert configuration()["visible"] and configuration()["searchFocused"]
+    click("typelay-language-choice-en", "mousedown")
+    close(fresh)
+    run(["xdotool", "mouseup", "1"], env=environment)
+    assert not events("languageConfigurationSave", fresh)
+    assert not native.call("overlay-language-configuration-open", {**stale, "openingId": fresh})[
+        "opened"
+    ]
+
+    opening, _ = begin()
+    run(["fcitx5-remote", "-s", "pinyin"], env=environment)
+    wait(lambda: state().get("tlqtEngine") == "pinyin" and settled(), "real search pinyin engine")
+    before_replies = state()["tlqtKeyReplies"]
+    run(["xdotool", "type", "--delay", "10", "nihao"], env=environment)
+    wait(
+        lambda: state().get("tlqtKeyReplies") == before_replies + 10
+        and configuration().get("preedit")
+        and settled(),
+        "all original search pinyin replies retired while composing",
+    )
+    before_receipt = state().get("configurationReceipts", {}).get(control, {}).get("clicked", 0)
+    click(control)
+    wait(
+        lambda: state().get("configurationReceipts", {}).get(control, {}).get("clicked", 0)
+        == before_receipt + 1,
+        "Composing test actually reaches the intended target row",
+    )
+    assert configuration()["preedit"] and configuration()["searchText"] == ""
+    assert not events("languageConfigurationSave", opening)
+    key("Return", "keydown")
+    wait(
+        lambda: not configuration().get("preedit")
+        and configuration().get("searchText")
+        and settled(),
+        "original Composing Return remains with the input method",
+    )
+    key("Return", "keydown")
+    key("Return", "keyup")
+    assert configuration()["visible"] and not events("languageConfigurationSave", opening)
+    run(["fcitx5-remote", "-s", "keyboard-us"], env=environment)
+    wait(
+        lambda: state().get("tlqtEngine") == "keyboard-us" and settled(), "keyboard search restored"
+    )
+    query("en")
+    key("Return")
+    assert len(events("languageConfigurationSave", opening)) == 1
+    close(opening)
+    for theme in ("light", "dark"):
+        opening, _ = begin(theme=theme)
+
+        def move_to(bounds):
+            scale = state()["scale"]
+            run(
+                [
+                    "xdotool",
+                    "mousemove",
+                    "--window",
+                    window,
+                    str(int((bounds["x"] + bounds["width"] / 2) * scale)),
+                    str(int((bounds["y"] + bounds["height"] / 2) * scale)),
+                ],
+                env=environment,
+            )
+            fixture("observe")
+
+        def photograph(scene):
+            fixture(
+                "configuration-screenshot",
+                path=str(out / f"language-configuration-{theme}-{scene}.png"),
+            )
+
+        move_to(configuration()["searchGeometry"])
+        photograph("normal")
+        move_to(state()["overlayControls"]["typelay-language-choice-en"]["geometry"])
+        wait(
+            lambda: state()["overlayControls"]["typelay-language-choice-en"]["underMouse"],
+            "actual row hover",
+        )
+        photograph("hover")
+        move_to(configuration()["searchGeometry"])
+        key("Down")
+        photograph("keyboard-highlight")
+        query("ko")
+        photograph("disabled")
+        close(opening)
+    unchanged()
+    return {
+        "passed": True,
+        "scope": "actual Qt/Fcitx search, rows, original key ownership and controlled config Host; no model",
+        "unknownScope": "actual search provider property temporarily absent, restored only to the same live search; not every Fcitx Unknown cause",
+    }
+
+
 def stop_child(child):
     if child.poll() is None:
         child.terminate()
@@ -1521,6 +2024,9 @@ def ordered_controls(
                 assert captured and captured["ime"] == "Clear"
                 result = language_options(
                     native, captured, generation, state, window, environment, Path(log.name)
+                )
+                result["configuration"] = language_configuration(
+                    native, generation, state, window, environment, fixture, out
                 )
                 fixture("quit")
                 assert client.wait(timeout=10) == 0

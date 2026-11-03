@@ -1444,6 +1444,26 @@ gboolean tl_overlay_key_claim(guint keycode, guint64 sequence, guint control_key
     held_keys[key_index].consumed = TRUE;
     return TRUE;
 }
+gboolean tl_overlay_search_key_claim(guint keycode, guint64 sequence) {
+    if (held_overflow || !keycode || !sequence) return FALSE;
+    for (guint index = 0; index < G_N_ELEMENTS(held_keys); index++) {
+        if (held_keys[index].keycode == keycode && held_keys[index].sequence == sequence
+            && (held_keys[index].keyval == GDK_KEY_Return || held_keys[index].keyval == GDK_KEY_KP_Enter)
+            && !held_keys[index].consumed) {
+            held_keys[index].consumed = TRUE;
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+gboolean tl_overlay_search_key_held(guint keycode) {
+    if (!keycode) return FALSE;
+    for (guint index = 0; index < G_N_ELEMENTS(held_keys); index++)
+        if (held_keys[index].keycode == keycode
+            && (held_keys[index].keyval == GDK_KEY_Return || held_keys[index].keyval == GDK_KEY_KP_Enter))
+            return TRUE;
+    return FALSE;
+}
 gboolean tl_dispatch_key(GdkEvent *event) {
     if (!event) return FALSE;
     GdkEventType type = gdk_event_get_event_type(event);
@@ -1480,7 +1500,10 @@ gboolean tl_dispatch_key(GdkEvent *event) {
         }
         if (!held_keys[index].keycode && empty < 0) empty = (gint)index;
     }
-    gboolean candidate = keyval == GDK_KEY_Tab || keyval == GDK_KEY_ISO_Left_Tab
+    /* No global Return observer: an ordinary source Return keeps its old route.
+     * Once started in this search, repeat/up retain the original held decision. */
+    gboolean auxiliary = tl_overlay_auxiliary_key_candidate(keyval);
+    gboolean candidate = auxiliary || keyval == GDK_KEY_Tab || keyval == GDK_KEY_ISO_Left_Tab
         || keyval == GDK_KEY_Escape || (keyval >= GDK_KEY_F1 && keyval <= GDK_KEY_F24)
         || keyval == GDK_KEY_Control_L || keyval == GDK_KEY_Control_R;
     if (!candidate) { tl_overlay_control_cancel(); return shortcut_event(&key); }
@@ -1493,11 +1516,13 @@ gboolean tl_dispatch_key(GdkEvent *event) {
     held_keys[empty].keyval = keyval;
     held_keys[empty].sequence = sequence;
     held_keys[empty].consumed = FALSE;
-    if (tl_overlay_auxiliary_key(keyval, state)) {
+    gboolean owned = FALSE;
+    gboolean auxiliary_consumed = tl_overlay_auxiliary_key(keyval, state, keycode, sequence, &owned);
+    if (auxiliary || owned) {
         if (held_keys[empty].keycode == keycode && held_keys[empty].sequence == sequence)
-            held_keys[empty].consumed = TRUE;
-        trace_session_key(keyval, "press", TRUE);
-        return TRUE;
+            held_keys[empty].consumed = held_keys[empty].consumed || auxiliary_consumed;
+        trace_session_key(keyval, "press", auxiliary_consumed);
+        return auxiliary_consumed;
     }
     if (keyval == GDK_KEY_Control_L || keyval == GDK_KEY_Control_R) {
         tl_overlay_control_cancel();

@@ -611,7 +611,7 @@ class Overlay:
             self.settings_requested()
         elif operation == "languageConfigurationBegin":
             if (
-                peer.backend == "gtk4"
+                peer.backend in ("gtk4", "qt6")
                 and isinstance(value, dict)
                 and set(value) == {"openingId"}
                 and self.valid_opening_id(value["openingId"])

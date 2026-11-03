@@ -1169,12 +1169,19 @@ static void glossary_close(gboolean restore, gboolean notify) {
     glossary_unref(form);
 }
 static gboolean close_more_escape(void);
-gboolean tl_overlay_auxiliary_key(guint keyval, GdkModifierType modifiers) {
+static gboolean language_configuration_enter(guint keycode, guint64 sequence);
+gboolean tl_overlay_auxiliary_key(guint keyval, GdkModifierType modifiers,
+        guint keycode, guint64 sequence, gboolean *owned) {
+    *owned = FALSE;
     /* Match the dispatcher's effective modifiers; lock states are not chords. */
     modifiers &= GDK_SHIFT_MASK | GDK_CONTROL_MASK | GDK_ALT_MASK
         | GDK_SUPER_MASK | GDK_HYPER_MASK | GDK_META_MASK;
+    if (tl_overlay_auxiliary_key_candidate(keyval)) {
+        *owned = TRUE; /* Unknown/Composing may not fall through to source actions. */
+        return !modifiers && language_configuration_enter(keycode, sequence);
+    }
     if (keyval != GDK_KEY_Escape || modifiers) return FALSE;
-    if (close_more_escape()) return TRUE;
+    if (close_more_escape()) { *owned = TRUE; return TRUE; }
     GlossaryForm *form = glossary_ref(overlay.glossary);
     gboolean consumed = FALSE;
     if (!glossary_current(form) || form->reported_ime != 1) goto done;
@@ -1194,6 +1201,7 @@ gboolean tl_overlay_auxiliary_key(guint keyval, GdkModifierType modifiers) {
     }
 done:
     glossary_unref(form);
+    *owned = consumed;
     return consumed;
 }
 static void glossary_term_changed(GtkEditable *editable, gpointer data) {
@@ -2287,6 +2295,12 @@ static gboolean language_configuration_contains(LanguageConfiguration *configura
     return configuration && configuration->popup && widget
         && (widget == configuration->popup || gtk_widget_is_ancestor(widget, configuration->popup));
 }
+gboolean tl_overlay_auxiliary_key_candidate(guint keyval) {
+    LanguageConfiguration *configuration = language_configuration;
+    return (keyval == GDK_KEY_Return || keyval == GDK_KEY_KP_Enter)
+        && language_configuration_current(configuration) && configuration->client
+        && gtk_window_get_focus(GTK_WINDOW(configuration->top)) == configuration->client;
+}
 /* Branch-local, bounded failure evidence on the existing opt-in trace channel.
  * Never expose the opening id, source, search text or target identity. */
 static void language_configuration_trace(LanguageConfiguration *configuration, const char *stage) {
@@ -2532,14 +2546,20 @@ static gboolean language_configuration_control_current(LanguageConfiguration *co
         && (control == configuration->swap ? configuration->swap_allowed
             : configuration->list && gtk_widget_is_ancestor(control, configuration->list));
 }
-static void language_configuration_save(LanguageConfiguration *configuration, GtkWidget *control,
-        const char *source, const char *target) {
+static gboolean language_configuration_save(LanguageConfiguration *configuration, GtkWidget *control,
+        const char *source, const char *target, guint keycode, guint64 sequence) {
     /* The real IME provider can synchronously filter or retire this row. Keep
      * this activation's values and widget alive, then recheck the exact control. */
     g_object_ref(control);
     char *saved_source = g_strdup(source), *saved_target = g_strdup(target);
+    gboolean consumed = FALSE;
     if (!language_configuration_action_ready(configuration)
         || !language_configuration_control_current(configuration, control)) goto done;
+    if (keycode) {
+        if (gtk_window_get_focus(GTK_WINDOW(configuration->top)) != configuration->client
+            || !tl_overlay_search_key_claim(keycode, sequence)) goto done;
+        consumed = TRUE; /* Before saving/CSS/transport callbacks can reenter. */
+    }
     configuration->saving = TRUE;
     /* Do not disable the focused row: GTK would move focus during its own
      * activation and cancel this opening before the save can be sent. The
@@ -2557,13 +2577,14 @@ failed:
 done:
     g_free(saved_source); g_free(saved_target);
     g_object_unref(control);
+    return consumed;
 }
 static void language_configuration_pick(GtkButton *control, gpointer data) {
     LanguageConfiguration *configuration = language_configuration_ref(data);
     if (language_configuration_control_current(configuration, GTK_WIDGET(control))
         && GTK_WIDGET(control) != configuration->swap) {
         const char *code = g_object_get_data(G_OBJECT(control), "typelay-language-code");
-        if (code) language_configuration_save(configuration, GTK_WIDGET(control), configuration->source, code);
+        if (code) language_configuration_save(configuration, GTK_WIDGET(control), configuration->source, code, 0, 0);
     }
     language_configuration_unref(configuration);
 }
@@ -2571,8 +2592,54 @@ static void language_configuration_swap(GtkButton *control, gpointer data) {
     LanguageConfiguration *configuration = language_configuration_ref(data);
     if (language_configuration_control_current(configuration, GTK_WIDGET(control))
         && GTK_WIDGET(control) == configuration->swap)
-        language_configuration_save(configuration, GTK_WIDGET(control), configuration->target, configuration->source);
+        language_configuration_save(configuration, GTK_WIDGET(control), configuration->target, configuration->source, 0, 0);
     language_configuration_unref(configuration);
+}
+static gboolean language_configuration_enter(guint keycode, guint64 sequence) {
+    LanguageConfiguration *configuration = language_configuration_ref(language_configuration);
+    gboolean consumed = FALSE;
+    if (!tl_overlay_auxiliary_key_candidate(GDK_KEY_Return) || !configuration->list
+        || configuration->composing) goto done;
+    /* Select only from this opening. Save performs the original synchronous
+     * provider check and claims this held press before any action callback. */
+    for (GtkWidget *row = gtk_widget_get_first_child(configuration->list); row; row = gtk_widget_get_next_sibling(row))
+        if (gtk_widget_get_visible(row) && gtk_widget_is_sensitive(row)) {
+            const char *code = g_object_get_data(G_OBJECT(row), "typelay-language-code");
+            if (code) consumed = language_configuration_save(configuration, row, configuration->source, code, keycode, sequence);
+            break;
+        }
+done:
+    language_configuration_unref(configuration);
+    return consumed;
+}
+static gboolean language_configuration_dispatch(GtkEventControllerLegacy *controller, GdkEvent *event, gpointer data) {
+    GdkEventType type = gdk_event_get_event_type(event);
+    if (type != GDK_KEY_PRESS && type != GDK_KEY_RELEASE) return FALSE;
+    LanguageConfiguration *configuration = data;
+    gboolean current = language_configuration_current(configuration)
+        && gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller)) == configuration->popup;
+    GtkWidget *focus = current ? gtk_window_get_focus(GTK_WINDOW(configuration->top)) : NULL;
+    if (current && focus != configuration->client && language_configuration_contains(configuration, focus)) {
+        guint keycode = gdk_key_event_get_keycode(event), keyval = gdk_key_event_get_keyval(event);
+        GdkDevice *device = gdk_event_get_device(event);
+        gboolean keyboard = device && gdk_device_get_source(device) == GDK_SOURCE_KEYBOARD;
+        /* A refused search down must not become a GtkButton activation after
+         * Tab. Query only its existing hardware slot; do not register new keys
+         * or change the original consumed decision. Release still clears it. */
+        if (tl_overlay_search_key_held(keycode)) {
+            (void)tl_dispatch_key(event);
+            return TRUE;
+        }
+        /* Without hardware identity this Return cannot prove it is a fresh
+         * button action rather than the old search key. Reject that action;
+         * ordinary source events are outside this popup controller. */
+        if ((!keyboard || !keycode) && (keyval == GDK_KEY_Return || keyval == GDK_KEY_KP_Enter)) return TRUE;
+    }
+    /* A release retires its original latch even after focus left the search. */
+    if (type == GDK_KEY_RELEASE) return tl_dispatch_key(event);
+    if (!current
+        || !tl_overlay_auxiliary_key_candidate(gdk_key_event_get_keyval(event))) return FALSE;
+    return tl_dispatch_key(event);
 }
 static void language_configuration_filter(GtkEditable *editable, gpointer data) {
     LanguageConfiguration *configuration = language_configuration_ref(data);
@@ -2598,21 +2665,15 @@ static gboolean language_configuration_key(GtkEventControllerKey *keys, guint ke
         GdkModifierType modifiers, gpointer data) {
     (void)keys; (void)keycode;
     modifiers &= GDK_SHIFT_MASK | GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK | GDK_HYPER_MASK | GDK_META_MASK;
-    if (modifiers || (keyval != GDK_KEY_Escape && keyval != GDK_KEY_Return && keyval != GDK_KEY_KP_Enter)) return FALSE;
+    /* Return belongs only to the original pre-IME dispatch. GtkText's default
+     * activation must never re-probe a refused down after the IM made it Clear. */
+    if (modifiers || keyval != GDK_KEY_Escape) return FALSE;
     LanguageConfiguration *configuration = language_configuration_ref(data);
     gboolean handled = FALSE;
-    GtkWidget *focus = configuration->top ? gtk_window_get_focus(GTK_WINDOW(configuration->top)) : NULL;
-    if (keyval != GDK_KEY_Escape && focus != configuration->client) goto done;
     gboolean ready = language_configuration_action_ready(configuration);
     if (language_configuration != configuration) { handled = TRUE; goto done; }
     if (!ready) goto done; /* Unknown/preedit remains the original input's event. */
-    if (keyval == GDK_KEY_Escape) { language_configuration_close(TRUE); handled = TRUE; }
-    else {
-        for (GtkWidget *row = gtk_widget_get_first_child(configuration->list); row; row = gtk_widget_get_next_sibling(row))
-            if (gtk_widget_get_visible(row) && gtk_widget_is_sensitive(row)) {
-                language_configuration_pick(GTK_BUTTON(row), configuration); handled = TRUE; break;
-            }
-    }
+    language_configuration_close(TRUE); handled = TRUE;
 done:
     language_configuration_unref(configuration);
     return handled;
@@ -2636,6 +2697,13 @@ static gboolean language_configuration_replace_default_keys(GtkWidget *popup, La
     gtk_event_controller_set_propagation_phase(keys, GTK_PHASE_BUBBLE);
     language_configuration_signal(keys, "key-pressed", G_CALLBACK(language_configuration_key), configuration);
     gtk_widget_add_controller(popup, keys);
+    /* The top-level SAME_NATIVE controller cannot see this popup's native.
+     * Observe its own real event before GtkText's target IM/activation path. */
+    GtkEventController *capture = gtk_event_controller_legacy_new();
+    gtk_event_controller_set_propagation_phase(capture, GTK_PHASE_CAPTURE);
+    gtk_event_controller_set_propagation_limit(capture, GTK_LIMIT_SAME_NATIVE);
+    language_configuration_signal(capture, "event", G_CALLBACK(language_configuration_dispatch), configuration);
+    gtk_widget_add_controller(popup, capture);
     return TRUE;
 }
 static gboolean language_configuration_text(JsonObject *value, const char *name, gsize maximum) {

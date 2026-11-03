@@ -3163,13 +3163,17 @@ while True:
                 self.assertFalse(await self.ask("editorRegenerate", value))
         self.assertIsNone(self.process.returncode)
 
-    async def language_configuration_source(self):
+    async def language_configuration_source(self, *, backend="linux-gtk4", on_demand=False):
         # The real production Host consumes these controlled input-port replies.
         # This is not native focus, IME or acceptance evidence.
         self.assertTrue((await self.ask("saveSettingsDraft", self.draft()))["saved"])
         self.assertTrue(await self.ask("traySettings", {"source": "en", "target": "en"}))
+        if on_demand:
+            self.assertTrue(
+                await self.ask("settings", {**self.latest("settings"), "mode": "OnDemand"})
+            )
         target = {
-            "backend": "linux-gtk4",
+            "backend": backend,
             "value": str(uuid.uuid4()),
             "lifetime": str(uuid.uuid4()),
         }
@@ -3229,6 +3233,24 @@ while True:
 
         self.input_reply = capture
         self.assertTrue(await self.ask("start"))
+        if on_demand:
+            # Start configures a fresh generation before accepting a wake.
+            acknowledgement["generation"] = self.latest("shortcuts")["generation"]
+            snapshot = capture("capture", None)["snapshot"]
+            await self.send(
+                {
+                    "event": "notice",
+                    "data": {
+                        "kind": "wake",
+                        "source": snapshot,
+                        "commandGeneration": acknowledgement["generation"],
+                        "commandSequence": 1,
+                        "acceptedAtMs": snapshot["observedAtMs"],
+                        "userEpoch": 1,
+                        "foregroundEpoch": 1,
+                    },
+                }
+            )
         rendered = (await self.receive_until(lambda item: item.get("event") == "render"))["data"]
         self.assertEqual(rendered["viewContext"]["token"]["target"], target)
         return {
@@ -3257,6 +3279,69 @@ while True:
                 },
             }
         )
+
+    async def test_stale_qt_language_opening_cannot_retire_new_unbound_automatic_practice(self):
+        opening = await self.language_configuration_source(backend="linux-qt6", on_demand=True)
+        # Keep the last delivered Qt request unchanged while the real Host moves
+        # to Automatic. Controlled input replies are not native GUI evidence.
+        cached_shortcuts = dict(self.latest("shortcuts"))
+        self.assertTrue(cached_shortcuts["enabled"])
+        self.assertEqual(opening["token"]["commandGeneration"], cached_shortcuts["generation"])
+        self.language_capture_active = False
+        self.assertTrue(
+            await self.ask("settings", {**self.latest("settings"), "mode": "Automatic"})
+        )
+        automatic_generation = self.latest("shortcuts")["generation"]
+        self.assertNotEqual(automatic_generation, cached_shortcuts["generation"])
+        self.assertFalse(self.latest("shortcuts")["enabled"])
+        run = str(uuid.uuid4())
+        self.assertTrue(await self.ask("beginAutomaticPractice", run))
+        progress = await self.ask("automaticPracticeProgress")
+        self.assertEqual(progress["runId"], run)
+        self.assertIsNone(progress["target"])
+        self.assertIsNone(progress["connectionId"])
+        self.assertNotIn(
+            progress["commandGeneration"], (cached_shortcuts["generation"], automatic_generation)
+        )
+        self.assertEqual(progress["commandGeneration"], self.latest("shortcuts")["generation"])
+        before = (self.home / "config/settings.json").read_bytes()
+        revision = (await self.ask("getStyleSettings"))["settingsRevision"]
+        start = len(self.events)
+        result = await self.ask("beginLanguageConfiguration", opening)
+        self.assertEqual(result, {"opened": False, "reason": "source-changed"})
+        self.assertEqual(await self.ask("automaticPracticeProgress"), progress)
+        self.assertEqual(
+            await self.ask(
+                "saveLanguageConfiguration",
+                {
+                    "connectionId": opening["connectionId"],
+                    "openingId": opening["openingId"],
+                    "expectedRevision": revision,
+                    "source": "en",
+                    "target": "zh",
+                },
+            ),
+            {"saved": False, "reason": "configuration-retired"},
+        )
+        self.assertEqual(
+            await self.ask("beginEdit", opening["token"]), {"allowed": False, "token": None}
+        )
+        self.assertEqual(await self.ask("automaticPracticeProgress"), progress)
+        self.assertEqual((self.home / "config/settings.json").read_bytes(), before)
+        effects = self.events[start:]
+        self.assertFalse(
+            any(item.get("event") in ("hide", "clear", "shortcuts", "render") for item in effects),
+            effects,
+        )
+        self.assertFalse(
+            any(
+                item.get("event") == "publish" and item["data"].get("permit") is not None
+                for item in effects
+            ),
+            effects,
+        )
+        # input_reply accepts only capture, so an executor retirement, write or
+        # focus-return request also fails at this real stdio boundary.
 
     async def test_language_configuration_retires_source_before_saving_direction(self):
         opening = await self.language_configuration_source()

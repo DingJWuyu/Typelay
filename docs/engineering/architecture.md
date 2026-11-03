@@ -161,6 +161,10 @@ GTK3 的目标搜索属于既有语言 child 的未应用配置，不建立新�
 
 GTK4 语言配置使用同 root 的非模态 child，避免 autohide 原生 keyboard grab 的合成焦点出入与现失权门冲突。配置 opening 内的捕获观察只对真实外部点击/触摸取消并透传原事件，内部点击与滚动保留；退出移除该观察。Tab/ShiftTab 正常移动，越出配置由既有焦点门取消；Escape 只关闭配置，不主动恢复旧源焦点或接受票。新源点击之后仍不能用旧票，合法捕获须独立重建。原 top inactive、opening、IME 与操作期限不变；此行为与 modal 的自动回焦不同，真实平台验收见[当前状态](development-state.md#最近真实平台结果)。
 
+GTK4 搜索 Return 在自身 popup 的 SAME_NATIVE capture 阶段处理，避免 GtkText 默认 activate 先消费后才到 bubble。仅当前搜索的真实原次按下进入既有 held 表，保存前核实际 IME Clear 与原 keycode/sequence，再一次 claim；拒绝的原次仍交 GTK/Fcitx，不在 activate 后重新探测。已有该 search Return 的同硬件未释放记录不能在配置行按钮上以 repeat 升级为新动作，release 仍清原槽；不增加普通源 Return 的全局观察。Unknown、Composing 和退休 opening 不借后来的 Clear 执行旧操作；普通源先持键再跨焦点进入搜索的未登记按次不在本切片覆盖范围。真实键路由和输入法验收独立于静态审查。
+
+Qt 目标搜索复用同一 config-only Begin、退休 ACK、Save/Cancel 合同，保留原 source/target/交换 child。本阶段只在启用按需快捷键的源状态提供入口；自动、禁快捷键和编辑态显示禁用原因。native 设置只决定可用提示，Host 仍在 StopSession 前核对当前 generation/owner；旧设置请求不能退休新建的自动练习。隐藏旧浮层前后的原源焦点、焦点代次和 opening 均需相同，返回配置壳不恢复旧源或接受许可。搜索框不参与源发现；只按当前 UI label、nativeLabel 和 code 搜索，并以当前目录的 code 选择，不承诺所有跨语言别名。实际搜索焦点上的原次 IME Clear 才允许 Up/Down 本地选择、Enter 保存和 Escape 取消，重复/释放不能借后来的 Clear 升级。搜索框是当前唯一 Tab 停靠点，Tab/ShiftTab 自然越界取消，完整按钮遍历仍未完成。关闭先退休原 opening，仅仍持有该搜索焦点时 clearFocus，不主动回焦旧源；600ms 只限制首次呈现，不作为用户输入超时。实际 Qt 编译、IME、键鼠及图像证据见[当前状态](development-state.md#验证环境与未闭边界)。
+
 既有安装、修复、选择与移除动作携带完整、冻结的 format1 请求与 `expectedCurrent`，确认后仍校验视图是否过期，再由同一准备任务传给安装器；暂停、继续及重试不会读取最新控件重建请求。已有包库存不再使用旧方向修复入口；损坏库存不提供任何修改动作。Hy 准备入口根据各平台的只读 native 组件检查呈现；真正准备和模型加载仍独立完整验证，不能把组件存在当作模型就绪。下载大小取嵌入的同一 `model.lock.json`，不将下载大小误作安装峰值空间。
 
 手动中英预览复用同一个 Hy 包、weight revision 与 SHA，不建立第二份下载包。正式目录列出十四方向，format1 新装默认仍为十二方向，默认方向来自不变的 `model.lock.json`；format1 安装仍拒绝已安装 ID，Repair 保留原方向子集，Select 不补方向。只有目录同时列出双向中英且已知库存满足条件时，既有设置行才提供“补充中英方向…”的明确确认动作，并告知高级能力、质量和降级限制。安装器仅接受 format2 的 Install 与唯一新增字段 `addDirections: ["zh_en", "en_zh"]`：恰一个已安装的固定 Hy 包、两方向均尚未安装、`expectedCurrent` 精确且非空、`activePackages` 与旧列表原样相同。它复用现有事务和已验证权重，以普通复制形成不可变新代，不下载、不修复 runtime、不自动切换；损坏或过期即失败。当前 active 选择和语言设置保持不变，取消不提交；Windows 连同 `addDirections` 复制冻结数组。模型行分别说明目录可用范围与实际已装范围，新装确认仍说明默认十二方向、中英另行确认。不改变原型布局或 Argos 默认。允许同时安装 Argos/Hy，不允许混合激活。

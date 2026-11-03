@@ -43,6 +43,7 @@ class Check:
         self.children, self.sequence = [], 0
         self.host = None
         self.status = None
+        self.protocol_phase = self.send_operation = None
         self.stage = "release-identity"
         self.report = {
             "scope": "linux-index-production-package-lifecycle",
@@ -72,6 +73,7 @@ class Check:
 
     def begin(self, name):
         self.stage = name
+        self.protocol_phase = self.send_operation = None
 
     def passed(self):
         self.report["stages"][self.stage] = "passed"
@@ -141,18 +143,35 @@ class Check:
         }
 
     async def send(self, value):
+        self.protocol_phase = "send"
+        operation = value.get("op", value.get("event"))
+        # Only fixed test operations cross into the report, never peer-supplied names/data.
+        if operation in (
+            "start",
+            "settings",
+            "translateEditorSnapshot",
+            "activateModel",
+            "cancelModelActivation",
+            "quit",
+        ):
+            self.send_operation = operation
+        else:
+            self.send_operation = "reply" if "reply" in value else None
         content = json.dumps(value).encode()
         self.host.stdin.write(struct.pack("<I", len(content)) + content)
         await self.host.stdin.drain()
+        self.protocol_phase = self.send_operation = None
 
     async def receive(self, predicate):
         while True:
+            self.protocol_phase = "receive"
             count = struct.unpack("<I", await self.host.stdout.readexactly(4))[0]
             assert 0 < count <= 262144, "host-frame-size"
             value = json.loads(await self.host.stdout.readexactly(count))
             if value.get("event") == "status":
                 self.status = value["data"]
             if predicate(value):
+                self.protocol_phase = None
                 return value
             if "op" in value:
                 await self.send({"reply": value["id"], "data": None})
@@ -177,8 +196,10 @@ class Check:
             ],
             pipes=True,
         )
+        self.protocol_phase = "startup-gate"
         self.host.stdin.write(b"\x01")
         await self.host.stdin.drain()
+        self.protocol_phase = None
         assert await self.ask("start") is True
 
     async def ready(self, active):
@@ -335,6 +356,13 @@ class Check:
         except Exception as error:
             self.report["stages"][self.stage] = "failed"
             self.report["failure"] = type(error).__name__ + ": " + str(error)[:200]
+            # Snapshot before cleanup signals/waits. None means exit not observed, not alive.
+            self.report["failureContext"] = {
+                "protocolPhase": self.protocol_phase,
+                "sendOperation": self.send_operation,
+                "hostSupervisorReturnCode": self.host.returncode if self.host else None,
+                "directProcessReturnCodes": [process.returncode for process in self.children],
+            }
         finally:
             # One independent cleanup budget, never a fresh budget for each child.
             try:

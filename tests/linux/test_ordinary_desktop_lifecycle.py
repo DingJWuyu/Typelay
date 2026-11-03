@@ -6,6 +6,7 @@ No GIMP UI, model, input-method or product acceptance is exercised here.
 import asyncio
 import json
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,7 @@ from unittest.mock import AsyncMock, patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 
+import index_package_e2e as lifecycle  # noqa: E402
 from application_support import ApplicationSupport  # noqa: E402
 from desktop_session import (  # noqa: E402
     boot_identity,
@@ -578,6 +580,127 @@ class FullscreenOriginProofTests(unittest.TestCase):
                         window["layout"], [1280, 800], full_output_proven=True
                     )
                 )
+
+
+class IndexProtocolFailureDiagnosticsTests(unittest.TestCase):
+    def run_probe(self, exercise):
+        class Probe(lifecycle.Check):
+            async def lifecycle(self):
+                await exercise(self)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            check = Probe(root / "package", root / "cache", root)
+            status = asyncio.run(check.run())
+            report = json.loads((root / "result.json").read_text())
+            return status, report, [child.returncode for child in check.children]
+
+    def test_request_failure_keeps_precleanup_exit_observations(self):
+        async def exercise(check):
+            check.begin("install-argos")
+            waiting = await check.process(
+                [sys.executable, "-c", "print('ready', flush=True); input()"], pipes=True
+            )
+            self.assertEqual(b"ready\n", await waiting.stdout.readline())
+            check.host = await check.process([sys.executable, "-c", "exit(23)"], pipes=True)
+            await check.host.wait()
+            await check.ask("activateModel", {"private": "/private/request-body"})
+
+        status, report, codes = self.run_probe(exercise)
+        self.assertEqual(1, status)
+        self.assertEqual("failed", report["stages"]["install-argos"])
+        self.assertEqual("not-run", report["stages"]["select-index"])
+        self.assertEqual("ConnectionResetError: Connection lost", report["failure"])
+        self.assertEqual(
+            {
+                "protocolPhase": "send",
+                "sendOperation": "activateModel",
+                "hostSupervisorReturnCode": 23,
+                "directProcessReturnCodes": [None, 23],
+            },
+            report["failureContext"],
+        )
+        self.assertIsNotNone(codes[0])
+        self.assertEqual([], report["cleanup"])
+        self.assertTrue(report["allOwnedSupervisorsExited"])
+        self.assertNotIn("private", json.dumps(report))
+
+    def test_reply_failure_does_not_record_received_operation_or_body(self):
+        payload = json.dumps({"id": 17, "op": "private-operation", "data": "private-body"}).encode()
+        frame = struct.pack("<I", len(payload)) + payload
+
+        async def exercise(check):
+            check.begin("install-argos")
+            check.host = await check.process(
+                [sys.executable, "-c", f"import os; os.write(1, {frame!r}); exit(24)"], pipes=True
+            )
+            await check.host.wait()
+            await check.receive(lambda value: False)
+
+        status, report, codes = self.run_probe(exercise)
+        self.assertEqual(1, status)
+        self.assertEqual("ConnectionResetError: Connection lost", report["failure"])
+        self.assertEqual(
+            {
+                "protocolPhase": "send",
+                "sendOperation": "reply",
+                "hostSupervisorReturnCode": 24,
+                "directProcessReturnCodes": [24],
+            },
+            report["failureContext"],
+        )
+        self.assertEqual([24], codes)
+        self.assertNotIn("private", json.dumps(report))
+
+    def test_receive_failure_is_not_misattributed_to_a_send(self):
+        async def exercise(check):
+            check.begin("install-argos")
+            check.host = await check.process([sys.executable, "-c", "exit(25)"], pipes=True)
+            await check.host.wait()
+            await check.receive(lambda value: False)
+
+        status, report, codes = self.run_probe(exercise)
+        self.assertEqual(1, status)
+        self.assertTrue(report["failure"].startswith("IncompleteReadError:"))
+        self.assertEqual(
+            {
+                "protocolPhase": "receive",
+                "sendOperation": None,
+                "hostSupervisorReturnCode": 25,
+                "directProcessReturnCodes": [25],
+            },
+            report["failureContext"],
+        )
+        self.assertEqual([25], codes)
+
+    def test_success_keeps_existing_result_and_has_no_failure_context(self):
+        peer = (
+            "import json, sys\n"
+            "count = int.from_bytes(sys.stdin.buffer.read(4), 'little')\n"
+            "request = json.loads(sys.stdin.buffer.read(count))\n"
+            "reply = json.dumps({'reply': request['id'], 'data': 'confirmed'}).encode()\n"
+            "sys.stdout.buffer.write(len(reply).to_bytes(4, 'little') + reply)\n"
+            "sys.stdout.buffer.flush()\n"
+        )
+
+        async def exercise(check):
+            check.begin("install-argos")
+            check.host = await check.process([sys.executable, "-c", peer], pipes=True)
+            self.assertEqual("confirmed", await check.ask("activateModel", {"private": "body"}))
+            check.host.stdin.close()
+            await check.host.wait()
+            for stage in check.report["stages"]:
+                check.begin(stage)
+                check.passed()
+
+        status, report, codes = self.run_probe(exercise)
+        self.assertEqual(0, status)
+        self.assertNotIn("failure", report)
+        self.assertNotIn("failureContext", report)
+        self.assertEqual([], report["cleanup"])
+        self.assertTrue(report["allOwnedSupervisorsExited"])
+        self.assertEqual([0], codes)
+        self.assertNotIn("private", json.dumps(report))
 
 
 if __name__ == "__main__":

@@ -70,6 +70,16 @@ static inline TlOverlayPalette tl_overlay_palette(int dark, const char *accent, 
     return p;
 }
 
+/* Approved menu hover/keyboard highlight token, intentionally identical in
+ * light and dark themes. accent_ink is text ink and is not this fill token. */
+static inline const char *tl_overlay_accent_strong(const char *accent) {
+    if (accent && strcmp(accent, "ocean") == 0) return "#1f63bb";
+    if (accent && strcmp(accent, "sage") == 0) return "#3c7650";
+    if (accent && strcmp(accent, "iris") == 0) return "#6a4cbc";
+    if (accent && strcmp(accent, "graphite") == 0) return "#55534e";
+    return "#b5552f";
+}
+
 /* Caller-owned storage avoids shared mutable font names across surfaces.
  * Content is the prototype's 400-weight role at a bounded logical pixel size;
  * this does not multiply the optical axis by the monitor scale. */
@@ -132,7 +142,9 @@ static inline const char *tl_overlay_ui(const char *value, int english) {
         {"重译", "Retranslate"}, {"重新翻译", "Retranslate"}, {"展开", "Expand"}, {"收起", "Collapse"},
         {"恢复", "Resume"}, {"已暂停", "Paused"}, {"更多", "More"}, {"源语言", "From"}, {"目标语言", "To"},
         {"应用语言方向", "Apply languages"}, {"交换语言", "Swap languages"}, {"当前应用风格", "Style in this app"},
-        {"搜索语言", "Search languages"}, {"没有匹配的语言", "No matching languages"},
+        {"搜索目标语言…", "Search target language…"},
+        {"请先返回原输入框，再搜索目标语言。", "Return to the original field to search target languages."},
+        {"请先启用按需翻译，再搜索目标语言。", "Enable on-demand translation to search target languages."}, {"搜索语言", "Search languages"}, {"没有匹配的语言", "No matching languages"},
         {"继承", "Use default"}, {"自然", "Natural"}, {"正式", "Formal"},
         {"风格", "Style"}, {"简洁", "Concise"}, {"口语", "Casual"}, {"暂不可用", "Not available yet"}, {"✓ 继承", "✓ Use default"},
         {"✓ 自然", "✓ Natural"}, {"✓ 正式", "✓ Formal"}, {"换种说法", "Rephrase"},

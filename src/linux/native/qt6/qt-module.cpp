@@ -4,6 +4,11 @@
 #include "../common/overlay-design.h"
 #include "overlay-regional-display.h"
 #include <QApplication>
+#include <QAbstractButton>
+#include <QFontMetrics>
+#include <QAction>
+#include <QIcon>
+#include <QPixmap>
 #include <QAbstractItemView>
 #include <QButtonGroup>
 #include <QClipboard>
@@ -35,6 +40,8 @@
 #include <QRadioButton>
 #include <QScopedValueRollback>
 #include <QScopeGuard>
+#include <QScrollArea>
+#include <QMouseEvent>
 #include <QSignalBlocker>
 #include <QSocketNotifier>
 #include <QStyleHints>
@@ -171,6 +178,52 @@ private:
     QString label_;
     QColor normal_, active_;
     bool menuOpen_ = false;
+};
+
+// Configuration rows retain QPushButton input/accessibility. Only their two
+// text columns and check ink are painted here, like the compact overlay actions.
+class OverlayLanguageChoice final : public QPushButton {
+public:
+    OverlayLanguageChoice(const QString &label, const QString &native, bool checked,
+            TlOverlayPalette palette, const char *strong, QWidget *parent)
+        : QPushButton(parent), label_(label), native_(native), checked_(checked),
+          ink_(QString::fromUtf8(palette.ink)), secondary_(QString::fromUtf8(palette.secondary)),
+          disabled_(QString::fromUtf8(palette.tertiary)), strong_(QString::fromUtf8(strong)) {
+        setAttribute(Qt::WA_Hover);
+        setFocusPolicy(Qt::NoFocus);
+        setFixedHeight(30);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    }
+    QSize sizeHint() const override { return {220, 30}; }
+    QSize minimumSizeHint() const override { return {120, 30}; }
+protected:
+    void paintEvent(QPaintEvent *) override {
+        const bool active = isEnabled() && (underMouse() || property("languageHighlighted").toBool());
+        QPainter paint(this);
+        paint.setRenderHint(QPainter::Antialiasing);
+        if (active) { paint.setPen(Qt::NoPen); paint.setBrush(strong_); paint.drawRoundedRect(rect(), 7, 7); }
+        const QColor text = !isEnabled() ? disabled_ : active ? QColor(Qt::white) : ink_;
+        if (checked_) {
+            paint.setPen(QPen(!isEnabled() ? disabled_ : active ? QColor(Qt::white) : secondary_,
+                1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            QPainterPath check; check.moveTo(11, 15); check.lineTo(15, 19); check.lineTo(22, 11); paint.drawPath(check);
+        }
+        auto font = this->font(); font.setPixelSize(13); paint.setFont(font); paint.setPen(text);
+        const int start = 34, available = qMax(0, width() - start - 10);
+        auto endFont = font; endFont.setPixelSize(12);
+        const QFontMetrics endMetrics(endFont);
+        const int endWidth = qMin(available * 45 / 100, endMetrics.horizontalAdvance(native_));
+        const QRect labelRect(start, 0, qMax(0, available - endWidth - 10), height());
+        paint.drawText(labelRect, Qt::AlignLeft | Qt::AlignVCenter,
+            QFontMetrics(font).elidedText(label_, Qt::ElideRight, labelRect.width()));
+        paint.setFont(endFont); paint.setOpacity(.6);
+        paint.drawText(QRect(width() - 10 - endWidth, 0, endWidth, height()), Qt::AlignRight | Qt::AlignVCenter,
+            endMetrics.elidedText(native_, Qt::ElideRight, endWidth));
+    }
+private:
+    QString label_, native_;
+    bool checked_;
+    QColor ink_, secondary_, disabled_, strong_;
 };
 
 constexpr qsizetype MaxFrame = 256 * 1024;
@@ -325,14 +378,17 @@ public:
         setProperty(TypeLayFcitxQtDetachedRetirementPropertyV1, true);
         qApp->installEventFilter(this);
         connect(qApp, &QApplication::focusChanged, this, [this](QWidget *old, QWidget *current) {
+            const QPointer<QWidget> previousField = old, currentField = current;
             ++focusGeneration_;
+            configurationFocusChanged(current);
             if (glossaryTransfer_) {
                 ++glossaryTransfer_->focusChanges;
                 if (old != glossaryTransfer_->from || current != glossaryTransfer_->to)
                     glossaryTransfer_->failed = true;
             }
             revokeEditorOrdered();
-            for (auto *widget : {old, current}) if (auto *target = discover(widget)) invalidate(target, false, true);
+            for (const auto &widget : {previousField, currentField})
+                if (auto *target = discover(widget)) invalidate(target, false, true);
             if (!glossaryTransfer_) { syncOverlay(); refreshGlossaryFocus(); }
         });
         connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged, this,
@@ -340,6 +396,7 @@ public:
         connect(&reconnect_, &QTimer::timeout, this, &Native::connectPeer);
         reconnect_.start(1000);
         connect(&expiry_, &QTimer::timeout, this, [this] {
+            refreshLanguageConfiguration();
             advanceShortcut();
             if (card_ && (now() > overlayUntil_ || !overlayTarget_ || !overlayTarget_->field
                 || !overlayTarget_->field->window()->isActiveWindow()
@@ -352,6 +409,7 @@ public:
         connectPeer();
     }
     ~Native() override {
+        closeLanguageConfiguration(false);
         revokeEditorOrdered();
         revokeOrdered();
         if (fd_ >= 0) ::close(fd_);
@@ -461,6 +519,7 @@ public:
         const auto *event = static_cast<QKeyEvent *>(inputEvent);
         // Auxiliary input never borrows a source/editor control ticket. A
         // fresh auxiliary IM proof can only navigate its form or close it.
+        if (configurationWidget(actualField)) return configurationKey(actualField, event);
         if (insideGlossary(actualField)) return glossaryEscape(actualField, event, true) || glossaryNavigate(actualField, event);
         traceGate("hook-enter", targets_.value(actualField, nullptr), publication_.value("authority").toObject(),
             integer(publication_.value("permit").toObject(), "expiresAtMs", 0));
@@ -660,6 +719,7 @@ private slots:
         constexpr uint knownCauses = TlQtInput | TlQtFocus | TlQtBinding | TlQtModifier
             | TlQtOrderedPrefix | TlQtDetachedRetired;
         const bool unknown = !causes || (causes & ~knownCauses);
+        if (languageConfiguration_) languageConfiguration_->press.reset();
         if (glossary_) {
             for (int index = 0; index < 2; ++index) {
                 if ((glossary_->terms[index] == field && (causes & TlQtInput))
@@ -811,7 +871,7 @@ private:
             }));
     }
     Target *discover(QWidget *widget) {
-        if (!standardField(widget) || insideOverlay(widget)) return nullptr;
+        if (!standardField(widget) || insideOverlay(widget) || configurationWidget(widget)) return nullptr;
         if (auto *existing = targets_.value(widget, nullptr)) { syncDocument(existing); return existing; }
         auto *target = new Target;
         target->field = widget;
@@ -1768,7 +1828,7 @@ private:
         auto *card = card_.data();
         card_ = nullptr; editor_ = nullptr; regionalDisplay_ = nullptr; overlayFontPolicy_.clear();
         hint_ = nullptr; status_ = nullptr;
-        language_ = nullptr; more_ = nullptr; exit_ = nullptr; footer_ = nullptr; menu_ = nullptr; moreMenu_ = nullptr; tools_ = nullptr; swap_ = nullptr; resume_ = nullptr;
+        language_ = nullptr; more_ = nullptr; exit_ = nullptr; footer_ = nullptr; menu_ = nullptr; moreMenu_ = nullptr; tools_ = nullptr; swap_ = nullptr; searchTarget_ = nullptr; resume_ = nullptr;
         styleOptions_ = nullptr; applicationStyles_ = nullptr; alternative_ = nullptr; translationFeedback_ = nullptr; glossaryAction_ = nullptr;
         translationActionMenu_.reset();
         sourceLanguages_ = nullptr; targetLanguages_ = nullptr; overlayTarget_ = nullptr;
@@ -2160,7 +2220,7 @@ private:
         const auto rendered = languageRender();
         closeOverlayMenus();
         if (closing || !panel || !languageCurrent(rendered) || !overlayActive() || paused() || glossary_ || glossaryOpening_) return;
-        if (panel == menu_ && !resetLanguageSelection()) return;
+        if (panel == menu_ && (!resetLanguageSelection() || !renderLanguageSearch(rendered))) return;
         if (!languageCurrent(rendered) || !overlayTarget_) return;
         openedMenu_ = panel;
         menuView_ = rendered;
@@ -2248,6 +2308,21 @@ private:
             return selectLanguage(group, choices, !reset && !savedChanged && languageIndex(choices, selection) >= 0 ? selection : code, rendered);
         return true;
     }
+    bool renderLanguageSearch(const LanguageRender &rendered) {
+        if (!languageCurrent(rendered) || !searchTarget_ || !overlayTarget_) return false;
+        const bool sourceFocused = QApplication::focusWidget() == overlayTarget_->field
+            && QGuiApplication::focusObject() == overlayTarget_->field;
+        const bool editing = rendered.view.value("state").toString() == QStringLiteral("EditingTranslation");
+        // This installed shortcut state is only the local availability hint.
+        // Host still checks the exact generation/owner before retiring anything.
+        const bool onDemand = shortcutConfiguration_.value("enabled").toBool();
+        searchTarget_->setEnabled(onDemand && sourceFocused && !editing && !sourceChoices_.isEmpty() && !targetChoices_.isEmpty());
+        if (!languageCurrent(rendered) || !searchTarget_) return false;
+        searchTarget_->setToolTip(editing || !sourceFocused
+            ? overlayUi("请先返回原输入框，再搜索目标语言。")
+            : !onDemand ? overlayUi("请先启用按需翻译，再搜索目标语言。") : QString());
+        return languageCurrent(rendered);
+    }
     bool renderLanguages(const QJsonObject &view) {
         const auto rendered = languageRender();
         const bool synchronizing = settingLanguages_;
@@ -2279,7 +2354,7 @@ private:
         if (!languageCurrent(rendered)) return false;
         swap_->setEnabled(valid && source != QStringLiteral("auto")
             && languageIndex(sourceChoices, target) >= 0 && languageIndex(targetChoices, source) >= 0);
-        return languageCurrent(rendered);
+        return renderLanguageSearch(rendered);
     }
     void chooseLanguages(const QString &source, const QString &target) {
         if (settingLanguages_ || !overlayMenuCurrent(menu_) || menu_->isHidden() || languageIndex(sourceChoices_, source) < 0 || languageIndex(targetChoices_, target) < 0) return;
@@ -2292,6 +2367,521 @@ private:
         if (card_ != card || menu_ != menu || overlayView_ != view || overlayGeneration_ != generation || overlayRevision_ != revision) return;
         closeOverlayMenus();
     }
+    // Configuration owns a parent/anchor, never a source field, view token or
+    // acceptance ticket. Its search is excluded even while deleteLater retires it.
+    struct LanguageConfiguration {
+        QPointer<QWidget> top;
+        QPointer<QFrame> panel;
+        QPointer<QLineEdit> search;
+        QPointer<QPushButton> swap;
+        QPointer<QScrollArea> scroll;
+        QPointer<QLabel> feedback;
+        QList<QPointer<QPushButton>> rows;
+        QJsonArray choices;
+        QString id, source, target, highlighted;
+        QRect anchor;
+        quint64 connection = 0, pendingFocus = 0;
+        qint64 expires = 0;
+        bool pending = true, opening = false, saving = false, retired = false, probing = false, english = false;
+        struct Proof {
+            QPointer<QLineEdit> search;
+            QPointer<QObject> provider;
+            QPointer<QPushButton> control;
+            TypeLayFcitxQtStateV1 state;
+            QString query;
+            quint64 focus = 0;
+        };
+        std::optional<Proof> press;
+    };
+    static bool configurationWidget(QObject *object) {
+        for (auto *parent = object; parent; parent = parent->parent())
+            if (parent->property("typelayLanguageConfiguration").toBool()) return true;
+        return false;
+    }
+    bool configurationCurrent(const std::shared_ptr<LanguageConfiguration> &configuration) const {
+        return configuration && languageConfiguration_ == configuration && !configuration->retired
+            && configuration->connection == connectionGeneration_ && fd_ >= 0 && !card_
+            && configuration->top && configuration->top->isVisible() && configuration->top->isActiveWindow();
+    }
+    bool configurationContains(const std::shared_ptr<LanguageConfiguration> &configuration, QObject *object) const {
+        if (!configuration || !configuration->panel) return false;
+        for (auto *parent = object; parent; parent = parent->parent())
+            if (parent == configuration->panel) return true;
+        return false;
+    }
+    void configurationEvent(const std::shared_ptr<LanguageConfiguration> &configuration, const char *operation,
+                            const QString &source = {}, const QString &target = {}) {
+        QJsonObject value{{"openingId", configuration->id}};
+        if (!source.isEmpty() && !target.isEmpty()) { value.insert("source", source); value.insert("target", target); }
+        sendEvent("ui", {{"operation", QLatin1String(operation)}, {"value", value}});
+    }
+    void configureControlKeys() {
+        const auto data = shortcutConfiguration_;
+        QVariantList keys, orderedKeys;
+        if (data.value("enabled").toBool()) for (const auto *kind : {"wake", "direct"}) {
+            const auto symbol = integer(data.value(QLatin1String(kind)).toObject(), "keyval", 0);
+            if (symbol > 0 && symbol <= std::numeric_limits<quint32>::max()) {
+                keys.append(quint32(symbol));
+                if (symbol >= 'A' && symbol <= 'Z') keys.append(quint32(symbol - 'A' + 'a'));
+                else if (symbol >= 'a' && symbol <= 'z') keys.append(quint32(symbol - 'a' + 'A'));
+            }
+        }
+        if (sessionCurrent(data.value("generation"))) {
+            keys.append(sessionSymbol(sessionKey(data.value("accept"), true)));
+            keys.append(sessionSymbol(sessionKey(data.value("exit"), false)));
+            for (const auto *action : {"accept", "exit"})
+                if (orderedBinding(data.value(QLatin1String(action))))
+                    orderedKeys.append(sessionSymbol(sessionKey(data.value(QLatin1String(action)), qstrcmp(action, "accept") == 0)));
+        }
+        // Routing only. Original Return/KP_Enter reaches ControlV1 before IM;
+        // no event-filter/returnPressed fallback can upgrade a rejected press.
+        if (languageConfiguration_ && !languageConfiguration_->retired) {
+            keys.append(quint32(0xff0d)); keys.append(quint32(0xff8d));
+            keys.append(quint32(0xff52)); keys.append(quint32(0xff54));
+        }
+        qApp->setProperty(TypeLayFcitxQtControlKeysPropertyV1, keys);
+        qApp->setProperty(TypeLayFcitxQtOrderedKeysPropertyV1, orderedKeys);
+    }
+    void closeLanguageConfiguration(bool notify = true) {
+        const auto configuration = std::exchange(languageConfiguration_, {});
+        if (!configuration) return;
+        configuration->retired = true;
+        configuration->press.reset();
+        configureControlKeys(); // Current settings, never a saved old key list.
+        if (notify && configuration->connection == connectionGeneration_ && fd_ >= 0)
+            configurationEvent(configuration, "languageConfigurationCancel");
+        const QPointer<QFrame> panel = configuration->panel;
+        const QPointer<QLineEdit> search = configuration->search;
+        // Do not let hiding a focused auxiliary widget traverse back into a
+        // source field. A real Tab/outside destination, if any, is untouched.
+        if (search && QApplication::focusWidget() == search && QGuiApplication::focusObject() == search)
+            search->clearFocus();
+        if (panel) panel->hide();
+        if (panel) panel->deleteLater();
+        // No source focus restoration, old view or old permit resurrection.
+    }
+    void configurationFocusChanged(QWidget *current) {
+        const auto configuration = languageConfiguration_;
+        if (!configuration) return;
+        configuration->press.reset();
+        if (!configurationCurrent(configuration)
+            || (configuration->pending && !configuration->opening)
+            || (configuration->opening && current != configuration->search)
+            || (!configuration->pending && current != configuration->search)) closeLanguageConfiguration();
+    }
+    void refreshLanguageConfiguration() {
+        const auto configuration = languageConfiguration_;
+        if (configuration && (!configurationCurrent(configuration)
+            || (configuration->pending && now() > configuration->expires)
+            || (!configuration->pending && (!configuration->panel || !configuration->panel->isVisible()
+                || QApplication::focusWidget() != configuration->search
+                || QGuiApplication::focusObject() != configuration->search)))) closeLanguageConfiguration();
+    }
+    std::optional<LanguageConfiguration::Proof> configurationProof(
+            const std::shared_ptr<LanguageConfiguration> &configuration) {
+        if (!configurationCurrent(configuration) || configuration->pending || configuration->saving || configuration->probing
+            || !configuration->panel || !configuration->panel->isVisible() || !configuration->search
+            || QApplication::focusWidget() != configuration->search || QGuiApplication::focusObject() != configuration->search)
+            return {};
+        LanguageConfiguration::Proof proof;
+        proof.search = configuration->search;
+        proof.provider = proof.search->property(ProviderProperty).value<QObject *>();
+        proof.query = proof.search->text(); proof.focus = focusGeneration_;
+        auto *provider = proof.provider ? qobject_cast<TypeLayFcitxQtV1 *>(proof.provider.data()) : nullptr;
+        if (!provider || proof.provider->thread() != thread()) return {};
+        QScopedValueRollback<bool> probing(configuration->probing, true);
+        if (!provider->inspect(proof.search, &proof.state)
+            || proof.state.size != sizeof proof.state || proof.state.version != 1 || !clear(proof.state)
+            || !configurationProofCurrent(configuration, proof)) return {};
+        return proof;
+    }
+    bool configurationProofCurrent(const std::shared_ptr<LanguageConfiguration> &configuration,
+                                   const LanguageConfiguration::Proof &proof, bool saving = false) const {
+        const auto owned = [&] {
+            return configurationCurrent(configuration) && !configuration->pending && (!configuration->saving || saving)
+                && configuration->panel && configuration->panel->isVisible()
+                && proof.search && configuration->search == proof.search && proof.provider
+                && proof.provider->thread() == thread() && proof.focus == focusGeneration_
+                && QApplication::focusWidget() == proof.search && QGuiApplication::focusObject() == proof.search
+                && proof.search->text() == proof.query
+                && proof.search->property(ProviderProperty).value<QObject *>() == proof.provider;
+        };
+        if (!owned()) return false;
+        auto *provider = qobject_cast<TypeLayFcitxQtV1 *>(proof.provider.data());
+        // validateLocal promises no IPC/event iteration. Still recheck ownership
+        // after the interface call, without inspecting or recursively validating.
+        return provider && provider->validateLocal(proof.search, &proof.state) && owned();
+    }
+    bool configurationControlCurrent(const std::shared_ptr<LanguageConfiguration> &configuration,
+                                     const QPointer<QPushButton> &control) const {
+        return configurationCurrent(configuration) && control && control->isVisible() && control->isEnabled()
+            && configurationContains(configuration, control)
+            && (control == configuration->swap || configuration->rows.contains(control));
+    }
+    bool saveLanguageConfiguration(const std::shared_ptr<LanguageConfiguration> &configuration,
+                                   const QPointer<QPushButton> &control, const LanguageConfiguration::Proof &proof) {
+        if (!configurationProofCurrent(configuration, proof) || !configuration->feedback
+            || !configurationControlCurrent(configuration, control)) return false;
+        const QString source = control == configuration->swap ? configuration->target : configuration->source;
+        const QString target = control == configuration->swap ? configuration->source : control->property("languageCode").toString();
+        if (source.isEmpty() || target.isEmpty()) return false;
+        configuration->saving = true; configuration->press.reset();
+        configuration->feedback->setText(configuration->english ? QStringLiteral("Saving…") : QStringLiteral("正在保存…"));
+        if (!configurationProofCurrent(configuration, proof, true) || !configuration->feedback
+            || !configurationControlCurrent(configuration, control)) {
+            if (languageConfiguration_ == configuration) closeLanguageConfiguration();
+            return false;
+        }
+        configurationEvent(configuration, "languageConfigurationSave", source, target);
+        return true;
+    }
+    bool configurationKey(QObject *actual, const QKeyEvent *event) {
+        const auto configuration = languageConfiguration_;
+        if (!configuration || actual != configuration->search || !event || event->isAutoRepeat()
+            || event->modifiers() != Qt::NoModifier || handlingKey_
+            || (event->key() != Qt::Key_Escape && event->key() != Qt::Key_Return && event->key() != Qt::Key_Enter
+                && event->key() != Qt::Key_Up && event->key() != Qt::Key_Down)) return false;
+        QScopedValueRollback<bool> handling(handlingKey_, true);
+        configuration->press.reset();
+        const auto proof = configurationProof(configuration);
+        if (!proof) return false; // This exact original event remains exclusively Qt/Fcitx input.
+        if (event->key() == Qt::Key_Escape) {
+            if (!configurationProofCurrent(configuration, *proof)) return false;
+            closeLanguageConfiguration(); return true;
+        }
+        QList<QPointer<QPushButton>> visible;
+        qsizetype selected = -1;
+        for (const auto &row : configuration->rows) if (configurationControlCurrent(configuration, row)) {
+            if (row->property("languageCode").toString() == configuration->highlighted) selected = visible.size();
+            visible.append(row);
+        }
+        if (visible.isEmpty()) return configurationProofCurrent(configuration, *proof);
+        if (event->key() == Qt::Key_Up || event->key() == Qt::Key_Down) {
+            if (selected < 0) selected = event->key() == Qt::Key_Down ? 0 : visible.size() - 1;
+            else selected = (selected + (event->key() == Qt::Key_Down ? 1 : -1) + visible.size()) % visible.size();
+            if (!configurationProofCurrent(configuration, *proof)
+                || !configurationControlCurrent(configuration, visible[selected])) return false;
+            configuration->highlighted = visible[selected]->property("languageCode").toString();
+            for (const auto &row : configuration->rows) {
+                if (!configurationCurrent(configuration) || !row) return true;
+                row->setProperty("languageHighlighted", row == visible[selected]);
+                if (!configurationCurrent(configuration) || !row || !configuration->search
+                    || configuration->search->text() != proof->query) return true;
+                row->update();
+            }
+            if (configurationCurrent(configuration) && configuration->scroll && visible[selected])
+                configuration->scroll->ensureWidgetVisible(visible[selected]);
+            return true;
+        }
+        return saveLanguageConfiguration(configuration, visible[selected < 0 ? 0 : selected], *proof);
+    }
+    void filterLanguageConfiguration(const std::shared_ptr<LanguageConfiguration> &configuration) {
+        if (!configurationCurrent(configuration) || !configuration->search || !configuration->feedback) return;
+        configuration->press.reset();
+        const auto query = configuration->search->text().trimmed().toCaseFolded();
+        int visible = 0;
+        for (const auto &row : configuration->rows) {
+            if (!configurationCurrent(configuration) || !row) return;
+            const bool match = query.isEmpty() || row->property("languageSearch").toString().contains(query);
+            row->setVisible(match);
+            if (!configurationCurrent(configuration) || !row) return;
+            if (!match && row->property("languageCode").toString() == configuration->highlighted)
+                configuration->highlighted.clear();
+            if (match) ++visible;
+        }
+        for (const auto &row : configuration->rows) {
+            if (!configurationCurrent(configuration) || !row) return;
+            row->setProperty("languageHighlighted", !configuration->highlighted.isEmpty()
+                && row->property("languageCode").toString() == configuration->highlighted);
+            if (!configurationCurrent(configuration) || !row) return;
+            row->update();
+        }
+        if (configurationCurrent(configuration) && configuration->feedback && !configuration->saving)
+            configuration->feedback->setText(visible ? QString() : configuration->english
+                ? QStringLiteral("No matching languages") : QStringLiteral("没有匹配的语言"));
+    }
+    void beginLanguageConfiguration() {
+        if (languageConfiguration_ || !overlayMenuCurrent(menu_) || glossary_ || glossaryOpening_ || !overlayTarget_
+            || !shortcutConfiguration_.value("enabled").toBool()
+            || overlayView_.value("state").toString() == QStringLiteral("EditingTranslation")) return;
+        const auto rendered = languageRender();
+        const QPointer<QWidget> top = card_->parentWidget(), focus = QApplication::focusWidget();
+        const QPointer<QPushButton> trigger = language_;
+        auto *target = overlayTarget_;
+        const auto generation = overlayGeneration_;
+        const auto originalFocus = focusGeneration_, connection = connectionGeneration_;
+        const auto shortcuts = shortcutConfiguration_;
+        const QPointer<QObject> provider = target->provider;
+        const auto sourceCurrent = [&] {
+            return top && focus && provider && target->field == focus && target->provider == provider
+                && connectionGeneration_ == connection && focusGeneration_ == originalFocus
+                && QApplication::focusWidget() == focus && QGuiApplication::focusObject() == focus
+                && focus->property(ProviderProperty).value<QObject *>() == provider
+                && top->isVisible() && top->isActiveWindow() && sessionCurrent(generation)
+                && shortcuts.value("enabled").toBool() && shortcutConfiguration_ == shortcuts;
+        };
+        if (!sourceCurrent() || !trigger || focused() != target || !inspect(target) || !clear(target->state)
+            || !sourceCurrent() || !languageCurrent(rendered) || !overlayMenuCurrent(menu_) || !trigger
+            || target != overlayTarget_ || !local(target, target->state) || !sourceCurrent()) return;
+        const auto sourceProof = target->state;
+        const QRect anchor(trigger->mapTo(top, QPoint()), trigger->size());
+        if (!top->rect().contains(anchor) || anchor.isEmpty()) return;
+        auto configuration = std::make_shared<LanguageConfiguration>();
+        configuration->top = top; configuration->anchor = anchor; configuration->connection = connection;
+        configuration->id = QUuid::createUuid().toString(QUuid::WithoutBraces); configuration->expires = now() + 600;
+        const QJsonObject event{{"target", target->id}, {"generation", generation}, {"revision", rendered.revision},
+            {"operation", "languageConfigurationBegin"}, {"value", QJsonObject{{"openingId", configuration->id}}}};
+        if (!sourceCurrent() || !languageCurrent(rendered) || !overlayMenuCurrent(menu_)) return;
+        revokeEditorOrdered();
+        if (!sourceCurrent() || !languageCurrent(rendered) || !overlayMenuCurrent(menu_)
+            || !local(target, sourceProof) || !sourceCurrent()) return;
+        clearPermit();
+        if (!sourceCurrent() || !languageCurrent(rendered) || !overlayMenuCurrent(menu_)
+            || !local(target, sourceProof) || !sourceCurrent()) return;
+        hideOverlay();
+        if (card_ || languageConfiguration_ || !sourceCurrent() || fd_ < 0
+            || now() > configuration->expires || !local(target, sourceProof) || !sourceCurrent()) return;
+        configuration->pendingFocus = originalFocus;
+        languageConfiguration_ = configuration;
+        configureControlKeys();
+        if (configurationCurrent(configuration) && sourceCurrent()) sendEvent("ui", event);
+        else if (languageConfiguration_ == configuration) closeLanguageConfiguration();
+    }
+    bool showLanguageConfiguration(const std::shared_ptr<LanguageConfiguration> &configuration, const QJsonObject &data) {
+        const auto pending = [&] { return configurationCurrent(configuration) && configuration->pending
+            && now() <= configuration->expires; };
+        auto textValue = [](const QJsonObject &object, const char *name, int maximum) {
+            const auto value = object.value(QLatin1String(name));
+            return value.isString() && !value.toString().isEmpty() && value.toString().size() <= maximum
+                && !value.toString().contains(QChar::Null);
+        };
+        if (!pending() || configuration->panel || configuration->pendingFocus != focusGeneration_
+            || integer(data, "settingsRevision", -1) < 0 || !data.value("swapAllowed").isBool()
+            || !textValue(data, "source", 16) || !textValue(data, "target", 16)
+            || !textValue(data, "sourceLabel", 256) || !textValue(data, "targetLabel", 256)
+            || !data.value("choices").isArray()) return false;
+        const auto choices = data.value("choices").toArray();
+        if (choices.isEmpty() || choices.size() > 32) return false;
+        QSet<QString> codes;
+        for (const auto &item : choices) {
+            const auto choice = item.toObject();
+            if (!textValue(choice, "code", 16) || !textValue(choice, "label", 256)
+                || !textValue(choice, "nativeLabel", 256) || !choice.value("selectable").isBool()) return false;
+            const auto code = choice.value("code").toString();
+            if (codes.contains(code)) return false;
+            for (const auto character : code)
+                if (!(character >= QLatin1Char('a') && character <= QLatin1Char('z'))
+                    && !(character >= QLatin1Char('A') && character <= QLatin1Char('Z'))
+                    && !(character >= QLatin1Char('0') && character <= QLatin1Char('9')) && character != QLatin1Char('-')) return false;
+            codes.insert(code);
+        }
+        configuration->source = data.value("source").toString(); configuration->target = data.value("target").toString();
+        configuration->choices = choices;
+        const auto appearance = data.value("appearance").toObject();
+        auto language = appearance.value("uiLanguage").toString(QStringLiteral("system"));
+        if (language == QStringLiteral("system")) language = QLocale::system().name();
+        configuration->english = !language.startsWith(QStringLiteral("zh"));
+        bool dark = data.value("theme").toString() == QStringLiteral("dark");
+        if (data.value("theme").toString(QStringLiteral("system")) == QStringLiteral("system"))
+            dark = QApplication::palette().color(QPalette::Window).lightness()
+                < QApplication::palette().color(QPalette::WindowText).lightness();
+        const auto accent = appearance.value("accent").toString().toUtf8();
+        const auto palette = tl_overlay_palette(dark, accent.constData(), true);
+        const auto family = appearance.value("font").toString().toUtf8();
+        auto systemFamily = QApplication::font().family();
+        systemFamily.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
+        systemFamily.replace(QLatin1Char('\''), QStringLiteral("\\'"));
+        const auto uiFont = family == "system" ? QLatin1Char('\'') + systemFamily + QLatin1Char('\'')
+            : QString::fromUtf8(tl_overlay_ui_font(family.constData()));
+        configuration->opening = true;
+        QPointer<QFrame> panel = new QFrame(configuration->top);
+        configuration->panel = panel;
+        panel->setProperty("typelayLanguageConfiguration", true);
+        if (!pending() || !panel) return false;
+        panel->setObjectName(QStringLiteral("typelay-language-configuration"));
+        if (!pending() || !panel) return false;
+        panel->setAttribute(Qt::WA_NoMousePropagation);
+        if (!pending() || !panel) return false;
+        panel->setFocusPolicy(Qt::NoFocus);
+        if (!pending() || !panel) return false;
+        panel->setStyleSheet(QStringLiteral(
+            "QFrame#typelay-language-configuration {background:%1;color:%2;border:1px solid %3;border-radius:12px;font-family:%6;font-size:13px;}"
+            "QFrame#typelay-language-configuration QLabel {color:%2;border:0;background:transparent;}"
+            "QFrame#typelay-language-configuration QPushButton {color:%2;background:transparent;border:0;border-radius:7px;padding:0 8px;min-height:30px;text-align:left;}"
+            "QFrame#typelay-language-configuration QPushButton:hover:enabled {background:%4;}"
+            "QFrame#typelay-language-configuration QPushButton#typelay-language-swap {padding:0;text-align:center;}"
+            "QFrame#typelay-language-configuration QPushButton:disabled {color:%5;}"
+            "QFrame#typelay-language-configuration QLineEdit {color:%2;background:%4;border:0;border-radius:8px;padding:0 8px;min-height:30px;}"
+            "QFrame#typelay-language-configuration QScrollArea {border:0;background:transparent;}"
+            ).arg(QString::fromUtf8(palette.surface), QString::fromUtf8(palette.ink), QString::fromUtf8(palette.line),
+                QString::fromUtf8(palette.hover), QString::fromUtf8(palette.tertiary), uiFont));
+        if (!pending() || !panel) return false;
+        const QPointer<QVBoxLayout> layout = new QVBoxLayout(panel);
+        const auto building = [&] { return pending() && panel && layout; };
+        if (!building()) return false;
+        layout->setContentsMargins(6, 6, 6, 6); layout->setSpacing(4);
+        const QPointer<QHBoxLayout> head = new QHBoxLayout;
+        if (!building() || !head) { if (head) delete head.data(); return false; }
+        layout->addLayout(head);
+        if (!building() || !head) return false;
+        const QPointer<QLabel> direction = new QLabel(data.value("sourceLabel").toString() + QStringLiteral(" → ") + data.value("targetLabel").toString(), panel);
+        if (!building() || !head || !direction) return false;
+        direction->setWordWrap(true);
+        if (!building() || !head || !direction) return false;
+        head->addWidget(direction, 1);
+        if (!building() || !head) return false;
+        configuration->swap = new QPushButton(QStringLiteral("⇄"), panel);
+        if (!building() || !head || !configuration->swap) return false;
+        configuration->swap->setObjectName(QStringLiteral("typelay-language-swap"));
+        if (!building() || !head || !configuration->swap) return false;
+        configuration->swap->setAccessibleName(configuration->english ? QStringLiteral("Swap languages") : QStringLiteral("交换语言"));
+        if (!building() || !head || !configuration->swap) return false;
+        configuration->swap->setFocusPolicy(Qt::NoFocus);
+        if (!building() || !head || !configuration->swap) return false;
+        configuration->swap->setFixedWidth(28);
+        if (!building() || !head || !configuration->swap) return false;
+        configuration->swap->setEnabled(data.value("swapAllowed").toBool());
+        if (!building() || !head || !configuration->swap) return false;
+        head->addWidget(configuration->swap);
+        if (!building()) return false;
+        configuration->search = new QLineEdit(panel);
+        if (!building() || !configuration->search) return false;
+        configuration->search->setObjectName(QStringLiteral("typelay-language-search"));
+        if (!building() || !configuration->search) return false;
+        configuration->search->setPlaceholderText(configuration->english ? QStringLiteral("Search languages…") : QStringLiteral("搜索语言…"));
+        if (!building() || !configuration->search) return false;
+        configuration->search->setAccessibleName(configuration->english ? QStringLiteral("Search languages") : QStringLiteral("搜索语言"));
+        if (!building() || !configuration->search) return false;
+        layout->addWidget(configuration->search);
+        if (!building() || !configuration->search) return false;
+        const auto iconScale = configuration->top->devicePixelRatioF();
+        QPixmap searchPixmap(qCeil(16 * iconScale), qCeil(16 * iconScale));
+        searchPixmap.setDevicePixelRatio(iconScale); searchPixmap.fill(Qt::transparent);
+        {
+            QPainter icon(&searchPixmap); icon.setRenderHint(QPainter::Antialiasing);
+            icon.setPen(QPen(QColor(QString::fromUtf8(palette.secondary)), 1.5, Qt::SolidLine, Qt::RoundCap));
+            icon.drawEllipse(QRectF(2.5, 2.5, 8, 8)); icon.drawLine(QPointF(9.5, 9.5), QPointF(13.5, 13.5));
+        }
+        QIcon searchIcon(searchPixmap); searchIcon.addPixmap(searchPixmap, QIcon::Disabled);
+        const QPointer<QAction> searchDecoration = configuration->search->addAction(searchIcon, QLineEdit::LeadingPosition);
+        if (!pending() || !panel || !configuration->search || !searchDecoration) return false;
+        searchDecoration->setEnabled(false); // Decorative only, no command or focus stop.
+        if (!pending() || !panel || !configuration->search) return false;
+        QList<QPointer<QAbstractButton>> decorations;
+        for (auto *part : configuration->search->findChildren<QAbstractButton *>()) decorations.append(part);
+        for (const auto &part : decorations) {
+            if (!pending() || !panel || !part) return false;
+            part->setFocusPolicy(Qt::NoFocus);
+        }
+        if (!pending() || !panel || !configuration->search) return false;
+        const QPointer<QScrollArea> scroll = new QScrollArea(panel); configuration->scroll = scroll;
+        if (!building() || !scroll) return false;
+        scroll->setWidgetResizable(true);
+        if (!building() || !scroll) return false;
+        scroll->setFocusPolicy(Qt::NoFocus);
+        if (!building() || !scroll) return false;
+        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        if (!building() || !scroll) return false;
+        scroll->setMaximumHeight(232);
+        if (!building() || !scroll) return false;
+        const QPointer<QWidget> list = new QWidget(scroll);
+        if (!building() || !scroll || !list) return false;
+        const QPointer<QVBoxLayout> rows = new QVBoxLayout(list);
+        if (!building() || !scroll || !list || !rows) return false;
+        rows->setContentsMargins(0, 0, 0, 0); rows->setSpacing(0);
+        for (const auto &item : choices) {
+            if (!building() || !list || !rows) return false;
+            const auto choice = item.toObject(); const auto code = choice.value("code").toString();
+            const QPointer<QPushButton> row = new OverlayLanguageChoice(choice.value("label").toString(), choice.value("nativeLabel").toString(),
+                code == configuration->target, palette, tl_overlay_accent_strong(accent.constData()), list);
+            if (!building() || !list || !rows || !row) return false;
+            row->setObjectName(QStringLiteral("typelay-language-choice-") + code);
+            if (!building() || !list || !rows || !row) return false;
+            row->setEnabled(choice.value("selectable").toBool());
+            if (!building() || !list || !rows || !row) return false;
+            row->setProperty("languageCode", code);
+            if (!building() || !list || !rows || !row) return false;
+            row->setProperty("languageSearch", (code + QLatin1Char('\n') + choice.value("label").toString()
+                + QLatin1Char('\n') + choice.value("nativeLabel").toString()).toCaseFolded());
+            if (!building() || !list || !rows || !row) return false;
+            row->setAccessibleName(choice.value("label").toString() + QStringLiteral(" · ") + choice.value("nativeLabel").toString());
+            if (!building() || !list || !rows || !row) return false;
+            rows->addWidget(row);
+            if (!building() || !list || !rows || !row) return false;
+            configuration->rows.append(row);
+        }
+        if (!building() || !scroll || !list) return false;
+        scroll->setWidget(list);
+        if (!building() || !scroll) return false;
+        layout->addWidget(scroll);
+        if (!building()) return false;
+        configuration->feedback = new QLabel(panel);
+        if (!building() || !configuration->feedback) return false;
+        configuration->feedback->setWordWrap(true);
+        if (!building() || !configuration->feedback) return false;
+        configuration->feedback->setObjectName(QStringLiteral("typelay-language-feedback"));
+        if (!building() || !configuration->feedback) return false;
+        layout->addWidget(configuration->feedback);
+        if (!building() || !configuration->search) return false;
+        const auto weak = std::weak_ptr<LanguageConfiguration>(configuration);
+        connect(configuration->search, &QLineEdit::textChanged, this, [this, weak] {
+            if (const auto current = weak.lock()) filterLanguageConfiguration(current);
+        });
+        auto controls = configuration->rows; controls.append(configuration->swap);
+        for (const auto &control : controls) connect(control, &QPushButton::clicked, this, [this, weak, control] {
+            const auto current = weak.lock();
+            if (!current || !current->press || current->press->control != control) return;
+            const auto proof = *current->press; current->press.reset();
+            saveLanguageConfiguration(current, control, proof);
+        });
+        if (!pending() || !panel || configuration->top->width() < 280) return false;
+        panel->setFixedWidth(264);
+        if (!building()) return false;
+        panel->ensurePolished();
+        if (!building()) return false;
+        layout->activate();
+        if (!building()) return false;
+        panel->adjustSize();
+        if (!pending() || !panel || panel->height() > configuration->top->height() - 16) return false;
+        const QRect anchor = configuration->anchor;
+        const int below = anchor.bottom() + 7;
+        const int y = below + panel->height() <= configuration->top->height() - 8
+            ? below : anchor.top() - panel->height() - 6;
+        panel->move(qBound(8, anchor.left() - 4, configuration->top->width() - panel->width() - 8),
+            qBound(8, y, configuration->top->height() - panel->height() - 8));
+        if (!pending() || !panel || configuration->pendingFocus != focusGeneration_) return false;
+        panel->show();
+        if (!pending() || !panel) return false;
+        panel->raise();
+        if (!pending() || !panel || !configuration->search) return false;
+        configuration->search->setFocus(Qt::OtherFocusReason);
+        if (!pending() || !panel || !panel->isVisible() || !configuration->search
+            || QApplication::focusWidget() != configuration->search || QGuiApplication::focusObject() != configuration->search) return false;
+        configuration->opening = false; configuration->pending = false;
+        return true;
+    }
+    QJsonObject languageConfigurationCommand(const QString &operation, const QJsonObject &data) {
+        const auto configuration = languageConfiguration_;
+        const bool matches = configuration && data.value("openingId").toString() == configuration->id;
+        bool opened = false;
+        if (matches && configuration->pending && operation == QStringLiteral("overlay-language-configuration-open")) {
+            opened = showLanguageConfiguration(configuration, data);
+            if (!opened && languageConfiguration_ == configuration) closeLanguageConfiguration();
+        } else if (matches && operation == QStringLiteral("overlay-language-configuration-close")) closeLanguageConfiguration(false);
+        else if (matches && operation == QStringLiteral("overlay-language-configuration-result")
+            && configurationCurrent(configuration) && !configuration->pending && configuration->saving
+            && data.value("saved").isBool() && !data.value("saved").toBool()
+            && (data.value("reason").toString() == QStringLiteral("unsupported-direction")
+                || data.value("reason").toString() == QStringLiteral("save-unconfirmed"))) {
+            configuration->saving = false;
+            if (configuration->feedback) configuration->feedback->setText(configuration->english
+                ? QStringLiteral("Save not confirmed. Choose a language to retry.") : QStringLiteral("保存未确认，请重新选择语言。"));
+        }
+        QJsonObject reply{{"opened", opened}};
+        if (configuration) reply.insert("openingId", configuration->id);
+        return reply;
+    }
+
     static QJsonObject translationActions(const QJsonObject &view) {
         auto actions = view.value("viewContext").toObject().value("translationActions").toObject();
         if (integer(actions, "settingsRevision") < 0) return {};
@@ -3101,6 +3691,14 @@ private:
             if (source != QStringLiteral("auto")) chooseLanguages(overlayView_.value("targetLanguage").toString(), source);
         });
         menuLayout->addWidget(swap_);
+        auto *searchTarget = new QPushButton(QStringLiteral("搜索目标语言…"), menu_);
+        searchTarget_ = searchTarget;
+        searchTarget->setObjectName(QStringLiteral("typelay-language-search-open"));
+        searchTarget->setFocusPolicy(Qt::NoFocus);
+        connect(searchTarget, &QPushButton::clicked, this, [this, owner = QPointer<QPushButton>(searchTarget)] {
+            if (owner && owner->isVisible() && owner->isEnabled() && overlayMenuCurrent(menu_)) beginLanguageConfiguration();
+        });
+        menuLayout->addWidget(searchTarget);
         auto *moreLayout = new QVBoxLayout(moreMenu_);
         moreLayout->setContentsMargins(10, 8, 10, 8);
         moreLayout->setSpacing(4);
@@ -3197,6 +3795,7 @@ private:
                 && target->field->window()->isActiveWindow() && !geometry(target).isEmpty() && viewCurrent(target, data);
             if (!valid) hideOverlay();
             else {
+                closeLanguageConfiguration();
                 const bool menuOnly = card_ && overlayTarget_ == target
                     && overlayGeneration_ == data.value("generation") && overlayRevision_ == integer(data, "revision", 0)
                     && data.value("theme").toString(QStringLiteral("system")) == overlayTheme_
@@ -3379,6 +3978,32 @@ private:
     bool eventFilter(QObject *object, QEvent *event) override {
         if (!onThread()) return false;
         if (object == qApp && event->type() == QEvent::ApplicationPaletteChange) refreshSystemTheme();
+        const auto configuration = languageConfiguration_;
+        if (configuration) {
+            const QPointer<QObject> receiver = object;
+            auto *widget = qobject_cast<QWidget *>(object);
+            if (object == configuration->top && (event->type() == QEvent::Hide || event->type() == QEvent::Close
+                    || event->type() == QEvent::Destroy || event->type() == QEvent::WindowDeactivate)) closeLanguageConfiguration();
+            else if (widget && event->type() == QEvent::MouseButtonPress) {
+                configuration->press.reset();
+                if (!configurationContains(configuration, object)) closeLanguageConfiguration();
+                else if (const QPointer<QPushButton> control = qobject_cast<QPushButton *>(widget); control
+                    && static_cast<QMouseEvent *>(event)->button() == Qt::LeftButton
+                    && configurationControlCurrent(configuration, control)) {
+                    auto proof = configurationProof(configuration);
+                    // inspect can synchronously run application code. Never
+                    // reconstruct a guarded pointer from a retired raw receiver.
+                    if (!receiver) return true;
+                    if (proof && control && configurationControlCurrent(configuration, control)) {
+                        proof->control = control; configuration->press = *proof;
+                    }
+                }
+            } else if (configurationContains(configuration, object)
+                && (event->type() == QEvent::KeyPress || event->type() == QEvent::InputMethod
+                    || event->type() == QEvent::DynamicPropertyChange)) configuration->press.reset();
+            if (!receiver) return true;
+        }
+        if (configurationWidget(object)) return false; // No source discovery or post-IME key action.
         // The QWindow sees the press before Qt resolves its QWidget receiver.
         // Hiding here on that raw event would remove the menu before hit testing.
         if (openedMenu_ && event->type() == QEvent::MouseButtonPress && qobject_cast<QWidget *>(object)) {
@@ -3587,7 +4212,9 @@ private:
         const auto targetId = data.value("target").toString();
         if (targetId.isEmpty()) target = focused();
         else for (auto *candidate : targets_) if (candidate->id == targetId) { target = candidate; break; }
-        if (op == "overlay-glossary-return") returnGlossary(target, data, id);
+        if (op == "overlay-language-configuration-open" || op == "overlay-language-configuration-result"
+            || op == "overlay-language-configuration-close") respond(id, languageConfigurationCommand(op, data));
+        else if (op == "overlay-glossary-return") returnGlossary(target, data, id);
         else if (op.startsWith("overlay-")) respond(id, overlayCommand(op, target, data));
         else if (op == "describe") respondObject(id, describe(target));
         else if (op == "capture") respondObject(id, capture(target, data.value("authority").toObject()));
@@ -3614,29 +4241,13 @@ private:
             refreshHint();
         } else if (op == "configure-shortcuts") {
             ++authorizationGeneration_; ++returnGeneration_;
+            closeLanguageConfiguration();
             clearPermit(); hideOverlay();
             if (data.value("generation") != shortcutConfiguration_.value("generation")) shortcutStartedAt_ = -1;
             shortcutConfiguration_ = data;
             cancelShortcut();
             shortcutAuthority_ = {};
-            QVariantList keys, orderedKeys;
-            if (data.value("enabled").toBool()) for (const auto *kind : {"wake", "direct"}) {
-                const auto symbol = integer(data.value(QLatin1String(kind)).toObject(), "keyval", 0);
-                if (symbol > 0 && symbol <= std::numeric_limits<quint32>::max()) {
-                    keys.append(quint32(symbol));
-                    if (symbol >= 'A' && symbol <= 'Z') keys.append(quint32(symbol - 'A' + 'a'));
-                    else if (symbol >= 'a' && symbol <= 'z') keys.append(quint32(symbol - 'a' + 'A'));
-                }
-            }
-            if (sessionCurrent(data.value("generation"))) {
-                keys.append(sessionSymbol(sessionKey(data.value("accept"), true)));
-                keys.append(sessionSymbol(sessionKey(data.value("exit"), false)));
-                for (const auto *action : {"accept", "exit"})
-                    if (orderedBinding(data.value(QLatin1String(action))))
-                        orderedKeys.append(sessionSymbol(sessionKey(data.value(QLatin1String(action)), qstrcmp(action, "accept") == 0)));
-            }
-            qApp->setProperty(TypeLayFcitxQtControlKeysPropertyV1, keys);
-            qApp->setProperty(TypeLayFcitxQtOrderedKeysPropertyV1, orderedKeys);
+            configureControlKeys();
             respond(id);
         } else if (op == "publish-shortcut") {
             shortcutAuthority_ = {};
@@ -3682,6 +4293,7 @@ private:
         if (writer_) writer_->setEnabled(true);
     }
     void disconnectPeer() {
+        closeLanguageConfiguration(false);
         cancelShortcut(nullptr, "PlatformFailure", false);
         ++connectionGeneration_;
         if (reader_) { reader_->setEnabled(false); reader_->deleteLater(); reader_ = nullptr; }
@@ -3796,7 +4408,7 @@ private:
     QString overlayFontPolicy_;
     QPointer<QObject> overlaySourceProvider_;
     QPointer<QLabel> hint_, status_, translationFeedback_;
-    QPointer<QPushButton> language_, more_, swap_, resume_, exit_, alternative_, glossaryAction_;
+    QPointer<QPushButton> language_, more_, swap_, searchTarget_, resume_, exit_, alternative_, glossaryAction_;
     QPointer<QButtonGroup> sourceLanguages_, targetLanguages_, applicationStyles_;
     QPointer<QGridLayout> sourceLanguageLayout_, targetLanguageLayout_;
     QJsonArray sourceChoices_, targetChoices_;
@@ -3810,6 +4422,7 @@ private:
     QPointer<QPlainTextEdit> glossaryOwnedEditor_;
     quint64 glossaryOpeningFocus_ = 0;
     std::shared_ptr<GlossaryForm> glossary_;
+    std::shared_ptr<LanguageConfiguration> languageConfiguration_;
     bool probingGlossary_ = false, movingGlossaryFocus_ = false;
     Target *overlayTarget_ = nullptr;
     qint64 overlayUntil_ = 0, overlayRevision_ = 0;

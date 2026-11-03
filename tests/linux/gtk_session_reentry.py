@@ -2010,10 +2010,35 @@ async def check_language_configuration(
 
         await language_wait_for(blank_hit, "fixed blank point did not pick the owned root alone")
         input_target(search_name)
-        await language_command("xdotool", "click", "1", timeout=3)
-        final = await closed()
+        # A modified original search Return is refused. Its held repeat/release
+        # must not acquire a configuration action after that opening retires.
+        try:
+            try:
+                await language_command("xdotool", "keydown", "Control_L", timeout=2)
+                await language_command("xdotool", "keydown", "Return", timeout=2)
+            finally:
+                await language_command("xdotool", "keyup", "Control_L", timeout=2)
+            await peer.link.ask("describe")
+            assert config_current()["overlayControls"][popup_name]["instance"] == opening_instance
+            assert not calls["save"] and not calls["cancel"]
+            await language_command("xdotool", "click", "1", timeout=3)
+            final = await closed()
+            await source_click("secondEntry")
+            await language_command("xdotool", "keydown", "Return", timeout=2)
+        finally:
+            await language_command("xdotool", "keyup", "Return", timeout=2)
+        released = time.monotonic_ns() // 1_000_000
+        await language_wait_for(
+            lambda: observe().get("observedAtMs", 0) > released,
+            "no fresh source observation after retired search Return release",
+        )
+        await peer.link.ask("describe")
+        assert overlay.language_configuration is None and observe().get("candidate") is None
+        assert observe()["secondEntry"]["instance"] == source_instances["secondEntry"]
+        assert observe()["secondEntry"]["focused"]
         assert final["firstEntry"]["topActive"]
         assert len(calls["cancel"]) == 1 and not calls["save"]
+        evidence["retiredSearchHeldReturn"] = True
     elif stage == "language-configuration-window-focus":
         other = await language_wait_for(
             lambda: next(
@@ -2107,6 +2132,112 @@ async def check_language_configuration(
                 assert restored["overlayControls"][popup_name]["instance"] == opening_instance
                 assert not restored["overlayControls"]["fixture-language-feedback"].get("text")
                 assert not calls["save"] and not calls["cancel"]
+            # Exercise the original pre-IME decision with real Fcitx pinyin.
+            # Composing is not Unknown, and XTest is not physical-input proof.
+            input_target(search_name, composing=False)
+            await language_command(
+                "fcitx5-remote", "-s", "pinyin", timeout=3, environment=environment
+            )
+            await language_wait_for(
+                lambda: observe().get("focusedImeClear"), "search pinyin context not Clear"
+            )
+            await search_type("nihao")
+            await language_wait_for(
+                lambda: observe().get("focusedImeComposing"), "real search preedit missing"
+            )
+            input_target(search_name, composing=True)
+            try:
+                await language_command("xdotool", "keydown", "Return", timeout=2)
+                committed = await language_wait_for(
+                    lambda: (value := config_current())
+                    and value.get("focusedImeClear")
+                    and value["overlayControls"][search_name].get("text")
+                    and value,
+                    "original composing Return did not commit through the real IM",
+                )
+                assert (
+                    committed["overlayControls"][search_name]["instance"]
+                    == focus_instances[search_name]
+                )
+                assert committed["overlayControls"][popup_name]["instance"] == opening_instance
+                assert not calls["save"] and not calls["cancel"]
+                await config_key("ctrl+a")
+                await config_key("BackSpace")
+                await language_wait_for(
+                    lambda: (value := config_current())
+                    and value["overlayControls"][search_name].get("text") == ""
+                    and all(
+                        value["overlayControls"][f"typelay-language-choice-{code}"]["visible"]
+                        for code in ("en", "ja", "ko", "fr")
+                    ),
+                    "held Return search did not restore selectable rows",
+                )
+                input_target(search_name, composing=False)
+                await language_command("xdotool", "keydown", "Return", timeout=2)
+                repeated = time.monotonic_ns() // 1_000_000
+                await language_wait_for(
+                    lambda: observe().get("observedAtMs", 0) > repeated,
+                    "no fresh observation after the held search Return repeat",
+                )
+                await peer.link.ask("describe")
+                assert not calls["save"] and not calls["cancel"]
+                # A real Tab moves to a selectable GtkButton. Its own Return
+                # binding must not turn this old search down into a new save.
+                await config_key("Tab")
+                await language_wait_for(
+                    lambda: config_current()["overlayControls"]["typelay-language-choice-en"].get(
+                        "focused"
+                    ),
+                    "held Return did not reach the actual selectable row",
+                )
+                input_target("typelay-language-choice-en")
+                await language_command("xdotool", "keydown", "Return", timeout=2)
+                repeated = time.monotonic_ns() // 1_000_000
+                await language_wait_for(
+                    lambda: observe().get("observedAtMs", 0) > repeated,
+                    "no fresh row observation after the original search Return repeat",
+                )
+                await peer.link.ask("describe")
+                assert not calls["save"] and not calls["cancel"], (
+                    "row binding upgraded the original composing search Return"
+                )
+            finally:
+                await language_command("xdotool", "keyup", "Return", timeout=2)
+            # A duplicate release likewise has no new action authority.
+            await language_command("xdotool", "keyup", "Return", timeout=2)
+            released = time.monotonic_ns() // 1_000_000
+            await language_wait_for(
+                lambda: observe().get("observedAtMs", 0) > released,
+                "no fresh search observation after held Return repeat/release",
+            )
+            await peer.link.ask("describe")
+            input_target("typelay-language-choice-en")
+            assert not calls["save"] and not calls["cancel"]
+            await config_key("shift+Tab", "typelay-language-choice-en", composing=None)
+            await language_wait_for(
+                lambda: (value := config_current())["overlayControls"][search_name].get("focused")
+                and value.get("focusedImeClear"),
+                "focus did not return to the same Clear search after held Return release",
+            )
+            unchanged = input_target(search_name, composing=False)
+            assert unchanged["overlayControls"][popup_name]["instance"] == opening_instance
+            assert unchanged["overlayControls"][search_name].get("text") == ""
+            assert not calls["save"] and not calls["cancel"], (
+                "later Clear/focus return upgraded the original composing Return"
+            )
+            evidence["searchHeldReturn"] = {
+                "composingCommitted": True,
+                "sameOpeningFocusRoundTrip": True,
+                "rowRepeatDidNotSave": True,
+                "repeatAndReleaseDidNotSave": True,
+                "unknownProvider": "not deterministically exercised; Composing is not Unknown",
+            }
+            await language_command(
+                "fcitx5-remote", "-s", "keyboard-us", timeout=3, environment=environment
+            )
+            await language_wait_for(
+                lambda: observe().get("focusedImeClear"), "search keyboard context not Clear"
+            )
         await search_type("ko")
         await language_wait_for(
             lambda: (value := config_current())

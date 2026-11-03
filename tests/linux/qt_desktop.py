@@ -1648,6 +1648,36 @@ def run_qt(
                     "host settings while the source is empty, without writing or moving its focus"
                 )
 
+                click_overlay("typelay-menu-trigger")
+                automatic_languages = wait_for(
+                    lambda: value if (value := state())["overlayMenuVisible"] else None,
+                    "automatic language menu did not open",
+                )
+                automatic_search = automatic_languages["overlayControls"][
+                    "typelay-language-search-open"
+                ]
+                assert not automatic_search["enabled"] and automatic_search["toolTip"]
+                click_rectangle(
+                    automatic_languages,
+                    automatic_search["geometry"],
+                    "typelay-language-search-open",
+                )
+                command("observe")
+                automatic_rejected = wait_for(
+                    lambda: value
+                    if (value := state())["observedAtMs"] > automatic_languages["observedAtMs"]
+                    else None,
+                    "disabled automatic search was observed",
+                )
+                assert not automatic_rejected.get("languageConfiguration", {}).get("visible")
+                assert automatic_rejected["first"] == automatic_languages["first"]
+                assert automatic_rejected["overlayMenuVisible"]
+                assert not new_write_outcomes(before_direction_write)
+                click_overlay("typelay-menu-trigger")
+                evidence.append(
+                    "Qt6 Automatic keeps target search visibly disabled with an on-demand explanation and no source mutation"
+                )
+
                 editing_source = "Please review this note."
                 enter_source(editing_source)
                 actual = state()
@@ -1710,6 +1740,44 @@ def run_qt(
                     else None,
                     "real editor typing did not establish the selected undoable suffix",
                 )
+                # Editing has no configuration handoff that can preserve a
+                # rejected opening's draft. Show this restriction before action.
+                click_overlay("typelay-menu-trigger")
+                editing_languages = wait_for(
+                    lambda: value if (value := state())["overlayMenuVisible"] else None,
+                    "language child did not open beside the real manual draft",
+                )
+                search_entry = editing_languages["overlayControls"]["typelay-language-search-open"]
+                assert search_entry["visible"] and not search_entry["enabled"]
+                assert search_entry["toolTip"]
+                assert editing_languages["overlayControls"]["typelay-source-en"]["enabled"]
+                assert editing_languages["overlayControls"]["typelay-target-zh"]["enabled"]
+                click_rectangle(
+                    editing_languages, search_entry["geometry"], "typelay-language-search-open"
+                )
+                command("observe")
+                editing_rejected = wait_for(
+                    lambda: value
+                    if (value := state())["observedAtMs"] > editing_languages["observedAtMs"]
+                    else None,
+                    "disabled search click was observed by the actual editor host",
+                )
+                assert not editing_rejected.get("languageConfiguration", {}).get("visible")
+                for name in (
+                    "editorText",
+                    "editorCursor",
+                    "editorAnchor",
+                    "editorUndoSteps",
+                    "editorUndoAvailable",
+                    "editorFocused",
+                ):
+                    assert editing_rejected[name] == editing_theme_before[name]
+                assert editing_rejected["overlayMenuVisible"]
+                click_overlay("typelay-menu-trigger")
+                evidence.append(
+                    "Qt6 Editing disables target search without discarding its manual draft, selection or Undo"
+                )
+
                 # The separate More surface must not surrender a live draft,
                 # its selection or native undo history just to copy that draft.
                 menu_write = trace_checkpoint()
@@ -2263,6 +2331,76 @@ def run_qt(
                 evidence.append(
                     "Qt6 OnDemand: real settings save, default wake shortcut and verified Tab; "
                     "default direct shortcut verifies one native edit without Tab and preserves native undo"
+                )
+
+                # The searchable shell has a separate configuration owner. Its
+                # real Host save can change language settings, never source text.
+                clear_source()
+                configuration_settings = json.loads(settings_path.read_text())
+                assert configuration_settings["Mode"] == 1 and configuration_settings["Enabled"]
+                configuration_write = trace_checkpoint()
+                source_fields = (
+                    "text",
+                    "cursor",
+                    "selectionStart",
+                    "selectionLength",
+                    "undoAvailable",
+                    "changes",
+                    "edits",
+                )
+                for target in ("en", "zh"):
+                    key("ctrl+shift+F9")
+                    wait_for(
+                        lambda: state()["first"]["focused"]
+                        and settled(state())
+                        and state().get("overlayVisible")
+                        and status().get("viewState") == "IdleCapsule",
+                        "fresh real OnDemand wake did not present the empty source capsule",
+                    )
+                    before_search = state()
+                    click_overlay("typelay-menu-trigger")
+                    click_overlay("typelay-language-search-open")
+                    search = wait_for(
+                        lambda: value
+                        if (value := state()).get("languageConfiguration", {}).get("searchFocused")
+                        else None,
+                        "Qt target search did not receive its own actual focus",
+                    )
+                    assert search["languageConfiguration"]["visibleCount"] == 1
+                    assert search["languageConfiguration"]["geometry"]["width"] == 264
+                    assert not search["overlayVisible"] and not search["overlayMenuVisible"]
+                    typed(target)
+                    wait_for(
+                        lambda: state()["languageConfiguration"].get("searchText") == target
+                        and settled(state()),
+                        "Qt configuration query did not settle",
+                    )
+                    key("Return")
+                    wait_for(
+                        lambda: json.loads(settings_path.read_text())["Target"] == target
+                        and not state().get("languageConfiguration", {}).get("visible"),
+                        "Qt configuration Save did not persist through the actual Host",
+                    )
+                    after_search = state()
+                    assert {name: after_search["first"][name] for name in source_fields} == {
+                        name: before_search["first"][name] for name in source_fields
+                    }
+                    assert not new_write_outcomes(configuration_write)
+                    # The next source session needs an actual user focus action;
+                    # the configuration is not allowed to restore its old token.
+                    click_rectangle(after_search, after_search["first"]["geometry"])
+                    wait_for(
+                        lambda: state()["first"]["focused"] and settled(state()),
+                        "actual source focus did not return after configuration",
+                    )
+                restored_settings = json.loads(settings_path.read_text())
+                assert all(
+                    restored_settings[name] == value
+                    for name, value in configuration_settings.items()
+                )
+                evidence.append(
+                    "Qt6 OnDemand explicit target search saves same-language English and restores Chinese "
+                    "through the real configuration Host, with unchanged source, selection and Undo"
                 )
 
                 changed_source = "Application changed this field"
