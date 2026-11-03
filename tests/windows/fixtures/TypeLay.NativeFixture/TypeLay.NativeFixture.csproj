@@ -14,6 +14,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/KeyboardHook.Browser.cs" Link="Product/KeyboardHook.Browser.cs" />
+    <Compile Include="../../../../src/windows/TypeLay.App/Windows/KeyboardHook.ForegroundDelivery.cs" Link="Product/KeyboardHook.ForegroundDelivery.cs" />
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/KeyboardHook.OwnedPractice.cs" Link="Product/KeyboardHook.OwnedPractice.cs" />
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/KeyboardHook.LocalDraft.cs" Link="Product/KeyboardHook.LocalDraft.cs" />
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/KeyboardHook.cs" Link="Product/KeyboardHook.cs" />

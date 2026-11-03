@@ -245,8 +245,8 @@ def select_session_keys(paths, host_pid, accept, exit_key, send_key):
         return key
 
     current = json.loads(paths.settings.read_text())
-    current_accept = main_key(current["AcceptShortcut"], "Tab")
-    current_exit = main_key(current["ExitShortcut"], "Esc")
+    current_accept = main_key(current.get("AcceptShortcut", "Tab"), "Tab")
+    current_exit = main_key(current.get("ExitShortcut", "Esc"), "Esc")
     requested_accept = main_key(accept, "Tab")
     requested_exit = main_key(exit_key, "Esc")
     assert current_accept != current_exit and requested_accept != requested_exit, (

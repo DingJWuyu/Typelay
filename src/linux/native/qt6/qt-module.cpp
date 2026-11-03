@@ -16,6 +16,7 @@
 #include <QElapsedTimer>
 #include <QLocale>
 #include <QPainter>
+#include <QPainterPath>
 #include <QGenericPlugin>
 #include <QGridLayout>
 #include <QJsonArray>
@@ -38,6 +39,7 @@
 #include <QSocketNotifier>
 #include <QStyleHints>
 #include <QStyle>
+#include <QStyleOptionButton>
 #include <QTextBlock>
 #include <QTextDocument>
 #include <QTextFrame>
@@ -101,6 +103,74 @@ private:
     bool reduced_ = false;
     QTimer timer_;
     QElapsedTimer clock_;
+};
+
+// The two compact actions keep QPushButton input semantics and the current
+// overlay palette. Only their ink is custom; no font glyph or SVG loader is used.
+class OverlayActionButton final : public QPushButton {
+    Q_OBJECT
+public:
+    enum class Glyph { Expand, Collapse, More };
+    explicit OverlayActionButton(Glyph glyph, QWidget *parent) : QPushButton(parent), glyph_(glyph) {
+        setFixedSize(26, 26);
+        setFocusPolicy(Qt::NoFocus);
+    }
+    bool setGlyph(Glyph glyph, const QString &label) {
+        glyph_ = glyph; label_ = label;
+        const QPointer<OverlayActionButton> owner(this);
+        const auto current = [&] { return owner && owner->glyph_ == glyph && owner->label_ == label; };
+        // Accessibility and tooltip notifications may synchronously retire this
+        // widget or apply a newer presentation. Never finish an old update then.
+        if (accessibleName() != label) setAccessibleName(label);
+        if (!current()) return false;
+        if (toolTip() != label) setToolTip(label);
+        if (!current()) return false;
+        update();
+        return true;
+    }
+    void setInk(const QColor &normal, const QColor &active) {
+        normal_ = normal; active_ = active;
+        update();
+    }
+    void setMenuOpen(bool open) { menuOpen_ = open; update(); }
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QStyleOptionButton option;
+        initStyleOption(&option);
+        if (menuOpen_) option.state |= QStyle::State_MouseOver;
+        QPainter paint(this);
+        style()->drawControl(QStyle::CE_PushButton, &option, &paint, this);
+        paint.setRenderHint(QPainter::Antialiasing);
+        const auto ink = option.state & (QStyle::State_MouseOver | QStyle::State_Sunken) ? active_ : normal_;
+        if (!isEnabled()) paint.setOpacity(.35);
+        paint.translate((width() - 15) / 2.0, (height() - 15) / 2.0);
+        paint.scale(15.0 / 24.0, 15.0 / 24.0);
+        if (glyph_ == Glyph::More) {
+            paint.setPen(Qt::NoPen); paint.setBrush(ink);
+            for (const double x : {5.5, 12.0, 18.5}) paint.drawEllipse(QPointF(x, 12), 1.4, 1.4);
+            return;
+        }
+        paint.setBrush(Qt::NoBrush);
+        paint.setPen(QPen(ink, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        QPainterPath path;
+        if (glyph_ == Glyph::Expand) {
+            path.moveTo(14, 4); path.lineTo(20, 4); path.lineTo(20, 10);
+            path.moveTo(20, 4); path.lineTo(13.5, 10.5);
+            path.moveTo(10, 20); path.lineTo(4, 20); path.lineTo(4, 14);
+            path.moveTo(4, 20); path.lineTo(10.5, 13.5);
+        } else {
+            path.moveTo(20, 10); path.lineTo(14, 10); path.lineTo(14, 4);
+            path.moveTo(14, 10); path.lineTo(20.5, 3.5);
+            path.moveTo(4, 14); path.lineTo(10, 14); path.lineTo(10, 20);
+            path.moveTo(10, 14); path.lineTo(3.5, 20.5);
+        }
+        paint.drawPath(path);
+    }
+private:
+    Glyph glyph_;
+    QString label_;
+    QColor normal_, active_;
+    bool menuOpen_ = false;
 };
 
 constexpr qsizetype MaxFrame = 256 * 1024;
@@ -1831,14 +1901,19 @@ private:
             || card_->style()->styleHint(QStyle::SH_Widget_Animation_Duration, nullptr, card_) <= 0);
         if (editor_) editor_->setAccessibleName(overlayUi("译文"));
         if (!surface || card_ != surface || overlayView_ != view || overlayGeneration_ != generation || overlayRevision_ != revision) return;
-        if (more_) { more_->setAccessibleName(overlayUi("更多")); more_->setToolTip(overlayUi("更多")); }
-        if (!surface || card_ != surface || overlayView_ != view || overlayGeneration_ != generation || overlayRevision_ != revision) return;
         QList<QPointer<QAbstractButton>> buttons;
         for (QWidget *root : {static_cast<QWidget *>(card_.data()), menu_.data(), moreMenu_.data()})
             if (root) for (auto *button : root->findChildren<QAbstractButton *>()) buttons.append(button);
         for (const auto &button : buttons) {
             if (!surface || card_ != surface || overlayView_ != view || overlayGeneration_ != generation || overlayRevision_ != revision) return;
-            if (button) button->setText(overlayUi(button->text().toUtf8().constData()));
+            if (auto *action = qobject_cast<OverlayActionButton *>(button.data())) {
+                const bool more = button == more_;
+                action->setInk(QColor(QString::fromUtf8(tokens.secondary)), QColor(QString::fromUtf8(tokens.ink)));
+                if (!action->setGlyph(more ? OverlayActionButton::Glyph::More
+                    : expanded_ ? OverlayActionButton::Glyph::Collapse : OverlayActionButton::Glyph::Expand,
+                    more ? overlayUi("更多") : expanded_ ? overlayUi("收起") : overlayUi("展开"))) return;
+                if (!surface || card_ != surface || overlayView_ != view || overlayGeneration_ != generation || overlayRevision_ != revision) return;
+            } else if (button) button->setText(overlayUi(button->text().toUtf8().constData()));
         }
         QList<QPointer<QLabel>> labels;
         for (QWidget *root : {static_cast<QWidget *>(card_.data()), menu_.data(), moreMenu_.data()})
@@ -2048,6 +2123,7 @@ private:
         openedMenu_ = nullptr;
         menuView_.reset();
         translationActionMenu_.reset();
+        if (auto *action = qobject_cast<OverlayActionButton *>(more_.data())) action->setMenuOpen(false);
         const auto language = menu_, more = moreMenu_;
         if (language) language->hide();
         if (more) more->hide();
@@ -2098,7 +2174,11 @@ private:
         placeOverlayMenu();
         if (!overlayMenuCurrent(panel)) return;
         panel->show();
-        if (overlayMenuCurrent(panel)) panel->raise();
+        if (overlayMenuCurrent(panel)) {
+            if (panel == moreMenu_)
+                if (auto *action = qobject_cast<OverlayActionButton *>(more_.data())) action->setMenuOpen(true);
+            panel->raise();
+        }
     }
     bool selectLanguage(QPointer<QButtonGroup> group, const QJsonArray &choices, const QString &code,
         const LanguageRender &rendered) {
@@ -2857,14 +2937,17 @@ private:
         layout->setContentsMargins(14, 10, 12, 8);
         layout->setSpacing(4);
         auto button = [&](QWidget *parent, QBoxLayout *box, const QString &label, const char *operation) {
-            auto *value = new QPushButton(label, parent);
+            QPushButton *value = qstrcmp(operation, "expand") == 0 || qstrcmp(operation, "more-menu") == 0
+                ? new OverlayActionButton(qstrcmp(operation, "more-menu") == 0 ? OverlayActionButton::Glyph::More
+                    : expanded_ ? OverlayActionButton::Glyph::Collapse : OverlayActionButton::Glyph::Expand, parent)
+                : new QPushButton(label, parent);
             value->setFocusPolicy(Qt::NoFocus);
-            connect(value, &QPushButton::clicked, this, [this, operation, value] {
-                if (!insideOverlay(value)) return;
+            connect(value, &QPushButton::clicked, this, [this, operation, owner = QPointer<QPushButton>(value)] {
+                if (!owner || !insideOverlay(owner)) return;
                 if (qstrcmp(operation, "resume") == 0) {
                     auto *resumeTarget = overlayTarget_;
                     const auto revision = overlayRevision_;
-                    if (value != resume_ || !paused() || pendingResume_) return;
+                    if (owner != resume_ || !paused() || pendingResume_) return;
                     if (!overlayActive() || !pauseCurrent(resumeTarget, overlayAuthority_)) { hideOverlay(); return; }
                     if (overlayTarget_ != resumeTarget || overlayRevision_ != revision || !paused() || !overlayActive()) return;
                     pendingResume_ = true;
@@ -2877,14 +2960,20 @@ private:
                     toggleOverlayMenu(qstrcmp(operation, "languages-menu") == 0 ? menu_ : moreMenu_);
                     return;
                 } else if (qstrcmp(operation, "expand") == 0) {
+                    const auto rendered = languageRender();
                     closeOverlayMenus();
-                    expanded_ = !expanded_;
-                    value->setText(expanded_ ? overlayUi("收起") : overlayUi("展开"));
-                    ui("expand", expanded_);
-                    resizeOverlay();
+                    if (!owner || !languageCurrent(rendered) || !overlayActive()) return;
+                    const bool expanded = !expanded_;
+                    expanded_ = expanded;
+                    auto *action = qobject_cast<OverlayActionButton *>(owner.data());
+                    if (!action || !action->setGlyph(expanded ? OverlayActionButton::Glyph::Collapse
+                        : OverlayActionButton::Glyph::Expand, expanded ? overlayUi("收起") : overlayUi("展开"))
+                        || !owner || !languageCurrent(rendered) || expanded_ != expanded || !overlayActive()) return;
+                    ui("expand", expanded);
+                    if (owner && languageCurrent(rendered) && expanded_ == expanded && overlayActive()) resizeOverlay();
                     return;
                 } else {
-                    if (value->parentWidget() == moreMenu_ && (!overlayMenuCurrent(moreMenu_) || moreMenu_->isHidden())) return;
+                    if (owner->parentWidget() == moreMenu_ && (!overlayMenuCurrent(moreMenu_) || moreMenu_->isHidden())) return;
                     const auto rendered = languageRender();
                     closeOverlayMenus();
                     if (!languageCurrent(rendered) || !overlayActive()) return;
@@ -2912,11 +3001,9 @@ private:
         auto *toolsLayout = new QHBoxLayout(tools_);
         toolsLayout->setContentsMargins(0, 0, 0, 0);
         toolsLayout->setSpacing(2);
-        more_ = button(tools_, toolsLayout, QStringLiteral("⋯"), "more-menu");
+        button(tools_, toolsLayout, QString(), "expand")->setObjectName(QStringLiteral("typelay-expand"));
+        more_ = button(tools_, toolsLayout, QString(), "more-menu");
         more_->setObjectName(QStringLiteral("typelay-more-trigger"));
-        more_->setAccessibleName(overlayUi("更多"));
-        more_->setToolTip(overlayUi("更多"));
-        button(tools_, toolsLayout, expanded_ ? overlayUi("收起") : overlayUi("展开"), "expand")->setObjectName(QStringLiteral("typelay-expand"));
         header->addWidget(tools_);
         resume_ = button(frame, header, QStringLiteral("恢复"), "resume");
         resume_->setObjectName(QStringLiteral("typelay-resume"));

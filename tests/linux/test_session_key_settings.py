@@ -38,6 +38,7 @@ class ShortcutScene:
         self.unacknowledged = unacknowledged
         self.confirmations = []
         self.keys = []
+        self.settings_before_keys = []
         self.selected = False
         self.ticks = 0
         self.row = self.node("快捷键", "row")
@@ -110,6 +111,7 @@ class ShortcutScene:
 
     def send_key(self, chord):
         assert self.recording is not None
+        self.settings_before_keys.append(self.paths.settings.read_bytes())
         self.keys.append(chord)
         canonical = chord.replace("ctrl+", "Ctrl+", 1)
         self.draft[self.recording.field] = {"Escape": "Esc"}.get(canonical, canonical)
@@ -165,6 +167,49 @@ class ShortcutScene:
 
 
 class SessionKeySettingsTests(unittest.TestCase):
+    def test_missing_session_keys_use_defaults_without_rewriting_before_recording(self):
+        for initial in ({"ExitShortcut": "Esc"}, {"AcceptShortcut": "Tab"}, {}):
+            with self.subTest(settings=initial), tempfile.TemporaryDirectory() as directory:
+                scene = ShortcutScene(Path(directory))
+                # The settings endpoint has loaded the product's Tab/Esc defaults;
+                # the original file still contains only the explicitly saved keys.
+                scene.paths.settings.write_text(json.dumps(initial))
+                before = scene.paths.settings.read_bytes()
+                scene.run("F1", "F24")
+                self.assertEqual(scene.keys, ["F1", "F24"])
+                self.assertEqual(scene.settings_before_keys[0], before)
+                self.assertEqual(
+                    scene.confirmations,
+                    [
+                        {"AcceptShortcut": "F1", "ExitShortcut": "Esc"},
+                        {"AcceptShortcut": "F1", "ExitShortcut": "F24"},
+                    ],
+                )
+                self.assertEqual(
+                    json.loads(scene.paths.settings.read_text()),
+                    {"AcceptShortcut": "F1", "ExitShortcut": "F24"},
+                )
+
+    def test_explicit_invalid_saved_keys_are_rejected_without_input_or_writes(self):
+        for accept, exit_key in (
+            (None, "Esc"),
+            ("Tab", None),
+            ("F25", "Esc"),
+            ("Tab", "Ctrl+Tab"),
+        ):
+            with (
+                self.subTest(accept=accept, exit_key=exit_key),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                scene = ShortcutScene(Path(directory), accept=accept, exit_key=exit_key)
+                before = scene.paths.settings.read_bytes()
+                with self.assertRaisesRegex(AssertionError, "unsupported canonical session key"):
+                    scene.run("F1", "F24")
+                self.assertFalse(scene.selected)
+                self.assertEqual(scene.keys, [])
+                self.assertEqual(scene.confirmations, [])
+                self.assertEqual(scene.paths.settings.read_bytes(), before)
+
     def test_new_exit_key_confirms_the_existing_risky_accept_key_again(self):
         with tempfile.TemporaryDirectory() as directory:
             scene = ShortcutScene(Path(directory))

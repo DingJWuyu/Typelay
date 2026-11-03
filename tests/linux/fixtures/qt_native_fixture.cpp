@@ -583,6 +583,7 @@ int main(int argc, char **argv) {
             observer.observeOverlay(button);
             QJsonObject control{
                 {"text", button->text()}, {"description", button->accessibleName()}, {"focused", button->hasFocus()},
+                {"toolTip", button->toolTip()}, {"focusPolicy", int(button->focusPolicy())},
                 {"visible", button->isVisible()}, {"enabled", button->isEnabled()},
                 {"underMouse", button->underMouse()},
                 {"checked", button->isChecked()}, {"geometry", rectangle(button)},

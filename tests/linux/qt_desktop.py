@@ -675,6 +675,22 @@ def run_qt(
                         f"Qt did not expose the requested real application appearance: {theme}",
                     )
 
+                def assert_action_icons(value, expand_label="展开"):
+                    controls = value["overlayControls"]
+                    for name, label in (
+                        ("typelay-expand", expand_label),
+                        ("typelay-more-trigger", "更多"),
+                    ):
+                        action = controls[name]
+                        assert action["text"] == ""
+                        assert action["description"] == action["toolTip"] == label
+                        assert action["focusPolicy"] == 0 and not action["focused"]
+                        assert action["geometry"]["width"] == action["geometry"]["height"] == 26
+                    expand, more = controls["typelay-expand"], controls["typelay-more-trigger"]
+                    if expand["visible"] and more["visible"]:
+                        assert expand["geometry"]["y"] == more["geometry"]["y"]
+                        assert expand["geometry"]["x"] + 28 == more["geometry"]["x"]
+
                 def themed_overlay(theme, *, paused=False):
                     background, foreground, secondary = (
                         ("#282724", "#f4f3ee", "#b5b3ab")
@@ -1243,6 +1259,7 @@ def run_qt(
                 assert 300 <= overlay_bounds["width"] <= 440
                 assert 36 <= editor_bounds["height"] <= 167
                 assert not initial_application["overlayControls"]["typelay-expand"]["visible"]
+                assert_action_icons(initial_application)
                 assert language_bounds["y"] >= editor_bounds["y"] + editor_bounds["height"]
                 for bounds in (editor_bounds, language_bounds):
                     assert bounds["width"] > 0 and bounds["height"] > 0
@@ -1285,6 +1302,7 @@ def run_qt(
                 assert not new_write_outcomes(motion_trace)
                 initial_application = state()
                 assert initial_application["editorGeometry"]["height"] == 167
+                assert_action_icons(initial_application)
                 # One controlled viewport, using the existing real model,
                 # provider, widgets and host renewals. The finite frame record
                 # spans the bounded spring settling window and never reads private motion state.
@@ -1449,6 +1467,7 @@ def run_qt(
                         application_theme(appearance)
                         expected = appearance if preference == "system" else preference
                         actual = themed_overlay(expected)
+                        assert_action_icons(actual)
                         unchanged_theme_input(before_appearance, actual)
                         assert actual["editorText"] == candidate and actual["editorReadOnly"]
                         for name in ("overlayGeometry", "editorGeometry"):
@@ -1612,15 +1631,21 @@ def run_qt(
                 # The new editing view has applied before any later draft
                 # test. Do not require model/IME round trips to fit a frame window.
                 click_overlay("typelay-expand")
-                wait_for(
-                    lambda: state()["editorGeometry"]["height"] == 360,
+                expanded_draft = wait_for(
+                    lambda: value
+                    if (value := state())["editorGeometry"]["height"] == 360
+                    else None,
                     "long draft did not expand to its bounded height",
                 )
+                assert_action_icons(expanded_draft, "收起")
                 click_overlay("typelay-expand")
-                wait_for(
-                    lambda: state()["editorGeometry"]["height"] == 167,
+                collapsed_draft = wait_for(
+                    lambda: value
+                    if (value := state())["editorGeometry"]["height"] == 167
+                    else None,
                     "new editing view did not restore compact geometry",
                 )
+                assert_action_icons(collapsed_draft)
                 key("ctrl+End")
                 typed(" MARK")
                 key("shift+Left")
@@ -1684,6 +1709,7 @@ def run_qt(
                     assert frame["cursor"] == draft_length - 1 and frame["anchor"] == draft_length
                     assert frame["editorFocused"]
                 collapse_before = state()
+                assert_action_icons(collapse_before, "收起")
                 editing_theme_trace = trace_checkpoint()
                 collapse_trace = arguments.output / "qt-desktop-fixture.log"
                 collapse_checkpoint = collapse_trace.stat().st_size
@@ -1749,12 +1775,14 @@ def run_qt(
                     compact_draft_after_settlement,
                     "Qt draft had no same-editor compact frame after its collapse settled",
                 )
+                assert_action_icons(editing_theme_before)
                 # The existing Ctrl+Z and two-stage Tab assertions below now
                 # validate the same editor after both animated size changes.
                 assert not new_write_outcomes(editing_theme_trace)
                 for appearance in ("light", "dark"):
                     application_theme(appearance)
                     actual = themed_overlay(appearance)
+                    assert_action_icons(actual)
                     theme_observations.append(
                         {
                             "observation": "editing-theme-geometry",

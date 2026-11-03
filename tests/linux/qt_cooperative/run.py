@@ -1809,6 +1809,14 @@ def ordered_controls(
                     )
                     assert actual["first"] == source_before
                     assert not actual["editorFocused"]
+                    for name, label in (
+                        ("typelay-expand", "展开"),
+                        ("typelay-more-trigger", "更多"),
+                    ):
+                        action = actual["overlayControls"][name]
+                        assert action["text"] == ""
+                        assert action["description"] == action["toolTip"] == label
+                        assert action["focusPolicy"] == 0 and not action["focused"]
                 native.call("overlay-hide")
                 result["updating_translation_muted_and_manual_states_normal"] = True
                 fixture("observe-fonts", enabled=True)
@@ -1930,6 +1938,14 @@ def ordered_controls(
                         )
                     assert actual["first"] == source_before
                     assert not actual["editorFocused"] and actual["editorReadOnly"]
+                    for name, label in (
+                        ("typelay-expand", "Expand"),
+                        ("typelay-more-trigger", "More"),
+                    ):
+                        action = actual["overlayControls"][name]
+                        assert action["text"] == ""
+                        assert action["description"] == action["toolTip"] == label
+                        assert action["focusPolicy"] == 0 and not action["focused"]
                     if font == "system":
                         runs = actual.get("editorFontRuns") or []
                         host_face = actual.get("applicationFontFace") or {}
