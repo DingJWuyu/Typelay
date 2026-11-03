@@ -677,6 +677,9 @@ def run_qt(
 
                 def assert_action_icons(value, expand_label="展开"):
                     controls = value["overlayControls"]
+                    assert controls["typelay-exit"]["visible"]
+                    assert controls["typelay-hide"]["text"] == "暂时隐藏"
+                    assert controls["typelay-hide"]["focusPolicy"] == 0
                     for name, label in (
                         ("typelay-expand", expand_label),
                         ("typelay-more-trigger", "更多"),
@@ -690,6 +693,48 @@ def run_qt(
                     if expand["visible"] and more["visible"]:
                         assert expand["geometry"]["y"] == more["geometry"]["y"]
                         assert expand["geometry"]["x"] + 28 == more["geometry"]["x"]
+
+                def assert_hide_menu(value):
+                    hide = value["overlayControls"]["typelay-hide"]
+                    assert hide["visible"] and hide["enabled"] and hide["focusPolicy"] == 0
+                    assert hide["text"] == "暂时隐藏" and not hide["focused"]
+                    assert value["overlayControls"]["typelay-exit"]["visible"]
+                    # These are the existing More children, including nested style
+                    # choices. Do not include the separate language menu controls.
+                    for name in (
+                        "typelay-regenerate",
+                        "typelay-alternative",
+                        "typelay-style-natural",
+                        "typelay-style-formal",
+                        "typelay-style-concise",
+                        "typelay-style-casual",
+                        "typelay-style-inherit",
+                        "typelay-copy",
+                        "typelay-glossary-open",
+                        "typelay-hide",
+                        "typelay-exclude",
+                        "typelay-settings",
+                    ):
+                        control = value["overlayControls"][name]
+                        if not control["visible"]:
+                            continue
+                        bounds = control["geometry"]
+                        for container in (
+                            value["overlayMoreMenuGeometry"],
+                            {"x": 0, "y": 0, "width": value["width"], "height": value["height"]},
+                        ):
+                            assert (
+                                container["x"]
+                                <= bounds["x"]
+                                < bounds["x"] + bounds["width"]
+                                <= container["x"] + container["width"]
+                            ), (name, bounds, container)
+                            assert (
+                                container["y"]
+                                <= bounds["y"]
+                                < bounds["y"] + bounds["height"]
+                                <= container["y"] + container["height"]
+                            ), (name, bounds, container)
 
                 def themed_overlay(theme, *, paused=False):
                     background, foreground, secondary = (
@@ -1507,6 +1552,7 @@ def run_qt(
                     "actual Qt More button did not open its menu",
                 )
                 assert not opened["overlayMenuVisible"]
+                assert_hide_menu(opened)
                 assert not opened["overlayControls"]["typelay-source-en"]["visible"]
                 assert opened["overlayGeometry"] == before_menu["overlayGeometry"]
                 assert opened["editorGeometry"] == before_menu["editorGeometry"]
@@ -1577,6 +1623,8 @@ def run_qt(
                 original_settings = json.loads(settings_path.read_text())
                 assert original_settings["Source"] == "en" and original_settings["Target"] == "zh"
                 before_direction = state()
+                assert not before_direction["overlayControls"]["typelay-exit"]["visible"]
+                assert not before_direction["overlayControls"]["typelay-more-trigger"]["visible"]
                 before_direction_write = trace_checkpoint()
                 for language in ("auto", "en"):
                     click_overlay("typelay-menu-trigger")
@@ -1671,6 +1719,7 @@ def run_qt(
                     "More did not open beside the live manual editor",
                 )
                 assert not draft_menu["overlayMenuVisible"]
+                assert_hide_menu(draft_menu)
                 assert all(
                     draft_menu["overlayControls"][f"typelay-style-{name}"]["visible"]
                     and not draft_menu["overlayControls"][f"typelay-style-{name}"]["enabled"]

@@ -137,7 +137,8 @@ static inline const char *tl_overlay_ui(const char *value, int english) {
         {"风格", "Style"}, {"简洁", "Concise"}, {"口语", "Casual"}, {"暂不可用", "Not available yet"}, {"✓ 继承", "✓ Use default"},
         {"✓ 自然", "✓ Natural"}, {"✓ 正式", "✓ Formal"}, {"换种说法", "Rephrase"},
         {"加入术语表", "Add to glossary"}, {"复制译文", "Copy translation"}, {"排除此应用", "Hide in this app"},
-        {"不要在这个应用中显示", "Hide in this app"}, {"设置…", "Settings…"}, {"点击译文编辑", "Click to edit translation"},
+        {"不要在这个应用中显示", "Hide in this app"}, {"暂时隐藏", "Hide for Now"},
+        {"设置…", "Settings…"}, {"点击译文编辑", "Click to edit translation"},
         {"编辑译文", "Edit translation"}, {"翻译中", "Translating"}, {"更新中", "Updating"}, {"未能更新", "Couldn't update"},
         {"输入中", "Typing"}, {"仅预览", "Preview only"}, {"已修改", "Edited"}, {"编辑中", "Editing"},
         {"保存", "Save"}, {"取消", "Cancel"}, {"原文", "Source"}, {"译文", "Translation"}

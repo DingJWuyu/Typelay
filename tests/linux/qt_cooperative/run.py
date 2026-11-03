@@ -735,6 +735,70 @@ def language_options(native, captured, generation, state, window, environment, n
     assert not reopened["overlayControls"]["typelay-style-inherit"]["enabled"]
     click("typelay-more-trigger")
     wait(lambda: not state()["overlayMoreMenuVisible"], "cancel More from its trigger")
+    render()
+    before_escape = len(native.events)
+    click("typelay-more-trigger")
+    opened_hide = wait(
+        lambda: value if (value := state())["overlayMoreMenuVisible"] else None,
+        "open current Hide for Now",
+    )
+    hide = opened_hide["overlayControls"]["typelay-hide"]
+    assert hide["visible"] and hide["enabled"] and hide["focusPolicy"] == 0
+    assert opened_hide["overlayControls"]["typelay-exit"]["visible"]
+    click("typelay-hide")
+    wait(lambda: not state()["overlayMoreMenuVisible"], "Hide for Now closes its current menu")
+    native.call("describe")
+    escapes = [
+        item["data"]
+        for item in native.events[before_escape:]
+        if item.get("event") == "ui" and item.get("data", {}).get("operation") == "escape"
+    ]
+    assert escapes == [
+        {
+            "target": captured["target"],
+            "generation": generation,
+            "revision": revision,
+            "operation": "escape",
+            "value": None,
+        }
+    ]
+    assert state()["first"] == original["first"]
+    assert state()["second"] == original["second"]
+    # A real down on an old menu cannot borrow the next view on its release.
+    render()
+    click("typelay-more-trigger")
+    pressed = wait(
+        lambda: value if (value := state())["overlayMoreMenuVisible"] else None,
+        "open Hide before view retirement",
+    )
+    bounds = pressed["overlayControls"]["typelay-hide"]["geometry"]
+    before_escape = len(native.events)
+    run(
+        [
+            "xdotool",
+            "mousemove",
+            "--window",
+            window,
+            str(int((bounds["x"] + bounds["width"] / 2) * pressed["scale"])),
+            str(int((bounds["y"] + bounds["height"] / 2) * pressed["scale"])),
+            "mousedown",
+            "1",
+        ],
+        env=environment,
+    )
+    try:
+        retired_hide = render(advance_revision=False, can_edit=True)
+        assert not retired_hide["overlayMoreMenuVisible"]
+    finally:
+        run(["xdotool", "mouseup", "1"], env=environment)
+    native.call("describe")
+    assert not any(
+        item.get("event") == "ui" and item.get("data", {}).get("operation") == "escape"
+        for item in native.events[before_escape:]
+    )
+    assert state()["first"]["text"] == original["first"]["text"]
+    assert state()["second"]["text"] == original["second"]["text"]
+    render(can_edit=False)
     before_events = events()
     toggle(True, renew=False)
     permissions = render(advance_revision=False, can_edit=True)
@@ -1809,6 +1873,11 @@ def ordered_controls(
                     )
                     assert actual["first"] == source_before
                     assert not actual["editorFocused"]
+                    fallback = actual["overlayControls"]["typelay-exit"]
+                    assert fallback["visible"]
+                    assert fallback["focusPolicy"] == 0 and not fallback["focused"]
+                    hide = actual["overlayControls"]["typelay-hide"]
+                    assert hide["text"] == "暂时隐藏" and hide["focusPolicy"] == 0
                     for name, label in (
                         ("typelay-expand", "展开"),
                         ("typelay-more-trigger", "更多"),
@@ -1938,6 +2007,8 @@ def ordered_controls(
                         )
                     assert actual["first"] == source_before
                     assert not actual["editorFocused"] and actual["editorReadOnly"]
+                    assert actual["overlayControls"]["typelay-exit"]["visible"]
+                    assert actual["overlayControls"]["typelay-hide"]["text"] == "Hide for Now"
                     for name, label in (
                         ("typelay-expand", "Expand"),
                         ("typelay-more-trigger", "More"),
@@ -2269,6 +2340,14 @@ def ordered_controls(
                         lambda: events("sessionGlossaryBegin"),
                         "explicit source glossary activation",
                     )[-1]
+                    observe(
+                        lambda value: value["overlayControls"]["typelay-exit"]["visible"],
+                        "glossary opening retains its existing pointer exit",
+                    )
+                    if check_inherit:
+                        click("typelay-more-trigger")
+                        assert not state()["overlayMoreMenuVisible"]
+                        assert state()["overlayControls"]["typelay-exit"]["visible"]
                     token = {
                         "target": publication["permit"]["plan"]["expected"]["target"],
                         "commandGeneration": generation,
@@ -2318,6 +2397,7 @@ def ordered_controls(
                         lambda value: value.get("glossary", {}).get("source", {}).get("focused"),
                         "real source-word focus without translation editing",
                     )
+                    assert state()["overlayControls"]["typelay-exit"]["visible"]
                     unchanged()
                     if finish == "font-policy-open":
                         # Retire, never restamp, the actual open source form.

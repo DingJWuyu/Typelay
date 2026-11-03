@@ -3054,6 +3054,7 @@ private:
         hint_->setWordWrap(true);
         footerLayout->addWidget(hint_); footerLayout->addStretch();
         exit_ = button(footer_, footerLayout, QString(), "escape");
+        exit_->setObjectName(QStringLiteral("typelay-exit"));
         header->addWidget(footer_);
         auto menuSurface = [&](const char *name) {
             auto *panel = new QFrame(top);
@@ -3156,6 +3157,7 @@ private:
         translationFeedback_->setStyleSheet(QStringLiteral("color: palette(mid);"));
         translationFeedback_->hide();
         moreLayout->addWidget(translationFeedback_);
+        button(moreMenu_, moreLayout, QStringLiteral("暂时隐藏"), "escape")->setObjectName(QStringLiteral("typelay-hide"));
         button(moreMenu_, moreLayout, QStringLiteral("不要在这个应用中显示"), "exclude")->setObjectName(QStringLiteral("typelay-exclude"));
         button(moreMenu_, moreLayout, QStringLiteral("设置…"), "settings")->setObjectName(QStringLiteral("typelay-settings"));
         moreMenu_->hide();

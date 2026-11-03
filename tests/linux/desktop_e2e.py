@@ -2099,23 +2099,6 @@ def run(arguments):
                                 nested[0],
                             )
                         evidence.append("GTK renderer: only nonempty updating previews are muted")
-                        with tempfile.TemporaryDirectory(prefix="tl-gtk-languages-") as directory:
-                            run_case(
-                                fixture_command,
-                                gtk_environment,
-                                arguments.output,
-                                None,
-                                Path(directory),
-                                "language-options",
-                                False,
-                                nested[0],
-                                language_configuration=gtk4,
-                            )
-                        evidence.append(
-                            "GTK4 configuration: source retired before search, keyboard navigation and explicit save/retry"
-                            if gtk4
-                            else "GTK renderer: catalog language choices preserve menu drafts and focus"
-                        )
                         if gtk4:
                             # Independent, pre-registered configuration openings.
                             # No retry, old-source renewal or private activation.
@@ -2146,6 +2129,23 @@ def run(arguments):
                             evidence.append(
                                 "GTK4 configuration: swap/search, empty recovery, natural Tab exit, outside click and second-window retirement"
                             )
+                        with tempfile.TemporaryDirectory(prefix="tl-gtk-languages-") as directory:
+                            run_case(
+                                fixture_command,
+                                gtk_environment,
+                                arguments.output,
+                                None,
+                                Path(directory),
+                                "language-options",
+                                False,
+                                nested[0],
+                                language_configuration=gtk4,
+                            )
+                        evidence.append(
+                            "GTK4 configuration: source retired before search, keyboard navigation and explicit save/retry"
+                            if gtk4
+                            else "GTK renderer: catalog language choices preserve menu drafts and focus"
+                        )
                         refusals = [
                             "body",
                             "host-token",

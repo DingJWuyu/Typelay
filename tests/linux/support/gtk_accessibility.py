@@ -72,13 +72,24 @@ def visible_named(pid, name, *, role=None, root=None):
         node = pending.pop()
         if node is None:
             continue
-        node.clear_cache()
-        assert node.get_process_id() == pid, "visible GTK node changed owner"
-        if (
-            node.get_name() == name
-            and (role is None or node.get_role() == role)
-            and node.get_state_set().contains(Atspi.StateType.SHOWING)
-        ):
+        try:
+            node.clear_cache()
+            assert node.get_process_id() == pid, "visible GTK node changed owner"
+            matches_name = (
+                node.get_name() == name
+                and (role is None or node.get_role() == role)
+                and node.get_state_set().contains(Atspi.StateType.SHOWING)
+            )
+        except GLib.Error as error:
+            if (
+                "as object /org/a11y/atspi/accessible/" not in error.message
+                or " does not exist" not in error.message
+            ):
+                raise
+            # A refreshed settings view can retire an already-enqueued proxy.
+            # Keep searching its queued siblings within the original bound.
+            continue
+        if matches_name:
             matches.append(node)
         pending.extend(node.get_child_at_index(index) for index in range(node.get_child_count()))
     else:
