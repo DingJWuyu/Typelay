@@ -51,7 +51,11 @@ public sealed class SessionDiagnosticsTests
             Assert.DoesNotContain("direct-write-result", pending);
             using var start = ReadOperation(pending, "direct-write-start");
             Assert.Equal(plan.Id, start.RootElement.GetProperty("planId").GetGuid());
-            s.Service.PendingDirectWrite.SetResult(new(status, reason));
+            s.Service.PendingDirectWrite.SetResult(new(status, reason,
+                status == WriteStatus.Verified ? plan.Expected with
+                {
+                    Text = "private-direct-result", Selection = new(21, 21)
+                } : null));
             s.Tick();
             string trace = File.ReadAllText(path);
             Assert.DoesNotContain("private-direct-result", trace);

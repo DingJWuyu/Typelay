@@ -379,6 +379,59 @@ public sealed class InlineGlossaryTests
     private static Task<GlossaryChangeResult> Add(SessionScenario s, SessionGlossaryEntry entry, string target = "fixed") =>
         s.View.AddGlossaryRequested!(new(entry.FormId, entry.Token, entry.SettingsRevision, new("hello", target)));
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AuxiliaryCompositionDoesNotPermanentlyRetireTheCurrentGlossaryForm(bool sourceOrigin)
+    {
+        using var s = sourceOrigin
+            ? new SessionScenario(experimental: true, translationRelease: SessionScenario.HyRelease,
+                modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true)
+            : Editing();
+        if (sourceOrigin)
+        {
+            s.View.SourceGlossarySupported = true;
+            s.ReadyCandidate();
+        }
+        var entry = Open(s);
+        s.Input.InEditor = true;
+        s.View.EditingComposition = true;
+        s.View.GlossaryEntryFocus = new(entry.FormId, entry.Token, ImeState.Composing);
+        s.Controller.RefreshAcceptancePresentation();
+        Assert.Equal(new SessionFormPresentation(entry.FormId, true), s.View.Context!.GlossaryForm);
+        Assert.False((await Add(s, entry)).Saved);
+
+        s.View.EditingComposition = false;
+        s.View.GlossaryEntryFocus = new(entry.FormId, entry.Token, ImeState.Clear);
+        s.Controller.RefreshAcceptancePresentation();
+        Assert.Equal(new SessionFormPresentation(entry.FormId, true), s.View.Context!.GlossaryForm);
+        if (sourceOrigin)
+            s.View.ReturnGlossary = _ =>
+            {
+                s.Input.InEditor = false;
+                s.View.GlossaryEntryFocus = null;
+                return Task.FromResult(true);
+            };
+        Assert.True((await Add(s, entry)).Saved);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public void AFormWhoseModelIdentityRetiredCannotBecomeCurrentAgainOnARepaint()
+    {
+        using var s = Editing();
+        var entry = Open(s);
+        var capability = s.Model.GlossaryTranslationCapability;
+        s.Model.GlossaryTranslationCapability = new(2);
+        s.Controller.RefreshAcceptancePresentation();
+        Assert.Equal(new SessionFormPresentation(entry.FormId, false), s.View.Context!.GlossaryForm);
+        s.Model.GlossaryTranslationCapability = capability;
+        s.Controller.RefreshAcceptancePresentation();
+        Assert.Equal(new SessionFormPresentation(entry.FormId, false), s.View.Context!.GlossaryForm);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+    }
+
     [Fact]
     public async Task SourceCandidateReturnsAndRevalidatesBeforeSavingWithoutEditing()
     {

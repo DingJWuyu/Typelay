@@ -14,7 +14,7 @@ from typelay_worker.protocol import valid_text
 
 INPUTS = Path(__file__).with_name("index_style_alternative_inputs.json")
 INPUT_SHA256 = "419606bdabec75a10df5de8b858a276fc8477b74d63ba561a7826bf2d070b96f"
-PROFILE = styled_quality.ROOT / "src/shared/TypeLay.Runtime/IndexInferenceProfile.json"
+PROFILE = styled_quality.ROOT / "src/shared/TypeLay.Runtime/Models/IndexInferenceProfile.json"
 PROFILE_SHA256 = "e57ecfbfd4681b174c91dfc38e93e5f4dd3dd3802d158d7626ff0c95e650e0b6"
 PROFILE_ID = "index-v1-3b99612f3676f5ac8ef34c81e99bf8874a5ba5271207a15d39e947c9d42ef87d"
 VARIANTS = ("ordinary", "natural", "formal", "alternative")

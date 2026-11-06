@@ -53,14 +53,16 @@ internal sealed class UiaInputProvider : IDisposable
                 installed, quiet, claimed, endpoint, receipt, acknowledged);
         if (!_sourcePrototype || identity.Generation == Guid.Empty || identity.Grant == Guid.Empty
             || identity.SessionRevision <= 0 || identity.Chord is not { } chord || !chord.IsValid(identity.AcceptKey))
-            return Result(receipt: new(WriteStatus.RejectedBeforeMutation, Denial.Unsupported));
+            return Result(quiet: request.Op == "source-install" && _sourceOwner?.Grant != identity.Grant,
+                receipt: new(WriteStatus.RejectedBeforeMutation, Denial.Unsupported));
         if (request.Op == "source-install")
         {
             // Reusing the last observation must not bypass an earlier uncertain
             // native write, even if the original Runtime session no longer exists.
             if (WindowsTarget.TryDecode(identity.Target, out var target)
                 && _quarantine.Contains((target.ProcessId, target.ProcessStartUtcTicks, target.ElementToken)))
-                return Result(receipt: new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged));
+                return Result(quiet: _sourceOwner?.Grant != identity.Grant,
+                    receipt: new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged));
             if (_sourceOwner is { Permit: not null } || _sourceOwner?.Grant == identity.Grant
                 || identity.Permit is not { } permit
                 || permit.Plan.Id != identity.Grant || permit.Plan.Expected.Target != identity.Target
@@ -74,7 +76,8 @@ internal sealed class UiaInputProvider : IDisposable
                 || chord.Control is { } control && (current.InputEpoch != control.BeforeInputEpoch + 1
                     || current.ObservedAtMs < control.ObservedAtMs)
                 || _ownedCapture is not null || _lastFocus != FocusMember.Source)
-                return Result(receipt: new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged));
+                return Result(quiet: _sourceOwner?.Grant != identity.Grant,
+                    receipt: new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged));
             _sourceCompletionTransferred = false;
             var installed = _edits.InstallSourceAcceptance(identity.Generation, permit, identity.AcceptKey, chord);
             if (!installed.Quiet)

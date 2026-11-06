@@ -29,6 +29,51 @@ from practice_session import PracticeSession  # noqa: E402
 from wire import Decoder  # noqa: E402
 
 
+def shared_identity(
+    previous=None, *, new_interaction=False, draft_revision=None, action_revision=None
+):
+    """Explicit shared-host fixture values, independent of display text."""
+    return {
+        "version": 1,
+        "interactionId": str(uuid.uuid4())
+        if previous is None or new_interaction
+        else previous["interactionId"],
+        "displaySequence": 1 if previous is None else previous["displaySequence"] + 1,
+        "draftRevision": draft_revision
+        if draft_revision is not None
+        else 0
+        if previous is None
+        else previous["draftRevision"],
+        "actionRevision": action_revision
+        if action_revision is not None
+        else 1
+        if previous is None
+        else previous["actionRevision"],
+    }
+
+
+def shared_view(
+    view,
+    *,
+    previous=None,
+    new_interaction=False,
+    draft_revision=None,
+    action_revision=None,
+    glossary_form=...,
+):
+    value = copy.deepcopy(view)
+    context = value["viewContext"]
+    context["identity"] = shared_identity(
+        (previous or view)["viewContext"]["identity"],
+        new_interaction=new_interaction,
+        draft_revision=draft_revision,
+        action_revision=action_revision,
+    )
+    if glossary_form is not ...:
+        context["glossaryForm"] = glossary_form
+    return value
+
+
 class EventLoop:
     IO_IN, IO_OUT, IO_HUP, IO_ERR, IO_NVAL = 1, 2, 4, 8, 16
     PRIORITY_DEFAULT = 0
@@ -162,11 +207,12 @@ class InputFeedbackTests(unittest.TestCase):
         self.addCleanup(connection.close)
         peer = Peer(self.input, connection, process.pid)
         self.connections[peer] = connection
-        self.input.peers.add(peer)
+        self.input._peers.add(peer)
         peer.event(
             "hello",
             {
                 "protocol": 2,
+                "presentationVersion": 1,
                 "pid": process.pid,
                 "backend": backend,
                 "lifetime": str(uuid.uuid4()),
@@ -252,6 +298,7 @@ class InputFeedbackTests(unittest.TestCase):
             "editorReady": True,
             "shortcutDispatch": "page",
             "sourceLocalAcceptanceVersion": 1,
+            "presentationVersion": 1,
             **(bindings or {}),
         }
         native = {
@@ -386,7 +433,7 @@ class InputFeedbackTests(unittest.TestCase):
         self.assertEqual(self.native_frames(self.peer), [])
         self.peer.link.receive({"event": "accepted", "data": receipt, "route": self.route})
         self.assertEqual(len(self.host.notices), 1)
-        self.assertEqual([frame["op"] for frame in self.native_frames(self.peer)], ["quarantine"])
+        self.assertEqual(self.native_frames(self.peer), [])
 
     def test_browser_receiptless_acceptance_reports_uncertainty_without_another_write(self):
         self.connect_registered_browser()
@@ -401,6 +448,51 @@ class InputFeedbackTests(unittest.TestCase):
         self.assertEqual(len(self.host.notices), 1)
         self.assertEqual(self.host.notices[0]["completedReceipt"]["status"], "OutcomeUnknown")
         self.assertEqual([frame["op"] for frame in self.native_frames(self.peer)], ["quarantine"])
+
+    def test_unused_write_retirement_requires_the_original_source_after_reconfiguration(self):
+        self.connect_registered_browser()
+        capture = asyncio.run(self.capture_browser())
+        plan_id = self.publish_browser(capture)
+        original_generation = self.generation
+        retired = {
+            "planId": plan_id,
+            "target": capture["snapshot"]["target"]["value"],
+            "generation": original_generation,
+        }
+        other = self.connect_peer()
+        self.native_frames(other)
+        other.event("writeRetired", retired)
+        self.assertEqual(self.host.notices, [])
+        self.assertEqual(self.native_frames(other), [])
+
+        self.input.notification("revoke", None)
+        self.generation = str(uuid.uuid4())
+        self.configure("F7", "F8")
+        self.native_frames(self.peer)
+        for value, route in (
+            ({**retired, "planId": str(uuid.uuid4())}, self.route),
+            ({**retired, "target": "other-field"}, self.route),
+            ({**retired, "generation": self.generation}, self.route),
+            (retired, {**self.route, "documentId": "other-document"}),
+        ):
+            with self.subTest(value=value, route=route):
+                self.peer.link.receive({"event": "writeRetired", "data": value, "route": route})
+                self.assertEqual(self.host.notices, [])
+                self.assertEqual(self.native_frames(self.peer), [])
+
+        self.peer.link.receive({"event": "writeRetired", "data": retired, "route": self.route})
+        expected = {
+            "kind": "write-retired",
+            "retiredUnusedPlanId": plan_id,
+            "target": capture["snapshot"]["target"],
+            "commandGeneration": original_generation,
+        }
+        self.assertEqual(self.host.notices, [expected])
+        self.assertEqual(self.native_frames(self.peer), [])
+        self.peer.link.receive({"event": "writeRetired", "data": retired, "route": self.route})
+        self.clock.return_value = 4000
+        self.input.expire()
+        self.assertEqual(self.host.notices, [expected])
 
     def test_browser_registration_rejects_foreign_origin_and_stale_installation(self):
         self.connect_registered_browser()
@@ -610,7 +702,7 @@ class InputFeedbackTests(unittest.TestCase):
             )
         )
         self.assertIsNone(capture)
-        self.assertIsNone(self.input.bound_observation)
+        self.assertIsNone(self.input._bound_observation)
 
     def browser_direct_removal(self, *, sent):
         self.connect_registered_browser()
@@ -960,7 +1052,7 @@ class InputFeedbackTests(unittest.TestCase):
             self.approved_shortcut_capture(mutation=lambda: self.input.lost(self.peer))
         )
         self.assertEqual(published, [])
-        self.assertNotIn(self.peer, self.input.peers)
+        self.assertNotIn(self.peer, self.input._peers)
 
     def completed_metadata_command(self, kind, *, target="ordinary-field"):
         published, current = asyncio.run(self.approved_shortcut_capture())
@@ -1433,7 +1525,7 @@ class InputFeedbackTests(unittest.TestCase):
                     self.assertTrue(await asyncio.wait_for(operation, 1))
                 self.peer.link.receive(late_reply)
                 fenced = await asyncio.wait_for(old_capture, 1)
-                self.assertIsNone(self.input.bound_observation)
+                self.assertIsNone(self.input._bound_observation)
                 self.assertIsNone(self.input.practice_authorization)
                 if invalidation:
                     self.assertIsNone(fenced)
@@ -1553,7 +1645,7 @@ class InputFeedbackTests(unittest.TestCase):
                 self.assertEqual(repeated, {"snapshot": None, "foregroundExpired": True})
                 self.assertTrue(self.input.practice_waiting(binding["runId"]))
                 self.assertIs(self.input.practice_continuity, successor)
-                self.assertIsNone(self.input.bound_observation)
+                self.assertIsNone(self.input._bound_observation)
                 self.assertIsNone(self.input.practice_pending)
             else:
                 self.assertEqual(repeated["ownedSource"]["binding"], second)
@@ -1622,14 +1714,14 @@ class InputFeedbackTests(unittest.TestCase):
                         self.input.practice_retirement_ack = None
                     elif complete_fault == "peer-changed":
                         self.input.practice_continuity["peer"] = next(
-                            peer for peer in self.input.peers if peer is not self.peer
+                            peer for peer in self.input._peers if peer is not self.peer
                         )
                     self.peer.link.receive({"id": capture["id"], "data": native})
                     complete = await asyncio.wait_for(operation, 1)
                     if complete_fault:
                         self.assertIsNone(complete)
                         self.assertIsNone(self.input.practice_authorization)
-                        self.assertIsNone(self.input.bound_observation)
+                        self.assertIsNone(self.input._bound_observation)
                         failure = self.input.diagnostics()["captureFailures"][-1]
                         self.assertEqual(failure["reason"], "practice-identity-lost")
                         self.assertEqual(
@@ -1652,7 +1744,7 @@ class InputFeedbackTests(unittest.TestCase):
                         return
                     if cross_age_gap:
                         self.assertTrue(complete["foregroundExpired"])
-                        self.assertIsNone(self.input.bound_observation)
+                        self.assertIsNone(self.input._bound_observation)
                         return
                     self.assertFalse(complete["ownedSource"]["contextAdvanced"])
                     self.assertEqual(complete["ownedSource"]["binding"], second)
@@ -1681,7 +1773,7 @@ class InputFeedbackTests(unittest.TestCase):
                     self.assertFalse(self.input.last_state["ready"])
                     self.assertEqual(self.input.last_state["focus"], "Other")
                     self.assertTrue(self.input.last_state["foregroundExpired"])
-                    self.assertIsNone(self.input.bound_observation)
+                    self.assertIsNone(self.input._bound_observation)
                     self.assertFalse(self.input.prepare_practice(second, lambda _: True))
                     refused = await self.input.request("capture", {"practiceRead": second})
                     self.assertTrue(refused["foregroundExpired"])
@@ -1700,7 +1792,7 @@ class InputFeedbackTests(unittest.TestCase):
                     self.assertTrue(self.input.last_state["ready"])
                     self.assertFalse(self.input.prepare_practice(second, lambda _: True))
                     # Recovery does not re-use the completed pre-gap native read.
-                    self.assertIsNone(self.input.bound_observation)
+                    self.assertIsNone(self.input._bound_observation)
                     self.assertIsNone(self.input.practice_authorization)
                     self.assertEqual(self.generation, second["commandGeneration"])
                     await complete_read(cross_age_gap=True)
@@ -2561,12 +2653,28 @@ class InputFeedbackTests(unittest.TestCase):
                 self.assertFalse(any(frame["op"] == "publish" for frame in frames))
 
     def test_configuration_change_rejects_old_target_acknowledgement_and_publication(self):
+        original_generation = self.generation
+
         def reconfigure():
             self.generation = str(uuid.uuid4())
             self.configure("F7", "F8")
 
         frames = asyncio.run(self.publish_acceptance(before_publish=reconfigure))
         self.assertFalse(any(frame["op"] == "publish" for frame in frames))
+        self.assertEqual(len(self.host.notices), 1)
+        notice = self.host.notices[0]
+        self.assertEqual(
+            set(notice), {"kind", "retiredUnusedPlanId", "target", "commandGeneration"}
+        )
+        self.assertEqual(notice["kind"], "write-retired")
+        self.assertEqual(
+            str(uuid.UUID(notice["retiredUnusedPlanId"])), notice["retiredUnusedPlanId"]
+        )
+        self.assertEqual(notice["commandGeneration"], original_generation)
+        self.assertEqual(
+            notice["target"],
+            {"backend": "linux-qt6", "value": "ordinary-field", "lifetime": self.peer.lifetime},
+        )
 
     def test_delayed_source_exit_cannot_close_a_new_configuration(self):
         asyncio.run(self.publish_acceptance(pause=False))
@@ -2646,7 +2754,7 @@ class InputFeedbackTests(unittest.TestCase):
                 overlay = Overlay(self.host, self.input, lambda _: None, lambda: None)
                 self.native_frames(self.peer)  # Consume initial peer configuration.
                 for event in (None, [], "resume"):
-                    overlay.event(self.peer, event)
+                    overlay.event(self.peer.source, event)
                 self.assertEqual(self.native_frames(self.peer), [])
                 overlay, jobs, _, _ = await self.overlay_scenario()
                 notices = list(self.host.notices)
@@ -2673,11 +2781,11 @@ class InputFeedbackTests(unittest.TestCase):
                 "value": None,
             }
             before = list(self.host.events)
-            overlay.event(self.peer, {**event, "revision": overlay.revision - 1})
+            overlay.event(self.peer.source, {**event, "revision": overlay.revision - 1})
             overlay.event(object(), event)
             self.assertEqual(opened, [])
             self.assertEqual(self.host.events, before)
-            overlay.event(self.peer, event)
+            overlay.event(self.peer.source, event)
             self.assertEqual(opened, ["language-picker"])
             self.assertEqual(self.host.events[-1], ("escape", token))
             self.assertFalse(
@@ -2686,7 +2794,7 @@ class InputFeedbackTests(unittest.TestCase):
                     for operation, _ in self.host.events[len(before) :]
                 )
             )
-            overlay.event(self.peer, {**event, "operation": "settings"})
+            overlay.event(self.peer.source, {**event, "operation": "settings"})
             self.assertEqual(opened, ["language-picker", "settings"])
             await self.settle_overlay(jobs)
 
@@ -2731,7 +2839,7 @@ class InputFeedbackTests(unittest.TestCase):
             self.host.ask = original_ask
             self.connect_language_configuration_peer(backend)
             other = self.connect_peer(backend=backend)
-            with patch("overlay.now_ms", return_value=1000):
+            with patch("input.now_ms", return_value=1000):
                 overlay, jobs, token, _ = await self.overlay_scenario()
                 opening = str(uuid.uuid4())
                 event = {
@@ -2761,7 +2869,7 @@ class InputFeedbackTests(unittest.TestCase):
                 ):
                     self.peer.event("ui", invalid)
                 other.event("ui", event)
-                self.assertIsNone(overlay.language_configuration)
+                self.assertFalse(self.input.language_configuration_open)
                 self.assertEqual(requests, [])
                 self.assertTrue(overlay.visible)
                 self.peer.event("ui", event)
@@ -2829,7 +2937,7 @@ class InputFeedbackTests(unittest.TestCase):
                         },
                     ),
                 )
-                self.assertIsNone(overlay.language_configuration)
+                self.assertFalse(self.input.language_configuration_open)
                 self.assertIsNone(overlay.value)
                 self.assertFalse(overlay.visible)
 
@@ -2857,7 +2965,7 @@ class InputFeedbackTests(unittest.TestCase):
             self.assertEqual(await self.settle_overlay(jobs), [])
             self.assertEqual(self.host.requests, requests)
             self.assertEqual(self.host.events, events)
-            self.assertIsNone(overlay.language_configuration)
+            self.assertFalse(self.input.language_configuration_open)
             self.assertTrue(overlay.visible)
 
         asyncio.run(exercise())
@@ -2875,7 +2983,7 @@ class InputFeedbackTests(unittest.TestCase):
                 for phase in ("begin", "save", "save-reply"):
                     with (
                         self.subTest(backend=backend, phase=phase),
-                        patch("overlay.now_ms", return_value=1000),
+                        patch("input.now_ms", return_value=1000),
                     ):
                         self.host.ask = original_ask
                         self.connect_language_configuration_peer(backend)
@@ -2942,7 +3050,7 @@ class InputFeedbackTests(unittest.TestCase):
                                 for frame in frames
                             )
                         )
-                        self.assertIsNone(overlay.language_configuration)
+                        self.assertFalse(self.input.language_configuration_open)
                         self.assertIsNone(overlay.value)
                         self.assertFalse(overlay.visible)
 
@@ -2963,7 +3071,7 @@ class InputFeedbackTests(unittest.TestCase):
                                 acknowledgement=acknowledgement,
                                 retirement=retirement,
                             ),
-                            patch("overlay.now_ms", return_value=1000) as clock,
+                            patch("input.now_ms", return_value=1000) as clock,
                         ):
                             self.connect_language_configuration_peer(backend)
                             overlay, jobs, token, view = await self.overlay_scenario()
@@ -3015,7 +3123,7 @@ class InputFeedbackTests(unittest.TestCase):
                                         "value": {"openingId": str(uuid.uuid4())},
                                     },
                                 )
-                                self.assertIsNotNone(overlay.language_configuration)
+                                self.assertTrue(self.input.language_configuration_open)
                                 self.peer.event(
                                     "ui",
                                     {
@@ -3026,6 +3134,7 @@ class InputFeedbackTests(unittest.TestCase):
                             elif retirement == "lost":
                                 self.peer.link.disconnected()
                             elif retirement == "new-view":
+                                view = shared_view(view, new_interaction=True)
                                 overlay.render(view)
                             elif retirement == "settings":
                                 overlay.configure({"theme": "dark"})
@@ -3043,7 +3152,7 @@ class InputFeedbackTests(unittest.TestCase):
                             else:
                                 pending.set_result(self.language_configuration_ack(owner))
                             frames = await self.settle_overlay(jobs)
-                            self.assertIsNone(overlay.language_configuration)
+                            self.assertFalse(self.input.language_configuration_open)
                             self.assertIn(("cancelLanguageConfiguration", owner), self.host.events)
                             self.assertFalse(
                                 any(
@@ -3108,6 +3217,7 @@ class InputFeedbackTests(unittest.TestCase):
             "state": "ValidTranslation",
             "source": {"target": token["target"]},
             "viewContext": {
+                "identity": shared_identity(),
                 "token": token,
                 "bindings": {"accept": "Tab", "exit": "Esc"},
                 "canEdit": True,
@@ -3218,6 +3328,7 @@ class InputFeedbackTests(unittest.TestCase):
                     "state": "EditingTranslation",
                     "source": {"target": token["target"]},
                     "viewContext": {
+                        "identity": shared_identity(),
                         "token": token,
                         "bindings": {"accept": "Tab", "exit": "Esc"},
                         "canEdit": True,
@@ -3274,6 +3385,7 @@ class InputFeedbackTests(unittest.TestCase):
                 "state": "EditingTranslation",
                 "source": {"target": token["target"]},
                 "viewContext": {
+                    "identity": shared_identity(),
                     "token": token,
                     "bindings": {"accept": "Tab", "exit": "Esc"},
                     "canEdit": True,
@@ -3341,7 +3453,13 @@ class InputFeedbackTests(unittest.TestCase):
                     {
                         **view,
                         "state": "ReturningToSource",
-                        "viewContext": {**view["viewContext"], "token": returning},
+                        "viewContext": {
+                            **view["viewContext"],
+                            "token": returning,
+                            "identity": shared_identity(
+                                view["viewContext"]["identity"], new_interaction=True
+                            ),
+                        },
                     }
                 )
                 # The provider is still editable while its real Return is held.
@@ -3394,6 +3512,7 @@ class InputFeedbackTests(unittest.TestCase):
                 "state": "EditingTranslation",
                 "source": {"target": token["target"]},
                 "viewContext": {
+                    "identity": shared_identity(),
                     "token": token,
                     "bindings": {"accept": "Tab", "exit": "Esc"},
                     "canEdit": True,
@@ -3546,6 +3665,7 @@ class InputFeedbackTests(unittest.TestCase):
             "state": "EditingTranslation",
             "source": {"target": token["target"]},
             "viewContext": {
+                "identity": shared_identity(),
                 "token": token,
                 "bindings": {"accept": "Tab", "exit": "Esc"},
                 "canEdit": True,
@@ -3793,11 +3913,19 @@ class InputFeedbackTests(unittest.TestCase):
                 ["Draft B", "Draft A", "Draft A"],
             )
             self.assertTrue(any(item["op"] == "overlay-resume" for item in frames))
-            self.assertIsNone(self.input.editor_regenerate)
             # Runtime's actual failed operation is now the displayed editor.
             retry_token = state.requests[0]["operation"]
             state.overlay.render(
-                {**state.view, "viewContext": {**state.view["viewContext"], "token": retry_token}}
+                {
+                    **state.view,
+                    "viewContext": {
+                        **state.view["viewContext"],
+                        "token": retry_token,
+                        "identity": shared_identity(
+                            state.view["viewContext"]["identity"], new_interaction=True
+                        ),
+                    },
+                }
             )
             await self.settle_overlay(state.jobs)
             self.clock.return_value = 1100
@@ -3885,7 +4013,6 @@ class InputFeedbackTests(unittest.TestCase):
             )
             self.assertFalse(any(item["op"] == "return" for item in frames))
             self.assertTrue(any(item["op"] == "overlay-resume" for item in frames))
-            self.assertIsNone(self.input.editor_regenerate)
             await self.finish_browser_editor_return(state)
 
         asyncio.run(exercise())
@@ -3903,7 +4030,13 @@ class InputFeedbackTests(unittest.TestCase):
                 {
                     **state.view,
                     "state": "ReturningToSource",
-                    "viewContext": {**state.view["viewContext"], "token": actual["operation"]},
+                    "viewContext": {
+                        **state.view["viewContext"],
+                        "token": actual["operation"],
+                        "identity": shared_identity(
+                            state.view["viewContext"]["identity"], new_interaction=True
+                        ),
+                    },
                 }
             )
             self.editor_source_focus(state)
@@ -4126,6 +4259,9 @@ class InputFeedbackTests(unittest.TestCase):
                     "viewContext": {
                         **state.view["viewContext"],
                         "token": state.requests[0]["operation"],
+                        "identity": shared_identity(
+                            state.view["viewContext"]["identity"], new_interaction=True
+                        ),
                     },
                 }
             )
@@ -4171,6 +4307,9 @@ class InputFeedbackTests(unittest.TestCase):
                     "viewContext": {
                         **state.view["viewContext"],
                         "token": state.requests[0]["operation"],
+                        "identity": shared_identity(
+                            state.view["viewContext"]["identity"], new_interaction=True
+                        ),
                     },
                 }
             )
@@ -4272,6 +4411,9 @@ class InputFeedbackTests(unittest.TestCase):
                         "viewContext": {
                             **state.view["viewContext"],
                             "token": request["operation"],
+                            "identity": shared_identity(
+                                state.view["viewContext"]["identity"], new_interaction=True
+                            ),
                         },
                     }
                 )
@@ -4391,6 +4533,9 @@ class InputFeedbackTests(unittest.TestCase):
                         "viewContext": {
                             **state.view["viewContext"],
                             "token": request["operation"],
+                            "identity": shared_identity(
+                                state.view["viewContext"]["identity"], new_interaction=True
+                            ),
                         },
                     }
                 )
@@ -4443,6 +4588,9 @@ class InputFeedbackTests(unittest.TestCase):
                                 "viewContext": {
                                     **state.view["viewContext"],
                                     "token": request["operation"],
+                                    "identity": shared_identity(
+                                        state.view["viewContext"]["identity"], new_interaction=True
+                                    ),
                                 },
                             }
                         )
@@ -4536,6 +4684,9 @@ class InputFeedbackTests(unittest.TestCase):
                         "viewContext": {
                             **state.view["viewContext"],
                             "token": request["operation"],
+                            "identity": shared_identity(
+                                state.view["viewContext"]["identity"], new_interaction=True
+                            ),
                         },
                     }
                 )
@@ -4622,6 +4773,9 @@ class InputFeedbackTests(unittest.TestCase):
                         "viewContext": {
                             **state.view["viewContext"],
                             "token": request["operation"],
+                            "identity": shared_identity(
+                                state.view["viewContext"]["identity"], new_interaction=True
+                            ),
                         },
                     }
                 )
@@ -4651,7 +4805,9 @@ class InputFeedbackTests(unittest.TestCase):
 
         async def exercise():
             state = await self.begin_browser_editor_return(legacy=True, version=1)
-            state.overlay.render({**state.view, "state": "ValidTranslation"})
+            state.overlay.render(
+                shared_view({**state.view, "state": "ValidTranslation"}, new_interaction=True)
+            )
             await self.settle_overlay(state.jobs)
             self.assertFalse(state.overlay.editing)
             before = len(self.host.events)
@@ -4708,6 +4864,7 @@ class InputFeedbackTests(unittest.TestCase):
                 "state": "ValidTranslation",
                 "source": {"target": token["target"]},
                 "viewContext": {
+                    "identity": shared_identity(),
                     "token": token,
                     "canEdit": True,
                     "bindings": {"accept": "Tab", "exit": "Esc"},
@@ -4728,6 +4885,9 @@ class InputFeedbackTests(unittest.TestCase):
                             "viewContext": {
                                 **view["viewContext"],
                                 "token": editor_token,
+                                "identity": shared_identity(
+                                    view["viewContext"]["identity"], new_interaction=True
+                                ),
                             },
                         }
                     )
@@ -4823,6 +4983,7 @@ class InputFeedbackTests(unittest.TestCase):
                 "state": "ValidTranslation",
                 "source": {"target": token["target"]},
                 "viewContext": {
+                    "identity": shared_identity(),
                     "token": token,
                     "bindings": {"accept": "Tab", "exit": "Esc"},
                     "canEdit": True,
@@ -4843,6 +5004,12 @@ class InputFeedbackTests(unittest.TestCase):
             async def ask(operation, value=None):
                 if operation == "sessionGlossaryBegin":
                     self.host.requests.append((operation, value))
+                    overlay.render(
+                        shared_view(
+                            overlay.value,
+                            glossary_form={"formId": entry["formId"], "current": True},
+                        )
+                    )
                     return entry
                 return await original_ask(operation, value)
 
@@ -4893,8 +5060,17 @@ class InputFeedbackTests(unittest.TestCase):
 
             self.description = description
             try:
-                await self.publish_acceptance(pause=False)
-                return self.input.last_state.get("sourceGlossaryTarget")
+                publication = (await self.publish_acceptance(pause=False))[0]["data"]
+                target = self.input.last_state.get("sourceGlossaryTarget")
+                self.peer.event(
+                    "writeRetired",
+                    {
+                        "planId": publication["permit"]["plan"]["id"],
+                        "target": publication["lease"]["source"]["target"]["value"],
+                        "generation": publication["generation"],
+                    },
+                )
+                return target
             finally:
                 self.description = original
 
@@ -4957,6 +5133,7 @@ class InputFeedbackTests(unittest.TestCase):
         backend="gtk3",
         state="ValidTranslation",
         multiline=False,
+        recapture=False,
     ):
         self.input.set_overlay_focus(False)
         self.peer = self.connect_peer(backend)
@@ -4992,6 +5169,7 @@ class InputFeedbackTests(unittest.TestCase):
             "glossaryUnavailableReason": None,
             "futureField": "unchanged",
         }
+        view = shared_view(view, new_interaction=state != "ValidTranslation")
         overlay.render(view)
         await self.settle_overlay(jobs)
         entry = {
@@ -5002,36 +5180,51 @@ class InputFeedbackTests(unittest.TestCase):
             "sourceOrigin": True,
         }
         original_ask = self.host.ask
+        begin_replied = asyncio.Event()
 
         async def ask(operation, value=None):
             if operation == "sessionGlossaryBegin":
+                if recapture:
+                    await self.publish_acceptance(pause=False)
+                following = shared_view(
+                    overlay.value, glossary_form={"formId": entry["formId"], "current": True}
+                )
                 if revoke:
-                    following = copy.deepcopy(overlay.value)
                     following["canAccept"] = False
                     following["presentation"]["tabHint"] = "Tab 交还应用"
                     actions = following["viewContext"]["translationActions"]
                     actions.update(
                         canOpenGlossary=False, glossaryUnavailableReason="请先完成当前术语表单"
                     )
-                    if invalidation == "actions":
-                        actions["futureField"] = "changed"
-                    elif invalidation == "settings":
-                        actions["settingsRevision"] += 1
-                    elif invalidation == "text":
-                        following["text"] += " changed"
-                    elif invalidation == "state":
-                        following["state"] = "EditedTranslationPending"
-                    elif invalidation == "token":
-                        following["viewContext"]["token"]["revision"] += 1
-                    elif invalidation == "ime":
-                        following["source"]["ime"] = "Unknown"
-                    elif invalidation == "hint":
-                        following["presentation"]["tabHint"] = "unexpected"
-                    overlay.render(following)
-                    if invalidation == "repeat":
-                        overlay.render(copy.deepcopy(following))
-                    elif invalidation == "close":
-                        overlay.close_glossary()
+                identity = following["viewContext"]["identity"]
+                if invalidation == "settings":
+                    following["viewContext"]["translationActions"]["settingsRevision"] += 1
+                    identity["actionRevision"] += 1
+                elif invalidation == "draft":
+                    following["text"] += " changed"
+                    identity["draftRevision"] += 1
+                elif invalidation == "state":
+                    following["state"] = "EditedTranslationPending"
+                    identity["interactionId"] = str(uuid.uuid4())
+                elif invalidation == "source":
+                    following["source"]["inputEpoch"] = 2
+                    identity["interactionId"] = str(uuid.uuid4())
+                elif invalidation == "token":
+                    following["viewContext"]["token"]["revision"] += 1
+                    identity["interactionId"] = str(uuid.uuid4())
+                elif invalidation == "form-retired":
+                    following["viewContext"]["glossaryForm"]["current"] = False
+                elif invalidation == "display":
+                    following["presentation"]["tabHint"] = "新的显示说明"
+                    following["viewContext"]["translationActions"]["futureField"] = (
+                        "new display feedback"
+                    )
+                overlay.render(following)
+                if invalidation == "display":
+                    overlay.render(copy.deepcopy(following))
+                elif invalidation == "close":
+                    overlay.close_glossary()
+                begin_replied.set()
                 return entry
             return await original_ask(operation, value)
 
@@ -5050,15 +5243,16 @@ class InputFeedbackTests(unittest.TestCase):
             )
 
         emit("sessionGlossaryBegin")
+        if recapture:
+            await asyncio.wait_for(begin_replied.wait(), 1)
         await asyncio.sleep(0)
-        request = next(
-            (
-                frame
-                for frame in self.native_frames(self.peer)
-                if frame["op"] == "overlay-glossary-open"
-            ),
-            None,
-        )
+        frames = self.native_frames(self.peer)
+        for frame in frames:
+            if frame["op"] == "overlay-render":
+                self.peer.link.receive(
+                    {"id": frame["id"], "data": {"visible": True, "editing": False}}
+                )
+        request = next((frame for frame in frames if frame["op"] == "overlay-glossary-open"), None)
         return overlay, jobs, entry, request, emit
 
     def native_glossary_transfer(self, entry, phase, ordinal=1, count=1, **changes):
@@ -5172,9 +5366,9 @@ class InputFeedbackTests(unittest.TestCase):
                         asyncio.run(exercise(backend, multiline, state))
 
     def test_gtk_glossary_begin_survives_its_own_acceptance_revocation_render(self):
-        async def exercise(backend):
+        async def exercise(backend, recapture):
             overlay, jobs, entry, request, emit = await self.native_glossary_scenario(
-                revoke=True, backend=backend
+                revoke=True, backend=backend, recapture=recapture, invalidation="display"
             )
             self.assertIsNotNone(request)
             self.native_glossary_transfer(entry, "Opening")
@@ -5189,8 +5383,9 @@ class InputFeedbackTests(unittest.TestCase):
             self.assertEqual(overlay.value["viewContext"]["token"], entry["token"])
 
         for backend in ("gtk3", "gtk4"):
-            with self.subTest(backend=backend):
-                asyncio.run(exercise(backend))
+            for recapture in (False, True):
+                with self.subTest(backend=backend, recapture=recapture):
+                    asyncio.run(exercise(backend, recapture))
 
     def test_native_glossary_pending_begin_rejects_other_changes_and_closed_attempt(self):
         async def exercise(case, backend):
@@ -5202,23 +5397,13 @@ class InputFeedbackTests(unittest.TestCase):
             self.assertIsNone(overlay.glossary)
             self.assertIn(("sessionGlossaryClose", entry["formId"]), self.host.events)
 
-        for case in (
-            "actions",
-            "settings",
-            "text",
-            "state",
-            "token",
-            "ime",
-            "hint",
-            "repeat",
-            "close",
-        ):
+        for case in ("settings", "draft", "state", "source", "token", "form-retired", "close"):
             for backend in ("gtk3", "gtk4", "qt6"):
                 with self.subTest(case=case, backend=backend):
                     asyncio.run(exercise(case, backend))
 
-    def test_gtk_glossary_auxiliary_render_allows_only_exact_ack_withdrawal(self):
-        async def exercise(case, backend):
+    def test_native_glossary_display_refresh_keeps_form_but_new_interaction_retires_it(self):
+        async def exercise(backend):
             overlay, jobs, entry, request, emit = await self.native_glossary_scenario(
                 revoke=True, backend=backend
             )
@@ -5229,55 +5414,84 @@ class InputFeedbackTests(unittest.TestCase):
             )
             self.peer.link.receive({"id": request["id"], "data": {"opened": True}})
             await self.settle_overlay(jobs)
-            revision, original = overlay.revision, copy.deepcopy(overlay.value)
-            following = copy.deepcopy(original)
+            revision, form = overlay.revision, overlay.glossary
+            following = shared_view(overlay.value)
             following["editable"] = False
             following["viewContext"]["canEdit"] = False
-            actions = following["viewContext"]["translationActions"]
-            actions["glossaryUnavailableReason"] = "内容或设置已变化，请重新打开表单"
-            if case == "settings":
-                actions["settingsRevision"] += 1
-            elif case == "unknown":
-                actions["futureField"] = "changed"
-            elif case == "model":
-                actions["glossaryReleased"] = False
-            elif case == "alternative":
-                actions["canRequestAlternative"] = False
-            elif case == "feedback":
-                actions["feedback"] = "new feedback"
-            elif case == "hint":
-                actions["glossaryUnavailableReason"] = "unexpected"
-            elif case == "missing":
-                del following["viewContext"]["translationActions"]
-            elif case == "null":
-                following["viewContext"]["translationActions"] = None
+            following["status"] = "新的状态说明"
+            following["presentation"]["tabHint"] = "新的按键说明"
+            following["viewContext"]["translationActions"].update(
+                futureField="new display extension",
+                canRequestAlternative=False,
+                feedback="新的菜单反馈",
+                glossaryUnavailableReason="显示文本不决定权限",
+            )
             overlay.render(following)
-            if case == "regrant":
-                overlay.render(original)
+            overlay.render(copy.deepcopy(following))
             await self.settle_overlay(jobs)
-            self.assertEqual(overlay.glossary is not None, case is None)
-            if case is None:
-                self.assertEqual(overlay.revision, revision)
-                self.assertFalse(overlay.value["viewContext"]["canEdit"])
-            else:
-                self.assertGreater(overlay.revision, revision)
-                self.assertIn(("sessionGlossaryClose", entry["formId"]), self.host.events)
+            self.assertIs(overlay.glossary, form)
+            self.assertEqual(overlay.revision, revision)
+            self.assertNotIn(("sessionGlossaryClose", entry["formId"]), self.host.events)
+            changed = shared_view(following, new_interaction=True)
+            changed["source"]["inputEpoch"] = 2
+            overlay.render(changed)
+            await self.settle_overlay(jobs)
+            self.assertIsNone(overlay.glossary)
+            self.assertGreater(overlay.revision, revision)
+            self.assertIn(("sessionGlossaryClose", entry["formId"]), self.host.events)
 
-        for case in (
-            None,
-            "settings",
-            "unknown",
-            "model",
-            "alternative",
-            "feedback",
-            "hint",
-            "regrant",
-            "missing",
-            "null",
-        ):
-            for backend in ("gtk3", "gtk4"):
-                with self.subTest(case=case, backend=backend):
-                    asyncio.run(exercise(case, backend))
+        for backend in ("gtk3", "gtk4", "qt6"):
+            with self.subTest(backend=backend):
+                asyncio.run(exercise(backend))
+
+    def test_native_glossary_read_only_form_cannot_regain_actions_from_a_later_display(self):
+        async def exercise():
+            overlay, jobs, entry, request, emit = await self.native_glossary_scenario(revoke=True)
+            self.native_glossary_transfer(entry, "Opening")
+            emit(
+                "sessionGlossaryFocus",
+                {"formId": entry["formId"], "token": entry["token"], "ime": "Clear"},
+            )
+            self.peer.link.receive({"id": request["id"], "data": {"opened": True}})
+            await self.settle_overlay(jobs)
+            form = overlay.glossary
+            readonly = shared_view(
+                overlay.value,
+                action_revision=2,
+                glossary_form={"formId": entry["formId"], "current": False},
+            )
+            readonly["viewContext"]["translationActions"]["settingsRevision"] += 1
+            overlay.render(readonly)
+            await self.settle_overlay(jobs)
+            self.assertIs(overlay.glossary, form)
+            request = {
+                "formId": entry["formId"],
+                "token": entry["token"],
+                "settingsRevision": entry["settingsRevision"],
+                "rule": {
+                    "sourceTerm": "PR",
+                    "targetTerm": "PR",
+                    "sourceLanguage": "en",
+                    "targetLanguage": "zh",
+                },
+            }
+            before = len(self.host.requests)
+            emit("sessionGlossaryAdd", request)
+            await self.settle_overlay(jobs)
+            self.assertEqual(len(self.host.requests), before)
+            self.assertIsNone(
+                await overlay.return_glossary_to_source(
+                    {key: entry[key] for key in ("formId", "token")}
+                )
+            )
+            overlay.render(
+                shared_view(readonly, glossary_form={"formId": entry["formId"], "current": True})
+            )
+            await self.settle_overlay(jobs)
+            self.assertIsNone(overlay.glossary)
+            self.assertIn(("sessionGlossaryClose", entry["formId"]), self.host.events)
+
+        asyncio.run(exercise())
 
     def test_native_glossary_transfer_rejects_incomplete_replayed_and_external_sequences(self):
         async def exercise(case, backend):
@@ -5576,6 +5790,7 @@ class InputFeedbackTests(unittest.TestCase):
                 "state": "ValidTranslation",
                 "source": {"target": token["target"]},
                 "viewContext": {
+                    "identity": shared_identity(),
                     "token": token,
                     "bindings": {"accept": "Tab", "exit": "Esc"},
                     "canEdit": True,
@@ -5596,6 +5811,12 @@ class InputFeedbackTests(unittest.TestCase):
 
             async def ask(operation, value=None):
                 if operation == "sessionGlossaryBegin":
+                    overlay.render(
+                        shared_view(
+                            overlay.value,
+                            glossary_form={"formId": entry["formId"], "current": True},
+                        )
+                    )
                     return entry
                 if operation == "sessionGlossaryAdd":
                     returned = await overlay.return_glossary_to_source(receipt)
@@ -5633,6 +5854,9 @@ class InputFeedbackTests(unittest.TestCase):
                             "viewContext": {
                                 **view["viewContext"],
                                 "token": {**token, "revision": 10},
+                                "identity": shared_identity(
+                                    overlay.value["viewContext"]["identity"], new_interaction=True
+                                ),
                             },
                         }
                     )
@@ -5704,7 +5928,6 @@ class InputFeedbackTests(unittest.TestCase):
             self.assertEqual(result["formId"], entry["formId"])
             self.assertEqual(result["result"], {"saved": True, "code": "glossary-saved"})
             self.assertIsNone(overlay.glossary)
-            self.assertIsNone(self.input.source_glossary_return)
             self.assertFalse(any(frame["op"] in ("write", "return", "publish") for frame in frames))
 
         asyncio.run(exercise())
@@ -5733,6 +5956,7 @@ class InputFeedbackTests(unittest.TestCase):
                     "state": "ValidTranslation",
                     "source": {"target": token["target"]},
                     "viewContext": {
+                        "identity": shared_identity(),
                         "token": token,
                         "bindings": {"accept": "Tab", "exit": "Esc"},
                         "canEdit": True,
@@ -5752,6 +5976,12 @@ class InputFeedbackTests(unittest.TestCase):
 
             async def ask(operation, value=None):
                 if operation == "sessionGlossaryBegin":
+                    overlay.render(
+                        shared_view(
+                            overlay.value,
+                            glossary_form={"formId": entry["formId"], "current": True},
+                        )
+                    )
                     return entry
                 if operation != "sessionGlossaryAdd":
                     return await original_ask(operation, value)
@@ -5864,7 +6094,6 @@ class InputFeedbackTests(unittest.TestCase):
             await self.settle_overlay(jobs)
             if phase == "Opening":
                 self.assertIsNone(overlay.glossary)
-            self.assertIsNone(self.input.source_glossary_return)
             overlay.close_glossary()
             self.native_frames(self.peer)
 
@@ -5885,7 +6114,8 @@ class InputFeedbackTests(unittest.TestCase):
     def test_inline_glossary_dispatches_one_rule_only_from_current_clear_auxiliary_focus(self):
         async def exercise():
             overlay, jobs, token, view = await self.overlay_scenario()
-            overlay.render({**view, "state": "EditingTranslation"})
+            view = shared_view({**view, "state": "EditingTranslation"}, new_interaction=True)
+            overlay.render(view)
             await self.settle_overlay(jobs)
             entry = {
                 "formId": str(uuid.uuid4()),
@@ -5898,6 +6128,12 @@ class InputFeedbackTests(unittest.TestCase):
             async def ask(operation, value=None):
                 if operation == "sessionGlossaryBegin":
                     self.host.requests.append((operation, value))
+                    overlay.render(
+                        shared_view(
+                            overlay.value,
+                            glossary_form={"formId": entry["formId"], "current": True},
+                        )
+                    )
                     return entry
                 if operation == "sessionGlossaryAdd":
                     self.host.requests.append((operation, value))
@@ -5924,7 +6160,11 @@ class InputFeedbackTests(unittest.TestCase):
                     **view,
                     "state": "EditingTranslation",
                     "editable": False,
-                    "viewContext": {**view["viewContext"], "canEdit": False},
+                    "viewContext": {
+                        **overlay.value["viewContext"],
+                        "canEdit": False,
+                        "identity": shared_identity(overlay.value["viewContext"]["identity"]),
+                    },
                 }
             )
             frames = await self.settle_overlay(jobs)
@@ -5987,7 +6227,8 @@ class InputFeedbackTests(unittest.TestCase):
     def test_inline_glossary_discards_stale_open_and_does_not_retry_unknown_save(self):
         async def exercise():
             overlay, jobs, token, view = await self.overlay_scenario()
-            overlay.render({**view, "state": "EditingTranslation"})
+            view = shared_view({**view, "state": "EditingTranslation"}, new_interaction=True)
+            overlay.render(view)
             await self.settle_overlay(jobs)
             entry = {
                 "formId": str(uuid.uuid4()),
@@ -6001,6 +6242,12 @@ class InputFeedbackTests(unittest.TestCase):
             async def ask(operation, value=None):
                 if operation == "sessionGlossaryBegin":
                     self.host.requests.append((operation, value))
+                    overlay.render(
+                        shared_view(
+                            overlay.value,
+                            glossary_form={"formId": entry["formId"], "current": True},
+                        )
+                    )
                     return await opening
                 if operation == "sessionGlossaryAdd":
                     self.host.requests.append((operation, value))
@@ -6015,7 +6262,15 @@ class InputFeedbackTests(unittest.TestCase):
             }
             self.peer.event("ui", {**event, "operation": "sessionGlossaryBegin"})
             await asyncio.sleep(0)
-            overlay.render({**view, "state": "EditingTranslation", "status": "changed"})
+            # The shared owner changed this interaction while Begin awaited its reply.
+            overlay.render(
+                shared_view(
+                    {**view, "state": "EditingTranslation", "status": "changed"},
+                    previous=overlay.value,
+                    new_interaction=True,
+                    action_revision=2,
+                )
+            )
             opening.set_result(entry)
             frames = await self.settle_overlay(jobs)
             self.assertFalse(any(frame["op"] == "overlay-glossary-open" for frame in frames))
@@ -6073,6 +6328,7 @@ class InputFeedbackTests(unittest.TestCase):
                 **view,
                 "viewContext": {**view["viewContext"], "translationActions": actions},
             }
+            current = shared_view(current)
             overlay.render(current)
             frames = await self.settle_overlay(jobs)
             rendered = next(frame["data"] for frame in frames if frame["op"] == "overlay-render")
@@ -6109,31 +6365,48 @@ class InputFeedbackTests(unittest.TestCase):
                 )
             self.peer.event("ui", {**event, "operation": "alternative"})
             self.assertIn(("alternative", token), self.host.events)
-            for change in (
-                {"status": "IME 正在输入"},
-                {"text": "changed"},
+            refreshed = shared_view({**current, "status": "IME 正在输入"})
+            refreshed["viewContext"]["canEdit"] = False
+            overlay.render(refreshed)
+            await self.settle_overlay(jobs)
+            self.assertEqual(overlay.revision, original_revision)
+            settings = shared_view(refreshed, action_revision=2)
+            settings["viewContext"]["translationActions"]["settingsRevision"] = 13
+            overlay.render(settings)
+            await self.settle_overlay(jobs)
+            self.assertEqual(overlay.revision, original_revision)
+            self.peer.event(
+                "ui",
                 {
-                    "viewContext": {**current["viewContext"], "canEdit": False},
+                    **event,
+                    "operation": "style",
+                    "value": {"settingsRevision": 12, "style": "Formal"},
                 },
-            ):
-                overlay.render({**current, **change})
-                await self.settle_overlay(jobs)
-                self.assertGreater(overlay.revision, original_revision)
-                before = len(self.host.requests), len(self.host.events)
-                self.peer.event(
-                    "ui",
-                    {
-                        **event,
-                        "operation": "style",
-                        "value": {
-                            "settingsRevision": 12,
-                            "style": "Formal",
-                        },
-                    },
-                )
-                self.peer.event("ui", {**event, "operation": "alternative"})
-                await self.settle_overlay(jobs)
-                self.assertEqual((len(self.host.requests), len(self.host.events)), before)
+            )
+            await self.settle_overlay(jobs)
+            # The shared owner receives the original settings revision and
+            # decides eligibility. Presentation cannot silently upgrade it.
+            self.assertEqual(
+                self.host.requests[-1],
+                ("sessionStyle", {"token": token, "settingsRevision": 12, "style": "Formal"}),
+            )
+            changed = shared_view(settings, new_interaction=True)
+            changed["source"]["inputEpoch"] = 2
+            overlay.render(changed)
+            await self.settle_overlay(jobs)
+            self.assertGreater(overlay.revision, original_revision)
+            before = len(self.host.requests), len(self.host.events)
+            self.peer.event(
+                "ui",
+                {
+                    **event,
+                    "operation": "style",
+                    "value": {"settingsRevision": 12, "style": "Formal"},
+                },
+            )
+            self.peer.event("ui", {**event, "operation": "alternative"})
+            await self.settle_overlay(jobs)
+            self.assertEqual((len(self.host.requests), len(self.host.events)), before)
 
         asyncio.run(exercise())
 
@@ -6170,6 +6443,9 @@ class InputFeedbackTests(unittest.TestCase):
                             **token,
                             "revision": token["revision"] + 1,
                         },
+                        "identity": shared_identity(
+                            view["viewContext"]["identity"], new_interaction=True
+                        ),
                     },
                 }
             )
@@ -6185,7 +6461,9 @@ class InputFeedbackTests(unittest.TestCase):
                 with patch("overlay.now_ms", return_value=1200):
                     self.clock.return_value = 1200
                     self.input.niri.observed_at = 1200  # Controlled compositor system port.
-                    overlay.render({**view, "sourceLanguage": "en", "targetLanguage": "ja"})
+                    overlay.render(
+                        shared_view({**view, "sourceLanguage": "en", "targetLanguage": "ja"})
+                    )
                     await asyncio.sleep(0)
                     request = next(
                         frame
@@ -6223,11 +6501,56 @@ class InputFeedbackTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def test_old_render_ack_cannot_restore_visibility_after_a_new_source_observation(self):
+        async def exercise():
+            overlay, jobs, token, view = await self.overlay_scenario()
+            previous = self.input.current_presentation(view)
+            overlay.render(shared_view({**view, "status": "显示更新"}))
+            await asyncio.sleep(0)
+            request = next(
+                frame for frame in self.native_frames(self.peer) if frame["op"] == "overlay-render"
+            )
+            self.peer.event(
+                "ui",
+                {
+                    "target": token["target"]["value"],
+                    "generation": self.generation,
+                    "revision": overlay.revision,
+                    "operation": "visible",
+                    "value": False,
+                },
+            )
+            # A fresh production capture replaces the native observation while
+            # the same desired product view still awaits its earlier render ACK.
+            await self.publish_acceptance(pause=False)
+            current = self.input.current_presentation(overlay.value)
+            self.assertNotEqual(previous.identity, current.identity)
+            self.assertFalse(self.input.presentation_current(previous))
+            self.peer.link.receive(
+                {"id": request["id"], "data": {"visible": True, "editing": True}}
+            )
+            await self.settle_overlay(jobs)
+            self.assertFalse(overlay.visible)
+            self.assertFalse(overlay.editing)
+            # The next ordinary renewal renders the fresh binding normally.
+            overlay.renew()
+            frames = await self.settle_overlay(jobs)
+            self.assertTrue(any(frame["op"] == "overlay-render" for frame in frames))
+            self.assertTrue(overlay.visible)
+            self.assertFalse(overlay.editing)
+            overlay.hide()
+
+        asyncio.run(exercise())
+
     def test_overlay_language_options_refresh_without_changing_saved_direction(self):
         async def exercise():
             overlay, jobs, _token, view = await self.overlay_scenario()
             overlay.configure({"source": "zh", "target": "fr"})
-            overlay.render({**view, "sourceLanguage": "zh", "targetLanguage": "fr"})
+            overlay.render(
+                shared_view(
+                    {**view, "sourceLanguage": "zh", "targetLanguage": "fr"}, action_revision=2
+                )
+            )
             await self.settle_overlay(jobs)
             choices = {
                 "source": [{"code": "auto", "label": "自动识别"}, {"code": "zh", "label": "中文"}],
@@ -6271,7 +6594,9 @@ class InputFeedbackTests(unittest.TestCase):
         async def exercise():
             overlay, jobs, _token, view = await self.overlay_scenario()
             overlay.configure({"source": "zh", "target": "ja"})
-            view = {**view, "sourceLanguage": "zh", "targetLanguage": "ja"}
+            view = shared_view(
+                {**view, "sourceLanguage": "zh", "targetLanguage": "ja"}, action_revision=2
+            )
             overlay.render(view)
             overlay.render_guidance(
                 {
@@ -6431,6 +6756,9 @@ class InputFeedbackTests(unittest.TestCase):
                         "viewContext": {
                             **view["viewContext"],
                             "token": updated_token,
+                            "identity": shared_identity(
+                                view["viewContext"]["identity"], new_interaction=True
+                            ),
                         },
                     }
                 )
@@ -6494,7 +6822,13 @@ class InputFeedbackTests(unittest.TestCase):
                     {
                         **view,
                         "state": "EditingTranslation",
-                        "viewContext": {**view["viewContext"], "token": updated},
+                        "viewContext": {
+                            **view["viewContext"],
+                            "token": updated,
+                            "identity": shared_identity(
+                                view["viewContext"]["identity"], new_interaction=True
+                            ),
+                        },
                     }
                 )
                 return {"allowed": True, "token": updated}
@@ -6642,7 +6976,13 @@ class InputFeedbackTests(unittest.TestCase):
             {
                 **view,
                 "state": "ReturningToSource",
-                "viewContext": {**view["viewContext"], "token": token},
+                "viewContext": {
+                    **view["viewContext"],
+                    "token": token,
+                    "identity": shared_identity(
+                        view["viewContext"]["identity"], new_interaction=True
+                    ),
+                },
             }
         )
         await self.settle_overlay(jobs)
@@ -6757,7 +7097,7 @@ class InputFeedbackTests(unittest.TestCase):
         self.assertEqual(result["practice"]["nativeFocusRevision"], 3)
         self.assertFalse(self.input.practice_editing(binding["runId"]))
         self.assertTrue(self.input.practice_waiting(binding["runId"]))
-        self.assertIsNone(self.input.bound_observation)
+        self.assertIsNone(self.input._bound_observation)
         self.generation = str(uuid.uuid4())
         self.configure()
         self.native_frames(self.peer)
@@ -6860,6 +7200,9 @@ class InputFeedbackTests(unittest.TestCase):
                         "viewContext": {
                             **view["viewContext"],
                             "token": {**token, "revision": 12},
+                            "identity": shared_identity(
+                                view["viewContext"]["identity"], new_interaction=True
+                            ),
                         },
                     }
                 )
@@ -6898,7 +7241,7 @@ class InputFeedbackTests(unittest.TestCase):
         )
         self.peer.event("accepted", receipt)
         self.assertEqual(len(self.host.notices), 1)
-        self.assertEqual([frame["op"] for frame in self.native_frames(self.peer)], ["quarantine"])
+        self.assertEqual(self.native_frames(self.peer), [])
 
     def test_reconfiguration_preserves_original_uncertain_receipt_without_reissuing_a_write(self):
         publication = asyncio.run(self.publish_acceptance(pause=False))[0]["data"]
@@ -6921,7 +7264,7 @@ class InputFeedbackTests(unittest.TestCase):
         self.assertEqual(self.native_frames(self.peer), [])
         self.peer.event("accepted", receipt)
         self.assertEqual(len(self.host.notices), 1)
-        self.assertEqual([frame["op"] for frame in self.native_frames(self.peer)], ["quarantine"])
+        self.assertEqual(self.native_frames(self.peer), [])
 
     def test_another_peer_cannot_consume_the_original_accepted_receipt(self):
         plan_id = asyncio.run(self.publish_acceptance())
@@ -6934,16 +7277,29 @@ class InputFeedbackTests(unittest.TestCase):
         }
         other.event("accepted", receipt)
         self.assertEqual(self.host.notices, [])
-        self.assertEqual([frame["op"] for frame in self.native_frames(other)], ["quarantine"])
+        self.assertEqual(self.native_frames(other), [])
         self.peer.event("accepted", receipt)
         self.assertEqual(len(self.host.notices), 1)
         self.assertEqual(self.host.notices[0]["completedReceipt"], receipt["receipt"])
         self.assertEqual(self.native_frames(self.peer), [])
 
     def test_paused_receipt_retention_expires_without_reissuing_the_old_permission(self):
-        plan_id = asyncio.run(self.publish_acceptance())
-        self.clock.return_value = 2001
+        publication = asyncio.run(self.publish_acceptance(pause=False))[0]["data"]
+        plan_id = publication["permit"]["plan"]["id"]
+        self.input.notification("settings", {"enabled": False})
+        self.native_frames(self.peer)
+        self.clock.return_value = publication["permit"]["expiresAtMs"] + 2001
         self.input.expire()
+        self.assertEqual(len(self.host.notices), 1)
+        notice = self.host.notices[0]
+        self.assertEqual(notice["completedReceipt"]["status"], "OutcomeUnknown")
+        self.assertEqual(notice["permit"], publication["permit"])
+        self.assertEqual(notice["target"], publication["lease"]["source"]["target"])
+        self.assertEqual(notice["commandGeneration"], publication["generation"])
+        self.assertEqual(
+            [(frame["op"], frame["data"]) for frame in self.native_frames(self.peer)],
+            [("quarantine", {"target": publication["lease"]["source"]["target"]["value"]})],
+        )
         self.peer.event(
             "accepted",
             {
@@ -6952,8 +7308,8 @@ class InputFeedbackTests(unittest.TestCase):
                 "receipt": {"status": "Verified", "reason": "None"},
             },
         )
-        self.assertEqual(self.host.notices, [])
-        self.assertEqual([frame["op"] for frame in self.native_frames(self.peer)], ["quarantine"])
+        self.assertEqual(self.host.notices, [notice])
+        self.assertEqual(self.native_frames(self.peer), [])
         self.assertIsNone(asyncio.run(self.input.request("capture", {})))
         self.assertFalse(
             any(
@@ -7154,6 +7510,15 @@ class InputFeedbackTests(unittest.TestCase):
             for _ in range(193):
                 frames = asyncio.run(self.publish_acceptance(pause=False))
                 self.assertIsNotNone(frames[0]["data"]["permit"])
+                publication = frames[0]["data"]
+                self.peer.event(
+                    "writeRetired",
+                    {
+                        "planId": publication["permit"]["plan"]["id"],
+                        "target": publication["lease"]["source"]["target"]["value"],
+                        "generation": publication["generation"],
+                    },
+                )
         records = self.input.diagnostics()["nativePublications"]
         self.assertEqual(len(records), 192)
         first = dict(records[0])

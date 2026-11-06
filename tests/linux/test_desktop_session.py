@@ -128,13 +128,11 @@ class DesktopSessionTests(unittest.TestCase):
             lifetime="live",
             backend="gtk3",
             application="fixture",
-            link=SimpleNamespace(channel=SimpleNamespace(alive=True)),
-            support_observation={
-                "atMs": now_ms(),
-                "preview": True,
-                "tabAccept": True,
-                "directReplace": True,
-            },
+            connected=True,
+            observed_at_ms=now_ms(),
+            preview=True,
+            tab_accept=True,
+            direct_replace=True,
         )
 
         def fact():
@@ -145,9 +143,9 @@ class DesktopSessionTests(unittest.TestCase):
         peer.pid = pid
         self.assertEqual(fact()["state"], "Connected")
         self.assertTrue(fact()["capabilities"]["preview"])
-        peer.support_observation["atMs"] = now_ms() - 30001
+        peer.observed_at_ms = now_ms() - 30001
         self.assertEqual(fact()["capabilities"], {})
-        peer.link.channel.alive = False
+        peer.connected = False
         self.assertNotEqual(fact()["state"], "Connected")
         self.assertFalse(owner.owns_application(None, pid), "reopen adopted a durable receipt")
         self.assertFalse(owner.owns_application(launched, os.getpid()))

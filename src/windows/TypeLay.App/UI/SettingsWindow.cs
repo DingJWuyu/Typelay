@@ -836,6 +836,8 @@ internal sealed partial class SettingsWindow : Window
     {
         if (_savingSettings || callerCurrent?.Invoke() == false)
             return false;
+        if (_saveIssue is not null)
+            _draftFeedback = null;
         ClearSaveIssue();
         var failedShortcuts = _shortcutDraft;
         var failedGlossary = _glossaryDraft?.ToArray();
@@ -848,7 +850,7 @@ internal sealed partial class SettingsWindow : Window
         bool IsCurrentSubmission() => callerCurrent?.Invoke() != false && (draftSubmission is null || draftSubmission == _draftSubmissionGeneration);
         string page = _page;
         object? navigation = _pageNavigation;
-        bool outcomeVisible = IsVisible, updateEntered = false;
+        bool outcomeVisible = IsVisible;
         void OutcomeVisibilityChanged(object sender, DependencyPropertyChangedEventArgs args)
         {
             if (!IsVisible)
@@ -872,115 +874,71 @@ internal sealed partial class SettingsWindow : Window
             PreviewMouseDown -= PointerUsed;
             _content.IsEnabled = true;
         }
-        try
+        AppearanceSizeCommit? appearanceSizeUpdate = null;
+        async Task<bool> Prepare(UserSettings proposed)
         {
-            var preparation = _settings.HasChanges(value) && PrepareSettingsChange is not null
-                ? PrepareSettingsChange(value) : Task.FromResult(true);
+            var preparation = PrepareSettingsChange?.Invoke(proposed) ?? Task.FromResult(true);
             if (!preparation.IsCompleted)
             {
                 waiting = true;
                 _content.IsEnabled = false;
-                // Disabling moves focus itself. Only later user/navigation focus
-                // changes cancel restoration of the original semantic control.
                 Deactivated += FocusLeft;
                 GotKeyboardFocus += FocusMoved;
                 PreviewMouseDown += PointerUsed;
             }
-            long preparationStarted = appearancePreparation is not null && !preparation.IsCompleted ? Stopwatch.GetTimestamp() : 0;
+            long started = appearancePreparation is not null && !preparation.IsCompleted ? Stopwatch.GetTimestamp() : 0;
             bool prepared = await preparation;
-            if (preparationStarted != 0)
-                appearancePreparation!.WaitMilliseconds = Stopwatch.GetElapsedTime(preparationStarted).TotalMilliseconds;
-            EnableContent(); // Refresh must rebuild enabled, focusable controls.
-            // A background settings notification can retire the initiating
-            // controls. Report the conflict in the same visible navigation,
-            // without reviving that control's permission to write.
-            if (prepared && !ReferenceEquals(expected, _settings.Value))
-            {
-                if (CanReportOutcome())
-                {
-                    _settingsError = "设置已更新，请检查当前值后重试。";
-                    Refresh();
-                }
-                return false;
-            }
-            if (!IsCurrentSubmission())
-                return false;
-            if (!prepared)
-            {
-                if (CanReportOutcome())
-                {
-                    _settingsError = "练习窗口尚未确认停止，设置未保存。请关闭练习窗口后再试。";
-                    Refresh();
-                }
-                return false;
-            }
-            _settingsError = null;
-            updateEntered = true;
-            var appearanceSizeUpdate = BeginAppearanceSizeUpdate(value, expected, expectedRevision);
-            try
-            {
-                _settings.Update(expectedRevision, value);
-            }
-            finally
-            {
-                if (appearanceSizeUpdate is not null)
-                    appearanceSizeUpdate.ActiveUpdate = false;
-            }
-            UiTheme.Apply(_settings.Value);
-            return true;
-        }
-        catch (SettingsConflictException) when (_settings.Revision == expectedRevision)
-        {
-            if (CanReportOutcome())
-            {
-                _settingsError = UiTheme.L("设置已更新，请检查当前值后重试。", "Settings changed. Review the current values and retry.");
-                RefreshDraftBar();
-            }
-        }
-        catch (ArgumentException) when (_settings.Revision == expectedRevision)
-        {
+            if (started != 0)
+                appearancePreparation!.WaitMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
             EnableContent();
-            if (!IsCurrentSubmission() || !CanReportOutcome())
-                return false;
-            _settingsError = !ModelCatalog.IsSupportedSetting(value.Source, value.Target)
-                ? "请选择支持的源语言和目标语言。"
-                : SettingsDraftPresentation.ShortcutErrorMessage(ShortcutDraftError.InvalidOnDemandBindings);
-            Refresh();
+            if (prepared)
+                appearanceSizeUpdate = BeginAppearanceSizeUpdate(value, expected, expectedRevision);
+            return prepared;
         }
-        catch (SettingsPersistenceException) when (_settings.Revision == expectedRevision)
+        try
         {
+            var result = await _settings.CommitAsync(expectedRevision, value, Prepare, IsCurrentSubmission);
             EnableContent();
-            if (!IsCurrentSubmission() || !CanReportOutcome())
-                return false;
-            _settingsError = "请检查当前用户目录与组织策略。";
-            SetSaveIssue(false, current: () => ReferenceEquals(expected, _settings.Value)
-                && _shortcutDraft == failedShortcuts && (_glossaryDraft is null ? failedGlossary is null : failedGlossary is not null && _glossaryDraft.SequenceEqual(failedGlossary)),
-                retry: async current =>
-                {
-                    if (draftSubmission is not null)
-                        await SaveDraftAsync(callerCurrent: current);
-                    else
-                        await SaveAsync(value, callerCurrent: current);
-                }, page: page);
+            if (result.Saved && result.State != SettingsCommitState.CommittedNotificationFailed)
+            {
+                _settingsError = null;
+                UiTheme.Apply(_settings.Value);
+                return true;
+            }
+            if (!CanReportOutcome() || !IsCurrentSubmission() && !result.Saved)
+                return result.Saved;
+            if (result.Reason == "persistence-failed" && result.Startup == SettingsStartupEffect.NotRequested)
+            {
+                _settingsError = "请检查当前用户目录与组织策略。";
+                SetSaveIssue(false, current: () => ReferenceEquals(expected, _settings.Value)
+                    && _shortcutDraft == failedShortcuts && (_glossaryDraft is null ? failedGlossary is null : failedGlossary is not null && _glossaryDraft.SequenceEqual(failedGlossary)),
+                    retry: async current =>
+                    {
+                        if (draftSubmission is not null)
+                            await SaveDraftAsync(callerCurrent: current);
+                        else
+                            await SaveAsync(value, callerCurrent: current);
+                    }, page: page);
+            }
+            else if (result.State is SettingsCommitState.CommittedNotificationFailed or SettingsCommitState.ExternalEffectUnknown
+                || result.Startup == SettingsStartupEffect.Applied || result.Reason == "preparation-failed")
+            {
+                _settingsError = null;
+                _draftFeedback = SettingsCommitPresentation.Message(result);
+                SetSaveIssue(true, result.Saved, page: page, detail: result.Saved ? null : _draftFeedback);
+            }
+            else if (result.Reason != "canceled")
+                _settingsError = result.Reason == "invalid-settings"
+                    ? !ModelCatalog.IsSupportedSetting(value.Source, value.Target) ? "请选择支持的源语言和目标语言。"
+                        : SettingsDraftPresentation.ShortcutErrorMessage(ShortcutDraftError.InvalidOnDemandBindings)
+                    : SettingsCommitPresentation.Message(result);
             Refresh();
-        }
-        catch (Exception error) when (error is not OutOfMemoryException)
-        {
-            EnableContent();
-            // Update can commit, notify this window (rebuilding its controls),
-            // then encounter a failing observer. That is a known commit, not a
-            // new permission or a reason to silently lose the outcome notice.
-            bool committed = updateEntered && _settings.Revision == expectedRevision + 1 && !_settings.HasChanges(value);
-            if (!CanReportOutcome() || !IsCurrentSubmission() && !committed)
-                return committed;
-            _settingsError = null;
-            _draftFeedback = committed ? "已保存，请重新打开设置确认当前状态。" : SettingsDraftPresentation.UnknownSaveMessage;
-            SetSaveIssue(true, committed, page: page);
-            Refresh();
-            return committed;
+            return result.Saved;
         }
         finally
         {
+            if (appearanceSizeUpdate is not null)
+                appearanceSizeUpdate.ActiveUpdate = false;
             IsVisibleChanged -= OutcomeVisibilityChanged;
             EnableContent();
             _savingSettings = false;
@@ -988,7 +946,6 @@ internal sealed partial class SettingsWindow : Window
             if (waiting && restoreFocus && IsActive && _page == page)
                 RestoreSettingFocus(focusedSetting);
         }
-        return false;
     }
     public async void StartPractice()
     {

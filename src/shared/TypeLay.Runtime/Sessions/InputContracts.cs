@@ -15,7 +15,10 @@ public sealed record InputNotice(string Kind, AcceptancePermit? Permit = null, l
     WriteReceipt? CompletedReceipt = null, Denial Rejection = Denial.None, long CommandSequence = 0, TargetId? Target = null, long SessionRevision = 0,
     Guid? PracticeRunId = null, Guid? PracticeConnectionId = null, CommandCaptureEvidence? CommandCapture = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Application = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] WakeCaptureIntent? WakeCapture = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] WakeCaptureIntent? WakeCapture = null,
+    // Exact adapter proof that this plan has no executing owner or remaining
+    // publication/ticket. Expiry, disconnect and a revoke request are not proof.
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? RetiredUnusedPlanId = null);
 // An explicit preview-only request for a NEW read, never a source observation
 // or permission to write. Epochs are sampled after the command key itself.
 public sealed record WakeCaptureIntent(TargetId Target, long TriggeredAtMs, long UserEpoch,

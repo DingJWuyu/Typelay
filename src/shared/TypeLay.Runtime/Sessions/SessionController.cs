@@ -7,6 +7,7 @@ public sealed partial class SessionController : IDisposable
     private readonly ITranslationService _model;
     private readonly TranslationReleasePolicy _translationRelease;
     private readonly ISessionView _overlay;
+    private readonly ISourceInteraction _sourceInteraction;
     private readonly IInputMonitor _hook;
     private readonly IInputService _broker;
     private readonly Session _session;
@@ -15,9 +16,6 @@ public sealed partial class SessionController : IDisposable
     private sealed record PendingWakeCapture(TargetId Target, long Generation, long FeedbackRevision,
         Guid CommandGeneration, long CommandSequence, WakeCaptureIntent? Intent = null, long ConfigurationRevision = 0);
     private PendingWakeCapture? _pendingWakeCapture;
-    private OnDemandPracticeProgress? _practiceWakeCommand, _pendingDirectPractice;
-    private Guid _lastRetiredPracticeRun;
-    private long _practiceBoundAt, _practicePreviewAt;
     private DirectTranslation? _pendingDirect;
     private bool _directRunning, _directWriteSubmitted;
     private long _lastCommandSequence, _commandSequence, _commandFeedbackRevision, _pendingDirectFeedbackRevision, _pendingDirectSequence;
@@ -40,8 +38,9 @@ public sealed partial class SessionController : IDisposable
     private AcceptancePermit? _presentationPermit;
     private bool _renderedAcceptanceReady;
     private TranslationMenuState? _renderedTranslationMenu;
+    private readonly SessionPresentationState _presentation = new();
     private bool _capturing, _writing, _translationRunning, _startingBroker, _disposed;
-    private SessionViewToken? _sourceReturn;
+    private SessionViewToken? _sourceReturn => _returnDispatch?.PendingReturn;
     private bool _returningToSource => _sourceReturn is not null;
     private bool _inputReadFailed;
     private PauseAnchor? _pauseAnchor;
@@ -76,134 +75,35 @@ public sealed partial class SessionController : IDisposable
     public string ServiceStatus => OperationStatus ?? ConnectionStatus;
     public event Action? Changed;
     public event Action<CommandFeedback>? OperationFeedback;
-    public OnDemandPracticeProgress? PracticeProgress
+    private readonly OnDemandPracticeCoordinator _onDemandPractice;
+    public OnDemandPracticeProgress? PracticeProgress => _onDemandPractice.PracticeProgress;
+    public event Action<OnDemandPracticeProgress?>? PracticeProgressChanged
     {
-        get; private set;
+        add => _onDemandPractice.PracticeProgressChanged += value;
+        remove => _onDemandPractice.PracticeProgressChanged -= value;
     }
-    public event Action<OnDemandPracticeProgress?>? PracticeProgressChanged;
-
-    // Hosts call Begin only for an explicit new/restarted owned practice window.
-    // Binding must come from that host's native identity verification, before the
-    // command is consumed. Neither registration nor progress changes write safety.
-    public bool BeginOnDemandPractice(Guid runId)
-    {
-        if (_disposed || runId == Guid.Empty || runId == _lastRetiredPracticeRun
-            || !_settings.Value.Enabled || _settings.Value.Mode != WorkMode.OnDemand)
-            return false;
-        if (PracticeProgress?.RunId == runId)
-            return true;
-        if (PracticeProgress is { } previous)
-            _lastRetiredPracticeRun = previous.RunId;
-        _practiceWakeCommand = null;
-        PracticeProgress = new(runId, null, _hook.CommandGeneration, 0, _commandFeedbackRevision, false, false);
-        PracticeProgressChanged?.Invoke(PracticeProgress);
-        return true;
-    }
-    public bool BindOnDemandPractice(Guid runId, TargetId target)
-    {
-        if (_disposed || PracticeProgress is not { } progress || progress.RunId != runId
-            || progress.CommandGeneration != _hook.CommandGeneration
-            || string.IsNullOrWhiteSpace(target.Backend) || string.IsNullOrWhiteSpace(target.Value)
-            || target.Lifetime == Guid.Empty)
-            return false;
-        if (progress.Target is { } existing)
-            return existing == target;
-        _practiceBoundAt = _loop.NowMs;
-        PracticeProgress = progress with
-        {
-            Target = target
-        };
-        PracticeProgressChanged?.Invoke(PracticeProgress);
-        return true;
-    }
-    public void ObserveOnDemandPreviewReadiness(Guid runId, TargetId? target, Guid commandGeneration, bool ready)
-    {
-        if (_disposed || PracticeProgress is not { } progress || progress.RunId != runId
-            || progress.Target != target || progress.CommandGeneration != commandGeneration
-            || ready && (commandGeneration != _hook.CommandGeneration || target is null)
-            || progress.PreviewReady == ready)
-            return;
-        PracticeProgress = progress with
-        {
-            PreviewReady = ready
-        };
-        PracticeProgressChanged?.Invoke(PracticeProgress);
-    }
-    public void ObserveOnDemandDirectReadiness(Guid runId, TargetId? target, Guid commandGeneration, bool ready)
-    {
-        if (_disposed || PracticeProgress is not { } progress || progress.RunId != runId
-            || progress.Target != target || progress.CommandGeneration != commandGeneration
-            || ready && (commandGeneration != _hook.CommandGeneration || target is null)
-            || progress.DirectReady == ready)
-            return;
-        PracticeProgress = progress with
-        {
-            DirectReady = ready
-        };
-        PracticeProgressChanged?.Invoke(PracticeProgress);
-    }
-    public bool EndOnDemandPractice(Guid runId)
-    {
-        if (PracticeProgress?.RunId != runId)
-            return false;
-        _lastRetiredPracticeRun = runId;
-        _practiceWakeCommand = null;
-        PracticeProgress = null;
-        PracticeProgressChanged?.Invoke(null);
-        return true;
-    }
-    private OnDemandPracticeProgress? PracticeCommand(InputNotice notice, bool direct)
-    {
-        // AcceptedAtMs is the existing adapter acceptance timestamp, not proof of
-        // a physical key-down. Ties are conservative: queued earlier commands
-        // cannot become practice evidence just because they were drained later.
-        if (PracticeProgress is not { Target: not null } progress || notice.Source?.Target != progress.Target
-            || notice.CommandGeneration == Guid.Empty || notice.CommandGeneration != progress.CommandGeneration
-            || notice.CommandSequence <= 0
-            || notice.AcceptedAtMs <= _practiceBoundAt || notice.AcceptedAtMs > _loop.NowMs
-            || direct && (!progress.PreviewCompleted || progress.DirectReplacementCompleted
-                || notice.AcceptedAtMs <= _practicePreviewAt))
-            return null;
-        return progress with
-        {
-            CommandSequence = notice.CommandSequence,
-            Revision = _commandFeedbackRevision
-        };
-    }
-    private void CompletePracticeCommand(OnDemandPracticeProgress? command, bool direct)
-    {
-        // Begin publishes the current command revision as a watermark. Even a
-        // reused host run ID cannot adopt work accepted before that registration.
-        if (command is null || PracticeProgress is not { } progress || progress.RunId != command.RunId
-            || progress.Target != command.Target || command.CommandGeneration != _hook.CommandGeneration
-            || command.Revision != _commandFeedbackRevision || command.Revision <= progress.Revision
-            || direct && (!command.PreviewCompleted || !progress.PreviewCompleted || progress.DirectReplacementCompleted)
-            || !direct && progress.PreviewCompleted)
-            return;
-        if (!direct)
-            _practicePreviewAt = _loop.NowMs;
-        PracticeProgress = command with
-        {
-            PreviewCompleted = true,
-            DirectReplacementCompleted = direct,
-            PreviewReady = progress.PreviewReady,
-            DirectReady = progress.DirectReady
-        };
-        PracticeProgressChanged?.Invoke(PracticeProgress);
-    }
+    public bool BeginOnDemandPractice(Guid runId) => _onDemandPractice.BeginOnDemandPractice(runId);
+    public bool BindOnDemandPractice(Guid runId, TargetId target) => _onDemandPractice.BindOnDemandPractice(runId, target);
+    public bool EndOnDemandPractice(Guid runId) => _onDemandPractice.EndOnDemandPractice(runId);
+    public void ObserveOnDemandPreviewReadiness(Guid runId, TargetId? target, Guid commandGeneration, bool ready) =>
+        _onDemandPractice.ObserveOnDemandPreviewReadiness(runId, target, commandGeneration, ready);
+    public void ObserveOnDemandDirectReadiness(Guid runId, TargetId? target, Guid commandGeneration, bool ready) =>
+        _onDemandPractice.ObserveOnDemandDirectReadiness(runId, target, commandGeneration, ready);
     public SessionController(SettingsStore settings, ITranslationService model, ISessionView overlay,
         IInputMonitor input, IInputService broker, ISessionLoop loop,
         Func<OwnedPracticeBinding, Task<bool>>? retireOwnedPractice = null,
         Func<OwnedPracticeBinding, Task<bool>>? confirmRetiredOwnedPractice = null,
-        TranslationReleasePolicy? translationRelease = null)
+        TranslationReleasePolicy? translationRelease = null, ISourceInteraction? sourceInteraction = null)
     {
-        _retireOwnedPractice = retireOwnedPractice;
-        _confirmRetiredOwnedPractice = confirmRetiredOwnedPractice;
+        _ownedSource = new(this, retireOwnedPractice, confirmRetiredOwnedPractice);
+        _onDemandPractice = new(this);
+        _glossary = new(this);
         _broker = broker;
         _settings = settings;
         _model = model;
         _translationRelease = translationRelease ?? TranslationReleasePolicy.Current;
         _overlay = overlay;
+        _sourceInteraction = sourceInteraction ?? UnavailableSourceInteraction.Instance;
         _hook = input;
         _lastShortcutStatus = ShortcutStatus;
         _loop = loop;
@@ -213,14 +113,14 @@ public sealed partial class SessionController : IDisposable
         _activation = new TranslationActivation(settings.Value.Mode);
         _loop.Tick += Tick;
         overlay.BeginEditing = BeginEdit;
-        overlay.DraftChanged = ChangePracticeDraft;
+        overlay.DraftChanged = ChangeDraft;
         overlay.ReturnRequested = token => { if (ViewCommandIsCurrent(token, true)) _ = ReturnFromEditor(); };
         overlay.EscapeRequested = token => { if (ViewCommandIsCurrent(token, false)) _ = Escape(); };
         overlay.AlternativeRequested = token => RequestAlternative(token, fromView: true);
         overlay.StyleRequested = ChangeViewStyleAsync;
-        overlay.BeginGlossaryRequested = BeginGlossaryEntry;
-        overlay.AddGlossaryRequested = AddGlossaryEntryAsync;
-        overlay.CloseGlossaryRequested = CloseGlossaryEntry;
+        overlay.BeginGlossaryRequested = _glossary.BeginGlossaryEntry;
+        overlay.AddGlossaryRequested = _glossary.AddGlossaryEntryAsync;
+        overlay.CloseGlossaryRequested = _glossary.CloseGlossaryEntry;
         overlay.RegenerateRequested = () => _ = Regenerate();
         overlay.EditorRegenerateRequested = RegenerateEditorAsync;
         overlay.ExcludeRequested = () => _ = ExcludeCurrentApplication();
@@ -238,26 +138,32 @@ public sealed partial class SessionController : IDisposable
         }
         var next = _settings.Excluding(app);
         bool keepPractice = AutomaticPracticeProgress is not null && !_settings.HasChanges(next);
-        if (!await PrepareSettingsChangeAsync(next) || _disposed)
+        if (ReferenceEquals(next, _settings.Value))
         {
-            if (!_disposed)
-                SetServiceStatus("练习尚未确认结束，未更改应用排除设置。请重启 TypeLay 后重试。", "practice-retirement-unconfirmed");
-            return;
-        }
-        // Recompute against the current settings after the retirement await.
-        try
-        {
-            _settings.Exclude(app);
             if (!keepPractice)
                 StopSession();
+            return;
         }
-        catch (SettingsPersistenceException)
+        var result = await _settings.CommitAsync(_settings.Revision, next, PrepareSettingsChangeAsync,
+            () => !_disposed);
+        if (result.Saved)
         {
-            SetServiceStatus("排除设置未能保存，请检查设置存储后重试。", "exclude-save-failed");
+            if (!keepPractice)
+                StopSession();
+            if (result.State == SettingsCommitState.CommittedNotificationFailed)
+                SetServiceStatus(SettingsCommitPresentation.Message(result), "exclude-notification-failed");
         }
+        else if (!_disposed)
+            SetServiceStatus(result.Reason == "practice-retirement-unconfirmed"
+                    ? "练习尚未确认结束，未更改应用排除设置。请重启 TypeLay 后重试。"
+                    : result.Reason == "persistence-failed" ? "排除设置未能保存，请检查设置存储后重试。"
+                    : SettingsCommitPresentation.Message(result),
+                result.Reason == "practice-retirement-unconfirmed" ? result.Reason : "exclude-save-failed");
     }
     public async Task StartAsync()
     {
+        if (_disposed || _closing)
+            return;
         await StartBroker();
         Configure();
         _loop.Start();
@@ -276,7 +182,7 @@ public sealed partial class SessionController : IDisposable
     }
     private async Task StartBroker()
     {
-        if (_disposed || _startingBroker)
+        if (_disposed || _closing || _startingBroker)
             return;
         if (_broker.Available)
         {
@@ -309,12 +215,13 @@ public sealed partial class SessionController : IDisposable
     }
     private void Configure()
     {
-        _sourceRegenerate = null;
-        _editorRegenerate = null;
+        if (_disposed || _closing)
+            return;
+        RetireInteraction();
         _styleObservation = null;
-        _editorGlossaryHandoff = null;
-        _pendingPracticeCompletion = null;
-        RetireAutomaticPractice(false);
+        _glossary.Retire();
+        _ownedSource.ForgetCompletion();
+        _ownedSource.RetireAutomaticPractice(false);
         if (PracticeProgress is { } practice)
             EndOnDemandPractice(practice.RunId);
         _pendingWakeCapture = null;
@@ -354,8 +261,12 @@ public sealed partial class SessionController : IDisposable
     {
         while (_hook.TryRead(out var notice))
         {
-            if (notice?.CompletedReceipt is not null && notice.Permit is not null)
+            if (notice?.RetiredUnusedPlanId is not null)
+                RetireUnusedWrite(notice);
+            else if (notice?.CompletedReceipt is not null && notice.Permit is not null)
                 CompleteNativeWrite(notice);
+            else if (_closing)
+                continue;
             else if (notice?.Kind is "wake" or "direct")
                 Shortcut(notice);
             else if (notice?.Kind == "escape" && notice.CommandGeneration == _hook.CommandGeneration
@@ -442,6 +353,12 @@ public sealed partial class SessionController : IDisposable
     {
         if (_disposed)
             return;
+        if (_closing)
+        {
+            DrainInputNotices();
+            ContinueShutdown();
+            return;
+        }
         string shortcutStatus = ShortcutStatus;
         if (_lastShortcutStatus != shortcutStatus)
         {
@@ -449,13 +366,12 @@ public sealed partial class SessionController : IDisposable
             Changed?.Invoke();
         }
         RefreshConnectionStatus();
-        CheckAutomaticPracticeIdentity();
+        _ownedSource.CheckAutomaticPracticeIdentity();
         if (!ReferenceEquals(_configuredGlossary, GlossaryForTranslation()))
             ApplyGlossarySettings();
         DrainInputNotices();
-        if (TickOwnedLocalDraft() || TickOwnedLocalRegenerate())
-            return;
-        if (_awaitingPractice is not null && (_automaticRetirementUnconfirmed || _automaticRetirement is { IsCompleted: false }))
+        ExpireUnconfirmedWrites();
+        if (_ownedSource.TickLocalInteraction())
             return;
         long now = _loop.NowMs;
         if (_manualObservation is { UnavailableUntil: > 0 } && !ManualObservationIsCurrent(now))
@@ -480,7 +396,7 @@ public sealed partial class SessionController : IDisposable
         // window. Preserve only its form/basis, not focus or input authority.
         // The platform keeps the original deadline and cancels on foreign
         // foreground events; equal epochs alone never provide this proof.
-        if (SourceGlossaryReturnIsPending())
+        if (_glossary.SourceGlossaryReturnIsPending())
         {
             RevokeInput("glossary-return-pending");
             _permitUntil = 0;
@@ -488,13 +404,13 @@ public sealed partial class SessionController : IDisposable
         }
         if (_session.Current is { } current)
         {
-            bool ordinaryReturn = _sourceReturn is { } returning && _ownedPractice is null
+            bool ordinaryReturn = _sourceReturn is { } returning && !_ownedSource.HasBinding
                 && returning.Target == current.Target && returning.Revision == _generation
                 && returning.CommandGeneration == _hook.CommandGeneration
                 && _session.State == SessionState.ReturningToSource && _hook.Ready && _broker.Available;
             bool retain = ordinaryReturn ? _hook.CanRetainDraftDuringSourceReturn(current.Target)
                 : _hook.GetFocus(current.Target) != FocusMember.Other;
-            if (!retain && !PracticeReturnIsPending(current.Target))
+            if (!retain && !_ownedSource.PracticeReturnIsPending(current.Target))
                 StopSession("focus-left");
         }
         if (!_hook.Ready || !_broker.Available)
@@ -506,8 +422,7 @@ public sealed partial class SessionController : IDisposable
         }
         // A finished owned field has no remaining translation or acceptance
         // work. Its body-free receipt survives ordinary observation changes.
-        if (_pendingPracticeCompletion is { } completed
-            && _hook.GetFocus(completed.Binding.Target) != FocusMember.Other)
+        if (_ownedSource.CompletionOwnsFocus)
             return;
         if (!_settings.Value.Enabled)
         {
@@ -535,39 +450,10 @@ public sealed partial class SessionController : IDisposable
         }
         // A private handoff is bounded by the existing edit deadline. Do not
         // read an unfocused source while GTK is still transferring its IM context.
-        if (_ownedPractice is not null && _editTransitionUntil != 0
-            && _session.State == SessionState.EditingTranslation && _session.Current is { } handoffSource)
-        {
-            if (_hook.GetFocus(handoffSource.Target) == FocusMember.Overlay)
-                _editTransitionUntil = 0;
-            else
-            {
-                if (now >= _editTransitionUntil)
-                    StopSession("practice-editor-timeout");
-                return;
-            }
-        }
-        if (_glossaryEntry is { Entry.SourceOrigin: true } sourceForm)
-        {
-            RetireInvalidGlossaryEntry();
-            if (ReferenceEquals(_glossaryEntry, sourceForm))
-            {
-                RevokeInput("glossary-entry");
-                _permitUntil = 0;
-                // Keep the original source basis, not an invented observation.
-                // Platform form focus includes its existing liveness deadline.
-                if (GlossaryAuxiliaryCurrent(sourceForm) || sourceForm.Returning
-                    && _hook.GetFocus(sourceForm.Entry.Token.Target) == FocusMember.Source)
-                    return;
-                // Only an actual auxiliary owner may suspend normal source
-                // observation. An abandoned opening is bounded by its original
-                // observation, and external focus ends the form immediately.
-                if (_hook.GetFocus(sourceForm.Entry.Token.Target) == FocusMember.Other
-                    || !sourceForm.Returned && (sourceForm.Source is not { } basis
-                        || now - basis.ObservedAtMs > Limits.ObservationMaxAgeMs))
-                    CancelGlossaryEntry();
-            }
-        }
+        if (_ownedSource.WaitForEditorHandoff(now))
+            return;
+        if (_glossary.SuspendSourceObservation(now))
+            return;
         // The editor owns focus and its saved source basis until the user returns.
         // Chromium may expose no source selection when another window has focus.
         // Revalidate the source on return instead of polling an unfocused TextPattern.
@@ -575,7 +461,7 @@ public sealed partial class SessionController : IDisposable
         {
             RevokeInput("editing-translation");
             _permitUntil = 0;
-            CheckEditorGlossaryHandoff();
+            _glossary.CheckEditorGlossaryHandoff();
             // Editor focus/composition arrives after BeginEdit's synchronous render.
             // Refresh only changed read-only qualifications, never a source lease.
             if (_renderedTranslationMenu != GetTranslationMenuState())
@@ -628,14 +514,17 @@ public sealed partial class SessionController : IDisposable
         && _hook.Ready && _broker.Available && _sessionShortcuts is { SourceReady: true } acknowledgement
         && acknowledgement.Target == target && acknowledgement.Generation == _hook.CommandGeneration
         && acknowledgement.Bindings == CurrentSessionBindings && (!editor || acknowledgement.EditorReady);
-    private bool ViewCommandIsCurrent(SessionViewToken token, bool editor) => !_disposed
+    private bool ViewCommandIsCurrent(SessionViewToken token, bool editor) => !_disposed && !_closing
         && token.Revision == _generation && token.CommandGeneration == _hook.CommandGeneration
         && _session.Current?.Target == token.Target && SessionBindingsReady(token.Target, editor);
-    private InputContext Context() => new(_hook.UserEpoch, _hook.ForegroundEpoch,
+    private InputContext Context()
+    {
+        var context = new InputContext(_hook.UserEpoch, _hook.ForegroundEpoch,
         _hook.SourceUserEpoch, _session.Current?.Target, _settings.Value.Excluded,
         _settings.Value.Enabled && _settings.Value.Mode == WorkMode.OnDemand,
-        new(_hook.CommandGeneration, CurrentSessionBindings), _ownedLocalRegenerate?.Binding ?? LocalDraftReturnRead() ?? PracticeReturnRead() ?? ContinuousPracticeRead(),
-        EditorReturn: _editorRegenerate is { AwaitingCapture: true } regenerate ? regenerate.Operation : null);
+        new(_hook.CommandGeneration, CurrentSessionBindings), _ownedSource.ReadBinding());
+        return _interaction?.CaptureContext(context) ?? context;
+    }
     private bool PauseAnchorIsCurrent(long now) => _pauseAnchor is { IsUsable: true } anchor
         && _pauseWindowEpoch == _hook.WindowEpoch && _pauseForegroundEpoch == _hook.ForegroundEpoch
         && anchor.FocusEpoch == _hook.ForegroundEpoch && _hook.GetFocus(anchor.Target) == FocusMember.Source
@@ -684,7 +573,7 @@ public sealed partial class SessionController : IDisposable
             _pauseAnchor = result.Anchor;
             _pauseWindowEpoch = windowEpoch;
             _pauseForegroundEpoch = request.ForegroundEpoch;
-            _overlay.RenderPaused(_pauseAnchor, _pauseViewRevision);
+            _overlay.RenderPaused(_pauseAnchor, _pauseViewRevision, _presentation.Pause(_pauseAnchor, _pauseViewRevision));
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
@@ -716,7 +605,6 @@ public sealed partial class SessionController : IDisposable
         };
         _resumingPause = true;
         _commandFeedbackRevision++;
-        bool saving = false;
         try
         {
             // A click is not proof that the field's metadata stayed safe. Re-read
@@ -730,11 +618,18 @@ public sealed partial class SessionController : IDisposable
                 _overlay.HideQuietly();
                 return;
             }
-            saving = true;
-            _settings.Update(_settings.Value with
+            var saved = await _settings.CommitAsync(_settings.Revision, _settings.Value with
             {
                 Enabled = true
-            });
+            }, isCurrent: () => !_disposed && generation == _generation && revision == _pauseViewRevision);
+            if (!saved.Saved)
+            {
+                InvalidatePauseAnchor();
+                _overlay.HideQuietly();
+                SetServiceStatus(ResumeSaveFailureStatus, "resume-failed", Guid.Empty, 0);
+            }
+            else if (saved.State == SettingsCommitState.CommittedNotificationFailed)
+                SetServiceStatus(SettingsCommitPresentation.Message(saved), "resume-notification-failed", Guid.Empty, 0);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
@@ -742,8 +637,6 @@ public sealed partial class SessionController : IDisposable
             {
                 InvalidatePauseAnchor();
                 _overlay.HideQuietly();
-                if (saving && !_settings.Value.Enabled)
-                    SetServiceStatus(ResumeSaveFailureStatus, "resume-failed", Guid.Empty, 0);
             }
         }
         finally { _resumingPause = false; }
@@ -756,8 +649,7 @@ public sealed partial class SessionController : IDisposable
         Guid connectionId = _hook.ConnectionId;
         long windowEpoch = _hook.WindowEpoch;
         long contentEpoch = _hook.ContentEpoch;
-        long sourceGlossaryReadRevision = _sourceGlossaryReadRevision;
-        var pendingEditorHandoff = _editorGlossaryHandoff;
+        var glossaryRead = _glossary.BeginRead();
         var request = Context();
         var freshWake = _pendingWakeCapture is { Intent: not null } intent ? intent : null;
         bool traceCapture = false;
@@ -798,47 +690,19 @@ public sealed partial class SessionController : IDisposable
             }
             // A source read started before an auxiliary transfer cannot replace
             // its frozen basis or publish a new permit. Its explicit return uses
-            // a separate, freshly checked read in RefreshGlossarySourceAsync.
-            if (sourceGlossaryReadRevision != _sourceGlossaryReadRevision)
+            // a separate, freshly checked read in _glossary.RefreshGlossarySourceAsync.
+            if (!_glossary.ReadIsCurrent(glossaryRead))
             {
                 captureExit = "glossary-entry-changed";
                 return;
             }
-            if (_glossaryEntry is { Entry.SourceOrigin: true } sourceForm
-                && (!sourceForm.Returned || sourceForm.Returning || GlossaryAuxiliaryCurrent(sourceForm)))
+            if (_glossary.OwnsCapture())
                 return;
             // Input already queued before this read completed owns the earlier action.
             // Accepting it advances generation before an obsolete read can clear it.
             if (!_disposed)
                 DrainInputNotices();
-            // Only the exact old read displaced by this pending age fence may
-            // bypass null retirement. It still passes identity/generation checks
-            // below and never becomes a new source observation or authority.
-            bool fencedPracticeRead = !_disposed
-                && result is
-                {
-                    Snapshot: null, OwnedSource: null, ForegroundExpired: false, Focus: FocusMember.Other,
-                    SessionShortcuts: null, FencedPracticeRead: { } fenced
-                }
-                && request.PracticeRead is { } fencedBinding && ReferenceEquals(fencedBinding, _awaitingPractice)
-                && fenced == fencedBinding && _hook.PracticeForegroundSuspension == fencedBinding
-                && fencedBinding.NativeFocusRevision > 0 && fencedBinding.ContextGeneration > 0
-                && AutomaticPracticeProgress is { AwaitingFreshSource: true, EditingStarted: false } progress
-                && progress.RunId == fencedBinding.RunId && progress.CommandGeneration == fencedBinding.CommandGeneration
-                && configurationRevision == _configurationRevision && windowEpoch == _hook.WindowEpoch
-                && request.ForegroundEpoch == _hook.ForegroundEpoch
-                && fencedBinding.ConnectionId == _hook.ConnectionId && fencedBinding.CommandGeneration == _hook.CommandGeneration
-                && _settings.Value.Enabled && _settings.Value.Mode == WorkMode.Automatic && _broker.Available
-                && (_hook.Ready ? _hook.GetFocus(fencedBinding.Target) == FocusMember.Source : _hook.ForegroundExpired);
-            // A native refusal remains unknown even if foreground age expired
-            // while this awaiting read was in flight. Never relabel it as age.
-            if (!_disposed && _awaitingPractice is { } awaiting && request.PracticeRead == awaiting with
-            {
-                CommandGeneration = _hook.CommandGeneration
-            }
-                && result.Snapshot is null && result.OwnedSource is null && !result.ForegroundExpired && !fencedPracticeRead)
-                StopSession("practice-continuity-lost");
-            CheckAutomaticPracticeIdentity();
+            bool fencedPracticeRead = _ownedSource.CheckCaptureIdentity(result, request, configurationRevision, windowEpoch);
             if (_disposed || generation != _generation)
             {
                 captureExit = _disposed ? "disposed" : "generation-changed";
@@ -864,7 +728,7 @@ public sealed partial class SessionController : IDisposable
                 if (_session.State == SessionState.NoSession)
                     _session.LeaveFamily();
                 _activation.Wake(freshSource.Target);
-                _practiceWakeCommand = PracticeCommand(new("wake", AcceptedAtMs: freshWake.Intent!.TriggeredAtMs,
+                _onDemandPractice._practiceWakeCommand = _onDemandPractice.PracticeCommand(new("wake", AcceptedAtMs: freshWake.Intent!.TriggeredAtMs,
                     Source: freshSource, CommandGeneration: freshWake.CommandGeneration,
                     CommandSequence: freshWake.CommandSequence), false);
                 _pendingWakeCapture = null;
@@ -900,24 +764,15 @@ public sealed partial class SessionController : IDisposable
                 _inputReadFailed = false;
                 RefreshConnectionStatus();
             }
-            if (ObserveOwnedLocalDraftReturn(result, request, windowEpoch, configurationRevision, now))
+            if (result.Snapshot is { } pendingSource && TargetHasPendingWrite(pendingSource.Target))
             {
-                captureExit = "local-draft-return";
+                captureExit = "write-awaiting-result";
+                StopSession("write-awaiting-result");
                 return;
             }
-            if (ObserveOwnedLocalRegenerateCapture(result, request, now))
+            if (_ownedSource.ObserveCapture(result, request, windowEpoch, configurationRevision, now))
             {
-                captureExit = "local-draft-regenerate";
-                return;
-            }
-            if (SuspendAutomaticRead(request, result, now))
-            {
-                captureExit = "automatic-read-suspended";
-                return;
-            }
-            if (ObserveAwaitingPractice(result, now) || ObservePracticeReturn(result, now))
-            {
-                captureExit = "awaiting-practice";
+                captureExit = "owned-source-operation";
                 return;
             }
             // A read can start after BeginEdit, before the editor-focus notice
@@ -934,7 +789,7 @@ public sealed partial class SessionController : IDisposable
                 && request.BoundTarget == editingSource.Target
                 && configurationRevision == _configurationRevision && connectionId == _hook.ConnectionId
                 && request.SessionShortcuts?.Generation == _hook.CommandGeneration
-                && (request.ForegroundEpoch == _hook.ForegroundEpoch || PendingEditorHandoffOwnsOrdinaryRead(request, pendingEditorHandoff))
+                && (request.ForegroundEpoch == _hook.ForegroundEpoch || _glossary.EditorHandoffOwnsRead(request, glossaryRead))
                 && contentEpoch == _hook.ContentEpoch
                 && _hook.Ready && _broker.Available && _hook.GetFocus(editingSource.Target) == FocusMember.Overlay)
             {
@@ -991,16 +846,7 @@ public sealed partial class SessionController : IDisposable
             // its pending handoff performs its own fresh source recheck. Do not
             // replace that handoff's frozen basis with an equivalent observation.
             // This read grants nothing; the original bounded recheck still runs.
-            if (result.Focus == FocusMember.Overlay && !result.ForegroundExpired
-                && result.OwnedSource is null && result.FencedPracticeRead is null
-                && result.UserEpoch == _hook.UserEpoch && result.ForegroundEpoch == _hook.ForegroundEpoch
-                && contentEpoch == _hook.ContentEpoch
-                && PendingEditorHandoffOwnsOrdinaryRead(request, pendingEditorHandoff)
-                && pendingEditorHandoff is { Source: var editorBasis } && snapshot.IsUsable
-                && snapshot.Target == editorBasis.Target && snapshot.Text == editorBasis.Text
-                && snapshot.InputEpoch == editorBasis.InputEpoch && snapshot.Selection == editorBasis.Selection
-                && snapshot.TranslationScope == editorBasis.TranslationScope && snapshot.Multiline == editorBasis.Multiline
-                && _settings.NormalizeStyleApplication(result.Application) == pendingEditorHandoff.Observation.Application)
+            if (_glossary.RetainsEditorBasis(result, request, glossaryRead, contentEpoch))
             {
                 captureExit = "editor-handoff-owns-read";
                 RevokeInput("editing-translation");
@@ -1068,13 +914,10 @@ public sealed partial class SessionController : IDisposable
             }
             // A capture may finish between the platform return and its awaiting
             // continuation. It cannot publish before that return has been verified.
-            if (_sourceRegenerate is { ReturningRevision: > 0, AwaitingCapture: false }
-                || _editorRegenerate is { Operation: not null, AwaitingCapture: false })
+            if (_interaction?.BeforeObserve(result, request, now) == true)
                 return;
             _session.Observe(snapshot, result.Focus, now);
-            if (CompleteEditorRegenerateCapture(result, request, now))
-                return;
-            if (CompleteSourceRegenerateCapture(result, request, now))
+            if (_interaction?.AfterObserve(result, request, now) == true)
                 return;
             bool styled = _settings.Value.Styles is not null && (_model.StyledTranslationCapability is not null
                 || GlossaryForTranslation()?.CouldApply(_settings.Value.Direction) == true);
@@ -1089,12 +932,8 @@ public sealed partial class SessionController : IDisposable
             }
             _styleObservation = new(snapshot.Target, styleApplication, _session.Revision, _hook.CommandGeneration,
                 request.SourceUserEpoch, contentEpoch, request.ForegroundEpoch, windowEpoch);
-            if (_awaitingPracticeReturn is not null && _session.State != SessionState.EditedTranslationPending)
-            {
-                StopSession("practice-return-source-changed");
+            if (_ownedSource.ObserveCoreResult())
                 return;
-            }
-            ObserveAutomaticReturn();
             // Reading the source completes wake even when translation or writing remains unavailable.
             if (_pendingWakeCapture is { } wake && wake.Generation == generation
                 && wake.CommandGeneration == _hook.CommandGeneration && wake.Target == snapshot.Target
@@ -1111,9 +950,9 @@ public sealed partial class SessionController : IDisposable
             _alternativeObservation = inputUnchanged
                 ? (_session.Revision, request.SourceUserEpoch, contentEpoch, request.ForegroundEpoch, windowEpoch)
                 : default;
-            var practiceBinding = AutomaticPracticeFor(snapshot.Target);
-            if (freshWake is null && _glossaryEntry is null && inputUnchanged && result.Focus == FocusMember.Source && _model.Ready
-                && !RetiredAutomaticTarget(snapshot.Target)
+            var practiceBinding = _ownedSource.AutomaticPracticeFor(snapshot.Target);
+            if (freshWake is null && !_glossary.HasEntry && inputUnchanged && result.Focus == FocusMember.Source && _model.Ready
+                && !_ownedSource.RetiredAutomaticTarget(snapshot.Target)
                 && (_settings.Value.ExperimentalWriteback || practiceBinding is not null
                     || _sessionShortcuts is { SourceLocalAcceptanceVersion: 1 })
                 && snapshot.WriteSupported && _hook.CanInterceptAcceptance && SessionBindingsReady(snapshot.Target, false))
@@ -1125,11 +964,13 @@ public sealed partial class SessionController : IDisposable
                     permit = new(plan, snapshot.InputEpoch, snapshot.FocusEpoch, snapshot.ObservedAtMs,
                         snapshot.ObservedAtMs + Limits.PermitMaxAgeMs);
             }
+            if (permit is not null && RegisterWrite(permit.Plan, permit.ExpiresAtMs) is null)
+                permit = null;
             _permitUntil = permit?.ExpiresAtMs ?? 0;
             _presentationPermit = permit;
             bool escape = SessionBindingsReady(snapshot.Target, false)
                 && _session.State is not (SessionState.NoSession or SessionState.Paused or SessionState.OutcomeUnknown);
-            RememberAutomaticPermit(practiceBinding, permit);
+            _ownedSource.RememberAutomaticPermit(practiceBinding, permit);
             _hook.Publish(new(snapshot, request.UserEpoch, request.ForegroundEpoch, escape, _hook.CommandGeneration, _generation,
                 practiceBinding?.RunId, practiceBinding?.ConnectionId), permit);
             if (result.Focus == FocusMember.Source)
@@ -1149,7 +990,7 @@ public sealed partial class SessionController : IDisposable
             if (traceCapture)
                 resumedAtMs ??= _loop.NowMs;
             captureExit = "capture-failed";
-            if (sourceGlossaryReadRevision != _sourceGlossaryReadRevision)
+            if (!_glossary.ReadIsCurrent(glossaryRead))
             {
                 captureExit = "glossary-entry-changed";
                 return;
@@ -1290,7 +1131,7 @@ public sealed partial class SessionController : IDisposable
             if (_session.State == SessionState.NoSession)
                 _session.LeaveFamily();
             _generation++;
-            _practiceWakeCommand = PracticeCommand(notice, false);
+            _onDemandPractice._practiceWakeCommand = _onDemandPractice.PracticeCommand(notice, false);
             _pendingWakeCapture = awaitingCapture
                 ? new(source.Target, _generation, _commandFeedbackRevision, notice.CommandGeneration, notice.CommandSequence)
                 : null;
@@ -1302,9 +1143,14 @@ public sealed partial class SessionController : IDisposable
     }
     private void QueueDirect(InputNotice notice)
     {
-        if (!_settings.Value.Enabled || _settings.Value.Mode != WorkMode.OnDemand || notice.Source is not { } source
+        if (_disposed || _closing || !_settings.Value.Enabled || _settings.Value.Mode != WorkMode.OnDemand || notice.Source is not { } source
             || notice.CommandGeneration != _hook.CommandGeneration)
             return;
+        if (_session.IsTargetQuarantined(source.Target) || TargetHasPendingWrite(source.Target))
+        {
+            SetServiceStatus("原输入框有尚未确认的写回结果，不会再次替换。", "write-unconfirmed");
+            return;
+        }
         if (_pendingDirect is not null || _directRunning)
         {
             SetServiceStatus("已有一次直接翻译正在处理，未追加操作。", "direct-busy");
@@ -1335,7 +1181,7 @@ public sealed partial class SessionController : IDisposable
         // Ending a foreground session never clears a pending direct operation.
         StopSession();
         _pendingDirect = operation;
-        _pendingDirectPractice = PracticeCommand(notice, true);
+        _onDemandPractice._pendingDirectPractice = _onDemandPractice.PracticeCommand(notice, true);
         _pendingDirectFeedbackRevision = _commandFeedbackRevision;
         _pendingDirectCommandGeneration = notice.CommandGeneration;
         _pendingDirectSequence = notice.CommandSequence;
@@ -1344,12 +1190,13 @@ public sealed partial class SessionController : IDisposable
     private async Task TranslateDirect(DirectTranslation operation, long feedbackRevision)
     {
         _directRunning = true;
+        WriteSettlement? write = null;
         long configuration = _configurationRevision;
-        var practiceCommand = _pendingDirectPractice;
+        var practiceCommand = _onDemandPractice._pendingDirectPractice;
         try
         {
             var response = await DispatchTranslationAsync(operation.Job);
-            if (_disposed || configuration != _configurationRevision || !ReferenceEquals(_pendingDirect, operation))
+            if (_disposed || _closing || configuration != _configurationRevision || !ReferenceEquals(_pendingDirect, operation))
                 return;
             if (response.Status != "translated")
             {
@@ -1371,10 +1218,13 @@ public sealed partial class SessionController : IDisposable
                 return;
             }
             // Never route detached work through foreground-only write/return operations.
+            write = RegisterWrite(plan, _loop.NowMs + WriteShutdownBudgetMs, WriteExecutionPath.Direct);
+            if (write is null || !write.Submit(WriteExecutionPath.Direct))
+                return;
             _directWriteSubmitted = true;
             Trace("direct-write-start", plan.Id, inspectFocus: false);
             var result = await _broker.WriteDirectAsync(plan, _settings.Value.Excluded);
-            if (_disposed)
+            if (!SettleWrite(write, result, out result) || _disposed || _closing)
                 return;
             Trace("direct-write-result", plan.Id, new
             {
@@ -1395,11 +1245,13 @@ public sealed partial class SessionController : IDisposable
                 && result.Status == WriteStatus.Verified && result.Reason == Denial.None
                 && result.VerifiedSnapshot is { IsUsable: true } after && after.Target == plan.Expected.Target
                 && after.Text == plan.ResultText && after.Selection == new TextRange(plan.Caret, plan.Caret))
-                CompletePracticeCommand(practiceCommand, true);
+                _onDemandPractice.CompletePracticeCommand(practiceCommand, true);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            if (!_disposed)
+            if (write is not null)
+                SettleWrite(write, new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome), out _);
+            if (!_disposed && !_closing)
                 SetCommandStatus(_directWriteSubmitted
                     ? "直接写回未获确认，请检查原输入框；不会自动重试。"
                     : "直接翻译服务中断，TypeLay 未替换文字。", feedbackRevision,
@@ -1411,6 +1263,7 @@ public sealed partial class SessionController : IDisposable
                 _pendingDirect = null;
             _directRunning = false;
             _directWriteSubmitted = false;
+            ContinueShutdown();
         }
     }
     private static string DirectWriteRejection(Denial reason) => reason switch
@@ -1494,8 +1347,7 @@ public sealed partial class SessionController : IDisposable
                 ? QualifyTranslationOperation(TranslationOperation.StyledGlossary, _settings.Value.Direction) : null);
 
     private bool TranslationSettingsBusy() => AutomaticPracticeProgress is not null || PracticeProgress is not null
-        || _pendingPracticeCompletion is not null || _ownedPractice is not null || _awaitingPractice is not null
-        || _awaitingPracticeReturn is not null || _writing || _directWriteSubmitted
+        || _ownedSource.BlocksConfiguration || _writing || _directWriteSubmitted
         || _session.State is SessionState.Applying or SessionState.OutcomeUnknown;
 
     public Task<StyleChangeResult> ChangeStyleAsync(StyleScope scope, TranslationStyle? style,
@@ -1572,13 +1424,6 @@ public sealed partial class SessionController : IDisposable
         _styleChangeRunning = true;
         try
         {
-            if (_automaticRetirement is not null || _automaticRetirementUnconfirmed)
-            {
-                if (!await RetireAutomaticPracticeAsync())
-                    return new(false, "practice-retirement-unconfirmed");
-                if (Check(true) is { } stale)
-                    return new(false, stale);
-            }
             TranslationStyles? next = null;
             if (!reset)
             {
@@ -1605,17 +1450,15 @@ public sealed partial class SessionController : IDisposable
                 next = _settings.Value.Styles is null && scope == StyleScope.CurrentApplication && style is null
                     ? null : new(scope == StyleScope.Global && savedApplication is null ? style!.Value : current.Default, applications);
             }
-            long before = _settings.Revision;
-            try
-            {
-                _settings.CommitStyles(expectedSettingsRevision, next, ApplyStyleSettings);
-            }
-            catch (SettingsPersistenceException) { return new(false, "style-save-failed"); }
-            catch (Exception error) when (error is not OutOfMemoryException && _settings.Revision != before)
-            {
-                return new(true, "style-saved-notification-failed");
-            }
-            return new(true, "style-saved");
+            var result = await _settings.CommitStylesAsync(expectedSettingsRevision, next,
+                () => _ownedSource.RetirementPending
+                    ? RetireAutomaticPracticeAsync() : Task.FromResult(true),
+                () => Check(true), cancellationToken, ApplyStyleSettings);
+            return new(result.Saved, result.State == SettingsCommitState.CommittedNotificationFailed
+                ? "style-saved-notification-failed" : result.Saved ? "style-saved"
+                : result.Reason == "persistence-failed" ? "style-save-failed"
+                : result.Reason == "settings-changed" ? "style-stale"
+                : result.Reason == "canceled" ? "style-canceled" : result.Reason!);
         }
         finally { _styleChangeRunning = false; }
     }
@@ -1730,7 +1573,7 @@ public sealed partial class SessionController : IDisposable
             return "alternative-source-unavailable";
         if (_model.Busy || _translationRunning || _directRunning || _pendingDirect is not null || _returningToSource
             || TranslationSettingsBusy() || _styleChangeRunning || _glossaryChangeRunning
-            || _automaticRetirement is not null || _automaticRetirementUnconfirmed)
+            || _ownedSource.RetirementPending)
             return "alternative-busy";
         return null;
     }
@@ -1768,8 +1611,8 @@ public sealed partial class SessionController : IDisposable
         _translationRunning = true;
         _statusOverride = null;
         Trace("translate-start");
-        var practiceCommand = _practiceWakeCommand;
-        var automaticPractice = AutomaticPracticeFor(job.Basis.Target);
+        var practiceCommand = _onDemandPractice._practiceWakeCommand;
+        var automaticPractice = _ownedSource.AutomaticPracticeFor(job.Basis.Target);
         long generation = _generation, feedbackRevision = _commandFeedbackRevision;
         var commandGeneration = _hook.CommandGeneration;
         long sourceEpoch = _hook.SourceUserEpoch, contentEpoch = _hook.ContentEpoch,
@@ -1829,9 +1672,9 @@ public sealed partial class SessionController : IDisposable
             Render();
             if (completed && practiceCommand?.Target == job.Basis.Target && job.Kind == TranslationKind.FullOrSelection
                 && _hook.GetFocus(job.Basis.Target) != FocusMember.Other)
-                CompletePracticeCommand(practiceCommand, false);
+                _onDemandPractice.CompletePracticeCommand(practiceCommand, false);
             if (completed)
-                CompleteAutomaticPreview(automaticPractice, job);
+                _ownedSource.CompleteAutomaticPreview(automaticPractice, job);
             Trace("translate-done");
         }
         finally { _translationRunning = false; }
@@ -1845,143 +1688,44 @@ public sealed partial class SessionController : IDisposable
             return false;
         if (!_session.BeginEdit())
             return false;
-        BeginAutomaticEdit();
+        _ownedSource.BeginAutomaticEdit();
         _generation++;
         _editTransitionUntil = _loop.NowMs + 500;
-        _editorGlossaryHandoff = _styleObservation is { } observation
-            && observation.Target == source.Target && observation.SourceEpoch == _hook.SourceUserEpoch
-            && observation.CommandGeneration == _hook.CommandGeneration
-                ? new(observation, source, new(source.Target, _hook.CommandGeneration, _generation),
-                    _configurationRevision, _settings.Revision, _hook.ConnectionId, _hook.WindowEpoch, _editTransitionUntil)
-                : null;
-        TraceEditorGlossaryHandoff(_editorGlossaryHandoff is null ? "not-created" : "pending");
+        _glossary.BeginEditorHandoff(source, new(source.Target, _hook.CommandGeneration, _generation), _editTransitionUntil);
         RevokeInput("begin-edit");
         _permitUntil = 0;
         Render();
         return true;
     }
-    private async Task<bool> ReturnFromEditor(PendingEditorExit? exit = null,
-        SourceRegenerateConfirmation? sourceConfirmation = null, bool resumeEditorOnFailure = true,
-        EditorRegenerateIntent? editorRegenerate = null)
+    private Task<bool> ReturnFromEditor(OwnedSourceSession.PendingEditorExit? exit = null)
     {
-        if (_sourceRegenerate is not null && !ReferenceEquals(_sourceRegenerate.Opening, sourceConfirmation)
-            || _returningToSource || _overlay.EditingComposition || !_session.RequestSourceReturn() || _session.Current is not { } source)
-            return false;
-        long generation = ++_generation;
-        var operation = new SessionViewToken(source.Target, _hook.CommandGeneration, generation);
-        if (editorRegenerate is not null)
-            editorRegenerate.Operation = new(editorRegenerate.Action, operation, editorRegenerate.Action.QueuedAtMs + 500);
-        if (_sourceRegenerate is { } confirmation)
-            confirmation.ReturningRevision = generation;
-        RevokeInput("return-from-editor");
-        _permitUntil = 0;
-        Render();
-        if (editorRegenerate is not null && !EditorRegenerateCurrent(editorRegenerate))
-        {
-            // A real view callback may retire this action synchronously. Never
-            // send its return or overwrite a newer operation after that render.
-            if (ReferenceEquals(_editorRegenerate, editorRegenerate))
-                StopSession("editor-regenerate-render-owner-changed");
-            return false;
-        }
-        _sourceReturn = operation;
-        var request = _ownedPractice is { } owned
-            ? new OwnedPracticeReturnRequest(owned, new(source.Target, _hook.CommandGeneration, generation)) : null;
-        _automaticPlans.Clear();
-        InputReturn result = new(false);
-        try
-        {
-            result = await _broker.ReturnToSourceAsync(Context() with
-            {
-                PracticeReturn = request,
-                EditorReturn = editorRegenerate?.Operation
-            });
-        }
-        catch (Exception ex) when (ex is not OutOfMemoryException)
-        {
-            if (editorRegenerate is not null)
-                result = new(false, ContextLost: true); // A thrown transport result cannot prove an unsent return.
-        }
-        finally
-        {
-            if (ReferenceEquals(_sourceReturn, operation))
-                _sourceReturn = null;
-        }
-        if (_disposed || generation != _generation)
-            return false;
-        if (result.ContextLost)
-        {
-            StopSession("return-context-lost");
-            return false;
-        }
-        if (result.Returned)
-        {
-            if (editorRegenerate is not null && !AwaitEditorRegenerateReturn(editorRegenerate, result.EditorReturn))
-            {
-                StopSession("editor-regenerate-return-unproven");
-                return false;
-            }
-            if (request is not null && !AwaitPracticeReturn(request, result.Practice))
-            {
-                StopSession("practice-return-unproven");
-                return false;
-            }
-            if (exit is not null)
-            {
-                // Rotation/progress callbacks may have cancelled this attempt. Only
-                // the original object can receive its one verified continuation.
-                if (!ReferenceEquals(_pendingEditorExit, exit) || !EditorExitInputCurrent(exit)
-                    || request is null || !ReferenceEquals(request.Binding, exit.Binding)
-                    || request.Token != exit.ReturningToken || result.Practice is not { } returned
-                    || !ReferenceEquals(_awaitingPracticeReturn, returned) || _generation != generation + 1
-                    || _hook.CommandGeneration == request.Binding.CommandGeneration
-                    || _session.State != SessionState.ReturningToSource
-                    || AutomaticPracticeProgress is not { AwaitingFreshSource: true } progress
-                    || progress.RunId != exit.Binding.RunId || progress.CommandGeneration != _hook.CommandGeneration
-                    || _awaitingPracticeWindowEpoch != _hook.WindowEpoch
-                    || _hook.GetFocus(exit.Binding.Target) != FocusMember.Source)
-                    return false;
-                exit.Confirmation = new(returned, _generation, _hook.CommandGeneration,
-                    _hook.WindowEpoch, _hook.ForegroundEpoch);
-            }
-            _nextCapture = 0;
-            return true;
-        }
-        if (editorRegenerate is not null && !EditorRegenerateCurrent(editorRegenerate))
-        {
-            StopSession("editor-regenerate-failed-owner-changed");
-            return false;
-        }
-        _session.CancelSourceReturn();
-        if (resumeEditorOnFailure)
-            _overlay.ResumeEditor();
-        Render();
-        return false;
+        if (_interaction is not null || _returningToSource || _overlay.EditingComposition)
+            return Task.FromResult(false);
+        var operation = new SourceReturnOperation(this, exit);
+        _interaction = operation;
+        return operation.RunAsync();
     }
     private void CompleteNativeWrite(InputNotice notice)
     {
         var plan = notice.Permit!.Plan;
-        var receipt = notice.CompletedReceipt!;
-        if (receipt.Status == WriteStatus.Verified
-            && (receipt.VerifiedSnapshot is not { } after || !after.IsUsable
-                || after.Target != plan.Expected.Target || after.Text != plan.ResultText
-                || after.Selection != new TextRange(plan.Caret, plan.Caret)))
-            receipt = new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome);
+        if (!_writes.TryGetValue(plan.Id, out var operation) || operation.Path != WriteExecutionPath.SourceAcceptance
+            || !operation.Matches(plan)
+            || !SettleWrite(operation, notice.CompletedReceipt!, out var receipt))
+            return;
         // The native UI thread has already written. Never issue another write,
         // nor discard its terminal receipt because a later observation won a race.
         // Only the original session/plan may consume it as its current UI result.
-        if (!_writing && _session.BeginWrite(plan))
+        if (!_disposed && !_closing && !_writing && operation.Generation == _generation && _session.BeginWrite(plan))
         {
             _generation++;
             RevokeInput("native-write-completed");
             _permitUntil = 0;
             _session.FinishWrite(plan, receipt);
-            CompleteAutomaticAcceptance(notice, receipt);
+            _ownedSource.CompleteAutomaticAcceptance(notice, receipt);
             _nextCapture = 0;
             Render();
         }
-        Trace("write-" + receipt.Status + "-" + receipt.Reason, plan.Id);
-        if (receipt.Status != WriteStatus.Verified)
+        if (!_disposed && !_closing && receipt.Status != WriteStatus.Verified)
         {
             OperationStatus = receipt.Status == WriteStatus.OutcomeUnknown ? "写回结果未确认，原目标已隔离" : "写回前安全校验拒绝了本次操作";
             Changed?.Invoke();
@@ -1989,10 +1733,12 @@ public sealed partial class SessionController : IDisposable
     }
     private async Task Accept(InputNotice notice)
     {
+        if (_disposed || _closing)
+            return;
         RevokeInput("accept");
         _permitUntil = 0;
         if (notice.Permit is not { } permit || notice.CommandGeneration != _hook.CommandGeneration
-            || !(_settings.Value.ExperimentalWriteback || AutomaticPracticeFor(permit.Plan.Expected.Target) is not null)
+            || !(_settings.Value.ExperimentalWriteback || _ownedSource.AutomaticPracticeFor(permit.Plan.Expected.Target) is not null)
             || !SessionBindingsReady(permit.Plan.Expected.Target, false)
             || _loop.NowMs - notice.AcceptedAtMs > Limits.WriteExecutionMaxAgeMs
             || notice.UserEpoch != _hook.UserEpoch || notice.ForegroundEpoch != _hook.ForegroundEpoch)
@@ -2000,8 +1746,11 @@ public sealed partial class SessionController : IDisposable
             Render();
             return;
         }
-        if (_writing || !_session.BeginWrite(permit.Plan))
+        if (_writing || !_writes.TryGetValue(permit.Plan.Id, out var operation)
+            || !operation.Matches(permit.Plan) || operation.Submitted || operation.Settled
+            || !_session.BeginWrite(permit.Plan))
             return;
+        operation.Submit(WriteExecutionPath.RuntimeAcceptance);
         _writing = true;
         _generation++;
         Render();
@@ -2015,17 +1764,19 @@ public sealed partial class SessionController : IDisposable
         {
             receipt = new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome);
         }
-        _session.FinishWrite(permit.Plan, receipt);
-        CompleteAutomaticAcceptance(notice, receipt);
-        Trace("write-" + receipt.Status + "-" + receipt.Reason);
-        if (receipt.Status != WriteStatus.Verified)
+        bool completed = SettleWrite(operation, receipt, out receipt);
+        if (completed && !_disposed && !_closing && _session.FinishWrite(permit.Plan, receipt))
+            _ownedSource.CompleteAutomaticAcceptance(notice, receipt);
+        if (completed && !_disposed && !_closing && receipt.Status != WriteStatus.Verified)
         {
             OperationStatus = receipt.Status == WriteStatus.OutcomeUnknown ? "写回结果未确认，当前目标已隔离" : "写回前安全校验拒绝了本次操作";
             Changed?.Invoke();
         }
         _writing = false;
         _nextCapture = 0;
-        Render();
+        if (!_disposed && !_closing)
+            Render();
+        ContinueShutdown();
     }
     private async Task Escape()
     {
@@ -2034,18 +1785,8 @@ public sealed partial class SessionController : IDisposable
             return;
         if (_session.State == SessionState.EditingTranslation)
         {
-            if (_ownedPractice is { } binding
-                && _overlay.IsEditorExitPrearmed(new(binding.Target, _hook.CommandGeneration, _generation)))
-            {
-                if (_pendingEditorExit is not null)
-                    return;
-                var exit = new PendingEditorExit(binding, new(binding.Target, _hook.CommandGeneration, _generation + 1),
-                    _configurationRevision, _hook.UserEpoch, _hook.SourceUserEpoch);
-                _pendingEditorExit = exit;
-                if (!await ReturnFromEditor(exit) && ReferenceEquals(_pendingEditorExit, exit))
-                    _pendingEditorExit = null;
-                return; // BindAutomaticPractice consumes this exit after fresh Core confirmation.
-            }
+            if (await _ownedSource.TryExitEditorAsync())
+                return;
             long expectedGeneration = _generation + 1;
             if (!await ReturnFromEditor() || _disposed || _generation != expectedGeneration)
                 return;
@@ -2060,7 +1801,7 @@ public sealed partial class SessionController : IDisposable
     }
     private async Task Regenerate()
     {
-        if (_disposed || _ownedLocalDraft is not null || _ownedLocalRegenerate is not null
+        if (_disposed || _ownedSource.HasLocalInteraction
             || _sourceRegenerate is not null || _editorRegenerate is not null
             || !_settings.Value.Enabled || _overlay.EditingComposition)
             return;
@@ -2087,13 +1828,13 @@ public sealed partial class SessionController : IDisposable
     {
         if (_disposed || !await RetireAutomaticPracticeAsync() || _disposed)
             return false;
-        _pendingPracticeCompletion = null;
+        _ownedSource.ForgetCompletion();
         if (PracticeProgress is { } practice)
             EndOnDemandPractice(practice.RunId);
         _configurationRevision++;
         _pendingWakeCapture = null;
-        _practiceWakeCommand = null;
-        _pendingDirectPractice = null;
+        _onDemandPractice._practiceWakeCommand = null;
+        _onDemandPractice._pendingDirectPractice = null;
         if (!_directWriteSubmitted)
         {
             _commandFeedbackRevision++;
@@ -2141,29 +1882,25 @@ public sealed partial class SessionController : IDisposable
     public void StopSession() => StopSession("stop-session");
     private void StopSession(string reason)
     {
-        _ownedLocalRegenerate = null;
-        _sourceRegenerate = null;
-        _editorRegenerate = null;
-        CancelGlossaryEntry();
+        _ownedSource.RetireSession();
+        RetireInteraction();
+        _glossary.Retire();
         _manualObservation = null;
         _styleObservation = null;
-        _editorGlossaryHandoff = null;
-        if (_ownedPractice is not null || _awaitingPractice is not null || _awaitingPracticeReturn is not null || _ownedLocalDraft is not null)
-            RetireAutomaticPractice();
         if (_session.Current is not null)
             Trace(reason);
         _activation.End();
         _pendingWakeCapture = null;
-        _practiceWakeCommand = null;
+        _onDemandPractice._practiceWakeCommand = null;
         _sessionShortcuts = null;
         InvalidatePauseAnchor();
         ClearBrokerSnapshot();
         _generation++;
         RevokeInput(reason);
         _permitUntil = 0;
-        RetireOwnedLocalDraft();
         _session.LeaveFamily();
         _statusOverride = null;
+        _presentation.Hide();
         _overlay.HideQuietly();
     }
     private void ClearBrokerSnapshot()
@@ -2184,10 +1921,10 @@ public sealed partial class SessionController : IDisposable
     }
     private void Render()
     {
-        RetireInvalidGlossaryEntry();
-        if (_disposed)
+        _glossary.RetireInvalidGlossaryEntry();
+        if (_disposed || _closing)
             return;
-        if (_ownedLocalRegenerate is { } regenerate && OwnedLocalRegenerateCurrent(regenerate))
+        if (_ownedSource.HoldsRegenerationPresentation)
         {
             _renderedAcceptanceReady = false;
             return;
@@ -2201,7 +1938,7 @@ public sealed partial class SessionController : IDisposable
         if (!_settings.Value.Enabled && PauseAnchorIsCurrent(_loop.NowMs))
         {
             _renderedAcceptanceReady = false;
-            _overlay.RenderPaused(_pauseAnchor!, _pauseViewRevision);
+            _overlay.RenderPaused(_pauseAnchor!, _pauseViewRevision, _presentation.Pause(_pauseAnchor!, _pauseViewRevision));
             return;
         }
         string? status = _session.State == SessionState.Translating && !_model.Ready ? "正在准备翻译"
@@ -2213,6 +1950,17 @@ public sealed partial class SessionController : IDisposable
                 SessionBindingsReady(source.Target, true), GetTranslationMenuState()) : null;
         _renderedTranslationMenu = context?.TranslationActions;
         _renderedAcceptanceReady = CanPresentAcceptance(_loop.NowMs);
+        if (context is not null)
+        {
+            context = context with
+            {
+                GlossaryForm = _glossary.Presentation
+            };
+            context = _presentation.Project(_session, _settings.Value, _settings.Revision,
+                _configurationRevision, _hook.ConnectionId, _model, context, _renderedAcceptanceReady, status);
+        }
+        else
+            _presentation.Hide();
         _overlay.Render(_session, _settings.Value, _renderedAcceptanceReady, status, context);
     }
     // Hosts call this only after their existing install/revoke boundary changes.
@@ -2223,9 +1971,7 @@ public sealed partial class SessionController : IDisposable
         // the same local editor is being detached or its fresh return is being
         // bound. It has no executable binding or permit to repaint. A real
         // Render/Hide/configuration change still retires that local presentation.
-        if (_ownedLocalDraft is { } local
-            && (OwnedLocalDraftCurrent(local.Opening) || LocalReturnRepaintIsCurrent(local))
-            && ReferenceEquals(_ownedLocalDraft, local) && _ownedPractice is null
+        if (_ownedSource.RetainsLocalPresentation
             && _presentationPermit is null && _permitUntil == 0)
         {
             _renderedAcceptanceReady = false;
@@ -2235,8 +1981,8 @@ public sealed partial class SessionController : IDisposable
     }
     private bool CanPresentAcceptance(long nowMs)
     {
-        if (_ownedLocalRegenerate is not null || _manualObservation is { UnavailableUntil: > 0 }
-            || _glossaryEntry is not null || _presentationPermit is not { } issued || _permitUntil == 0 || nowMs > _permitUntil
+        if (_ownedSource.HasRegeneration || _manualObservation is { UnavailableUntil: > 0 }
+            || _glossary.HasEntry || _presentationPermit is not { } issued || _permitUntil == 0 || nowMs > _permitUntil
             || _session.State is not (SessionState.ValidTranslation or SessionState.EditedTranslationPending)
             || _session.Current is not { } source)
             return false;
@@ -2302,11 +2048,17 @@ public sealed partial class SessionController : IDisposable
     }
     public void Dispose()
     {
-        _sourceRegenerate = null;
-        _editorRegenerate = null;
-        CancelGlossaryEntry();
-        _pendingPracticeCompletion = null;
-        RetireAutomaticPractice(false);
+        if (_disposed)
+            return;
+        _closing = true;
+        DrainInputNotices();
+        foreach (var operation in _writes.Values.Where(operation => !operation.Settled))
+            SettleWrite(operation, new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome), out _);
+        ContinueShutdown(expired: true);
+        RetireInteraction();
+        _glossary.CancelGlossaryEntry();
+        _ownedSource.ForgetCompletion();
+        _ownedSource.RetireAutomaticPractice(false);
         if (PracticeProgress is { } practice)
             EndOnDemandPractice(practice.RunId);
         _disposed = true;

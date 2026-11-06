@@ -120,30 +120,22 @@ public sealed partial class SessionController
         _glossaryChangeRunning = true;
         try
         {
-            if (_automaticRetirement is not null || _automaticRetirementUnconfirmed)
-            {
-                if (!await RetireAutomaticPracticeAsync())
-                    return new(false, "practice-retirement-unconfirmed");
-                if (Check(true) is { } stale)
-                    return new(false, stale);
-            }
-            long before = _settings.Revision;
-            try
-            {
-                _settings.CommitGlossary(expectedSettingsRevision, next!, () =>
+            var result = await _settings.CommitGlossaryAsync(expectedSettingsRevision, next!,
+                () => _ownedSource.RetirementPending
+                    ? RetireAutomaticPracticeAsync() : Task.FromResult(true),
+                () => Check(true), cancellationToken, () =>
                 {
                     committed?.Invoke();
                     ApplyGlossarySettings();
                 });
-            }
-            catch (SettingsPersistenceException) { return new(false, "glossary-save-failed"); }
-            catch (Exception error) when (error is not OutOfMemoryException && _settings.Revision != before)
-            {
-                return new(true, next!.CouldApply(_settings.Value.Direction) && GlossaryApplicationProblem(next) is not null
-                    ? "glossary-saved-inactive-notification-failed" : "glossary-saved-notification-failed");
-            }
-            return new(true, next!.CouldApply(_settings.Value.Direction) && GlossaryApplicationProblem(next) is not null
-                ? "glossary-saved-inactive" : "glossary-saved");
+            if (!result.Saved)
+                return new(false, result.Reason == "persistence-failed" ? "glossary-save-failed"
+                    : result.Reason == "settings-changed" ? "glossary-stale"
+                    : result.Reason == "canceled" ? "glossary-canceled" : result.Reason!);
+            bool inactive = next!.CouldApply(_settings.Value.Direction) && GlossaryApplicationProblem(next) is not null;
+            return new(true, result.State == SettingsCommitState.CommittedNotificationFailed
+                ? inactive ? "glossary-saved-inactive-notification-failed" : "glossary-saved-notification-failed"
+                : inactive ? "glossary-saved-inactive" : "glossary-saved");
         }
         finally { _glossaryChangeRunning = false; }
     }

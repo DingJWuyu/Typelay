@@ -126,7 +126,7 @@ public sealed class WindowsSessionViewTests
     {
         var native = new View();
         var browser = new View { SourceGlossarySupported = true, SourceGlossaryReturnPending = true };
-        ISessionView router = new WindowsSessionView(native, browser);
+        var router = new WindowsSessionView(native, browser);
         var session = new Session(new("auto", "en"));
         var source = Source("windows-browser");
         session.Observe(source, FocusMember.Source, 1);
@@ -153,7 +153,7 @@ public sealed class WindowsSessionViewTests
 
     private static InputSnapshot Source(string backend) => new(new(backend, "field", Guid.NewGuid()), "source", new(0, 0),
         new(0, 0, 100, 20), false, FieldAccess.Supported, ImeState.Clear, 1, 1, 1);
-    private sealed class View : ISessionView
+    private sealed class View : ISessionView, ISourceInteraction
     {
         public int Hidden, Rendered;
         public bool SourceGlossarySupported;
@@ -223,7 +223,7 @@ public sealed class WindowsSessionViewTests
         {
         }
         public void Render(Session session, UserSettings settings, bool canAccept, string? statusOverride = null, SessionViewContext? context = null) => Rendered++;
-        public void RenderPaused(PauseAnchor anchor, long revision)
+        public void RenderPaused(PauseAnchor anchor, long revision, PresentationIdentity? identity = null)
         {
         }
         public void HideQuietly() => Hidden++;

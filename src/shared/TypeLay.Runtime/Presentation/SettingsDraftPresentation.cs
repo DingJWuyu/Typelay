@@ -68,7 +68,7 @@ public enum ShortcutDraftError
 
 // Immutable settings text, not a second persistence flow. The caller supplies
 // the latest settings at submit time and retains this draft if validation or
-// SettingsStore.Update fails. No controller or input permission is changed here.
+// SettingsStore.CommitAsync fails. No controller or input permission is changed here.
 public sealed record ShortcutSettingsDraft(string Wake, string Direct, string Accept, string Exit, string Pause = "")
 {
     public static ShortcutSettingsDraft From(UserSettings settings) =>

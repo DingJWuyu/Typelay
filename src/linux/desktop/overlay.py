@@ -10,6 +10,52 @@ import uuid
 from wire import now_ms
 
 
+def presentation_identity(view):
+    """Read the negotiated product identity; never infer it from display text."""
+    context = view.get("viewContext") if isinstance(view, dict) else None
+    if not isinstance(context, dict):
+        return None
+    identity, form = context.get("identity"), context.get("glossaryForm")
+    if not isinstance(identity, dict) or set(identity) != {
+        "version",
+        "interactionId",
+        "displaySequence",
+        "draftRevision",
+        "actionRevision",
+    }:
+        return None
+    if (
+        any(
+            type(identity.get(key)) is not int
+            for key in ("version", "displaySequence", "draftRevision", "actionRevision")
+        )
+        or identity["version"] != 1
+    ):
+        return None
+    if not all(
+        minimum <= identity[key] <= 2**53 - 1
+        for key, minimum in (("displaySequence", 1), ("draftRevision", 0), ("actionRevision", 1))
+    ):
+        return None
+    try:
+        token = identity["interactionId"]
+        if not isinstance(token, str) or str(uuid.UUID(token)) != token.lower():
+            return None
+        if form is not None:
+            if not isinstance(form, dict) or set(form) != {"formId", "current"}:
+                return None
+            token = form["formId"]
+            if (
+                type(form["current"]) is not bool
+                or not isinstance(token, str)
+                or str(uuid.UUID(token)) != token.lower()
+            ):
+                return None
+    except ValueError:
+        return None
+    return identity
+
+
 class Overlay:
     """The shared view rendered in its actual GTK parent, without global coordinates."""
 
@@ -27,19 +73,16 @@ class Overlay:
         self.pending = False
         self.glossary = None
         self.glossary_begin_pending = None
-        self.language_configuration = None
         self.lock = asyncio.Lock()
         self.input.ui_event = self.event
-        self.input.language_peer_lost = self.language_peer_lost
-        self.input.glossary_focus_transfer = self.consume_glossary_focus_transfer
         self.timer = self.input.glib.timeout_add(200, self.renew)
 
     def configure(self, settings):
-        if self.language_configuration and settings != self.settings:
-            self.cancel_language_configuration()
+        if self.input.language_configuration_open and settings != self.settings:
+            self.input.cancel_language_configuration()
         self.settings = settings
         if self.value:
-            self.schedule()
+            self.schedule(retain_revision=True)
 
     def render_guidance(self, guidance):
         def valid_text(text, maximum):
@@ -71,7 +114,7 @@ class Overlay:
                 else None
             )
             if self.value:
-                self.schedule()
+                self.schedule(retain_revision=True)
 
     def language_label(self, code, source):
         for choice in (self.language_choices or {}).get("source" if source else "target", []):
@@ -84,26 +127,7 @@ class Overlay:
         return context.get("token") if isinstance(context, dict) else None
 
     def current_record(self):
-        paused = bool(self.value and self.value.get("state") == "Paused")
-        record = self.input.current_pause_record() if paused else self.input.bound_observation
-        if (
-            not self.value
-            or not record
-            or record["target"] != self.value["source"]["target"]
-            or record["peer"] not in self.input.peers
-            or record["peer"] is not self.input.focused_peer()
-            or not self.input.fresh()
-            or (
-                not paused
-                and (
-                    not self.session_token()
-                    or self.session_token().get("commandGeneration")
-                    != self.input.shortcut_config.get("generation")
-                )
-            )
-        ):
-            return None
-        return record
+        return self.input.current_presentation(self.value)
 
     def schedule(self, visual_expansion_from=None, *, retain_revision=False):
         if not retain_revision:
@@ -111,158 +135,61 @@ class Overlay:
         # A later schedule replaces this one-use visual hint, even if its view
         # happens to have identical text. It grants no input/display authority.
         self.visual_expansion = (self.revision, visual_expansion_from)
+        if self.value:
+            self.input.presented(self.value, self.revision)
         if not self.pending:
             self.pending = True
             self.tasks(self.update())
 
     def render(self, value):
-        # A new source presentation permanently retires the independent shell.
-        self.cancel_language_configuration()
-
-        def editor_view(view):
-            if not isinstance(view, dict) or not isinstance(view.get("viewContext"), dict):
-                return view
-            return {
-                **view,
-                "viewContext": {
-                    key: item
-                    for key, item in view["viewContext"].items()
-                    if key != "translationActions"
-                },
-            }
-
-        # Menu availability/feedback is read-only presentation, not a new editor
-        # authority. Every older view field still participates in its identity.
-        retain_revision = (
-            self.value is not None
-            and self.value != value
-            and editor_view(self.value) == editor_view(value)
-        )
+        identity = presentation_identity(value)
+        if identity is None:
+            self.hide()
+            return
+        previous = presentation_identity(self.value)
+        if previous and identity["displaySequence"] < previous["displaySequence"]:
+            return
+        if (
+            previous
+            and identity["displaySequence"] == previous["displaySequence"]
+            and identity != previous
+        ):
+            return
+        # Native tickets retain their own authority and deadlines. A display
+        # update must not replace the transport identity of a live interaction.
+        retain_revision = bool(previous and previous["interactionId"] == identity["interactionId"])
+        self.input.cancel_language_configuration()
         attempt = self.glossary_begin_pending
-        if attempt and attempt["nativeSource"] and not self.glossary:
-            # Only the original explicit Begin may retain its transport identity
-            # across its one synchronous permit/menu revocation render. Compare
-            # every other field, including unknown translation action fields.
-            previous, following = attempt["view"], copy.deepcopy(value)
-            if previous.get("canAccept") is True and following.get("canAccept") is False:
-                following["canAccept"] = True
-                accept = previous.get("viewContext", {}).get("bindings", {}).get("accept")
-                old_hint = previous.get("presentation", {}).get("tabHint")
-                new_hint = following.get("presentation", {}).get("tabHint")
-                if (
-                    isinstance(accept, str)
-                    and old_hint == f"{accept} 接受译文"
-                    and new_hint == f"{accept} 交还应用"
-                ):
-                    following["presentation"]["tabHint"] = old_hint
-            old_actions = previous.get("viewContext", {}).get("translationActions")
-            new_actions = following.get("viewContext", {}).get("translationActions")
-            if (
-                isinstance(old_actions, dict)
-                and isinstance(new_actions, dict)
-                and old_actions.get("canOpenGlossary") is True
-                and new_actions.get("canOpenGlossary") is False
-                and old_actions.get("glossaryUnavailableReason") is None
-                and new_actions.get("glossaryUnavailableReason") == "请先完成当前术语表单"
-            ):
-                new_actions["canOpenGlossary"] = True
-                new_actions["glossaryUnavailableReason"] = None
-            record = self.current_record()
-            retain_revision = (
-                not attempt["rendered"]
+        if attempt and not self.glossary:
+            current = (
+                retain_revision
                 and self.peer is attempt["peer"]
                 and self.revision == attempt["revision"]
-                and self.value == previous
-                and value != previous
-                and following == previous
-                and record is not None
-                and record["authority"] == attempt["authority"]
-                and (self.input.window_epoch, self.input.foreground_epoch) == attempt["window"]
+                and self.session_token() == value.get("viewContext", {}).get("token")
+                and all(
+                    attempt["identity"][key] == identity[key]
+                    for key in ("interactionId", "draftRevision", "actionRevision")
+                )
+                and self.input.glossary_opening_current(attempt["opening"])
             )
-            if retain_revision:
-                attempt["rendered"] = copy.deepcopy(value)
-            else:
+            if not current:
+                self.input.finish_glossary_opening(attempt["opening"])
                 self.glossary_begin_pending = None
-        native_form = (
-            self.glossary
-            and self.glossary["peer"].backend in ("gtk3", "gtk4", "qt6")
-            and self.glossary["entry"].get("sourceOrigin") is True
-        )
-        if native_form:
-            previous, following = self.glossary["sourceView"], copy.deepcopy(value)
-            context = following.get("viewContext", {})
-            old_context = previous.get("viewContext", {})
-            # Match the native source-form contract: only the actual auxiliary
-            # ACK's one-way withdrawal; preserve every other action/view field.
-            if previous.get("editable") is True and following.get("editable") is False:
-                following["editable"] = True
-            if old_context.get("canEdit") is True and context.get("canEdit") is False:
-                context["canEdit"] = True
-            old_actions = old_context.get("translationActions", {})
-            actions = context.get("translationActions", {})
+        form = self.glossary
+        if form:
+            projection = value.get("viewContext", {}).get("glossaryForm")
             if (
-                isinstance(old_actions, dict)
-                and isinstance(actions, dict)
-                and old_actions.get("glossaryUnavailableReason") == "请先完成当前术语表单"
-                and actions.get("glossaryUnavailableReason") == "内容或设置已变化，请重新打开表单"
+                not retain_revision
+                or value.get("state") != form["state"]
+                or value.get("viewContext", {}).get("token") != form["entry"]["token"]
+                or not projection
+                or projection["formId"] != form["entry"]["formId"]
+                or not form["current"]
+                and projection["current"]
             ):
-                actions["glossaryUnavailableReason"] = "请先完成当前术语表单"
-            current_actions = self.value.get("viewContext", {}).get("translationActions")
-            next_actions = value.get("viewContext", {}).get("translationActions")
-            retain_revision = (
-                previous == following
-                and not (self.value.get("editable") is False and value.get("editable") is True)
-                and not (
-                    self.value.get("viewContext", {}).get("canEdit") is False
-                    and value.get("viewContext", {}).get("canEdit") is True
-                )
-                and not (
-                    isinstance(current_actions, dict)
-                    and isinstance(next_actions, dict)
-                    and current_actions.get("glossaryUnavailableReason")
-                    == "内容或设置已变化，请重新打开表单"
-                    and next_actions.get("glossaryUnavailableReason") == "请先完成当前术语表单"
-                )
-            )
-        elif self.glossary and not retain_revision and self.value:
-            previous, following = (
-                copy.deepcopy(editor_view(self.value)),
-                copy.deepcopy(editor_view(value)),
-            )
-            for projection in (previous, following):
-                projection.pop("editable", None)
-                projection.get("viewContext", {}).pop("canEdit", None)
-            # Auxiliary focus intentionally withdraws the editor ACK. That is
-            # not a replacement form, source token, or translation buffer.
-            retain_revision = previous == following
-        if self.glossary and (
-            value.get("state") != self.glossary["state"]
-            or value.get("viewContext", {}).get("token") != self.glossary["entry"]["token"]
-            or not retain_revision
-            and value != self.value
-        ):
-            self.close_glossary()
-        owner = self.input.editor_regenerate
-        if owner is not None:
-            token = value.get("viewContext", {}).get("token")
-            actual = owner["operation"]
-            owner["viewToken"] = copy.deepcopy(token)
-            owner["viewState"] = value.get("state")
-            if token != owner["action"]["token"] and not (
-                value.get("state") == "ReturningToSource"
-                and actual is not None
-                and token == actual["operation"]
-            ):
-                # A render can precede its actual Return request. Keep only the
-                # receipt, never grant it authority from this unassociated view.
-                if (
-                    value.get("state") != "ReturningToSource"
-                    or not isinstance(token, dict)
-                    or token.get("target") != owner["action"]["token"]["target"]
-                    or token.get("commandGeneration")
-                    != owner["action"]["token"]["commandGeneration"]
-                ):
-                    self.input.editor_regenerate = None
+                self.close_glossary()
+            elif not projection["current"]:
+                form["current"] = False
         self.value = value
         self.schedule(retain_revision=retain_revision)
 
@@ -275,18 +202,15 @@ class Overlay:
             if record is None:
                 self.conceal("observation-unavailable")
                 return False
-            peer = record["peer"]
+            peer = record.connection
             revision = self.revision
             visual_expansion, self.visual_expansion = self.visual_expansion, None
-            if self.peer and self.peer is not peer and self.peer.link.channel.alive:
-                self.peer.link.command("overlay-hide")
+            if self.peer and self.peer is not peer:
+                self.input.conceal_source(self.peer)
             self.peer = peer
-            reply = await peer.link.ask(
-                "overlay-render",
+            reply = await self.input.present_source(
+                record,
                 {
-                    "target": record["target"]["value"],
-                    "authority": record["authority"],
-                    "generation": self.input.shortcut_config.get("generation"),
                     "view": {
                         **self.value,
                         "languageChoices": self.language_choices,
@@ -317,7 +241,6 @@ class Overlay:
                             ("reduceTransparency", False),
                         )
                     },
-                    "expiresAtMs": now_ms() + 800,
                 },
             )
             if paused_view:
@@ -327,7 +250,11 @@ class Overlay:
                     current=self.peer is peer and self.revision == revision,
                     visible=isinstance(reply, dict) and reply.get("visible") is True,
                 )
-            if self.peer is peer and self.revision == revision:
+            if (
+                self.peer is peer
+                and self.revision == revision
+                and self.input.presentation_current(record)
+            ):
                 self.visible = bool(reply and reply.get("visible"))
                 self.editing = bool(reply and reply.get("editing"))
                 self.acceptance_ready = self.visible and self.value.get("canAccept", False)
@@ -347,24 +274,11 @@ class Overlay:
             self.pending = False
 
     def renew(self):
-        configuration = self.language_configuration
-        if configuration and (
-            configuration["peer"] not in self.input.peers
-            or configuration["peer"] is not self.input.focused_peer()
-        ):
-            self.cancel_language_configuration()
+        self.input.renew_language_configuration()
         record = self.current_record()
         if self.value and record:
-            if self.peer is record["peer"] and self.visible:
-                self.peer.link.command(
-                    "overlay-renew",
-                    {
-                        "target": record["target"]["value"],
-                        "authority": record["authority"],
-                        "generation": self.input.shortcut_config.get("generation"),
-                        "expiresAtMs": now_ms() + 800,
-                    },
-                )
+            if self.peer is record.connection and self.visible:
+                self.input.renew_source_presentation(record)
             elif not self.pending:
                 self.schedule()
         elif self.value:
@@ -440,7 +354,7 @@ class Overlay:
             "languageConfigurationSave",
             "languageConfigurationCancel",
         ):
-            self.language_configuration_event(peer, event)
+            self.input.language_configuration_event(peer, event)
             return  # Configuration messages can never fall through to source actions.
         if isinstance(event, dict) and event.get("operation") == "editClickDiagnostic":
             self.trace_edit_click(peer, event)
@@ -492,58 +406,8 @@ class Overlay:
             elif operation == "visible":
                 self.visible = value is True
             return
-        owner = self.input.editor_regenerate
-        if operation in ("draft", "focus", "composition") and owner is not None:
-            action = owner["action"]
-            actual = owner["operation"]
-            current_token = self.session_token()
-            owner_revision = type(event.get("revision")) is int and (
-                event["revision"] == owner["revision"]
-                or event["revision"] == self.revision
-                and (
-                    actual is not None
-                    and current_token == actual["operation"]
-                    or actual is None
-                    and self.value.get("state") == "ReturningToSource"
-                    and current_token == owner["viewToken"]
-                )
-            )
-            if (
-                self.input.browser_regenerate_current(owner, pending_focus=True, pending_view=True)
-                and peer is owner["peer"]
-                and getattr(event, "route", None) == owner["route"]
-                and owner_revision
-                and event.get("generation") == action["token"]["commandGeneration"]
-            ):
-                if operation == "draft":
-                    text = (
-                        value
-                        if isinstance(value, str)
-                        else value.get("text")
-                        if (
-                            isinstance(value, dict)
-                            and set(value) == {"actionId", "text"}
-                            and value["actionId"] == action["actionId"]
-                        )
-                        else None
-                    )
-                    if isinstance(text, str):
-                        owner["draft"] = text
-                        if actual is None:
-                            # The UI task and Returning render each precede the
-                            # actual Return RPC. Keep only this exact owner's
-                            # observation locally; do not invent an operation.
-                            owner["laterDraftPending"] = True
-                        else:
-                            self.host.send("draft", text)
-                elif operation == "composition" and type(value) is bool:
-                    self.host.send("composition", value)
-                elif operation == "focus" and type(value) is bool and not owner["returned"]:
-                    # The original DOM blur can precede its queued new render.
-                    # Consume it normally before the real source focus event;
-                    # a completed receipt never restores the old editor role.
-                    self.input.set_overlay_focus(value and peer is self.input.focused_peer())
-            return  # Never retarget an old action's event to a new view.
+        if self.input.observe_editor_event(peer, event):
+            return
         token = self.session_token()
         if (
             not token
@@ -560,15 +424,13 @@ class Overlay:
                 self.editing = self.acceptance_ready = False
                 self.input.set_overlay_focus(False)
         elif operation == "focus":
-            editor = self.input.practice_editor
-            if not editor or editor["phase"] == "editor":
-                self.input.set_overlay_focus(value is True and peer is self.input.focused_peer())
+            if self.input.observe_overlay_focus(peer, value):
                 if value is not True and not (
                     self.glossary
                     and self.glossary["entry"].get("sourceOrigin") is True
                     and (
                         peer.backend not in ("gtk3", "gtk4", "qt6")
-                        or (self.glossary.get("transfer") or {}).get("phase") == "Returning"
+                        or self.input.source_glossary_returning(self.glossary["source"])
                     )
                 ):
                     self.close_glossary()
@@ -577,10 +439,8 @@ class Overlay:
                 self.tasks(self.begin_glossary(peer, event["revision"], copy.deepcopy(token)))
         elif operation == "sessionGlossaryFocus":
             form = self.glossary
-            if form and (value is None or self.glossary_focus_valid(value, form)):
+            if form and self.input.observe_glossary_focus(form["source"], value):
                 form["focus"] = copy.deepcopy(value)
-                if value is not None:
-                    self.input.set_overlay_focus(True)
                 self.host.send("sessionGlossaryFocus", value)
         elif operation == "sessionGlossaryClose":
             if self.glossary and value == self.glossary["entry"]["formId"]:
@@ -589,6 +449,7 @@ class Overlay:
             form = self.glossary
             if (
                 form
+                and form["current"]
                 and not form["pending"]
                 and not form["unknown"]
                 and form["focus"]
@@ -614,7 +475,7 @@ class Overlay:
                 peer.backend in ("gtk4", "qt6")
                 and isinstance(value, dict)
                 and set(value) == {"openingId"}
-                and self.valid_opening_id(value["openingId"])
+                and self.input.valid_opening_id(value["openingId"])
             ):
                 self.start_language_configuration(peer, value["openingId"], copy.deepcopy(token))
         elif operation == "languagesPicker":
@@ -649,306 +510,55 @@ class Overlay:
             # Input owner/focus/ACK gates admission, not that old presentation fact.
             editing = self.value.get("state") == "EditingTranslation"
             if value is None:
-                if not editing or not self.current_record().get("editorRegenerateSupported"):
+                if not editing or not self.current_record().editor_regenerate_supported:
                     self.host.send("regenerate")
             elif editing:
-                owner = self.input.begin_browser_regenerate(peer, event, copy.deepcopy(token))
-                if owner is not None:
-                    self.tasks(self.regenerate_editor(owner))
+                action_id = self.input.begin_browser_regenerate(peer, event, copy.deepcopy(token))
+                if action_id is not None:
+                    self.tasks(self.input.regenerate_editor(action_id))
             # Nonplain Browser payloads never downgrade, including outside Editing.
         elif operation in ("regenerate", "exclude"):
             self.host.send(operation)
         elif operation in ("draft", "composition"):
             self.host.send(operation, value)
 
-    async def regenerate_editor(self, owner):
-        # The source may have retired before the scheduled task ever runs.
-        if not self.input.browser_regenerate_current(owner):
-            if self.input.editor_regenerate is owner:
-                self.input.editor_regenerate = None
-            return
-        try:
-            accepted = await self.host.ask(
-                "editorRegenerate", {"action": owner["action"], "draft": owner["initialDraft"]}
-            )
-            if accepted is not True and self.input.editor_regenerate is owner:
-                if (
-                    self.input.browser_regenerate_current(owner)
-                    and self.value.get("state") == "EditingTranslation"
-                    and self.input.overlay_focused
-                    and (not owner["dispatched"] or owner.get("safeFailure"))
-                ):
-                    if owner["laterDraftPending"]:
-                        owner["laterDraftPending"] = False
-                        self.host.send("draft", owner["draft"])
-                    owner["peer"].link.command(
-                        "overlay-resume",
-                        {
-                            "target": owner["action"]["token"]["target"]["value"],
-                            "generation": owner["action"]["token"]["commandGeneration"],
-                            "revision": self.revision,
-                            "editorRegenerate": owner["action"],
-                        },
-                    )
-                self.input.editor_regenerate = None
-        except (OSError, EOFError, TimeoutError):
-            if self.input.editor_regenerate is owner:
-                self.input.editor_regenerate = None
-
-    @staticmethod
-    def valid_opening_id(value):
-        try:
-            return (
-                isinstance(value, str)
-                and str(uuid.UUID(value)) == value
-                and uuid.UUID(value).int != 0
-            )
-        except ValueError:
-            return False
-
-    def language_owner(self, configuration):
-        # connection_id is minted by Peer, never accepted from native JSON.
-        return {
-            "connectionId": configuration["peer"].connection_id,
-            "openingId": configuration["openingId"],
-        }
-
-    def cancel_language_configuration(self, *, notify_host=True, notify_peer=True):
-        configuration, self.language_configuration = self.language_configuration, None
-        if not configuration:
-            return
-        configuration["phase"] = "Retired"  # Before callbacks or sending cancellation.
-        if notify_host:
-            try:
-                self.host.send("cancelLanguageConfiguration", self.language_owner(configuration))
-            except (OSError, EOFError):
-                pass  # This local opening is already retired; a dead Host link cannot save it.
-        peer = configuration["peer"]
-        if notify_peer and peer in self.input.peers and peer.link.channel.alive:
-            try:
-                peer.link.command(
-                    "overlay-language-configuration-close",
-                    {"openingId": configuration["openingId"]},
-                )
-            except (OSError, EOFError):
-                pass  # Transport teardown cannot restore the retired configuration.
-
-    def language_peer_lost(self, peer):
-        if self.language_configuration and self.language_configuration["peer"] is peer:
-            self.cancel_language_configuration(notify_peer=False)
-
-    def language_configuration_closed(self, value):
-        configuration = self.language_configuration
-        if (
-            configuration
-            and isinstance(value, dict)
-            and all(
-                value.get(key) == expected
-                for key, expected in self.language_owner(configuration).items()
-            )
-        ):
-            self.cancel_language_configuration(notify_host=False)
-
-    def language_configuration_current(self, configuration):
-        peer = configuration["peer"]
-        return (
-            self.language_configuration is configuration
-            and configuration["phase"] != "Retired"
-            and peer in self.input.peers
-            and peer.link.channel.alive
-            and self.input.focused_peer() is peer
-        )
-
     def start_language_configuration(self, peer, opening_id, token):
-        self.cancel_language_configuration()
         self.close_glossary()
-        configuration = {
-            "peer": peer,
-            "openingId": opening_id,
-            "phase": "Pending",
-            "expiresAtMs": now_ms() + 600,
+        appearance = {
+            "theme": (self.settings or {}).get("theme", "system"),
+            "appearance": {
+                key: (self.settings or {}).get(key, default)
+                for key, default in (
+                    ("font", "claude"),
+                    ("textSize", 15),
+                    ("accent", "clay"),
+                    ("uiLanguage", "system"),
+                    ("reduceMotion", False),
+                    ("reduceTransparency", False),
+                    ("motion", "system"),
+                )
+            },
         }
-        self.language_configuration = configuration
-        # Native has synchronously retired its source view before emitting this
-        # request. Do not send overlay-hide back into the new pending opening.
-        self.revision += 1
-        self.value = self.peer = None
-        self.visible = self.editing = self.acceptance_ready = False
-        self.input.set_overlay_focus(False)
-        self.tasks(self.begin_language_configuration(configuration, token))
-
-    async def begin_language_configuration(self, configuration, token):
-        # The task may start after a synchronous cancel/peer loss. Do not send a
-        # request whose opening retired before dispatch, even on the same pipe.
-        if (
-            not self.language_configuration_current(configuration)
-            or configuration["phase"] != "Pending"
-            or now_ms() > configuration["expiresAtMs"]
-        ):
-            if self.language_configuration is configuration:
-                self.cancel_language_configuration()
-            return
-        try:
-            reply = await self.host.ask(
-                "beginLanguageConfiguration", {**self.language_owner(configuration), "token": token}
-            )
-            if not self.language_configuration_current(configuration):
-                if self.language_configuration is configuration:
-                    self.cancel_language_configuration()
-                return
-            if (
-                now_ms() > configuration["expiresAtMs"]
-                or not isinstance(reply, dict)
-                or reply.get("opened") is not True
-                or any(
-                    reply.get(key) != value
-                    for key, value in self.language_owner(configuration).items()
-                )
-                or type(reply.get("settingsRevision")) is not int
-                or not 0 <= reply["settingsRevision"] <= 9223372036854775807
-            ):
-                self.cancel_language_configuration()
-                return
-            configuration["settingsRevision"] = reply["settingsRevision"]
-            # No original target, token, candidate or permit is sent to the shell.
-            presentation = {
-                key: reply.get(key)
-                for key in (
-                    "openingId",
-                    "settingsRevision",
-                    "source",
-                    "target",
-                    "sourceLabel",
-                    "targetLabel",
-                    "swapAllowed",
-                    "choices",
-                )
-            }
-            presentation.update(
-                theme=(self.settings or {}).get("theme", "system"),
-                appearance={
-                    key: (self.settings or {}).get(key, default)
-                    for key, default in (
-                        ("font", "claude"),
-                        ("textSize", 15),
-                        ("accent", "clay"),
-                        ("uiLanguage", "system"),
-                        ("reduceMotion", False),
-                        ("reduceTransparency", False),
-                        ("motion", "system"),
-                    )
-                },
-            )
-            remaining = (configuration["expiresAtMs"] - now_ms()) / 1000
-            if remaining <= 0:
-                self.cancel_language_configuration()
-                return
-            shown = await configuration["peer"].link.ask(
-                "overlay-language-configuration-open", presentation, timeout=remaining
-            )
-            if not self.language_configuration_current(configuration):
-                if self.language_configuration is configuration:
-                    self.cancel_language_configuration()
-                return
-            if (
-                now_ms() > configuration["expiresAtMs"]
-                or not isinstance(shown, dict)
-                or shown.get("opened") is not True
-                or shown.get("openingId") != configuration["openingId"]
-            ):
-                self.cancel_language_configuration()
-                return
-            configuration["phase"] = "Open"
-        except (OSError, EOFError, TimeoutError):
-            if self.language_configuration is configuration:
-                self.cancel_language_configuration()
-
-    def language_configuration_event(self, peer, event):
-        configuration = self.language_configuration
-        value = event.get("value")
-        if (
-            not configuration
-            or configuration["peer"] is not peer
-            or not isinstance(value, dict)
-            or value.get("openingId") != configuration["openingId"]
-        ):
-            return
-        if event["operation"] == "languageConfigurationCancel":
-            if set(value) == {"openingId"}:
-                self.cancel_language_configuration(notify_peer=False)
-            return
-        if (
-            set(value) != {"openingId", "source", "target"}
-            or not self.language_configuration_current(configuration)
-            or configuration["phase"] != "Open"
-            or any(
-                not isinstance(value.get(key), str) or not 0 < len(value[key]) <= 16
-                for key in ("source", "target")
-            )
-        ):
-            return
-        configuration["phase"] = "Saving"
-        self.tasks(self.save_language_configuration(configuration, dict(value)))
-
-    async def save_language_configuration(self, configuration, value):
-        # The task may start after a synchronous cancel/peer loss. Do not send a
-        # request whose opening retired before dispatch, even on the same pipe.
-        if (
-            not self.language_configuration_current(configuration)
-            or configuration["phase"] != "Saving"
-        ):
-            if self.language_configuration is configuration:
-                self.cancel_language_configuration()
-            return
-        try:
-            reply = await self.host.ask(
-                "saveLanguageConfiguration",
-                {
-                    **value,
-                    **self.language_owner(configuration),
-                    "expectedRevision": configuration["settingsRevision"],
-                },
-            )
-            if self.language_configuration is not configuration:
-                return  # A committed save may already have retired via settings notification.
-            if not self.language_configuration_current(configuration):
-                self.cancel_language_configuration()
-                return
-            if isinstance(reply, dict) and reply.get("saved") is True:
-                self.cancel_language_configuration(notify_host=False)
-            elif isinstance(reply, dict) and reply.get("reason") in (
-                "unsupported-direction",
-                "save-unconfirmed",
-            ):
-                configuration["phase"] = "Open"
-                configuration["peer"].link.command(
-                    "overlay-language-configuration-result",
-                    {
-                        "openingId": configuration["openingId"],
-                        "saved": False,
-                        "reason": reply["reason"],
-                    },
-                )
-            else:
-                self.cancel_language_configuration()
-        except (OSError, EOFError, TimeoutError):
-            # Unknown persistence is not success, and never restores source authority.
-            if self.language_configuration is configuration:
-                self.cancel_language_configuration()
+        if self.input.start_language_configuration(peer, opening_id, token, appearance, self.tasks):
+            # The native source UI retired before the independent shell opened.
+            self.revision += 1
+            self.input.withdraw_presentation()
+            self.value = self.peer = None
+            self.visible = self.editing = self.acceptance_ready = False
 
     async def begin_edit(self, peer, target, token):
-        authorization = self.input.practice_authorization
-        editor = None
-        deadline = now_ms() + 500
+        opening = None
         try:
             record = self.current_record()
-            acknowledgement = self.input.current_session_acknowledgement(record)
             if (
-                not acknowledgement
-                or not acknowledgement["editorReady"]
+                not record
+                or not record.editor_ready
                 or self.session_token() != token
                 or not self.value["viewContext"].get("canEdit")
             ):
+                return
+            opening = self.input.begin_editor_opening(record)
+            if opening is None:
                 return
             requested_revision = self.revision
             response = await self.host.ask("beginEdit", token)
@@ -977,10 +587,8 @@ class Overlay:
                 or self.value.get("state") != "EditingTranslation"
             ):
                 return
-            if authorization is not None:
-                editor = self.input.begin_practice_edit(authorization, editor_token, deadline)
-                if editor is None:
-                    return
+            if not self.input.prepare_editor_opening(opening, editor_token):
+                return
             # The state transition's render precedes the reply on the host channel;
             # flush it before asking GTK to focus its editor. No source text is changed.
             value, revision = self.value, self.revision
@@ -1002,46 +610,11 @@ class Overlay:
                 and self.session_token() == editor_token
                 and self.current_record() is not None
             ):
-                command = {
-                    "target": target,
-                    "allowed": True,
-                    "revision": revision,
-                    "generation": editor_token["commandGeneration"],
-                }
-                if editor is None:
-                    peer.link.command("overlay-edit", command)
-                elif await self.input.revoke_practice_editor(editor):
-                    if (
-                        self.value is not value
-                        or self.revision != revision
-                        or self.peer is not peer
-                        or self.session_token() != editor_token
-                    ):
-                        return
-                    editor["phase"] = "focusing"
-                    reply = await peer.link.ask(
-                        "overlay-edit",
-                        {
-                            **command,
-                            "practiceHandoff": {
-                                "token": editor_token,
-                                "nativeFocusRevision": editor["nativeFocusRevision"],
-                                "contextGeneration": editor["contextGeneration"],
-                            },
-                        },
-                    )
-                    if (
-                        self.value is value
-                        and self.revision == revision
-                        and self.peer is peer
-                        and self.session_token() == editor_token
-                    ):
-                        self.input.complete_practice_edit(editor, reply)
+                await self.input.focus_source_editor(opening, revision)
         except (OSError, EOFError, TimeoutError):
             self.conceal("transport-unavailable")
         finally:
-            if editor is not None and editor["phase"] != "editor":
-                self.input.retire_practice(editor["runId"])
+            self.input.finish_editor_opening(opening)
 
     def glossary_origin_supported(self):
         return bool(
@@ -1049,125 +622,29 @@ class Overlay:
             and (
                 self.value.get("state") == "EditingTranslation"
                 or self.value.get("state") in ("ValidTranslation", "EditedTranslationPending")
-                and self.input.source_glossary_supported(self.current_record())
+                and bool(self.current_record() and self.current_record().source_glossary_supported)
             )
         )
 
     def glossary_current(self, form):
-        return (
+        return bool(
             self.glossary is form
             and self.peer is form["peer"]
             and self.revision == form["revision"]
             and self.session_token() == form["entry"]["token"]
             and self.value.get("state") == form["state"]
-            and self.current_record() is not None
-            and (
-                form["entry"].get("sourceOrigin") is not True
-                or self.input.source_glossary_supported(self.current_record())
-                and self.current_record().get("route") == form["route"]
-            )
-            and (
-                form["peer"].backend not in ("gtk3", "gtk4", "qt6")
-                or form["entry"].get("sourceOrigin") is not True
-                or (form["window"], form["foreground"])
-                == (self.input.window_epoch, self.input.foreground_epoch)
-            )
-        )
-
-    def consume_glossary_focus_transfer(self, peer, value, route):
-        form = self.glossary
-        transfer = form.get("transfer") if form else None
-        marker = value.get("glossaryTransfer")
-        if (
-            not transfer
-            or transfer["consumed"]
-            or not self.glossary_current(form)
-            or form["entry"].get("sourceOrigin") is not True
-            or peer is not form["peer"]
-            or route != form["route"]
-            or form["entry"]["token"]["target"] != self.input.bound
-            or value.get("target") != form["entry"]["token"]["target"]["value"]
-            or value.get("textChanged") is not False
-            or value.get("focusChanged") is not True
-            or (transfer["window"], transfer["foreground"])
-            != (self.input.window_epoch, self.input.foreground_epoch)
-        ):
-            return False
-        expected = {
-            "formId": form["entry"]["formId"],
-            "token": form["entry"]["token"],
-            "phase": transfer["phase"],
-        }
-        if peer.backend in ("gtk3", "gtk4", "qt6"):
-            if not isinstance(marker, dict) or set(marker) != {*expected, "ordinal", "count"}:
-                return False
-            ordinal, count = marker["ordinal"], marker["count"]
-            if (
-                type(ordinal) is not int
-                or type(count) is not int
-                or not 1 <= ordinal <= count <= 8
-                or ordinal != transfer.get("next", 1)
-                or count != transfer.get("count", count)
-                or any(marker[key] != value for key, value in expected.items())
-                or type(value.get("focused")) is not bool
-                or any(
-                    value.get(key) != form["sourceAuthority"].get(key)
-                    for key in ("inputRevision", "contentRevision")
-                )
-                or ordinal == count
-                and value["focused"] is not (transfer["phase"] == "Returning")
-            ):
-                return False
-            transfer["next"], transfer["count"] = ordinal + 1, count
-            transfer["consumed"] = ordinal == count
-            return True
-        if (
-            peer.backend != "browser"
-            or marker != expected
-            or value.get("focused") is not (transfer["phase"] == "Returning")
-        ):
-            return False
-        # The isolated document emits this marker only after its synchronous
-        # trusted blur/focus pair reached the exact requested control. Consume
-        # it once; it preserves window identity, never a capture/write permit.
-        transfer["consumed"] = True
-        return True
-
-    @staticmethod
-    def glossary_focus_valid(value, form):
-        return (
-            isinstance(value, dict)
-            and set(value) == {"formId", "token", "ime"}
-            and value["formId"] == form["entry"]["formId"]
-            and value["token"] == form["entry"]["token"]
-            and value["ime"] in ("Clear", "Composing", "Unknown")
-        )
-
-    def glossary_command(self, form, operation, **payload):
-        form["peer"].link.command(
-            operation,
-            {
-                "target": form["entry"]["token"]["target"]["value"],
-                "generation": form["entry"]["token"]["commandGeneration"],
-                "revision": form["revision"],
-                "formId": form["entry"]["formId"],
-                **payload,
-            },
+            and self.input.source_glossary_current(form["source"])
         )
 
     def close_glossary(self, *, notify_peer=True):
+        if self.glossary_begin_pending:
+            self.input.finish_glossary_opening(self.glossary_begin_pending["opening"])
         self.glossary_begin_pending = None
         form, self.glossary = self.glossary, None
         if form:
-            if (
-                self.input.source_glossary_return
-                and self.input.source_glossary_return["formId"] == form["entry"]["formId"]
-            ):
-                self.input.source_glossary_return = None
+            self.input.close_source_glossary(form["source"], notify_peer=notify_peer)
             self.host.send("sessionGlossaryFocus", None)
             self.host.send("sessionGlossaryClose", form["entry"]["formId"])
-            if notify_peer and form["peer"].link.channel.alive:
-                self.glossary_command(form, "overlay-glossary-close")
 
     async def begin_glossary(self, peer, revision, token):
         if (
@@ -1180,15 +657,16 @@ class Overlay:
             or self.current_record() is None
         ):
             return
+        opening = self.input.begin_glossary_opening(self.current_record())
+        if opening is None:
+            return
         attempt = self.glossary_begin_pending = {
             "nativeSource": peer.backend in ("gtk3", "gtk4", "qt6")
             and self.value.get("state") in ("ValidTranslation", "EditedTranslationPending"),
             "peer": peer,
             "revision": revision,
-            "view": copy.deepcopy(self.value),
-            "authority": copy.deepcopy(self.current_record()["authority"]),
-            "window": (self.input.window_epoch, self.input.foreground_epoch),
-            "rendered": None,
+            "identity": dict(presentation_identity(self.value)),
+            "opening": opening,
         }
         try:
             entry = await self.host.ask("sessionGlossaryBegin", token)
@@ -1198,19 +676,17 @@ class Overlay:
                     and self.revision == revision
                     and self.session_token() == token
                 ):
-                    peer.link.command(
-                        "overlay-glossary-open",
-                        {
-                            "target": token["target"]["value"],
-                            "generation": token["commandGeneration"],
-                            "revision": revision,
-                            "entry": None,
-                        },
-                    )
+                    self.input.decline_source_glossary(peer, token, revision)
                 return
+            projection = (
+                self.value.get("viewContext", {}).get("glossaryForm") if self.value else None
+            )
             if (
                 self.glossary_begin_pending is not attempt
                 or entry.get("token") != token
+                or not projection
+                or projection["formId"] != entry["formId"]
+                or not projection["current"]
                 or self.peer is not peer
                 or self.revision != revision
                 or self.session_token() != token
@@ -1221,54 +697,24 @@ class Overlay:
             ):
                 self.host.send("sessionGlossaryClose", entry["formId"])
                 return
+            source = self.input.bind_source_glossary(self.current_record(), entry, revision)
+            if source is None:
+                self.host.send("sessionGlossaryClose", entry["formId"])
+                return
             self.glossary = {
                 "entry": copy.deepcopy(entry),
                 "peer": peer,
                 "revision": revision,
                 "state": self.value["state"],
-                "route": copy.deepcopy(self.current_record().get("route")),
-                "sourceAuthority": copy.deepcopy(self.current_record()["authority"]),
-                "sourceDocumentGeneration": self.current_record().get("documentGeneration"),
-                "sourceView": copy.deepcopy(self.value),
-                "window": self.input.window_epoch,
-                "foreground": self.input.foreground_epoch,
+                "source": source,
+                "current": True,
                 "focus": None,
                 "pending": False,
                 "unknown": False,
             }
             form = self.glossary
-            transfer = None
-            if entry.get("sourceOrigin") is True:
-                transfer = form["transfer"] = {
-                    "phase": "Opening",
-                    "consumed": False,
-                    "window": self.input.window_epoch,
-                    "foreground": self.input.foreground_epoch,
-                }
-            try:
-                response = await peer.link.ask(
-                    "overlay-glossary-open",
-                    {
-                        "target": token["target"]["value"],
-                        "generation": token["commandGeneration"],
-                        "revision": revision,
-                        "entry": entry,
-                    },
-                )
-            finally:
-                form["transfer"] = None
-            if self.glossary is form and (
-                not self.glossary_current(form)
-                or transfer is not None
-                and (
-                    not transfer["consumed"]
-                    or getattr(response, "route", None) != form["route"]
-                    or (transfer["window"], transfer["foreground"])
-                    != (self.input.window_epoch, self.input.foreground_epoch)
-                )
-                or not isinstance(response, dict)
-                or response.get("opened") is not True
-            ):
+            opened = await self.input.open_source_glossary(source)
+            if self.glossary is form and (not opened or not self.glossary_current(form)):
                 self.close_glossary()
         except (OSError, ValueError, EOFError, TimeoutError):
             if (
@@ -1278,16 +724,9 @@ class Overlay:
             ):
                 self.close_glossary()
             elif self.peer is peer and self.revision == revision and self.session_token() == token:
-                peer.link.command(
-                    "overlay-glossary-open",
-                    {
-                        "target": token["target"]["value"],
-                        "generation": token["commandGeneration"],
-                        "revision": revision,
-                        "entry": None,
-                    },
-                )
+                self.input.decline_source_glossary(peer, token, revision)
         finally:
+            self.input.finish_glossary_opening(opening)
             if self.glossary_begin_pending is attempt:
                 self.glossary_begin_pending = None
 
@@ -1302,59 +741,13 @@ class Overlay:
             or not form["pending"]
             or request["formId"] != form["entry"]["formId"]
             or request["token"] != form["entry"]["token"]
-            or not form["focus"]
-            or form["focus"]["ime"] != "Clear"
-            or self.input.focus() != "Overlay"
         ):
             return None
-        window, foreground = self.input.window_epoch, self.input.foreground_epoch
-        transfer = form["transfer"] = {
-            "phase": "Returning",
-            "consumed": False,
-            "window": window,
-            "foreground": foreground,
-        }
-        try:
-            response = await form["peer"].link.ask(
-                "overlay-glossary-return",
-                {
-                    **request,
-                    "target": request["token"]["target"]["value"],
-                    "generation": request["token"]["commandGeneration"],
-                    "revision": form["revision"],
-                },
-            )
-        except (OSError, ValueError, EOFError, TimeoutError):
-            return None
-        finally:
-            form["transfer"] = None
-        if (
-            not transfer["consumed"]
-            or not self.glossary_current(form)
-            or not isinstance(response, dict)
-            or set(response) != {"formId", "token", "returned"}
-            or response.get("formId") != request["formId"]
-            or response.get("token") != request["token"]
-            or response.get("returned") is not True
-            or (window, foreground) != (self.input.window_epoch, self.input.foreground_epoch)
-            or getattr(response, "route", None) != form["route"]
-        ):
-            return None
-        # This proves only the native/browser focus transfer. The controller obtains
-        # its own fresh source capture before any persistence or new permission.
-        form["focus"] = None
-        self.input.source_glossary_return = {
-            **copy.deepcopy(request),
-            "peer": form["peer"],
-            "route": copy.deepcopy(form["route"]),
-            "windowEpoch": window,
-            "foregroundEpoch": foreground,
-            "sourceAuthority": copy.deepcopy(form["sourceAuthority"]),
-            "sourceDocumentGeneration": form["sourceDocumentGeneration"],
-        }
-        self.input.set_overlay_focus(False)
-        self.host.send("sessionGlossaryFocus", None)
-        return dict(response)
+        response = await self.input.return_glossary_to_source(form["source"], request)
+        if response is not None:
+            form["focus"] = None
+            self.host.send("sessionGlossaryFocus", None)
+        return response
 
     async def add_glossary(self, form, request):
         if not self.glossary_current(form):
@@ -1376,7 +769,7 @@ class Overlay:
         # Complete the original request even when the successful commit rendered
         # a new session and retired this form. The browser matches the exact old
         # identity and cannot reopen it or attach this result to a newer form.
-        self.glossary_command(form, "overlay-glossary-result", result=result)
+        self.input.complete_source_glossary(form["source"], result)
 
     async def set_session_style(self, peer, revision, token, value):
         if (
@@ -1419,18 +812,11 @@ class Overlay:
                     if saved is False
                     else "语言设置结果未确认，请打开设置检查。",
                 }
-                self.schedule()
+                self.schedule(retain_revision=True)
 
     def resume(self):
         if self.peer and self.value:
-            self.peer.link.command(
-                "overlay-resume",
-                {
-                    "target": self.value["source"]["target"]["value"],
-                    "generation": (self.session_token() or {}).get("commandGeneration"),
-                    "revision": self.revision,
-                },
-            )
+            self.input.resume_source(self.peer, self.session_token(), self.revision)
 
     def conceal(self, reason):
         # A transient missing/stale native observation must hide the actual UI,
@@ -1440,18 +826,19 @@ class Overlay:
         if self.value and self.peer and os.environ.get("TYPELAY_TRACE"):
             print(f"typelay-overlay conceal reason={reason} atMs={now_ms()}", file=sys.stderr)
         self.close_glossary()
-        self.input.editor_regenerate = None
+        self.input.withdraw_presentation()
         self.revision += 1
-        if self.peer and self.peer.link.channel.alive:
-            self.peer.link.command("overlay-hide")
+        if self.peer:
+            self.input.conceal_source(self.peer)
         self.peer = None
         self.visible = self.editing = self.acceptance_ready = False
         self.input.set_overlay_focus(False)
 
     def hide(self):
-        if self.language_configuration:
+        if self.input.language_configuration_open:
             # StopSession's hide acknowledges source retirement, not cancellation
             # of the separately identified configuration request.
+            self.input.withdraw_presentation()
             self.value = self.peer = None
             self.visible = self.editing = self.acceptance_ready = False
             self.input.set_overlay_focus(False)

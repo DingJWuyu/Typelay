@@ -526,12 +526,14 @@ public sealed class SessionBehaviorTests
         Check(s.State == SessionState.OutcomeUnknown);
     }
 
-    [Fact(DisplayName = "abandoned-inflight-write-quarantines-original-target")]
-    public void AbandonedInflightWriteQuarantinesOriginalTarget()
+    [Fact(DisplayName = "detached-unknown-write-quarantines-original-target")]
+    public void DetachedUnknownWriteQuarantinesOriginalTarget()
     {
         var (s, a) = Ready();
         s.BeginWrite(Plan(s, a));
         s.LeaveFamily();
+        // The execution owner supplies the terminal fact after presentation retires.
+        s.QuarantineTarget(a.Target);
         s.Observe(a, FocusMember.Source, 1500);
         Check(s.State == SessionState.OutcomeUnknown);
     }

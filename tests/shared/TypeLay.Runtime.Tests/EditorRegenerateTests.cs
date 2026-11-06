@@ -267,10 +267,13 @@ public sealed class EditorRegenerateTests
     }
 
     [Theory]
-    [InlineData("settings")]
-    [InlineData("stop")]
-    [InlineData("dispose")]
-    public async Task AReplaceRetiredDuringItsReturningRenderNeverDispatchesTheOldReturn(string change)
+    [InlineData("settings", false)]
+    [InlineData("stop", false)]
+    [InlineData("dispose", false)]
+    [InlineData("settings", true)]
+    [InlineData("stop", true)]
+    [InlineData("dispose", true)]
+    public async Task AReturnRetiredDuringItsReturningRenderNeverDispatchesTheOldReturn(string change, bool replace)
     {
         using var s = new SessionScenario(experimental: true);
         s.ReadyCandidate();
@@ -299,7 +302,10 @@ public sealed class EditorRegenerateTests
             }
         };
 
-        Assert.False(await s.View.EditorRegenerateRequested!(action));
+        if (replace)
+            Assert.False(await s.View.EditorRegenerateRequested!(action));
+        else
+            s.View.ReturnRequested!(s.View.Token);
         Assert.Equal(0, s.Service.Returns);
         Assert.Equal(0, s.View.Resumes);
         Assert.Single(s.Model.Jobs);

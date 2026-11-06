@@ -259,7 +259,7 @@ async def complete(
             surface.window.hide()
             # The one reopen follows the independent retirement proof below.
         else:
-            assert await host.ask("settingsPatch", {"accent": "sage"}, timeout=3) is True
+            assert (await host.ask("settingsPatch", {"accent": "sage"}, timeout=3))["saved"] is True
             before = settings_file.read_bytes()
 
         def retirement_facts():
@@ -478,7 +478,7 @@ async def complete(
         "QUIT TRAY PASS: hide then confirm, old caller cannot retire Settings B, reopen/close refuse stale",
         flush=True,
     )
-    assert await host.ask("settingsPatch", {"uiLanguage": "en"}, timeout=3) is True
+    assert (await host.ask("settingsPatch", {"uiLanguage": "en"}, timeout=3))["saved"] is True
     before = settings_file.read_bytes()
     await open_settings()
     dialog = await ask_quit()

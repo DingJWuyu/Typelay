@@ -438,7 +438,17 @@ public sealed partial class NativeSourceControllerTests
                 Assert.InRange(witness.ReadUInt32(record + 40), 1u, 0xffu);
                 Assert.Equal(0u, witness.ReadUInt32(record + 48)); // History is not acceptance authority.
             }
-            Assert.True(hook.TryRead(out var command));
+            InputNotice? command;
+            do
+            {
+                Assert.True(hook.TryRead(out command));
+                if (command!.RetiredUnusedPlanId is not null)
+                {
+                    Assert.Equal("write-retired", command.Kind);
+                    Assert.Null(command.Permit);
+                    Assert.Null(command.CompletedReceipt);
+                }
+            } while (command!.RetiredUnusedPlanId is not null);
             Assert.Equal("direct", command!.Kind);
             Assert.Equal(Denial.StaleObservation, command.Rejection); // Configuration removed its old read basis.
             Assert.Null(command.Permit);

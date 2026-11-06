@@ -302,7 +302,7 @@ public sealed class OwnedPracticeSettingsTests(WpfDesktopFixture desktop)
         Assert.Equal(revision + 1, fixture.Settings.Revision);
         Assert.Equal(WorkMode.OnDemand, new SettingsStore(fixture.Path).Value.Mode);
         Assert.Contains(Descendants(fixture.Window).OfType<TextBlock>(),
-            text => text.IsVisible && text.Text == SettingsDraftPresentation.UnknownSaveMessage);
+            text => text.IsVisible && text.Text == "设置未保存，练习状态未能确认。请重新打开设置检查当前状态。");
         Assert.DoesNotContain(Descendants(fixture.Window).OfType<TextBlock>(),
             text => text.IsVisible && text.Text == "已保存，请重新打开设置确认当前状态。");
         var banner = Assert.Single(Descendants(fixture.Window).OfType<Border>(),

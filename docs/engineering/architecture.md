@@ -111,9 +111,14 @@ flowchart TD
 | 想看什么 | 从哪里开始 |
 | --- | --- |
 | 两端怎样创建同一控制器 | [WindowsRuntime](../../src/windows/TypeLay.App/Windows/WindowsRuntime.cs)、[Linux Program](../../src/linux/TypeLay.Linux/Program.cs) |
-| 输入、翻译、编辑与接受怎样衔接 | [SessionController](../../src/shared/TypeLay.Runtime/SessionController.cs)、[输入端口](../../src/shared/TypeLay.Runtime/InputContracts.cs)、[视图与事件循环端口](../../src/shared/TypeLay.Runtime/SessionHost.cs) |
+| 输入、翻译、编辑与接受怎样衔接 | [SessionController](../../src/shared/TypeLay.Runtime/Sessions/SessionController.cs)、[输入端口](../../src/shared/TypeLay.Runtime/Sessions/InputContracts.cs)、[视图与事件循环端口](../../src/shared/TypeLay.Runtime/Sessions/SessionHost.cs) |
+| 回源、重译和术语表单由谁继续或退休 | [具体交互](../../src/shared/TypeLay.Runtime/Sessions/SessionController.Interaction.cs)、[浏览器重译](../../src/shared/TypeLay.Runtime/Sessions/SessionController.EditorRegenerate.cs)、[术语交接](../../src/shared/TypeLay.Runtime/Sessions/SessionController.GlossaryEntry.cs) |
+| 显示刷新为何不取消用户操作 | [共享呈现与身份](../../src/shared/TypeLay.Runtime/Presentation/SessionPresentation.cs)、[Linux 显示桥](../../src/linux/desktop/overlay.py)、[原生共同身份解码](../../src/linux/native/common/presentation-identity.h) |
+| 保存成功后通知失败怎样反馈 | [设置提交结果](../../src/shared/TypeLay.Runtime/Settings/SettingsCommit.cs)、[实际持久化](../../src/shared/TypeLay.Runtime/Settings/SettingsStore.cs) |
+| 教程步骤与真实输入许可怎样分开 | [教程进度](../../src/shared/TypeLay.Runtime/Practice/PracticeProgressCoordinator.cs)、[自有源会话](../../src/shared/TypeLay.Runtime/Sessions/SessionController.AutomaticPractice.cs)、[本地稿操作](../../src/shared/TypeLay.Runtime/Sessions/SessionController.OwnedLocalDraft.cs) |
+| 已派发写入和正常退出如何结束 | [写入结算](../../src/shared/TypeLay.Runtime/Sessions/WriteSettlement.cs)、[会话关闭](../../src/shared/TypeLay.Runtime/Sessions/SessionController.WriteSettlement.cs) |
 | 候选与写入为何被允许或拒绝 | [Session](../../src/shared/TypeLay.Core/Session.cs)、[AcceptanceGate](../../src/shared/TypeLay.Core/AcceptanceGate.cs)、[WriteSafety](../../src/shared/TypeLay.Core/WriteSafety.cs) |
-| 模型请求怎样跨进程并执行 | [ModelClient](../../src/shared/TypeLay.Runtime/ModelClient.cs)、[worker 入口](../../src/shared/TypeLay.Worker/run_worker.py)、[LocalEngine](../../src/shared/TypeLay.Worker/typelay_worker/engine.py) |
+| 模型请求怎样跨进程并执行 | [ModelClient](../../src/shared/TypeLay.Runtime/Models/ModelClient.cs)、[worker 入口](../../src/shared/TypeLay.Worker/run_worker.py)、[LocalEngine](../../src/shared/TypeLay.Worker/typelay_worker/engine.py) |
 | Linux 两个宿主进程怎样连接 | [desktop main](../../src/linux/desktop/main.py)、[DesktopLink](../../src/linux/TypeLay.Linux/DesktopLink.cs) |
 | 为什么两端输入能力不同 | [Windows 架构](../platforms/windows/architecture.md)、[Linux 架构](../platforms/linux/architecture.md) |
 
@@ -127,9 +132,19 @@ Windows/Linux 在 trunk 共用 src/shared/ 下的一份 Core、Runtime、Protoco
 
 `TypeLay.Runtime` 引用 Core/Protocol，拥有 SessionController 的时序编排、设置持久化及 ModelClient 的本地模型协议。宿主注入输入服务/输入观察、串行事件循环、视图、数据路径和进程所有权。这里没有 WPF、Win32、UIA、Registry、Windows Broker DTO 或 provider 名称判定。模型、设置、平台事件通过公开端口进入同一会话所有者，不另建线程、服务容器或消息总线。
 
-Windows 自有练习源的人工稿进入 More 时，旧编辑 attempt 永久退休、旧 reader 立即停用，独立 ACK 证明其已关闭后才允许新的返回；同一 TextBox 的文字、选区与 Undo 转入本地-only 呈现，不再是源字段、`FocusMember.Overlay`、输入镜像或接受许可。[Core 的单会话 opaque dormant edit](../../src/shared/TypeLay.Core/Session.DormantEdit.cs) 仅保存原编辑基准，空稿仍锁定风格，配置/会话退休后不能复用。Keep 保留本地稿，再由真实 Tab keyup 一次发起返回；Replace 则只由本次真实 click、Enter 或 Space 生成专用一次意图，不伪装 Tab。两者均在实际 down 冻结稿件/输入身份，原 down 起算的 500ms 不续期，持键或排队过期拒绝；旧普通源与正常 owned 编辑返回的 held 路径不变。Keep 后真实 Tab 的原始按键期限绑定[独立返回 receipt](../../src/shared/TypeLay.Runtime/SessionController.OwnedLocalDraft.cs)；Windows Host/Practice 分别核对新 reader、真实源焦点到达与新鲜捕获，Core 共用原回源基准校验通过后才建立新 binding。绑定前不发布许可或模型任务。Replace 的专用 Core 回源确认只保原源基准，不把待弃人工稿变成可接受候选；空稿可被明确丢弃重译，但 Keep 原可写稿条件不变。Host 核新 reader 安装后，还须同一次操作期限内 fresh 原源观察才完整重译，接受/写回资格始终独立。未受理的同合法 prompt 失败保稿可重试；明确失权沿原 Keep 退休，不新建通用恢复界面，旧回执不能作用于新会话。该身份不是持久草稿恢复或通用辅助焦点授权，完整交互与未完成子项见[原型对照](../design/prototype-parity.md)。
+Runtime 的目录对应实际责任。`Sessions` 拥有会话编排、具体回源操作和写入结算，`Presentation` 产生只读显示值，`Settings` 拥有保存的准备、提交和结果，`Practice` 只记录已确认里程碑，`Models` 拥有冻结加载身份和模型连接。目录不新增项目、进程或依赖容器。模型服务合同独立于视图合同；`ISessionView` 只接显示、编辑和用户意图，原生窗口与回源证明通过单独注入的 `ISourceInteraction` 提供。
 
-Browser 的 `EditingTranslation` 重译确认使用独立于 owned 练习源的[一次操作关联](../../src/shared/TypeLay.Runtime/SessionController.EditorRegenerate.cs)。Host 配置 `editorRegenerateVersion=1`，只在当前 DOM 的实际 `sessionBindings` 与 fresh describe 同样回显版本 1 时消费专用对象；缺省或未知版本不算支持。旧版未协商 Editing 与原非 Editing 的 plain 操作保持兼容，已协商的 plain 或任何状态的畸形对象不能降级为旧重译入口。非浏览器消费者不接入这个协议。
+具体操作在重入回调或异步等待之前登记自身。普通回源、浏览器 Replace、源端重译确认、自有源 Keep/Replace 和术语交接各自解释继续条件；主捕获路径只分派观察，不枚举它们的内部阶段。视图退休会撤掉继续资格，已经发出的回源或写入仍交原操作收束。教程进度不参与读写授权，自有源绑定及 reader 退休仍由实际输入路径确认。
+
+呈现协议分别携带交互身份、显示序号、真实草稿版本和动作版本。显示序号丢弃旧画面，文案、标签、菜单反馈和颜色不成为操作寿命。真实编辑包含 ABA，必须推进草稿版本；原生按次、目标、焦点、IME 和期限仍由各 adapter 独立核实。术语表单有独立 FormId 和单向有效状态，临时辅助焦点、组合输入与保存等待不导致永久退休。GTK/Qt hello 与浏览器配置明确协商 `presentationVersion=1`，未知身份字段或版本不按旧语义降级。
+
+Linux Input 独占 peer、绑定观察、回源、术语和语言配置的原生记录。Overlay 只持冻结的连接/呈现事实和表单显示状态，向 Input 提交具体意图；它不能读取 peer 或修改输入操作字典。GUI 仍在原有 GTK/Qt、WPF 与浏览器中呈现，本轮职责调整不改变产品交互或采用另一套 UI 框架。
+
+所有现役设置保存入口调用同一提交方法。结果区分未提交、无变化但保存成功、已提交、已提交但通知失败和外部副作用未知，并携带实际提交版本。平台注册表或 XDG 启动项仍是独立副作用，不能与文件保存冒充一个原子事务；晚到取消或观察者失败不抹去已经提交的事实。
+
+Windows 自有练习源的人工稿进入 More 时，旧编辑 attempt 永久退休、旧 reader 立即停用，独立 ACK 证明其已关闭后才允许新的返回；同一 TextBox 的文字、选区与 Undo 转入本地-only 呈现，不再是源字段、`FocusMember.Overlay`、输入镜像或接受许可。[Core 的单会话 opaque dormant edit](../../src/shared/TypeLay.Core/Session.DormantEdit.cs) 仅保存原编辑基准，空稿仍锁定风格，配置/会话退休后不能复用。Keep 保留本地稿，再由真实 Tab keyup 一次发起返回；Replace 则只由本次真实 click、Enter 或 Space 生成专用一次意图，不伪装 Tab。两者均在实际 down 冻结稿件/输入身份，原 down 起算的 500ms 不续期，持键或排队过期拒绝；旧普通源与正常 owned 编辑返回的 held 路径不变。Keep 后真实 Tab 的原始按键期限绑定[独立返回 receipt](../../src/shared/TypeLay.Runtime/Sessions/SessionController.OwnedLocalDraft.cs)；Windows Host/Practice 分别核对新 reader、真实源焦点到达与新鲜捕获，Core 共用原回源基准校验通过后才建立新 binding。绑定前不发布许可或模型任务。Replace 的专用 Core 回源确认只保原源基准，不把待弃人工稿变成可接受候选；空稿可被明确丢弃重译，但 Keep 原可写稿条件不变。Host 核新 reader 安装后，还须同一次操作期限内 fresh 原源观察才完整重译，接受/写回资格始终独立。未受理的同合法 prompt 失败保稿可重试；明确失权沿原 Keep 退休，不新建通用恢复界面，旧回执不能作用于新会话。该身份不是持久草稿恢复或通用辅助焦点授权，完整交互与未完成子项见[原型对照](../design/prototype-parity.md)。
+
+Browser 的 `EditingTranslation` 重译确认使用独立于 owned 练习源的[一次操作关联](../../src/shared/TypeLay.Runtime/Sessions/SessionController.EditorRegenerate.cs)。Host 配置 `editorRegenerateVersion=1`，只在当前 DOM 的实际 `sessionBindings` 与 fresh describe 同样回显版本 1 时消费专用对象；缺省或未知版本不算支持。旧版未协商 Editing 与原非 Editing 的 plain 操作保持兼容，已协商的 plain 或任何状态的畸形对象不能降级为旧重译入口。非浏览器消费者不接入这个协议。
 
 Browser 的确认框在用户实际点击或按键选择 Replace 前只是显示，不创建返回意图或许可。同一合法 field/view/token 下，Host 对当前人工稿的精确回显可以保留原确认：原编辑序列未变、当前/原确认/回显三稿一致，且除 text 外的完整视图身份（含动作设置）不变。后来编辑含 ABA、撤权、新 owner 或失效 lease 仍关闭。显示沿既有 owner 的合法续租，不增加人类确认超时；回显不重开提示、不授新票或延长操作期限。真实 Replace 才按下面的单次操作规则受理。
 
@@ -239,7 +254,7 @@ IInputService 的实现负责操作前重新确认目标与权限，不能把 Wr
 
 旧或新计划含 Hy 时，宿主先校验候选，再由 PrepareModelChangeAsync 等待练习退役 ACK、隔离尚未派发的请求和完成回调、撤销许可；已派发写入按原 receipt 收束一次。随后客户端撤回 Ready，取消旧交换并等待自有进程退出证明，才启动唯一候选。发布结果分 Confirmed、Unchanged、Unconfirmed；仅候选已回收且持有原安装 lease 确认指针仍为精确旧代时，允许重新启动旧代并验证 hello。未知发布一律不可用；Hy 串行切换未确认退出时保持不可用。Argos 热替换失败可续用已确认旧连接，但下一次加载须先获同一进程所有者的退出证明。锁序保持安装 lease、lifecycle、serial。
 
-控制器释放时停止循环并释放其输入服务/观察器；模型客户端、设置和视图由宿主拥有。进程创建后清理未获证明时，工厂必须返回携带所有者的专用异常，客户端保留退出障碍；Dispose 本身不是退出证明。Linux 模型专用 supervisor 仅在无待收子进程且自有组不存在时确认退出；Windows 模型专用 owner 挂起创建根进程，确认 Job 限制、精确归属和三条私有管道后才恢复执行；Argos 保持原 kill-on-close 限制，Hy 使用单进程与 2.5 GiB 上限。原生根句柄已退出且 Job active=0 才确认回收，同步管道也受原交换期限约束。新 schema3 代的 model-use.lock 从启动前共享持有至该退出证明；安装 lease 下只有精确已知退休代的独占使用锁成功后才清理，旧无标记或退出未确认的代保留并报告空间未回收。最终 Dispose 未获证明时保留使用句柄至 App 结束，不将关闭 Job 当成删除许可；外部强杀时序不作绝对保证。Broker/Practice 进程工厂不变。Windows Hy 计划要求包内生产组件齐备；正式 ABI5 包、原生生命周期及安装切换的实际证据见 [Windows 当前候选](../platforms/windows/README.md#当前可验证候选)。stderr 持续排空且不保存正文。
+正常退出先等待 `ShutdownAsync`：停止新操作并撤新许可，同时保留原事件循环、输入通知和已派发继续体。源端许可只有原执行者确认未使用，或原写入回执到达，才能结束；TTL、容量淘汰、断连和撤权本身不证明没有写入。既有预算内仍缺结论的原操作按未知结果隔离原目标，不重放。同步源端回执只结算，不补写；异步路径只由原调用交结果。终态记录释放正文，只保留必要的关联及结果事实。交还摘要后，控制器才停止循环并释放输入服务/观察器；`Dispose` 保持异常兜底，模型客户端、设置和视图由宿主拥有。进程创建后清理未获证明时，工厂必须返回携带所有者的专用异常，客户端保留退出障碍；Dispose 本身不是退出证明。Linux 模型专用 supervisor 仅在无待收子进程且自有组不存在时确认退出；Windows 模型专用 owner 挂起创建根进程，确认 Job 限制、精确归属和三条私有管道后才恢复执行；Argos 保持原 kill-on-close 限制，Hy 使用单进程与 2.5 GiB 上限。原生根句柄已退出且 Job active=0 才确认回收，同步管道也受原交换期限约束。新 schema3 代的 model-use.lock 从启动前共享持有至该退出证明；安装 lease 下只有精确已知退休代的独占使用锁成功后才清理，旧无标记或退出未确认的代保留并报告空间未回收。最终 Dispose 未获证明时保留使用句柄至 App 结束，不将关闭 Job 当成删除许可；外部强杀时序不作绝对保证。Broker/Practice 进程工厂不变。Windows Hy 计划要求包内生产组件齐备；正式 ABI5 包、原生生命周期及安装切换的实际证据见 [Windows 当前候选](../platforms/windows/README.md#当前可验证候选)。stderr 持续排空且不保存正文。
 
 ## 分发与测试依赖
 

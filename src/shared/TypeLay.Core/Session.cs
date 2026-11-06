@@ -7,7 +7,7 @@ namespace TypeLay.Core;
 public sealed partial class Session
 {
     private Guid _id = Guid.NewGuid();
-    private long _revision, _configurationRevision, _changedAt;
+    private long _revision, _configurationRevision, _changedAt, _draftRevision;
     private InputSnapshot? _current, _editBasis, _suppressed;
     private InputSnapshot? _previewSource;
     private long _pendingSince, _previewRevision;
@@ -44,6 +44,9 @@ public sealed partial class Session
     // Display freshness only, never acceptance or write authorization.
     public bool HasCurrentPreview => _preview.Length > 0 && _previewRevision == _revision;
     public string Draft => _draft;
+    // Real edits advance this even when the user restores the same text (ABA).
+    // It orders draft observations; it never grants source or write authority.
+    public long DraftRevision => _draftRevision;
     public long Revision => _revision;
     public TranslationStyle? Style => _style;
     public bool ManualStyleLocked => _dormantEdit is not null || State is SessionState.EditingTranslation or SessionState.ReturningToSource
@@ -417,6 +420,7 @@ public sealed partial class Session
         _editConfiguration = _configurationRevision;
         _editInvalid = false;
         _draft = _candidate; // Never trim the user's text.
+        _draftRevision++;
         _job = null;
         _focus = FocusMember.Overlay;
         State = SessionState.EditingTranslation;
@@ -426,7 +430,10 @@ public sealed partial class Session
     public void ChangeDraft(string text)
     {
         if (State == SessionState.EditingTranslation)
+        {
             _draft = text;
+            _draftRevision++;
+        }
     }
 
     public bool RequestSourceReturn()
@@ -514,6 +521,13 @@ public sealed partial class Session
         _pendingWrite = plan;
         State = SessionState.Applying;
         return true;
+    }
+
+    public bool IsTargetQuarantined(TargetId target) => _quarantined.Contains(target);
+
+    public void QuarantineTarget(TargetId target)
+    {
+        _quarantined.Add(target);
     }
 
     public bool FinishWrite(WritePlan plan, WriteReceipt receipt)
@@ -665,8 +679,6 @@ public sealed partial class Session
     public void LeaveFamily()
     {
         _dormantEdit = null;
-        if (_pendingWrite is { } outstanding)
-            _quarantined.Add(outstanding.Expected.Target);
         _id = Guid.NewGuid();
         AppliedGlossary = null;
         _revision++;

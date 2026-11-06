@@ -140,7 +140,8 @@ internal static class Program
         (string Identity, CancellationTokenSource Cancellation)? editorSnapshot = null;
         long modelRevision = 0;
         using var controller = new SessionController(settings, model, view, input, input, loop,
-            async binding => (await link.Ask("retireAutomaticPractice", binding, timeoutMs: 2000)).ValueKind == JsonValueKind.True);
+            async binding => (await link.Ask("retireAutomaticPractice", binding, timeoutMs: 2000)).ValueKind == JsonValueKind.True,
+            sourceInteraction: view);
         SettingsDraftRequest? pendingSettingsDraft = null;
         (TranslationSettingsRequest Request, CancellationTokenSource Cancellation)? translationChange = null;
         LanguageConfigurationOpening? languageConfiguration = null;
@@ -271,43 +272,20 @@ internal static class Program
             opening.Saving = true;
             try
             {
-                if (!await controller.PrepareSettingsChangeAsync(next) || !LanguageCurrent(opening))
-                {
-                    if (ReferenceEquals(languageConfiguration, opening))
-                        RetireLanguageConfiguration("retirement-unconfirmed");
-                    return new
-                    {
-                        saved = false,
-                        reason = "configuration-retired"
-                    };
-                }
-                // No await between this final identity check and persistence.
-                settings.Update(opening.Revision, next);
-                if (ReferenceEquals(languageConfiguration, opening))
-                    RetireLanguageConfiguration("saved");
+                var result = await settings.CommitAsync(opening.Revision, next,
+                    controller.PrepareSettingsChangeAsync, () => LanguageCurrent(opening));
+                if (ReferenceEquals(languageConfiguration, opening) && (result.Saved
+                    || result.Reason is "canceled" or "settings-changed" or "practice-retirement-unconfirmed"))
+                    RetireLanguageConfiguration(result.Saved ? "saved" : "configuration-retired");
                 return new
                 {
-                    saved = true,
-                    reason = "saved"
-                };
-            }
-            catch (SettingsConflictException)
-            {
-                if (ReferenceEquals(languageConfiguration, opening))
-                    RetireLanguageConfiguration("settings-changed");
-                return new
-                {
-                    saved = false,
-                    reason = "configuration-retired"
-                };
-            }
-            catch (SettingsPersistenceException)
-            {
-                // Only a still-current configuration can offer an explicit retry.
-                return new
-                {
-                    saved = false,
-                    reason = "save-unconfirmed"
+                    saved = result.Saved,
+                    reason = result.Saved ? result.State == SettingsCommitState.CommittedNotificationFailed
+                        ? "saved-notification-failed" : "saved"
+                        : result.Reason is "canceled" or "settings-changed" or "practice-retirement-unconfirmed"
+                            ? "configuration-retired" : "save-unconfirmed",
+                    revision = result.Revision,
+                    message = SettingsCommitPresentation.Message(result)
                 };
             }
             finally { opening.Saving = false; }
@@ -425,15 +403,19 @@ internal static class Program
                 RetireLanguageConfiguration("catalog-changed");
         }
 
-        async Task<bool> ApplySettings(UserSettings next)
+        Task<SettingsCommitResult> CommitSettings(UserSettings next) =>
+            settings.CommitAsync(settings.Revision, next, controller.PrepareSettingsChangeAsync);
+        async Task<bool> ApplySettings(UserSettings next) => (await CommitSettings(next)).Saved;
+        object CommitResponse(SettingsCommitResult result) => new
         {
-            var expected = settings.Value;
-            long expectedRevision = settings.Revision;
-            if (!await controller.PrepareSettingsChangeAsync(next) || !ReferenceEquals(expected, settings.Value))
-                return false;
-            settings.Update(expectedRevision, next);
-            return true;
-        }
+            saved = result.Saved,
+            state = result.State.ToString(),
+            revision = result.Revision,
+            startup = result.Startup.ToString(),
+            requestedStartup = result.RequestedStartup,
+            reason = result.Reason,
+            message = SettingsCommitPresentation.Message(result)
+        };
         void Status() => link.Send("status", new
         {
             model = model.Status,
@@ -557,16 +539,25 @@ internal static class Program
                         view.ResumeRequested?.Invoke(revision);
                     break;
                 case "quit":
-                    loop.Quit();
+                    _ = QuitAfterSettlement();
                     break;
             }
         };
         bool started = false;
         Task modelStart = Task.CompletedTask;
+        async Task QuitAfterSettlement()
+        {
+            await controller.ShutdownAsync();
+            loop.Quit();
+        }
         link.Request = async (operation, value) =>
         {
+            if (controller.IsClosing && operation != "shutdown")
+                return null;
             switch (operation)
             {
+                case "shutdown":
+                    return await controller.ShutdownAsync();
                 case "start":
                     if (started)
                         return false;
@@ -701,40 +692,9 @@ internal static class Program
                     pendingSettingsDraft = draft;
                     try
                     {
-                        if (!await controller.PrepareSettingsChangeAsync(updated!))
-                            return new
-                            {
-                                saved = false,
-                                message = "练习尚未确认结束，设置未保存。请重启 TypeLay 后重试。"
-                            };
-                        if (!ReferenceEquals(pendingSettingsDraft, draft))
-                            return new
-                            {
-                                saved = false,
-                                message = "本次保存已取消。"
-                            };
-                        if (!ReferenceEquals(expectedSettings, settings.Value))
-                            return new
-                            {
-                                saved = false,
-                                message = "设置已更改，请重新保存。"
-                            };
-                        // The owner loop cannot process a cancellation between
-                        // this final identity check and the synchronous commit.
-                        settings.Update(updated!);
-                        return new
-                        {
-                            saved = true,
-                            message = SettingsDraftPresentation.Create().SavedMessage
-                        };
-                    }
-                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
-                    {
-                        return new
-                        {
-                            saved = false,
-                            message = SettingsDraftPresentation.Create().InvalidMessage
-                        };
+                        var result = await settings.CommitAsync(settings.Revision, updated!,
+                            controller.PrepareSettingsChangeAsync, () => ReferenceEquals(pendingSettingsDraft, draft));
+                        return CommitResponse(result);
                     }
                     finally
                     {
@@ -886,11 +846,11 @@ internal static class Program
                     return OverlayPlacement.Place(placement.Input, placement.Work, placement.Width,
                         placement.Height, placement.Gap, placement.MinimumHeight);
                 case "applicationEnabled":
-                    object ApplicationPolicyResult(bool saved, string code) => new
+                    object ApplicationPolicyResult(bool saved, string code, long? revision = null) => new
                     {
                         saved,
                         code,
-                        settingsRevision = saved ? (long?)settings.Revision : null
+                        settingsRevision = saved ? revision : null
                     };
                     if (!ExactObject(value, "application", "enabled", "expectedSettingsRevision")
                         || value.GetProperty("application").ValueKind != JsonValueKind.String
@@ -909,19 +869,13 @@ internal static class Program
                     var remainingApplications = settings.Value.Excluded.Where(item => !item.Equals(policyApplication, StringComparison.OrdinalIgnoreCase)).ToArray();
                     if (!value.GetProperty("enabled").GetBoolean() && remainingApplications.Length >= 256)
                         return ApplicationPolicyResult(false, "application-capacity");
-                    try
+                    var policyResult = await CommitSettings(settings.Value with
                     {
-                        bool saved = await ApplySettings(settings.Value with
-                        {
-                            ExcludedApplications = value.GetProperty("enabled").GetBoolean()
-                                ? remainingApplications : [.. remainingApplications, policyApplication]
-                        });
-                        return ApplicationPolicyResult(saved, saved ? "application-saved" : "settings-changed");
-                    }
-                    catch (SettingsPersistenceException)
-                    {
-                        return ApplicationPolicyResult(false, "application-save-failed");
-                    }
+                        ExcludedApplications = value.GetProperty("enabled").GetBoolean()
+                            ? remainingApplications : [.. remainingApplications, policyApplication]
+                    });
+                    return ApplicationPolicyResult(policyResult.Saved, policyResult.Saved ? "application-saved"
+                        : policyResult.Reason == "persistence-failed" ? "application-save-failed" : "settings-changed", policyResult.Revision);
                 case "getApplicationList":
                     if (!ExactObject(value, "knownApplications")
                         || !ApplicationIdentities(value.GetProperty("knownApplications"), out var knownApplications))
@@ -933,11 +887,11 @@ internal static class Program
                         settingsRevision = settings.Revision
                     };
                 case "changeApplicationList":
-                    object ApplicationListResult(bool saved, string code) => new
+                    object ApplicationListResult(bool saved, string code, long? revision = null) => new
                     {
                         saved,
                         code,
-                        settingsRevision = saved ? (long?)settings.Revision : null
+                        settingsRevision = saved ? revision : null
                     };
                     if (!ExactObject(value, "application", "included", "expectedSettingsRevision", "knownApplications")
                         || value.GetProperty("application").ValueKind != JsonValueKind.String
@@ -963,23 +917,13 @@ internal static class Program
                         .Order(StringComparer.OrdinalIgnoreCase).ToArray();
                     if (nextMembers.Length > 256)
                         return ApplicationListResult(false, "application-capacity");
-                    try
+                    var membershipResult = await CommitSettings(settings.Value with
                     {
-                        bool saved = await ApplySettings(settings.Value with
-                        {
-                            ManagedApplications = nextMembers,
-                            ApplicationListCustomized = true
-                        });
-                        return ApplicationListResult(saved, saved ? "application-list-saved" : "settings-changed");
-                    }
-                    catch (SettingsPersistenceException)
-                    {
-                        return ApplicationListResult(false, "application-save-failed");
-                    }
-                    catch (SettingsConflictException)
-                    {
-                        return ApplicationListResult(false, "settings-changed");
-                    }
+                        ManagedApplications = nextMembers,
+                        ApplicationListCustomized = true
+                    });
+                    return ApplicationListResult(membershipResult.Saved, membershipResult.Saved ? "application-list-saved"
+                        : membershipResult.Reason == "persistence-failed" ? "application-save-failed" : "settings-changed", membershipResult.Revision);
                 case "manageApplication":
                     if (value.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(value.GetString())
                         || value.GetString()!.Length > 128 || value.GetString()!.Any(char.IsControl))
@@ -989,17 +933,10 @@ internal static class Program
                         return true;
                     if (settings.Value.Managed.Length >= 256)
                         return false;
-                    try
+                    return await ApplySettings(settings.Value with
                     {
-                        return await ApplySettings(settings.Value with
-                        {
-                            ManagedApplications = [.. settings.Value.Managed, managedApplication]
-                        });
-                    }
-                    catch (SettingsPersistenceException)
-                    {
-                        return false;
-                    }
+                        ManagedApplications = [.. settings.Value.Managed, managedApplication]
+                    });
                 case "togglePause":
                     if (value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined))
                         return false;
@@ -1013,15 +950,10 @@ internal static class Program
                         || value.EnumerateObject().Any(property => property.Name is not ("enabled" or "mode" or "source" or "target"))))
                         return false;
                     if (!TryApplyTraySettings(value, settings.Value, out var traySettings))
-                        return false;
-                    try
-                    {
-                        return await ApplySettings(traySettings);
-                    }
-                    catch (SettingsPersistenceException)
-                    {
-                        return false;
-                    }
+                        return operation == "settingsPatch"
+                            ? CommitResponse(new(SettingsCommitState.NotCommitted, settings.Revision, Reason: "invalid-settings")) : false;
+                    var trayResult = await CommitSettings(traySettings);
+                    return operation == "settingsPatch" ? CommitResponse(trayResult) : trayResult.Saved;
                 case "settings":
                     // The ordinary DTO cannot write or clear dedicated preferences,
                     // even when an old form was opened before a dedicated save.
@@ -1042,14 +974,11 @@ internal static class Program
                     if (next.Schema != 1 || next.Theme is not ("system" or "light" or "dark")
                         || next.Excluded.Length > 256 || next.Excluded.Any(app => string.IsNullOrWhiteSpace(app) || app.Length > 128))
                         return false;
-                    try
-                    {
-                        return await ApplySettings(next);
-                    }
-                    catch (SettingsPersistenceException)
-                    {
-                        return false;
-                    }
+                    var settingsResult = await CommitSettings(next);
+                    // The legacy full DTO has no outcome payload. Unknown or
+                    // partial system effects retain its unconfirmed response.
+                    return settingsResult.Startup != SettingsStartupEffect.NotRequested && !settingsResult.Saved
+                        ? null : settingsResult.Saved;
                 case "translateEditorSnapshot":
                     if (editorSnapshot is not null || value.ValueKind != JsonValueKind.Object
                         || value.EnumerateObject().Count() != 2

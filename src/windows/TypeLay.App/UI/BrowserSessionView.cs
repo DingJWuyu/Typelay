@@ -5,7 +5,7 @@ using TypeLay.Windows;
 
 namespace TypeLay.App;
 
-internal sealed partial class BrowserSessionView : ISessionView
+internal sealed partial class BrowserSessionView : ISessionView, ISourceInteraction
 {
     private readonly BrowserInput _input;
     private readonly Action _settings;
@@ -122,27 +122,7 @@ internal sealed partial class BrowserSessionView : ISessionView
         _state = session.State;
         if (_glossary is { } entry && (entry.Token != context.Token || !GlossaryStateCurrent(entry)))
             CloseGlossary(entry.FormId);
-        var view = new
-        {
-            presentation,
-            viewContext = context,
-            sessionShortcuts = SettingsDraftPresentation.SessionShortcuts(context.Bindings),
-            canAccept,
-            state = session.State,
-            source = new
-            {
-                source.Target,
-                source.Bounds,
-                source.Ime
-            },
-            text = presentation.EditorOwnsText ? session.Draft : session.Preview,
-            editable = session.Candidate.Length > 0 && context.CanEdit,
-            status = statusOverride ?? presentation.Status,
-            sourceLanguage = settings.Source,
-            targetLanguage = settings.Target,
-            sourceLanguageLabel = ApplicationSupportPresentation.LanguageName(settings.Source),
-            targetLanguageLabel = ApplicationSupportPresentation.LanguageName(settings.Target)
-        };
+        var view = SessionPresentation.From(session, settings, canAccept, statusOverride, context)!;
         string key = JsonSerializer.Serialize(view, BrowserServer.Json);
         if (_last == key)
         {
@@ -220,7 +200,7 @@ internal sealed partial class BrowserSessionView : ISessionView
         }
         finally { _renewing = false; }
     }
-    public void RenderPaused(PauseAnchor anchor, long revision) => HideQuietly();
+    public void RenderPaused(PauseAnchor anchor, long revision, PresentationIdentity? identity = null) => HideQuietly();
     public void HideQuietly()
     {
         RetireEditorRegenerate();

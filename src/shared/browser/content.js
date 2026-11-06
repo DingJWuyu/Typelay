@@ -75,8 +75,47 @@
   const inputValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").get;
   const areaValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").get;
   let glossaryTransfer = null;
+  const writeSettlements = new Map();
+  let writeSettlementQueued = false, writeSettlementTimer = null;
+  function trackSourcePublication(data) {
+    const planId = data.permit?.plan?.id;
+    if (typeof planId !== "string" || !planId || typeof data.target !== "string"
+      || typeof data.generation !== "string" || consumed.has(planId) || writeSettlements.has(planId)) return;
+    writeSettlements.set(planId, {planId, target: data.target, generation: data.generation, inFlight: 0});
+    queueWriteSettlements();
+  }
+  function queueWriteSettlements() {
+    if (writeSettlementQueued || !writeSettlements.size) return;
+    writeSettlementQueued = true;
+    queueMicrotask(flushWriteSettlements);
+  }
+  function flushWriteSettlements() {
+    writeSettlementQueued = false;
+    clearTimeout(writeSettlementTimer); writeSettlementTimer = null;
+    if (!alive) { writeSettlements.clear(); return; }
+    for (const [id, expiry] of consumed) if (monoNow() > expiry) consumed.delete(id);
+    let next = Infinity;
+    const remaining = value => value && Number.isFinite(value.expiresAtPerformanceMs)
+      && Number.isFinite(value.expiresAtWallMs)
+      ? Math.min(value.expiresAtPerformanceMs - monoNow(), value.expiresAtWallMs - Date.now()) : -1;
+    for (const [planId, record] of writeSettlements) {
+      if (record.inFlight) continue;
+      let time = publication?.permit?.plan?.id === planId ? remaining(publication) : -1;
+      if (ordered && !ordered.revoked && !ordered.claimed && ordered.publication.permit?.plan?.id === planId)
+        time = Math.max(time, remaining(ordered.accept));
+      if (time >= 0) { next = Math.min(next, time); continue; }
+      // No current publication or original Ctrl ticket can execute this plan.
+      // Retire before emitting, so a reentrant/queued repeat cannot revive it.
+      writeSettlements.delete(planId);
+      consumed.set(planId, monoNow() + 250);
+      send("writeRetired", {planId, target: record.target, generation: record.generation});
+    }
+    if (Number.isFinite(next)) writeSettlementTimer = setTimeout(flushWriteSettlements, Math.max(1, Math.ceil(next) + 1));
+  }
   const send = (event, data) => {
     if (!alive) return;
+    if (event === "accepted") writeSettlements.delete(data.planId);
+    if (event === "writeRetired") { port.postMessage({event, data}); return; }
     const transfer = glossaryTransfer;
     if (transfer?.buffering) {
       if (transfer.messages.length < 8) { transfer.messages.push({event, data}); return; }
@@ -98,6 +137,7 @@
     ? "page" : configuration.shortcutDispatch;
   function sessionApplied() {
     return ["page", "native", "source-local"].includes(shortcutDispatch()) && typeof configuration?.sessionEnabled === "boolean"
+      && configuration.presentationVersion === 1
       && typeof configuration.generation === "string"
       && configuration.generation.length > 0
       && typeof configuration.accept === "string" && typeof configuration.exit === "string"
@@ -125,7 +165,7 @@
       && source && alive && !!field && !field.richText && !field.dead && !field.quarantined
       && allowedElement(field.element) && field.element.isConnected && field.element.getRootNode() === document
       && typeof (field.element instanceof HTMLTextAreaElement ? areaReplace : inputReplace) === "function";
-    return {generation: configuration?.generation ?? null, accept: configuration?.accept ?? null,
+    return {presentationVersion: sessionApplied() ? 1 : 0, generation: configuration?.generation ?? null, accept: configuration?.accept ?? null,
       exit: configuration?.exit ?? null, sourceReady: source, editorReady: !auxiliary && editorConfigured(field),
       shortcutDispatch: shortcutDispatch(), target: field?.id ?? null,
       sourceLocalAcceptanceVersion: sourceLocal ? 1 : 0,
@@ -140,10 +180,30 @@
   function retireOrdered() {
     if (ordered) ordered.revoked = true;
     ordered = null; // Physical press ownership lives until its real key-up.
+    queueWriteSettlements();
   }
   function retireEditorControl() { editorControl = null; } // Never clear held press ownership.
+  const presentationGuid = value => typeof value === "string"
+    && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value)
+    && value !== "00000000-0000-0000-0000-000000000000";
+  function presentationIdentity(view) {
+    const identity = view?.viewContext?.identity, form = view?.viewContext?.glossaryForm;
+    if (!identity || typeof identity !== "object" || Array.isArray(identity)
+      || Object.keys(identity).length !== 5 || identity.version !== 1
+      || !presentationGuid(identity.interactionId)
+      || !Number.isSafeInteger(identity.displaySequence) || identity.displaySequence <= 0
+      || !Number.isSafeInteger(identity.draftRevision) || identity.draftRevision < 0
+      || !Number.isSafeInteger(identity.actionRevision) || identity.actionRevision <= 0) return null;
+    if (form !== undefined && form !== null && (typeof form !== "object" || Array.isArray(form)
+      || Object.keys(form).length !== 2 || !presentationGuid(form.formId) || typeof form.current !== "boolean")) return null;
+    return identity;
+  }
+  const sameInteraction = (before, after) => !!before && !!after && before.interactionId === after.interactionId;
+  const sameAction = (before, after) => sameInteraction(before, after) && before.actionRevision === after.actionRevision;
+  const sameDraftAction = (before, after) => sameAction(before, after) && before.draftRevision === after.draftRevision;
   function viewCurrent(field, data) {
-    if (!field || !sessionApplied() || data.generation !== configuration.generation) return false;
+    if (!field || !sessionApplied() || data.generation !== configuration.generation
+      || !presentationIdentity(data.view)) return false;
     if (data.view?.state === "Paused") return true; // Metadata-only pause has its own revision.
     const context = data.view?.viewContext;
     return configuration.sessionEnabled && context?.token?.target?.value === field.id
@@ -654,6 +714,15 @@
   }
   const rejection = reason => ({status: "RejectedBeforeMutation", reason});
   function write(field, request, direct, ticket = null) {
+    const record = !direct ? writeSettlements.get(request.plan?.id) : null;
+    if (record) record.inFlight++;
+    try { return writeAttempt(field, request, direct, ticket); }
+    finally {
+      if (record) record.inFlight--;
+      queueWriteSettlements();
+    }
+  }
+  function writeAttempt(field, request, direct, ticket) {
     drainMutations();
     const plan = request.plan, basis = request.authority, approval = direct ? request.approved : basis;
     const expected = plan?.expected, applied = configuration;
@@ -922,6 +991,7 @@
     }
   }
   function refreshHint() {
+    queueWriteSettlements();
     clearTimeout(hintTimer); hintTimer = null;
     const current = overlay;
     if (!current || current.paused) return;
@@ -1017,9 +1087,17 @@
   }
   function render(field, data) {
     if (!viewCurrent(field, data)) return {visible: false};
-    if (overlay && overlay.field === field && data.revision < (overlay.revision || 0)) {
+    if (overlay && overlay.field === field && (data.revision < (overlay.revision || 0)
+      || presentationIdentity(data.view).displaySequence < overlay.identity.displaySequence)) {
       return {visible: overlay.host.isConnected, editing: overlay.editing};
     }
+    const identity = presentationIdentity(data.view);
+    if (overlay?.field === field && overlay.generation === data.generation
+      && (identity.actionRevision < overlay.identity.actionRevision
+        || identity.displaySequence === overlay.identity.displaySequence && !sameDraftAction(overlay.identity, identity)
+        || sameInteraction(overlay.identity, identity) && (identity.draftRevision < overlay.identity.draftRevision
+          || data.view.state !== overlay.state || JSON.stringify(data.view.viewContext.token) !== JSON.stringify(overlay.viewToken))))
+      return {visible: false};
     const view = data.view, paused = view?.state === "Paused";
     if (paused) { retireOrdered(); publication = shortcut = null; }
     // A paused view has no capture. Echoing its metadata authority establishes
@@ -1254,7 +1332,7 @@
       const setMoreOpen = (open, previous = overlay?.host.getBoundingClientRect()) => {
         if (overlay) overlay.menuContext = open ? {
           field: overlay.field, generation: overlay.generation, revision: overlay.revision,
-          token: JSON.stringify(overlay.viewToken), actions: overlay.translationActions
+          token: JSON.stringify(overlay.viewToken), identity: overlay.identity, actions: overlay.translationActions
         } : null;
         menu.hidden = !open;
         more.setAttribute("aria-expanded", String(open));
@@ -1417,34 +1495,12 @@
     // A new view is authoritative immediately, including during a resize.
     // Land at its current layout rather than carrying an older revision's motion.
     cancelMotion(overlay);
-    const identityView = {...view};
-    if (view.viewContext && typeof view.viewContext === "object") {
-      identityView.viewContext = {...view.viewContext};
-      delete identityView.viewContext.translationActions;
-    }
-    const viewIdentity = JSON.stringify({generation: data.generation, revision: data.revision, view: identityView});
-    const moreDraftView = {...identityView};
-    delete moreDraftView.text;
-    const moreDraftIdentity = JSON.stringify({generation: data.generation, revision: data.revision, view: moreDraftView});
-    // Only the current editor's exact draft echo may keep this inert opening.
-    // Every other view difference still retires it; actions keep their own gate.
-    const keepMoreForDraftEcho = !overlay.menu.hidden && overlay.menuContext
-      && menuOpeningCurrent(overlay, overlay.menuContext) && overlay.moreDraftIdentity === moreDraftIdentity
-      && overlay.field === field && overlay.generation === data.generation && overlay.revision === data.revision
-      && JSON.stringify(overlay.viewToken) === JSON.stringify(view.viewContext?.token)
-      && overlay.state === "EditingTranslation" && overlay.editing && overlay.editable && !overlay.editor.readOnly
-      && view.state === "EditingTranslation" && view.presentation.editorOwnsText && !paused
-      && editorConfigured(field) && view.editable && view.viewContext?.canEdit === true
-      && view.text === overlay.editor.value;
-    const regenerateDraftView = {...view};
-    delete regenerateDraftView.text;
-    // Unlike inert More, a confirmation also keeps the exact action settings.
-    const regenerateDraftIdentity = JSON.stringify({generation: data.generation, revision: data.revision, view: regenerateDraftView});
     const confirmation = overlay.regenerateConfirmation;
     const keepConfirmationForDraftEcho = confirmation && !overlay.editorReturn
       && menuActionCurrent(overlay, confirmation.opened)
-      && confirmation.draftIdentity === overlay.regenerateDraftIdentity
-      && confirmation.draftIdentity === regenerateDraftIdentity
+      && sameDraftAction(confirmation.identity, overlay.identity)
+      && sameAction(confirmation.identity, identity)
+      && identity.draftRevision >= confirmation.identity.draftRevision
       && overlay.field === field && overlay.generation === data.generation && overlay.revision === data.revision
       && JSON.stringify(overlay.viewToken) === JSON.stringify(view.viewContext?.token)
       && overlay.state === "EditingTranslation" && overlay.editing && overlay.editable && !overlay.editor.readOnly
@@ -1461,7 +1517,8 @@
       && overlay.field === field && overlay.generation === data.generation && pending.revision === data.revision
       && overlay.revision === pending.revision && pending.tokenKey === JSON.stringify(overlay.viewToken)
       && pending.tokenKey === JSON.stringify(view.viewContext?.token)
-      && echo.draftIdentity === overlay.regenerateDraftIdentity && echo.draftIdentity === regenerateDraftIdentity
+      && sameDraftAction(echo.identity, overlay.identity) && sameAction(echo.identity, identity)
+      && identity.draftRevision >= echo.identity.draftRevision
       && overlay.state === "EditingTranslation" && overlay.editing && overlay.editable && !overlay.editor.readOnly
       && view.state === "EditingTranslation" && view.presentation.editorOwnsText && !paused
       && editorConfigured(field) && configuration.editorRegenerateVersion === 1
@@ -1473,35 +1530,46 @@
     // Once interrupted, even an identical later render cannot revive the echo.
     // Keep the old return receipt for the existing late-Draft/ACK settlement.
     if (pending && !keepPendingForDraftEcho) pending.echo = null;
-    const newView = overlay.viewIdentity !== viewIdentity;
+    const newView = !sameInteraction(overlay.identity, identity);
+    const newDraftAction = !sameDraftAction(overlay.identity, identity);
     if (newView) {
       overlay.retryPending = false;
-      if (!keepMoreForDraftEcho) closeMore(overlay);
+      closeMore(overlay);
     }
     // This question has not issued Replace. Only its unchanged draft's exact
     // echo may keep the same DOM; a later input (including ABA) cannot revive it.
     // Keep the existing display lease/renewal. Only a real Replace makes t0.
-    if (confirmation && (newView || confirmation.draftIdentity !== regenerateDraftIdentity)
-      && !keepConfirmationForDraftEcho)
+    if (confirmation && !keepConfirmationForDraftEcho)
       closeRegenerate(overlay, overlay.editing && view.state === "EditingTranslation"
         && editorConfigured(field) && view.editable && view.viewContext?.canEdit === true
         && JSON.stringify(view.viewContext?.token) === JSON.stringify(overlay.viewToken)
         && liveDeadline(overlay));
+    // A failed exact echo retires the unassociated pending Replace even when
+    // its shared interaction is unchanged. Returning retains the original
+    // receipt so later draft/ACK settlement still follows the existing path.
+    if (pending && !keepPendingForDraftEcho && (view.state !== "ReturningToSource"
+      || view.viewContext?.token?.target?.value !== overlay.field.id
+      || view.viewContext?.token?.commandGeneration !== overlay.generation)) overlay.editorReturn = null;
     if (newView) {
-      // Retain only the receipt of this already requested handoff. No new view
-      // gets an action until the host supplies the actual operation identity.
-      if (pending && !keepPendingForDraftEcho && (view.state !== "ReturningToSource"
-        || view.viewContext?.token?.target?.value !== overlay.field.id
-        || view.viewContext?.token?.commandGeneration !== overlay.generation)) overlay.editorReturn = null;
-      retireEditorControl();
       if (overlay.glossaryOpening && (data.revision !== overlay.glossaryOpening.revision
         || JSON.stringify(view.viewContext?.token) !== overlay.glossaryOpening.tokenKey)) overlay.glossaryOpening = null;
       if (overlay.glossary && (data.revision !== overlay.glossary.revision
         || JSON.stringify(view.viewContext?.token) !== overlay.glossary.tokenKey)) closeGlossary(false);
     }
-    overlay.viewIdentity = viewIdentity;
-    overlay.moreDraftIdentity = moreDraftIdentity;
-    overlay.regenerateDraftIdentity = regenerateDraftIdentity;
+    if (newDraftAction) retireEditorControl();
+    // A late shared ACK may catch up with this exact unchanged local draft.
+    // Keep the existing confirmation/operation and its original deadline.
+    if (keepConfirmationForDraftEcho) confirmation.identity = identity;
+    if (keepPendingForDraftEcho) echo.identity = identity;
+    const form = overlay.glossary, formState = view.viewContext.glossaryForm;
+    if (form && formState?.formId === form.entry.formId && !formState.current) {
+      form.current = false;
+      form.source.readOnly = form.target.readOnly = true;
+      form.scope.disabled = true;
+      form.save.setAttribute("aria-disabled", "true");
+    }
+    if (form && formState?.formId !== form.entry.formId) closeGlossary(false);
+    overlay.identity = identity;
     // Only successful display updates set the bounds for a future Ctrl. An
     // existing editor ticket keeps its original copied bounds through renewal.
     overlay.expiresAtPerformanceMs = deadline(data.expiresAtMs, 800);
@@ -1634,7 +1702,8 @@
     // proves no action eligibility and never extends its original display lease.
     return !!current && overlay === current && liveDeadline(current) && !current.paused
       && current.field === opened.field && current.revision === opened.revision
-      && current.generation === opened.generation && JSON.stringify(current.viewToken) === opened.token;
+      && current.generation === opened.generation && sameInteraction(current.identity, opened.identity)
+      && JSON.stringify(current.viewToken) === opened.token;
   }
   function menuActionCurrent(current, opened) {
     return menuOpeningCurrent(current, opened) && !current.composing && current.field.ime === "Clear";
@@ -1662,6 +1731,7 @@
   function completeRegenerate(current, confirmation, replace, event) {
     if (overlay !== current || current.regenerateConfirmation !== confirmation) return;
     const allowed = menuActionCurrent(current, confirmation.opened)
+      && sameDraftAction(current.identity, confirmation.identity)
       && current.editor.value === confirmation.draft && current.draftRevision === confirmation.draftRevision;
     const editing = current.editing && current.state === "EditingTranslation"
       && configuration?.editorRegenerateVersion === 1;
@@ -1672,7 +1742,7 @@
       ? Math.floor(clock.lower + event.timeStamp) : NaN;
     const echo = editing && Number.isSafeInteger(queuedAtMs)
       ? {field: current.field, configuration, draft: confirmation.draft,
-        draftRevision: confirmation.draftRevision, draftIdentity: confirmation.draftIdentity,
+        draftRevision: confirmation.draftRevision, identity: confirmation.identity,
         expiresAtPerformanceMs: queuedAtMs + 500 - clock.upper,
         expiresAtWallMs: queuedAtMs + 500 - clock.upperWall} : null;
     closeRegenerate(current, true);
@@ -1685,7 +1755,7 @@
         // choice cannot inherit a newer token, settings or a later (even ABA) draft.
         if (overlay !== current || !echo || echo.configuration !== configuration || !current.editing || !current.editable
           || current.editor.readOnly || !menuActionCurrent(current, confirmation.opened)
-          || current.regenerateDraftIdentity !== echo.draftIdentity
+          || !sameDraftAction(current.identity, echo.identity)
           || current.draftRevision !== echo.draftRevision || current.editor.value !== echo.draft) return;
         current.editorReturn = {token: current.viewToken, tokenKey: JSON.stringify(current.viewToken),
           revision: current.revision, queuedAtMs, actionId: null, operation: null, returned: false, echo};
@@ -1702,7 +1772,7 @@
     box.setAttribute("aria-label", uiText("替换你修改过的译文？"));
     label.textContent = uiText("替换你修改过的译文？"); box.append(label);
     const confirmation = {box, draft, draftRevision: current.draftRevision,
-      draftIdentity: current.regenerateDraftIdentity, opened, buttons: []};
+      identity: current.identity, opened, buttons: []};
     for (const [text, replace] of [["保留", false], ["替换", true]]) {
       const button = document.createElement("button"); button.textContent = uiText(text);
       button.addEventListener("pointerdown", event => event.preventDefault());
@@ -1937,7 +2007,7 @@
     const save = document.createElement("button"), cancel = document.createElement("button"), status = document.createElement("span");
     save.textContent = "保存"; cancel.textContent = "取消"; status.setAttribute("role", "status");
     const form = {entry, tokenKey, field: current.field, state: current.state, generation: current.generation, revision: current.revision,
-      box, source, target, scope, save, cancel, status, pending: false, states: new Map([[source, "Unknown"], [target, "Unknown"]])};
+      box, source, target, scope, save, cancel, status, current: true, pending: false, states: new Map([[source, "Unknown"], [target, "Unknown"]])};
     for (const field of [source, target]) {
       for (const kind of ["compositionstart", "compositionupdate", "compositionend", "beforeinput", "input"]) {
         field.addEventListener(kind, event => {
@@ -1963,7 +2033,7 @@
     }
     cancel.addEventListener("click", event => { if (event.isTrusted && glossaryCurrent(form)) closeGlossary(); });
     save.addEventListener("click", event => {
-      if (!event.isTrusted || !glossaryCurrent(form) || form.pending || form.saved || form.unknown) return;
+      if (!event.isTrusted || !glossaryCurrent(form) || !form.current || form.pending || form.saved || form.unknown) return;
       const focus = publishGlossaryFocus();
       if (focus?.ime !== "Clear") { status.textContent = uiText("请先完成两个词的输入。"); return; }
       const direction = scope.value === "" ? null : entry.directions[Number(scope.value)];
@@ -2015,8 +2085,8 @@
       form.saved = true; form.save.setAttribute("aria-disabled", "true"); form.cancel.textContent = uiText("关闭");
       form.status.textContent = uiText(typeof result.message === "string" ? result.message : message);
     } else if (result?.saved === false && !["glossary-unconfirmed", "glossary-outcome-unknown"].includes(result.code)) {
-      form.source.readOnly = form.target.readOnly = false; form.scope.disabled = false;
-      form.save.removeAttribute("aria-disabled");
+      form.source.readOnly = form.target.readOnly = !form.current; form.scope.disabled = !form.current;
+      if (form.current) form.save.removeAttribute("aria-disabled");
       form.status.textContent = uiText(typeof result.message === "string" ? result.message : "术语未保存，请检查词条或重新打开表单。");
     } else {
       // An unknown transport result may already have committed. Never retry it.
@@ -2131,8 +2201,9 @@
           direct: configuration.direct} : {applied: false};
       case "capture": return capture(field, data.authority, data.requireFocused === true);
       case "publish": {
+        trackSourcePublication(data);
         if (!sameOrderedPublication(data)) retireOrdered();
-        if (!sessionCurrent(data.generation) || !sourceConfigured(field)) return {published: false};
+        if (!sessionCurrent(data.generation) || !sourceConfigured(field) || consumed.has(data.permit?.plan?.id)) return {published: false};
         const previous = publication, oldBasis = previous?.authority, basis = data.authority;
         const sameSource = field && previous?.target === field.id && data.target === field.id
           && field.content === basis?.contentRevision && field.input === basis?.inputRevision
@@ -2432,7 +2503,7 @@
     const selected = model?.selection || selection(field);
     return (!field.richText || model?.version === ticket.richVersion && model.text === ticket.source
         && field.richVersion === ticket.richVersion)
-      && current.viewIdentity === ticket.viewIdentity && current.editing && current.editable
+      && sameDraftAction(current.identity, ticket.identity) && current.editing && current.editable
       && !current.paused && !current.composing && !current.editor.readOnly
       && current.editor === ticket.editor && current.editor.value === ticket.draft
       && document.visibilityState === "visible" && document.hasFocus()
@@ -2454,7 +2525,7 @@
     if (!current || !field || field.dead || field.quarantined || field.ime !== "Clear"
       || !liveDeadline(current)) return;
     const ticket = {overlay: current, field, editor: current.editor, configuration,
-      viewIdentity: current.viewIdentity, revision: current.revision, generation: current.generation,
+      identity: current.identity, revision: current.revision, generation: current.generation,
       authority: current.authority, content: field.content, input: field.input, focus: field.focus,
       source: read(field), selection: null, richVersion: field.richVersion, draft: current.editor.value,
       controlCode: event.code, controlPress: press,

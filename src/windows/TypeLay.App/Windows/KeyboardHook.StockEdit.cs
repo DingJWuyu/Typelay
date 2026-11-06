@@ -13,7 +13,9 @@ internal sealed partial class KeyboardHook
         // Decode on publication, never in the low-level callback.
         internal WindowsTarget Target { get; } = Lease.Source.Target.AsWindows();
         internal TaskCompletionSource Delivered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal int Claimed;
+        // Claiming installation races publication retirement. Once an install
+        // starts, only the original source response can prove this plan unused.
+        internal int Installation, Claimed;
         internal bool Retiring, CompletionQueued;
     }
     private sealed record StockClaim(StockCandidate Candidate, long AcceptedAtMs);
@@ -61,11 +63,13 @@ internal sealed partial class KeyboardHook
             && WindowsInterruptClock.NowMs <= existing.Permit.ExpiresAtMs)
         {
             Volatile.Write(ref _stockCurrentLease, lease);
+            if (existing.Permit.Plan.Id != permit.Plan.Id)
+                RetireUnusedAcceptance(lease, permit);
             return true; // Keep the original authorization and its original deadline.
         }
-        _gate.Revoke();
+        RevokeAcceptanceGate();
         RevokeStockCandidate();
-        if (permit is not null && Volatile.Read(ref _stockClosed) == 0)
+        if (permit is not null && Volatile.Read(ref _stockClosed) == 0 && Volatile.Read(ref _stockBlocked) == 0)
         {
             Volatile.Write(ref _stockCurrentLease, lease);
             Volatile.Write(ref _stockLatest, new(lease, permit, keys.Accept, chord));
@@ -74,15 +78,28 @@ internal sealed partial class KeyboardHook
             // original deadline waiting for the next controller poll.
             PumpStockAcceptance();
         }
+        else if (permit is not null)
+            RetireUnusedAcceptance(lease, permit);
         return true;
     }
 
     private void RevokeStockCandidate()
     {
-        Interlocked.Exchange(ref _stockLatest, null);
+        if (Interlocked.Exchange(ref _stockLatest, null) is { } candidate)
+            RetireUninstalledStockCandidate(candidate);
         Interlocked.Exchange(ref _stockCurrentLease, null);
         Interlocked.Exchange(ref _stockInstalled, null);
         Volatile.Read(ref _stockActivation)?.Withdraw();
+    }
+
+    internal void RetireUnusedAcceptance(InputLease lease, AcceptancePermit permit) =>
+        _notices.Enqueue(new("write-retired", CommandGeneration: lease.CommandGeneration,
+            Target: permit.Plan.Expected.Target, RetiredUnusedPlanId: permit.Plan.Id));
+
+    private void RetireUninstalledStockCandidate(StockCandidate candidate)
+    {
+        if (Interlocked.CompareExchange(ref candidate.Installation, 2, 0) == 0)
+            RetireUnusedAcceptance(candidate.Lease, candidate.Permit);
     }
 
     private static bool StockLeaseMatches(InputLease original, InputLease current) =>
@@ -190,6 +207,11 @@ internal sealed partial class KeyboardHook
     private void PumpStockAcceptance()
     {
         ObserveStockNoticeDelivery(null);
+        if (Volatile.Read(ref _stockLatest) is { } latest && !StockCandidateCurrent(latest, WindowsInterruptClock.NowMs))
+        {
+            Interlocked.CompareExchange(ref _stockLatest, null, latest);
+            RetireUninstalledStockCandidate(latest);
+        }
         if (_stockExchange is null || Volatile.Read(ref _stockBlocked) != 0
             || Interlocked.CompareExchange(ref _stockWorker, 1, 0) != 0)
             return;
@@ -225,7 +247,7 @@ internal sealed partial class KeyboardHook
                     // uncertainty still fences this adapter, independently of UI settlement.
                     Interlocked.Exchange(ref _stockBlocked, 1);
                     RevokeStockCandidate();
-                    _gate.Revoke();
+                    RevokeAcceptanceGate();
                 }
                 var lease = claim.Candidate.Lease;
                 _notices.Enqueue(new("accept", claim.Candidate.Permit, claim.AcceptedAtMs,
@@ -250,6 +272,8 @@ internal sealed partial class KeyboardHook
                     Interlocked.Exchange(ref _stockBlocked, 1);
                     return; // Unknown owner is never replaced, even by a newer candidate.
                 }
+                if (retired is { Quiet: true, Claimed: false } && Volatile.Read(ref owner.Claimed) == 0)
+                    RetireUnusedAcceptance(owner.Lease, owner.Permit);
                 Interlocked.Exchange(ref _stockActivation, null)?.Dispose();
                 Interlocked.Exchange(ref _stockInstalled, null);
                 _stockOwner = null;
@@ -257,6 +281,8 @@ internal sealed partial class KeyboardHook
             if (Volatile.Read(ref _stockBlocked) != 0 || _stockOwner is not null
                 || Volatile.Read(ref _stockLatest) is not { } candidate
                 || !StockCandidateCurrent(candidate, WindowsInterruptClock.NowMs))
+                return;
+            if (Interlocked.CompareExchange(ref candidate.Installation, 1, 0) != 0)
                 return;
             _stockOwner = candidate; // Own even an install whose ACK is lost.
             var installed = await _stockExchange!("source-install", StockRequest(candidate, install: true));
@@ -267,7 +293,10 @@ internal sealed partial class KeyboardHook
                 // An unknown/mismatched ACK must retain ownership instead.
                 if (StockReplyMatches(installed, candidate) && !installed!.Installed
                     && installed.Quiet && !installed.Claimed)
+                {
+                    RetireUnusedAcceptance(candidate.Lease, candidate.Permit);
                     _stockOwner = null;
+                }
                 return;
             }
             var activation = new StockEditActivation(installed.Endpoint.Nonce, installed.Endpoint.Command,
@@ -285,13 +314,13 @@ internal sealed partial class KeyboardHook
             if (!StockCandidateCurrent(candidate, WindowsInterruptClock.NowMs))
             {
                 activation.Withdraw();
-                _gate.Revoke();
+                RevokeAcceptanceGate();
             }
         }
         catch (Exception error) when (error is not OutOfMemoryException)
         {
             RevokeStockCandidate();
-            _gate.Revoke();
+            RevokeAcceptanceGate();
             // Failure is not quiet. Preserve the native owner for exact retirement.
             if (Volatile.Read(ref _stockClaim) is { } claim)
             {
@@ -314,7 +343,7 @@ internal sealed partial class KeyboardHook
         Interlocked.Exchange(ref _stockDelivery, null)?.Delivered.TrySetResult();
         RevokeStockCandidate();
         Interlocked.Exchange(ref _stockActivation, null)?.Dispose();
-        _gate.Revoke();
+        RevokeAcceptanceGate();
     }
 
     private StockEditActivation? _stockActivation;

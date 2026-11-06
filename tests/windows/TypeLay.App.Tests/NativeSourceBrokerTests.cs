@@ -50,6 +50,7 @@ public sealed class NativeSourceBrokerTests
             AcceptKey: 9, Chord: SourceAcceptanceChord.Unmodified);
         var rejected = await Send(desktop, "source-install", owner);
         Assert.False(rejected.Installed);
+        Assert.True(rejected.Quiet); // This exact grant never reached the source.
         Assert.False(rejected.Claimed);
         Assert.Null(rejected.Endpoint);
 

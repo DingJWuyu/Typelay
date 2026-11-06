@@ -140,16 +140,23 @@ internal sealed partial class BrowserInput
         if (rejection != ObservationReason.Ready)
         {
             Revoke();
+            if (permit is not null && !_issued.ContainsKey(permit.Plan.Id))
+                RetireUnpublished(lease, permit);
             TraceObservation(ObservationStage.Publish, rejection);
             return;
         }
         _lease = lease;
         if (permit is not null)
         {
-            // Repeated publication of one plan renews only its actual issued permit.
-            _issued[permit.Plan.Id] = new(record!, lease, permit, permit.ExpiresAtMs + 2000);
-            while (_issued.Count > 128)
-                _issued.Remove(_issued.Keys.First());
+            // Retain the original association through configuration changes and
+            // source replies. Capacity refuses a new publication before sending.
+            if (!_issued.ContainsKey(permit.Plan.Id) && _issued.Count >= 128)
+            {
+                RetireUnpublished(lease, permit);
+                Revoke();
+                return;
+            }
+            _issued.TryAdd(permit.Plan.Id, new(record!, lease, permit, permit.ExpiresAtMs + 2000));
         }
         record!.Peer.Send("publish", new
         {
@@ -161,6 +168,9 @@ internal sealed partial class BrowserInput
         });
         TraceObservation(ObservationStage.Publish, ObservationReason.Ready);
     }
+    private void RetireUnpublished(InputLease lease, AcceptancePermit permit) =>
+        _notices.Enqueue((new("write-retired", CommandGeneration: lease.CommandGeneration,
+            Target: permit.Plan.Expected.Target, RetiredUnusedPlanId: permit.Plan.Id), 0));
     public void PublishShortcut(ShortcutLease lease)
     {
         var record = Observation(lease.Source);
@@ -1065,6 +1075,11 @@ internal sealed partial class BrowserInput
             Accepted(peer, route, value);
             return;
         }
+        if (name == "writeRetired")
+        {
+            RetiredUnused(peer, route, value);
+            return;
+        }
         if (name == "publication")
         {
             RememberPublication(peer, route, value);
@@ -1130,12 +1145,31 @@ internal sealed partial class BrowserInput
         if (!Guid.TryParse(String(value, "planId"), out var id) || !_issued.TryGetValue(id, out var issued)
             || issued.Observation.Peer != peer || issued.Observation.Route != route)
             return;
-        _issued.Remove(id);
-        _publication = null;
         long at = Number(value, "acceptedAtMs");
         var receipt = value.TryGetProperty("receipt", out var raw) ? Receipt(raw, issued.Observation, issued.Permit.Plan) : Unknown();
         if (at < issued.Permit.ObservedAtMs || at > issued.Permit.ExpiresAtMs)
             receipt = Unknown();
+        CompleteIssued(issued, receipt, at);
+    }
+    private void RetiredUnused(BrowserPeer peer, BrowserRoute route, JsonElement value)
+    {
+        if (value.ValueKind != JsonValueKind.Object || value.EnumerateObject().Count() != 3
+            || !Guid.TryParse(String(value, "planId"), out var id) || !_issued.TryGetValue(id, out var issued)
+            || issued.Observation.Peer != peer || issued.Observation.Route != route
+            || String(value, "target") != issued.Observation.Target.Value
+            || !Guid.TryParse(String(value, "generation"), out var generation)
+            || generation != issued.Lease.CommandGeneration)
+            return;
+        _issued.Remove(id);
+        if (_publication?.Plan == id)
+            _publication = null;
+        RetireUnpublished(issued.Lease, issued.Permit);
+    }
+    private void CompleteIssued(Issued issued, WriteReceipt receipt, long at)
+    {
+        _issued.Remove(issued.Permit.Plan.Id);
+        if (_publication?.Plan == issued.Permit.Plan.Id)
+            _publication = null;
         Trace("browser-accept-" + receipt.Status, new
         {
             reason = receipt.Reason
@@ -1144,7 +1178,7 @@ internal sealed partial class BrowserInput
             CommandGeneration: issued.Lease.CommandGeneration, CompletedReceipt: receipt,
             Target: issued.Observation.Target, SessionRevision: issued.Lease.SessionRevision), 0));
         if (receipt.Status == WriteStatus.OutcomeUnknown)
-            peer.Send("quarantine", new
+            issued.Observation.Peer.Send("quarantine", new
             {
                 target = issued.Observation.Target.Value
             });

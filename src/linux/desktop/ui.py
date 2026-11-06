@@ -473,12 +473,19 @@ class Tutorial:
             async with self.owner.settings_lock:
                 if not self.current(opening, revision) or self.pending is not token:
                     return
-                saved = await self.owner.host.ask("settingsPatch", patch)
-            if self.current(opening, revision) and self.pending is token and saved is not True:
+                response = await self.owner.host.ask("settingsPatch", patch)
+            saved = isinstance(response, dict) and response.get("saved") is True
+            warning = (
+                isinstance(response, dict)
+                and response.get("state") == "CommittedNotificationFailed"
+            )
+            if self.current(opening, revision) and self.pending is token and (not saved or warning):
                 self.message.set_text(
-                    self.owner.tr(
-                        "未保存，已恢复原设置。请检查权限或磁盘空间。",
-                        "Not saved; the previous setting was restored. Check permissions or disk space.",
+                    response["message"]
+                    if isinstance(response, dict) and isinstance(response.get("message"), str)
+                    else self.owner.tr(
+                        "保存结果未确认，请检查当前设置后重试。",
+                        "Save was not confirmed. Check the current settings and retry.",
                     )
                 )
         except (OSError, ValueError, EOFError, TimeoutError):
@@ -3959,8 +3966,11 @@ class Settings:
         self.settings_feedback_owned = False
         self.render_footer()
 
-    def report_save_result(self, saved, failure):
-        if saved:
+    def report_save_result(self, saved, failure, *, notice=None):
+        if notice:
+            self.message.set_text(notice)
+            self.settings_feedback_owned = True
+        elif saved:
             # An unrelated operation may have reported an error during this save.
             if self.settings_feedback_owned:
                 self.message.set_text("")
@@ -4334,17 +4344,24 @@ class Settings:
             if self.pending_settings.get(key) != value:
                 return
             try:
-                saved = await self.host.ask("settingsPatch", {key: value})
+                response = await self.host.ask("settingsPatch", {key: value})
             except (OSError, ValueError, EOFError, TimeoutError):
-                saved = None
+                response = None
             if self.pending_settings.get(key) == value:
                 self.pending_settings.pop(key, None)
                 self.configure(self.value)
+            saved = isinstance(response, dict) and response.get("saved") is True
+            message = (
+                response["message"]
+                if isinstance(response, dict) and isinstance(response.get("message"), str)
+                else "上次设置操作结果未确认，请打开设置检查。"
+            )
             self.report_save_result(
-                saved is True,
-                "上次设置操作结果未确认，请打开设置检查。"
-                if saved is None
-                else "未保存，已恢复原设置。请检查语言方向或系统权限。",
+                saved,
+                message,
+                notice=message
+                if saved and response.get("state") == "CommittedNotificationFailed"
+                else None,
             )
 
     async def save(self, *, confirmed_shortcuts=None, confirmation_baseline=None):
@@ -4444,6 +4461,9 @@ class Settings:
                 self.report_save_result(
                     saved,
                     self.localizer.shortcut_text(failure),
+                    notice=failure
+                    if saved and response.get("state") == "CommittedNotificationFailed"
+                    else None,
                 )
         except (OSError, ValueError, EOFError, TimeoutError):
             if self.pending_draft is identity:

@@ -16,7 +16,7 @@ using System.Windows.Media.Effects;
 using TypeLay.Core;
 namespace TypeLay.App;
 
-internal sealed partial class OverlayWindow : Window, ISessionView
+internal sealed partial class OverlayWindow : Window, ISessionView, ISourceInteraction
 {
     private readonly TextBox _editor;
     private readonly TextBlock _language, _status, _tabHint;
@@ -1239,7 +1239,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         if (trace)
             TraceRender(atMs, Stopwatch.GetElapsedTime(started).TotalMilliseconds, uiMs, textMs, positionTiming);
     }
-    public void RenderPaused(PauseAnchor anchor, long revision)
+    public void RenderPaused(PauseAnchor anchor, long revision, PresentationIdentity? identity = null)
     {
         RetireLanguageConfigurationForNewView();
         var display = Presentation.From(SessionState.Paused, false, hasPauseAnchor: true);

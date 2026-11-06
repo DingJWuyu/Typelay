@@ -5,6 +5,7 @@ validates native anchors, obtains Core approval before reading, and accounts
 for one-shot receipts. A late or missing receipt is never interpreted as success.
 """
 
+import copy
 import json
 import math
 import os
@@ -12,6 +13,7 @@ import socket
 import sys
 import uuid
 from collections import Counter, OrderedDict
+from dataclasses import dataclass
 
 from geometry import anchor_geometry
 from link import Link, RoutedReply
@@ -43,6 +45,50 @@ def refused(unknown=False):
     }
 
 
+@dataclass(frozen=True)
+class SourceConnection:
+    """Opaque connection identity for presentation, never native authority."""
+
+    connection_id: str
+    backend: str
+
+
+@dataclass(frozen=True)
+class SourcePresentation:
+    """A display snapshot with capabilities, without mutable native evidence."""
+
+    connection: SourceConnection
+    identity: str
+    window_epoch: int
+    foreground_epoch: int
+    source_glossary_supported: bool
+    editor_ready: bool
+    editor_regenerate_supported: bool
+
+
+@dataclass(frozen=True)
+class SourceGlossary:
+    connection: SourceConnection
+    form_id: str
+    token_json: str
+    revision: int
+
+
+@dataclass(frozen=True)
+class SourceConnectionFacts:
+    """Read-only diagnostics for application support, never capture authority."""
+
+    lifetime: str | None
+    connected: bool
+    backend: str
+    application: str
+    pid: int
+    observed_at_ms: int | None
+    preview: bool | None
+    tab_accept: bool | None
+    direct_replace: bool | None
+
+
 class Peer:
     def __init__(self, owner, connection, pid):
         self.owner = owner
@@ -60,6 +106,7 @@ class Peer:
         self.browser_active_route = None
         self.lifetime = None
         self.connection_id = str(uuid.uuid4())
+        self.source = None
         self.shortcut = None
         self.command_id = 0
         self.command_generation = None
@@ -91,6 +138,10 @@ class Peer:
             self.backend = data.get("backend", "gtk3")
             if self.backend not in ("gtk3", "gtk4", "qt6", "browser"):
                 raise ValueError("native-backend")
+            if self.backend != "browser" and (
+                type(data.get("presentationVersion")) is not int or data["presentationVersion"] != 1
+            ):
+                raise ValueError("native-presentation-version")
             if self.backend == "browser":
                 self.ancestors = process_lineage(self.pid)
                 self.started = self.ancestors.pop(self.pid, None)
@@ -104,6 +155,7 @@ class Peer:
             if self.hello_timer:
                 self.owner.glib.source_remove(self.hello_timer)
                 self.hello_timer = 0
+            self.source = SourceConnection(self.connection_id, self.backend)
             self.owner.configure_peer(self)
             self.owner.changed()
         else:
@@ -176,22 +228,25 @@ class Input:
     def __init__(self, glib, gdk, paths, host, tasks, *, browser_registration=None):
         self.glib, self.gdk, self.paths, self.host, self.tasks = glib, gdk, paths, host, tasks
         self.browser_registration = browser_registration or (lambda *_: None)
-        self.peers = set()
+        self._peers = set()
         self.observations = OrderedDict()
         self.frozen = OrderedDict()
         self.issued = OrderedDict()
         self.bound = None
-        self.bound_observation = None
+        self._bound_observation = None
         self.pause_observation = None
         self.pause_generation = 0
         self.enabled = None
         self.settings_generation = 0
         self.overlay_focused = False
         self.ui_event = lambda *_: None
-        self.language_peer_lost = lambda *_: None
-        self.glossary_focus_transfer = lambda *_: False
-        self.source_glossary_return = None
-        self.editor_regenerate = None
+        self._language_configuration = None
+        self._source_glossary = None
+        self._glossary_opening = None
+        self._source_glossary_return = None
+        self._editor_regenerate = None
+        self._presentation = None
+        self._editor_openings = {}
         self.user_epoch = self.source_epoch = self.foreground_epoch = 0
         self.window_epoch = self.content_epoch = 0
         self.last_focus = None
@@ -255,11 +310,11 @@ class Input:
         except BlockingIOError:
             return True
         try:
-            if len(self.peers) >= 64:
+            if len(self._peers) >= 64:
                 raise OSError("native-capacity")
             pid, _, _ = peer_credentials(connection)
             peer = Peer(self, connection, pid)
-            self.peers.add(peer)
+            self._peers.add(peer)
             self.clear_browser_capture()
         except OSError:
             connection.close()
@@ -280,6 +335,9 @@ class Input:
         )
 
     def lost(self, peer):
+        self._retire_source_operations(peer)
+        if self._bound_observation and self._bound_observation["peer"] is peer:
+            self._bound_observation = None
         self.language_peer_lost(peer)
         practice = (
             self.practice_authorization
@@ -295,13 +353,376 @@ class Input:
         self.clear_browser_capture()
         if self.published_plan and self.published_plan[0] is peer:
             self.invalidate_publication()
-        self.peers.discard(peer)
-        for collection in (self.observations, self.frozen, self.issued):
+        self._peers.discard(peer)
+        for plan_id, issued in list(self.issued.items()):
+            if issued["peer"] is peer:
+                self.finish_issued(plan_id, refused(True), quarantine=True)
+        for collection in (self.observations, self.frozen):
             for key, value in list(collection.items()):
                 if value["peer"] is peer:
                     collection.pop(key)
         if not self.closing:
             self.changed()
+
+    @staticmethod
+    def valid_opening_id(value):
+        try:
+            return (
+                isinstance(value, str)
+                and str(uuid.UUID(value)) == value
+                and uuid.UUID(value).int != 0
+            )
+        except ValueError:
+            return False
+
+    def language_owner(self, configuration):
+        # connection_id is minted by Peer, never accepted from native JSON.
+        return {
+            "connectionId": configuration["peer"].connection_id,
+            "openingId": configuration["openingId"],
+        }
+
+    def cancel_language_configuration(self, *, notify_host=True, notify_peer=True):
+        configuration, self._language_configuration = self._language_configuration, None
+        if not configuration:
+            return
+        configuration["phase"] = "Retired"  # Before callbacks or sending cancellation.
+        if notify_host:
+            try:
+                self.host.send("cancelLanguageConfiguration", self.language_owner(configuration))
+            except (OSError, EOFError):
+                pass  # This local opening is already retired; a dead Host link cannot save it.
+        peer = configuration["peer"]
+        if notify_peer and peer in self._peers and peer.link.channel.alive:
+            try:
+                peer.link.command(
+                    "overlay-language-configuration-close",
+                    {"openingId": configuration["openingId"]},
+                )
+            except (OSError, EOFError):
+                pass  # Transport teardown cannot restore the retired configuration.
+
+    def language_peer_lost(self, peer):
+        if self._language_configuration and self._language_configuration["peer"] is peer:
+            self.cancel_language_configuration(notify_peer=False)
+
+    def language_configuration_closed(self, value):
+        configuration = self._language_configuration
+        if (
+            configuration
+            and isinstance(value, dict)
+            and all(
+                value.get(key) == expected
+                for key, expected in self.language_owner(configuration).items()
+            )
+        ):
+            self.cancel_language_configuration(notify_host=False)
+
+    def language_configuration_current(self, configuration):
+        peer = configuration["peer"]
+        return (
+            self._language_configuration is configuration
+            and configuration["phase"] != "Retired"
+            and peer in self._peers
+            and peer.link.channel.alive
+            and self.focused_peer() is peer
+        )
+
+    @property
+    def language_configuration_open(self):
+        return self._language_configuration is not None
+
+    def start_language_configuration(self, source, opening_id, token, appearance, tasks):
+        self.cancel_language_configuration()
+        peer = self._source_peer(source, focused=True)
+        if peer is None or not self.valid_opening_id(opening_id):
+            return False
+        configuration = {
+            "peer": peer,
+            "openingId": opening_id,
+            "phase": "Pending",
+            "expiresAtMs": now_ms() + 600,
+            "appearance": copy.deepcopy(appearance),
+            "tasks": tasks,
+        }
+        self._language_configuration = configuration
+        self.set_overlay_focus(False)
+        tasks(self.begin_language_configuration(configuration, token))
+        return True
+
+    async def begin_language_configuration(self, configuration, token):
+        # The task may start after a synchronous cancel/peer loss. Do not send a
+        # request whose opening retired before dispatch, even on the same pipe.
+        if (
+            not self.language_configuration_current(configuration)
+            or configuration["phase"] != "Pending"
+            or now_ms() > configuration["expiresAtMs"]
+        ):
+            if self._language_configuration is configuration:
+                self.cancel_language_configuration()
+            return
+        try:
+            reply = await self.host.ask(
+                "beginLanguageConfiguration", {**self.language_owner(configuration), "token": token}
+            )
+            if not self.language_configuration_current(configuration):
+                if self._language_configuration is configuration:
+                    self.cancel_language_configuration()
+                return
+            if (
+                now_ms() > configuration["expiresAtMs"]
+                or not isinstance(reply, dict)
+                or reply.get("opened") is not True
+                or any(
+                    reply.get(key) != value
+                    for key, value in self.language_owner(configuration).items()
+                )
+                or type(reply.get("settingsRevision")) is not int
+                or not 0 <= reply["settingsRevision"] <= 9223372036854775807
+            ):
+                self.cancel_language_configuration()
+                return
+            configuration["settingsRevision"] = reply["settingsRevision"]
+            # No original target, token, candidate or permit is sent to the shell.
+            presentation = {
+                key: reply.get(key)
+                for key in (
+                    "openingId",
+                    "settingsRevision",
+                    "source",
+                    "target",
+                    "sourceLabel",
+                    "targetLabel",
+                    "swapAllowed",
+                    "choices",
+                )
+            }
+            presentation.update(configuration["appearance"])
+            remaining = (configuration["expiresAtMs"] - now_ms()) / 1000
+            if remaining <= 0:
+                self.cancel_language_configuration()
+                return
+            shown = await configuration["peer"].link.ask(
+                "overlay-language-configuration-open", presentation, timeout=remaining
+            )
+            if not self.language_configuration_current(configuration):
+                if self._language_configuration is configuration:
+                    self.cancel_language_configuration()
+                return
+            if (
+                now_ms() > configuration["expiresAtMs"]
+                or not isinstance(shown, dict)
+                or shown.get("opened") is not True
+                or shown.get("openingId") != configuration["openingId"]
+            ):
+                self.cancel_language_configuration()
+                return
+            configuration["phase"] = "Open"
+        except (OSError, EOFError, TimeoutError):
+            if self._language_configuration is configuration:
+                self.cancel_language_configuration()
+
+    def language_configuration_event(self, source, event):
+        peer = self._source_peer(source)
+        configuration = self._language_configuration
+        value = event.get("value")
+        if (
+            not configuration
+            or configuration["peer"] is not peer
+            or not isinstance(value, dict)
+            or value.get("openingId") != configuration["openingId"]
+        ):
+            return
+        if event["operation"] == "languageConfigurationCancel":
+            if set(value) == {"openingId"}:
+                self.cancel_language_configuration(notify_peer=False)
+            return
+        if (
+            set(value) != {"openingId", "source", "target"}
+            or not self.language_configuration_current(configuration)
+            or configuration["phase"] != "Open"
+            or any(
+                not isinstance(value.get(key), str) or not 0 < len(value[key]) <= 16
+                for key in ("source", "target")
+            )
+        ):
+            return
+        configuration["phase"] = "Saving"
+        configuration["tasks"](self.save_language_configuration(configuration, dict(value)))
+
+    async def save_language_configuration(self, configuration, value):
+        # The task may start after a synchronous cancel/peer loss. Do not send a
+        # request whose opening retired before dispatch, even on the same pipe.
+        if (
+            not self.language_configuration_current(configuration)
+            or configuration["phase"] != "Saving"
+        ):
+            if self._language_configuration is configuration:
+                self.cancel_language_configuration()
+            return
+        try:
+            reply = await self.host.ask(
+                "saveLanguageConfiguration",
+                {
+                    **value,
+                    **self.language_owner(configuration),
+                    "expectedRevision": configuration["settingsRevision"],
+                },
+            )
+            if self._language_configuration is not configuration:
+                return  # A committed save may already have retired via settings notification.
+            if not self.language_configuration_current(configuration):
+                self.cancel_language_configuration()
+                return
+            if isinstance(reply, dict) and reply.get("saved") is True:
+                self.cancel_language_configuration(notify_host=False)
+            elif isinstance(reply, dict) and reply.get("reason") in (
+                "unsupported-direction",
+                "save-unconfirmed",
+            ):
+                configuration["phase"] = "Open"
+                configuration["peer"].link.command(
+                    "overlay-language-configuration-result",
+                    {
+                        "openingId": configuration["openingId"],
+                        "saved": False,
+                        "reason": reply["reason"],
+                    },
+                )
+            else:
+                self.cancel_language_configuration()
+        except (OSError, EOFError, TimeoutError):
+            # Unknown persistence is not success, and never restores source authority.
+            if self._language_configuration is configuration:
+                self.cancel_language_configuration()
+
+    def renew_language_configuration(self):
+        configuration = self._language_configuration
+        if configuration and not self.language_configuration_current(configuration):
+            self.cancel_language_configuration()
+
+    def connection_facts(self):
+        facts = []
+        for peer in self._peers:
+            observation = peer.support_observation or {}
+            facts.append(
+                SourceConnectionFacts(
+                    peer.lifetime,
+                    peer.link.channel.alive,
+                    peer.backend,
+                    peer.application,
+                    peer.pid,
+                    observation.get("atMs"),
+                    observation.get("preview"),
+                    observation.get("tabAccept"),
+                    observation.get("directReplace"),
+                )
+            )
+        return tuple(facts)
+
+    def source_connected(self, source, *, focused=False):
+        return self._source_peer(source, focused=focused) is not None
+
+    def _source_peer(self, source, *, focused=False):
+        for peer in self._peers:
+            if peer.source is source and peer.link.channel.alive:
+                return peer if not focused or self.focused_peer() is peer else None
+        return None
+
+    def current_presentation(self, view):
+        paused = bool(view and view.get("state") == "Paused")
+        record = self.current_pause_record() if paused else self._bound_observation
+        token = view.get("viewContext", {}).get("token") if view else None
+        if (
+            not view
+            or not record
+            or record["target"] != view["source"]["target"]
+            or record["peer"] not in self._peers
+            or record["peer"] is not self.focused_peer()
+            or not self.fresh()
+            or not paused
+            and (
+                not token
+                or token.get("commandGeneration") != self.shortcut_config.get("generation")
+            )
+        ):
+            return None
+        if "presentationId" not in record:
+            record["presentationId"] = str(uuid.uuid4())
+        identity = record["presentationId"]
+        acknowledgement = self.current_session_acknowledgement(record)
+        return SourcePresentation(
+            record["peer"].source,
+            identity,
+            self.window_epoch,
+            self.foreground_epoch,
+            self.source_glossary_supported(record),
+            bool(acknowledgement and acknowledgement["editorReady"]),
+            record.get("editorRegenerateSupported") is True,
+        )
+
+    def _presentation_record(self, presentation):
+        if presentation is None:
+            return None
+        for record in (self._bound_observation, self.current_pause_record()):
+            if (
+                record
+                and record.get("presentationId") == presentation.identity
+                and record["peer"].source is presentation.connection
+                and self.source_connected(presentation.connection, focused=True)
+                and (presentation.window_epoch, presentation.foreground_epoch)
+                == (self.window_epoch, self.foreground_epoch)
+            ):
+                return record
+        return None
+
+    def presentation_current(self, presentation):
+        return self._presentation_record(presentation) is not None
+
+    async def present_source(self, presentation, payload):
+        record = self._presentation_record(presentation)
+        if record is None:
+            return None
+        return await record["peer"].link.ask(
+            "overlay-render",
+            {
+                **payload,
+                "target": record["target"]["value"],
+                "authority": record["authority"],
+                "generation": self.shortcut_config.get("generation"),
+                "expiresAtMs": now_ms() + 800,
+            },
+        )
+
+    def renew_source_presentation(self, presentation):
+        record = self._presentation_record(presentation)
+        if record is not None:
+            record["peer"].link.command(
+                "overlay-renew",
+                {
+                    "target": record["target"]["value"],
+                    "authority": record["authority"],
+                    "generation": self.shortcut_config.get("generation"),
+                    "expiresAtMs": now_ms() + 800,
+                },
+            )
+
+    def conceal_source(self, source):
+        peer = self._source_peer(source)
+        if peer is not None:
+            peer.link.command("overlay-hide")
+
+    def resume_source(self, source, token, revision):
+        peer = self._source_peer(source)
+        if peer is not None:
+            peer.link.command(
+                "overlay-resume",
+                {
+                    "target": token["target"]["value"],
+                    "generation": token.get("commandGeneration"),
+                    "revision": revision,
+                },
+            )
 
     def fresh(self, *, now=None):
         return (
@@ -318,7 +739,7 @@ class Input:
         pid = self.niri.focused.get("pid")
         peers = [
             peer
-            for peer in self.peers
+            for peer in self._peers
             if peer.lifetime and not peer.browser_retired and peer.matches_process(pid)
         ]
         # niri chooses the process, not a guessed window-to-widget mapping. The
@@ -335,7 +756,7 @@ class Input:
         """
         peers = [
             peer
-            for peer in self.peers
+            for peer in self._peers
             if peer.pid == pid
             and peer.backend == "gtk3"
             and peer.lifetime
@@ -369,7 +790,7 @@ class Input:
                 or not isinstance(native, str)
                 or str(uuid.UUID(native)) != native
                 or authority.get("target") != native
-                or peer not in self.peers
+                or peer not in self._peers
                 or not peer.link.channel.alive
             ):
                 return None
@@ -398,12 +819,12 @@ class Input:
         if native is None:
             return None
         peers = [
-            peer for peer in self.peers if peer.pid == pid and peer.lifetime == native["lifetime"]
+            peer for peer in self._peers if peer.pid == pid and peer.lifetime == native["lifetime"]
         ]
         if len(peers) != 1:
             return None
         peer = peers[0]
-        record = self.bound_observation
+        record = self._bound_observation
         acknowledgement = self.current_session_acknowledgement(record)
         if (
             not record
@@ -454,7 +875,7 @@ class Input:
             or self.practice_editor is not None
         ):
             return False
-        peers = [peer for peer in self.peers if peer.connection_id == binding["connectionId"]]
+        peers = [peer for peer in self._peers if peer.connection_id == binding["connectionId"]]
         if len(peers) != 1:
             return False
         peer = peers[0]
@@ -482,8 +903,8 @@ class Input:
                     "contextGeneration",
                 )
             )
-            or self.bound_observation is None
-            or self.bound_observation.get("commandGeneration") != binding["commandGeneration"]
+            or self._bound_observation is None
+            or self._bound_observation.get("commandGeneration") != binding["commandGeneration"]
         ):
             return False
         returned = self.practice_return
@@ -491,8 +912,8 @@ class Input:
             not self.practice_waiting(binding["runId"])
             or binding["commandGeneration"] == returned["commandGeneration"]
             or binding != self.practice_return_binding(returned)
-            or self.bound_observation is None
-            or self.bound_observation.get("commandGeneration") != binding["commandGeneration"]
+            or self._bound_observation is None
+            or self._bound_observation.get("commandGeneration") != binding["commandGeneration"]
         ):
             return False
         self.practice_return = None
@@ -553,7 +974,7 @@ class Input:
             reason = "settings-changed"
         elif pending["windowEpoch"] != self.window_epoch:
             reason = "window-changed"
-        elif pending["peer"] not in self.peers:
+        elif pending["peer"] not in self._peers:
             reason = "peer-lost"
         elif not pending["peer"].link.channel.alive:
             reason = "channel-closed"
@@ -610,7 +1031,7 @@ class Input:
 
             async def revoke():
                 peer = retirement["peer"]
-                if peer not in self.peers or not peer.link.channel.alive:
+                if peer not in self._peers or not peer.link.channel.alive:
                     return False
                 try:
                     # Fixed Peer/connection plus the ordered stream associates
@@ -621,7 +1042,7 @@ class Input:
                     return False
                 return (
                     reply is None
-                    and peer in self.peers
+                    and peer in self._peers
                     and peer.link.channel.alive
                     and peer.connection_id == retirement["connectionId"]
                 )
@@ -653,7 +1074,7 @@ class Input:
                         and self.practice_retirement_binding is returned
                     )
                 )
-                and returned["peer"] in self.peers
+                and returned["peer"] in self._peers
                 and returned["peer"].link.channel.alive
                 and returned["ownsProcess"](returned["peer"].pid)
                 and returned["settingsGeneration"] == self.settings_generation
@@ -679,7 +1100,7 @@ class Input:
                 )
                 or (self.practice_retirement is None and self.practice_retirement_ack == run)
             )
-            and value["peer"] in self.peers
+            and value["peer"] in self._peers
             and value["peer"].link.channel.alive
             and value["ownsProcess"](value["peer"].pid)
             and value["settingsGeneration"] == self.settings_generation
@@ -694,7 +1115,7 @@ class Input:
                     and self.niri.focused
                     and [
                         peer
-                        for peer in self.peers
+                        for peer in self._peers
                         if peer.lifetime and peer.matches_process(self.niri.focused.get("pid"))
                     ]
                     == [value["peer"]]
@@ -720,7 +1141,7 @@ class Input:
                 and record["target"] == authorization["target"]
             ):
                 self.observations.pop(key)
-        self.bound_observation = None
+        self._bound_observation = None
         return waiting
 
     async def suspend_owned_source(self, binding):
@@ -939,7 +1360,7 @@ class Input:
         return bool(
             value
             and value["runId"] == run
-            and value["peer"] in self.peers
+            and value["peer"] in self._peers
             and value["peer"].link.channel.alive
             and value["ownsProcess"](value["peer"].pid)
             and value["settingsGeneration"] == self.settings_generation
@@ -1036,7 +1457,7 @@ class Input:
                             and record["target"] == waiting["target"]
                         ):
                             self.observations.pop(key)
-                    self.bound_observation = None
+                    self._bound_observation = None
             else:
                 waiting["foregroundExpired"] = False
         authorization = self.practice_authorization or self.practice_pending
@@ -1044,7 +1465,7 @@ class Input:
             return
         peer = authorization["peer"]
         if (
-            peer not in self.peers
+            peer not in self._peers
             or not peer.link.channel.alive
             or not authorization["ownsProcess"](peer.pid)
             or self.enabled is False
@@ -1070,7 +1491,7 @@ class Input:
             and self.niri.focused
             and [
                 candidate
-                for candidate in self.peers
+                for candidate in self._peers
                 if candidate.lifetime and candidate.matches_process(self.niri.focused.get("pid"))
             ]
             == [peer]
@@ -1127,10 +1548,10 @@ class Input:
             }
             if self.practice_continuity and self.practice_continuity.get("foregroundSuspension")
             else None,
-            "connectionId": self.bound_observation["peer"].connection_id
-            if self.bound_observation
-            and self.bound_observation["peer"] in self.peers
-            and self.bound_observation["target"] == self.bound
+            "connectionId": self._bound_observation["peer"].connection_id
+            if self._bound_observation
+            and self._bound_observation["peer"] in self._peers
+            and self._bound_observation["target"] == self.bound
             else self.practice_return["connectionId"]
             if self.practice_return
             and self.practice_waiting(self.practice_return["runId"], acknowledged=False, now=now)
@@ -1141,14 +1562,14 @@ class Input:
             )
             else "00000000-0000-0000-0000-000000000000",
             "sourceGlossaryTarget": self.bound
-            if self.source_glossary_supported(self.bound_observation, now=now)
+            if self.source_glossary_supported(self._bound_observation, now=now)
             else None,
             "sourceGlossaryGeneration": self.shortcut_config.get("generation"),
             "nativeReady": self.focused_peer(now=now) is not None,
-            "sessionShortcuts": self.current_session_acknowledgement(self.bound_observation)
-            if self.bound_observation
-            and self.bound_observation["peer"] is self.focused_peer(now=now)
-            and self.bound_observation["target"] == self.bound
+            "sessionShortcuts": self.current_session_acknowledgement(self._bound_observation)
+            if self._bound_observation
+            and self._bound_observation["peer"] is self.focused_peer(now=now)
+            and self._bound_observation["target"] == self.bound
             else None,
             "target": paused["target"] if paused else self.bound,
             "focus": "Source" if paused else self.focus(now=now),
@@ -1186,18 +1607,20 @@ class Input:
         for collection, age in (
             (self.observations, 2000),
             (self.frozen, 120_000),
-            (self.issued, 1000),
         ):
             for key, value in list(collection.items()):
                 if stamp - value["time"] > age:
                     collection.pop(key)
+        for plan_id, issued in list(self.issued.items()):
+            if stamp > issued["permit"]["expiresAtMs"] + 2000:
+                self.finish_issued(plan_id, refused(True), quarantine=True)
         self.state()
         return not self.closing
 
     def check_browser_registrations(self):
         # Reuse the existing maintenance cycle and explicit settings action.
         # Revocation retires grants, not the accounting for an already executed write.
-        for peer in list(self.peers):
+        for peer in list(self._peers):
             if peer.backend != "browser" or not peer.lifetime:
                 continue
             registration = (
@@ -1214,7 +1637,7 @@ class Input:
             self.configure_peer(peer)
 
     def suspend_browser(self, browser, suspended=True):
-        for peer in list(self.peers):
+        for peer in list(self._peers):
             if peer.browser_identity and peer.browser_identity["browser"] == browser:
                 peer.browser_suspended = suspended
                 if suspended and peer.browser_had_v1:
@@ -1226,14 +1649,15 @@ class Input:
         self.check_browser_registrations()
 
     def retire_browser_document(self, peer, route=None):
+        self._retire_source_operations(peer, route)
         self.clear_browser_capture()
         if self.published_plan and self.published_plan[0] is peer:
             issued = self.issued.get(self.published_plan[1])
             if route is None or issued and issued.get("route") == route:
                 self.invalidate_publication()
-        record = self.bound_observation
+        record = self._bound_observation
         if record and record["peer"] is peer and (route is None or record.get("route") == route):
-            self.bound_observation = None
+            self._bound_observation = None
             self.window_epoch += 1
         peer.link.command("revoke", {"shortcuts": 1})
         peer.shortcut = None
@@ -1291,16 +1715,332 @@ class Input:
             collection.popitem(last=False)
         return snapshot, record
 
+    def begin_glossary_opening(self, presentation):
+        record = self._presentation_record(presentation)
+        if record is None:
+            return None
+        identity = str(uuid.uuid4())
+        self._glossary_opening = {
+            "identity": identity,
+            "peer": record["peer"],
+            "route": copy.deepcopy(record.get("route")),
+            "authority": copy.deepcopy(record["authority"]),
+            "window": self.window_epoch,
+            "foreground": self.foreground_epoch,
+        }
+        return identity
+
+    def glossary_opening_current(self, identity):
+        opening, record = self._glossary_opening, self._bound_observation
+        return bool(
+            opening
+            and opening["identity"] == identity
+            and record
+            and record["peer"] is opening["peer"]
+            and record["authority"] == opening["authority"]
+            and self.source_connected(opening["peer"].source, focused=True)
+            and (opening["window"], opening["foreground"])
+            == (self.window_epoch, self.foreground_epoch)
+        )
+
+    def finish_glossary_opening(self, identity):
+        if self._glossary_opening and self._glossary_opening["identity"] == identity:
+            self._glossary_opening = None
+
+    def bind_source_glossary(self, presentation, entry, revision):
+        record = self._presentation_record(presentation)
+        if (
+            record is None
+            or entry.get("sourceOrigin") is True
+            and not self.source_glossary_supported(record)
+        ):
+            return None
+        handle = SourceGlossary(
+            presentation.connection, entry["formId"], json.dumps(entry["token"]), revision
+        )
+        self._source_glossary = {
+            "handle": handle,
+            "entry": copy.deepcopy(entry),
+            "peer": record["peer"],
+            "revision": revision,
+            "route": copy.deepcopy(record.get("route")),
+            "sourceAuthority": copy.deepcopy(record["authority"]),
+            "sourceDocumentGeneration": record.get("documentGeneration"),
+            "window": self.window_epoch,
+            "foreground": self.foreground_epoch,
+            "state": self._presentation["state"],
+            "focus": None,
+            "transfer": None,
+        }
+        return handle
+
+    def source_glossary_current(self, handle):
+        form = self._source_glossary
+        display = self._presentation
+        record = self._bound_observation
+        return bool(
+            form
+            and form["handle"] is handle
+            and display
+            and record
+            and display["revision"] == handle.revision
+            and display["token"] == form["entry"]["token"]
+            and display["state"] == form["state"]
+            and record["target"] == form["entry"]["token"]["target"]
+            and record["peer"] is form["peer"]
+            and self.source_connected(handle.connection, focused=True)
+            and (
+                form["entry"].get("sourceOrigin") is not True
+                or (
+                    self.source_glossary_supported(record)
+                    and record.get("route") == form["route"]
+                    and (
+                        form["peer"].backend not in ("gtk3", "gtk4", "qt6")
+                        or (form["window"], form["foreground"])
+                        == (self.window_epoch, self.foreground_epoch)
+                    )
+                )
+            )
+        )
+
+    def source_glossary_returning(self, handle):
+        form = self._source_glossary
+        return bool(
+            form
+            and form["handle"] is handle
+            and (form.get("transfer") or {}).get("phase") == "Returning"
+        )
+
+    def observe_glossary_focus(self, handle, value):
+        if not self.source_glossary_current(handle):
+            return False
+        form = self._source_glossary
+        if value is not None and not (
+            isinstance(value, dict)
+            and set(value) == {"formId", "token", "ime"}
+            and value["formId"] == handle.form_id
+            and value["token"] == form["entry"]["token"]
+            and value["ime"] in ("Clear", "Composing", "Unknown")
+        ):
+            return False
+        form["focus"] = copy.deepcopy(value)
+        if value is not None:
+            self.set_overlay_focus(True)
+        return True
+
+    def _glossary_payload(self, handle, **payload):
+        token = json.loads(handle.token_json)
+        return {
+            "target": token["target"]["value"],
+            "generation": token["commandGeneration"],
+            "revision": handle.revision,
+            "formId": handle.form_id,
+            **payload,
+        }
+
+    def decline_source_glossary(self, source, token, revision):
+        peer = self._source_peer(source)
+        if peer is not None:
+            peer.link.command(
+                "overlay-glossary-open",
+                {
+                    "target": token["target"]["value"],
+                    "generation": token["commandGeneration"],
+                    "revision": revision,
+                    "entry": None,
+                },
+            )
+
+    async def open_source_glossary(self, handle):
+        if not self.source_glossary_current(handle):
+            return False
+        form = self._source_glossary
+        transfer = None
+        if form["entry"].get("sourceOrigin") is True:
+            transfer = form["transfer"] = {
+                "phase": "Opening",
+                "consumed": False,
+                "window": self.window_epoch,
+                "foreground": self.foreground_epoch,
+            }
+        token = form["entry"]["token"]
+        try:
+            response = await form["peer"].link.ask(
+                "overlay-glossary-open",
+                {
+                    "target": token["target"]["value"],
+                    "generation": token["commandGeneration"],
+                    "revision": handle.revision,
+                    "entry": form["entry"],
+                },
+            )
+        finally:
+            form["transfer"] = None
+        return bool(
+            self.source_glossary_current(handle)
+            and (
+                transfer is None
+                or (
+                    transfer["consumed"]
+                    and getattr(response, "route", None) == form["route"]
+                    and (transfer["window"], transfer["foreground"])
+                    == (self.window_epoch, self.foreground_epoch)
+                )
+            )
+            and isinstance(response, dict)
+            and response.get("opened") is True
+        )
+
+    def close_source_glossary(self, handle, *, notify_peer=True):
+        form = self._source_glossary
+        if form and form["handle"] is handle:
+            self._source_glossary = None
+            if (
+                self._source_glossary_return
+                and self._source_glossary_return["formId"] == handle.form_id
+            ):
+                self._source_glossary_return = None
+        peer = self._source_peer(handle.connection)
+        if notify_peer and peer is not None:
+            peer.link.command("overlay-glossary-close", self._glossary_payload(handle))
+
+    def complete_source_glossary(self, handle, result):
+        # A retired form still receives its original persistence result. This
+        # never attaches it to another form or restores source authority.
+        peer = self._source_peer(handle.connection)
+        if peer is not None:
+            peer.link.command(
+                "overlay-glossary-result", self._glossary_payload(handle, result=result)
+            )
+
+    def consume_glossary_focus_transfer(self, peer, value, route):
+        form = self._source_glossary
+        transfer = form.get("transfer") if form else None
+        marker = value.get("glossaryTransfer")
+        if (
+            not transfer
+            or transfer["consumed"]
+            or not self.source_glossary_current(form["handle"])
+            or form["entry"].get("sourceOrigin") is not True
+            or peer is not form["peer"]
+            or route != form["route"]
+            or form["entry"]["token"]["target"] != self.bound
+            or value.get("target") != form["entry"]["token"]["target"]["value"]
+            or value.get("textChanged") is not False
+            or value.get("focusChanged") is not True
+            or (transfer["window"], transfer["foreground"])
+            != (self.window_epoch, self.foreground_epoch)
+        ):
+            return False
+        expected = {
+            "formId": form["entry"]["formId"],
+            "token": form["entry"]["token"],
+            "phase": transfer["phase"],
+        }
+        if peer.backend in ("gtk3", "gtk4", "qt6"):
+            if not isinstance(marker, dict) or set(marker) != {*expected, "ordinal", "count"}:
+                return False
+            ordinal, count = marker["ordinal"], marker["count"]
+            if (
+                type(ordinal) is not int
+                or type(count) is not int
+                or not 1 <= ordinal <= count <= 8
+                or ordinal != transfer.get("next", 1)
+                or count != transfer.get("count", count)
+                or any(marker[key] != value for key, value in expected.items())
+                or type(value.get("focused")) is not bool
+                or any(
+                    value.get(key) != form["sourceAuthority"].get(key)
+                    for key in ("inputRevision", "contentRevision")
+                )
+                or ordinal == count
+                and value["focused"] is not (transfer["phase"] == "Returning")
+            ):
+                return False
+            transfer["next"], transfer["count"] = ordinal + 1, count
+            transfer["consumed"] = ordinal == count
+            return True
+        if (
+            peer.backend != "browser"
+            or marker != expected
+            or value.get("focused") is not (transfer["phase"] == "Returning")
+        ):
+            return False
+        # The isolated document emits this marker only after its synchronous
+        # trusted blur/focus pair reached the exact requested control. Consume
+        # it once; it preserves window identity, never a capture/write permit.
+        transfer["consumed"] = True
+        return True
+
+    async def return_glossary_to_source(self, handle, request):
+        form = self._source_glossary
+        if (
+            not self.source_glossary_current(handle)
+            or form["entry"].get("sourceOrigin") is not True
+            or request != {"formId": handle.form_id, "token": form["entry"]["token"]}
+            or not form["focus"]
+            or form["focus"]["ime"] != "Clear"
+            or self.focus() != "Overlay"
+        ):
+            return None
+        window, foreground = self.window_epoch, self.foreground_epoch
+        transfer = form["transfer"] = {
+            "phase": "Returning",
+            "consumed": False,
+            "window": window,
+            "foreground": foreground,
+        }
+        try:
+            response = await form["peer"].link.ask(
+                "overlay-glossary-return",
+                {
+                    **request,
+                    "target": request["token"]["target"]["value"],
+                    "generation": request["token"]["commandGeneration"],
+                    "revision": form["revision"],
+                },
+            )
+        except (OSError, ValueError, EOFError, TimeoutError):
+            return None
+        finally:
+            form["transfer"] = None
+        if (
+            not transfer["consumed"]
+            or not self.source_glossary_current(handle)
+            or not isinstance(response, dict)
+            or set(response) != {"formId", "token", "returned"}
+            or response.get("formId") != request["formId"]
+            or response.get("token") != request["token"]
+            or response.get("returned") is not True
+            or (window, foreground) != (self.window_epoch, self.foreground_epoch)
+            or getattr(response, "route", None) != form["route"]
+        ):
+            return None
+        # This proves only the native/browser focus transfer. The controller obtains
+        # its own fresh source capture before any persistence or new permission.
+        form["focus"] = None
+        self._source_glossary_return = {
+            **copy.deepcopy(request),
+            "peer": form["peer"],
+            "route": copy.deepcopy(form["route"]),
+            "windowEpoch": window,
+            "foregroundEpoch": foreground,
+            "sourceAuthority": copy.deepcopy(form["sourceAuthority"]),
+            "sourceDocumentGeneration": form["sourceDocumentGeneration"],
+        }
+        self.set_overlay_focus(False)
+        return dict(response)
+
     def source_glossary_supported(self, record, *, now=None):
         # Display capability only. Native and browser origins keep separate
         # identity checks; neither can borrow the other's route or readiness.
         current = bool(
             record
-            and record is self.bound_observation
+            and record is self._bound_observation
             and record.get("sourceGlossarySupported") is True
             and record["target"] == self.bound
             and record.get("commandGeneration") == self.shortcut_config.get("generation")
-            and record["peer"] in self.peers
+            and record["peer"] in self._peers
             and record["peer"] is self.focused_peer(now=now)
             and self.fresh(now=now)
         )
@@ -1379,13 +2119,13 @@ class Input:
             and stamp["input"] >= 0
         )
 
-    def source_glossary_return_current(self, receipt, peer, native):
+    def _source_glossary_return_current(self, receipt, peer, native):
         # This exact, live form receipt narrows its return capture only. Ordinary
         # Linux preview captures retain their existing read-only ACK semantics.
         acknowledgement = self.session_acknowledgement(peer, native)
         current = bool(
             receipt is not None
-            and self.source_glossary_return is receipt
+            and self._source_glossary_return is receipt
             and receipt["peer"] is peer
             and receipt["windowEpoch"] == self.window_epoch
             and receipt["foregroundEpoch"] == self.foreground_epoch
@@ -1451,6 +2191,11 @@ class Input:
             or acknowledgement.get("exit") != config.get("exit")
             or type(acknowledgement.get("sourceReady")) is not bool
             or type(acknowledgement.get("editorReady")) is not bool
+            or peer.backend == "browser"
+            and (
+                type(acknowledgement.get("presentationVersion")) is not int
+                or acknowledgement["presentationVersion"] != 1
+            )
             or native.get("target") != authority.get("target")
             or ("sessionBindings" in authority and authority["sessionBindings"] != acknowledgement)
         ):
@@ -1697,10 +2442,10 @@ class Input:
 
     def diagnostics(self):
         acknowledgement = (
-            self.current_session_acknowledgement(self.bound_observation)
-            if self.bound_observation
-            and self.bound_observation["peer"] is self.focused_peer()
-            and self.bound_observation["target"] == self.bound
+            self.current_session_acknowledgement(self._bound_observation)
+            if self._bound_observation
+            and self._bound_observation["peer"] is self.focused_peer()
+            and self._bound_observation["target"] == self.bound
             else None
         )
         return {
@@ -1715,6 +2460,12 @@ class Input:
             if acknowledgement
             else None,
             "captureStatus": self.capture_status,
+            "languageConfiguration": {
+                key: self._language_configuration[key]
+                for key in ("openingId", "phase", "expiresAtMs")
+            }
+            if self._language_configuration
+            else None,
             "captureCounts": dict(self.capture_counts),
             "captureFailures": list(self.capture_failures),
             "practiceFailures": [dict(value) for value in self.practice_failures],
@@ -1745,7 +2496,7 @@ class Input:
             or record["foregroundEpoch"] != self.foreground_epoch
             or record["userEpoch"] != self.user_epoch
             or not 0 <= (now_ms() if now is None else now) - record["anchor"]["observedAtMs"] <= 150
-            or record["peer"] not in self.peers
+            or record["peer"] not in self._peers
             or self.focused_peer(now=now) is not record["peer"]
             or self.overlay_focused
         ):
@@ -1760,7 +2511,7 @@ class Input:
             self.enabled is not False
             or context.get("boundTarget") is not None
             or context.get("captureDirect", False) is not False
-            or peer not in self.peers
+            or peer not in self._peers
             or not window
             or self.overlay_focused
         ):
@@ -1822,7 +2573,7 @@ class Input:
                 self.enabled is not False
                 or generation != self.pause_generation
                 or epochs != (self.window_epoch, self.foreground_epoch, self.user_epoch)
-                or peer not in self.peers
+                or peer not in self._peers
                 or self.focused_peer() is not peer
                 or self.overlay_focused
                 or not 0 <= now_ms() - stamp <= 150
@@ -1891,8 +2642,8 @@ class Input:
         self.native_capture_timing = None
         settings_generation = self.settings_generation
         command_generation = self.shortcut_config.get("generation")
-        glossary_return = self.source_glossary_return
-        editor_return = self.editor_regenerate if context.get("editorReturn") is not None else None
+        glossary_return = self._source_glossary_return
+        editor_return = self._editor_regenerate if context.get("editorReturn") is not None else None
         if context.get("editorReturn") is not None and (
             not self.browser_regenerate_current(editor_return)
             or context["editorReturn"] != editor_return["operation"]
@@ -1928,10 +2679,10 @@ class Input:
         focus = "Overlay" if self.overlay_focused else "Source"
         if (
             focus == "Overlay"
-            and self.bound_observation
+            and self._bound_observation
             and context.get("boundTarget") == self.bound
         ):
-            record = self.bound_observation
+            record = self._bound_observation
             peer, window = record["peer"], self.niri.by_id(record["window"]["id"])
             target = self.bound["value"]
         else:
@@ -1945,7 +2696,7 @@ class Input:
             return self.expired_practice_capture(practice)
         if window is None:
             return self.captured("no-window")
-        if peer not in self.peers or peer.browser_retired:
+        if peer not in self._peers or peer.browser_retired:
             return self.captured("unsupported-application")
         publication_generation = self.publication_generation
         cached, self.browser_capture = self.browser_capture, None
@@ -2006,7 +2757,7 @@ class Input:
             self.remember_browser_diagnostics(description.get("diagnostics"))
         if not reuse:
             self.remember_publication(peer, description, publication_generation)
-        if glossary_return is not None and not self.source_glossary_return_current(
+        if glossary_return is not None and not self._source_glossary_return_current(
             glossary_return, peer, description
         ):
             return self.captured("glossary-return-identity-lost")
@@ -2065,7 +2816,7 @@ class Input:
             and command_generation == self.shortcut_config.get("generation")
             and focus == "Source"
             and not self.overlay_focused
-            and peer in self.peers
+            and peer in self._peers
             and self.focused_peer() is peer
             and description.get("focused") is True
             and window_epoch == self.window_epoch
@@ -2170,7 +2921,7 @@ class Input:
         ):
             return self.captured("editor-return-identity-lost")
         if glossary_return is not None and (
-            not self.source_glossary_return_current(glossary_return, peer, native)
+            not self._source_glossary_return_current(glossary_return, peer, native)
             or native.get("ime") != "Clear"
             or native.get("writeSupported") is not False
         ):
@@ -2180,7 +2931,7 @@ class Input:
             return self.expired_practice_capture(practice, native)
         if window_epoch != self.window_epoch:
             return self.captured("window-changing")
-        if peer not in self.peers:
+        if peer not in self._peers:
             return self.captured("native-disconnected")
         if focus == "Source" and (not native["focused"] or self.focused_peer() is not peer):
             return self.captured("native-focus-changed")
@@ -2318,7 +3069,7 @@ class Input:
         if acknowledgement and acknowledgement["sourceLocalAcceptanceVersion"] == 1:
             peer.browser_had_v1 = True
         record["commandGeneration"] = command_generation
-        self.bound, self.bound_observation = snapshot["target"], record
+        self.bound, self._bound_observation = snapshot["target"], record
         if browser_source:
             round_timing["snapshotAtMs"] = native["observedAtMs"]
             if os.environ.get("TYPELAY_TRACE"):
@@ -2405,6 +3156,7 @@ class Input:
                 "shortcutDispatch": "page",
                 "sourceLocalAcceptanceVersion": 1 if peer.browser_registration else 0,
                 "editorRegenerateVersion": 1,
+                "presentationVersion": 1,
             }
             if peer.browser_retired:
                 configuration = {
@@ -2763,11 +3515,49 @@ class Input:
         }
         self.frozen.clear()
         self.revoke()
-        for peer in list(self.peers):
+        for peer in list(self._peers):
             peer.support_observation = None
             if peer.lifetime:
                 self.configure_peer(peer)
         self.state()
+
+    def retire_unpublished(self, lease, permit):
+        if permit:
+            self.host.send(
+                "notice",
+                {
+                    "kind": "write-retired",
+                    "retiredUnusedPlanId": permit["plan"]["id"],
+                    "target": lease["source"]["target"],
+                    "commandGeneration": lease["commandGeneration"],
+                },
+            )
+
+    def finish_issued(self, plan_id, receipt=None, accepted_at=0, *, quarantine=False):
+        issued = self.issued.pop(plan_id, None)
+        if issued is None:
+            return
+        if receipt is None:
+            self.retire_unpublished(issued["lease"], issued["permit"])
+            return
+        target = issued["lease"]["source"]["target"]
+        if quarantine and issued["peer"].link.channel.alive:
+            issued["peer"].link.command("quarantine", {"target": target["value"]})
+        self.host.send(
+            "notice",
+            {
+                "kind": "accept",
+                "commandGeneration": issued["lease"].get("commandGeneration"),
+                "practiceRunId": issued["lease"].get("practiceRunId"),
+                "practiceConnectionId": issued["lease"].get("practiceConnectionId"),
+                "target": target,
+                "permit": issued["permit"],
+                "completedReceipt": receipt,
+                "acceptedAtMs": accepted_at,
+                "userEpoch": issued["lease"]["userEpoch"],
+                "foregroundEpoch": issued["lease"]["foregroundEpoch"],
+            },
+        )
 
     def publish(self, value, shortcut=False):
         received_at = (
@@ -2776,13 +3566,17 @@ class Input:
             else None
         )
         lease = value["lease"]
+        permit = None if shortcut else value.get("permit")
         record = self.observations.get(observation_key(lease["source"]))
-        if not record or record["peer"] not in self.peers or not self.fresh():
+        if not record or record["peer"] not in self._peers or not self.fresh():
+            self.retire_unpublished(lease, permit)
             return
         peer = record["peer"]
         if peer.browser_retired or self.focused_peer() is not peer or self.overlay_focused:
+            self.retire_unpublished(lease, permit)
             return
         if not shortcut and not self.practice_publication_allowed(lease, peer):
+            self.retire_unpublished(lease, permit)
             return
         if shortcut:
             if not self.shortcut_config.get("enabled") or value[
@@ -2805,8 +3599,12 @@ class Input:
                 or not acknowledgement["sourceReady"]
                 or lease.get("commandGeneration") != acknowledgement["generation"]
             ):
+                self.retire_unpublished(lease, permit)
                 return
-            permit = value.get("permit")
+            if permit and len(self.issued) >= 32:
+                self.retire_unpublished(lease, permit)
+                self.revoke()
+                return
             round_timing = record.get("roundTiming")
             if round_timing is not None and permit:
                 previous = self.issued.get(self.published_plan[1]) if self.published_plan else None
@@ -2851,8 +3649,6 @@ class Input:
                     if acknowledgement.get("sourceLocalAcceptanceVersion") == 1
                     else None,
                 }
-                while len(self.issued) > 32:
-                    self.issued.popitem(last=False)
             send_started = now_ms() if received_at is not None else None
             peer.link.command(
                 "publish",
@@ -2901,7 +3697,7 @@ class Input:
     def revoke(self, shortcuts=False):
         self.clear_browser_capture()
         self.invalidate_publication()
-        for peer in list(self.peers):
+        for peer in list(self._peers):
             if peer.lifetime and peer.link.channel.alive:
                 peer.link.command("revoke", {"shortcuts": int(shortcuts)})
                 if shortcuts:
@@ -2913,7 +3709,7 @@ class Input:
         # teardown: they belong to already accepted physical input, not the UI.
 
     def event(self, peer, name, value, *, route=None):
-        if peer not in self.peers or peer.browser_retired and name != "accepted":
+        if peer not in self._peers or peer.browser_retired and name != "accepted":
             return
         if name in ("document-focus", "document-closed") and peer.backend == "browser":
             if not peer.valid_browser_route(route):
@@ -3068,7 +3864,7 @@ class Input:
                 and value.get("family") == "Other"
             ):
                 self.retire_practice(editor["runId"])
-            self.ui_event(peer, value)
+            self.ui_event(peer.source, value)
         elif name == "input":
             authorization = (
                 self.practice_authorization
@@ -3110,7 +3906,9 @@ class Input:
                 # transfer is internal to this window. Every other field focus
                 # event retains the ordinary window invalidation semantics.
                 before_window = self.window_epoch
-                if value["focusChanged"] and not self.glossary_focus_transfer(peer, value, route):
+                if value["focusChanged"] and not self.consume_glossary_focus_transfer(
+                    peer, value, route
+                ):
                     self.window_epoch += 1
                 if value["focusChanged"]:
                     self.observe_browser_return_focus(peer, value, route, before_window)
@@ -3124,10 +3922,23 @@ class Input:
             if self.bound == target_id(peer, value["target"]) or (
                 paused and paused["target"] == target_id(peer, value["target"])
             ):
-                self.bound = self.bound_observation = None
+                self.bound = self._bound_observation = None
                 self.window_epoch += 1
                 self.revoke()
                 self.state()
+        elif name == "writeRetired":
+            issued = self.issued.get(value.get("planId")) if isinstance(value, dict) else None
+            if (
+                not issued
+                or value.keys() != {"planId", "target", "generation"}
+                or issued["peer"] is not peer
+                or issued.get("route") is not None
+                and issued["route"] != route
+                or value["target"] != issued["lease"]["source"]["target"]["value"]
+                or value["generation"] != issued["lease"]["commandGeneration"]
+            ):
+                return
+            self.finish_issued(value["planId"])
         elif name == "accepted":
             self.clear_browser_capture()
             if self.published_plan and self.published_plan[0] is peer:
@@ -3139,36 +3950,20 @@ class Input:
                 or issued.get("route") is not None
                 and issued["route"] != route
             ):
-                peer.link.command(
-                    "quarantine", {"target": self.bound["value"] if self.bound else ""}
-                )
                 return
-            self.issued.pop(value["planId"])
             # A receiptless native notification cannot cause a deferred write or
             # claim success. The original one-shot operation is now uncertain.
-            receipt = value.get("receipt") if issued.get("route") is not None else value["receipt"]
-            if issued.get("route") is not None and not isinstance(receipt, dict):
+            receipt = value.get("receipt")
+            if not isinstance(receipt, dict):
                 receipt = refused(True)
-                peer.link.command(
-                    "quarantine", {"target": issued["lease"]["source"]["target"]["value"]}
-                )
-            self.host.send(
-                "notice",
-                {
-                    "kind": "accept",
-                    "commandGeneration": issued["lease"].get("commandGeneration"),
-                    "practiceRunId": issued["lease"].get("practiceRunId"),
-                    "practiceConnectionId": issued["lease"].get("practiceConnectionId"),
-                    "target": issued["lease"]["source"]["target"],
-                    "permit": issued["permit"],
-                    "completedReceipt": receipt,
-                    "acceptedAtMs": value["acceptedAtMs"],
-                    "userEpoch": issued["lease"]["userEpoch"],
-                    "foregroundEpoch": issued["lease"]["foregroundEpoch"],
-                },
+            self.finish_issued(
+                value["planId"],
+                receipt,
+                value["acceptedAtMs"],
+                quarantine=not isinstance(value.get("receipt"), dict),
             )
         elif name == "escape":
-            record = self.bound_observation
+            record = self._bound_observation
             acknowledgement = self.current_session_acknowledgement(record)
             publication = self.session_publication
             if (
@@ -3206,7 +4001,7 @@ class Input:
 
     async def direct(self, plan):
         record = self.frozen.pop(observation_key(plan["expected"]), None)
-        if not record or record["peer"] not in self.peers or record["peer"].browser_retired:
+        if not record or record["peer"] not in self._peers or record["peer"].browser_retired:
             return refused()
         peer, target = record["peer"], record["target"]["value"]
         generation = self.shortcut_config.get("generation")
@@ -3313,12 +4108,251 @@ class Input:
                 peer.link.command("quarantine", {"target": target})
             return refused(True)
 
-    def begin_browser_regenerate(self, peer, event, token):
-        record = self.bound_observation
+    def begin_editor_opening(self, presentation):
+        record = self._presentation_record(presentation)
+        if record is None or not presentation.editor_ready:
+            return None
+        identity = str(uuid.uuid4())
+        self._editor_openings[identity] = {
+            "peer": record["peer"],
+            "target": copy.deepcopy(record["target"]),
+            "authorization": self.practice_authorization,
+            "deadline": now_ms() + 500,
+            "route": copy.deepcopy(record.get("route")),
+            "editor": None,
+            "token": None,
+        }
+        return identity
+
+    def prepare_editor_opening(self, identity, token):
+        opening = self._editor_openings.get(identity)
+        if opening is None or opening["target"] != token.get("target"):
+            return False
+        opening["token"] = copy.deepcopy(token)
+        authorization = opening["authorization"]
+        if authorization is not None:
+            opening["editor"] = self.begin_practice_edit(authorization, token, opening["deadline"])
+            if opening["editor"] is None:
+                return False
+        return True
+
+    def _editor_opening_current(self, identity, revision):
+        opening = self._editor_openings.get(identity)
+        display = self._presentation
+        return bool(
+            opening
+            and display
+            and opening["token"] == display["token"]
+            and display["revision"] == revision
+            and display["state"] == "EditingTranslation"
+            and self.source_connected(opening["peer"].source, focused=True)
+            and self.bound == opening["target"]
+        )
+
+    async def focus_source_editor(self, identity, revision):
+        if not self._editor_opening_current(identity, revision):
+            return
+        opening = self._editor_openings[identity]
+        peer, token, editor = opening["peer"], opening["token"], opening["editor"]
+        command = {
+            "target": token["target"]["value"],
+            "allowed": True,
+            "revision": revision,
+            "generation": token["commandGeneration"],
+        }
+        if editor is None:
+            peer.link.command("overlay-edit", command)
+        elif await self.revoke_practice_editor(editor):
+            if not self._editor_opening_current(identity, revision):
+                return
+            editor["phase"] = "focusing"
+            reply = await peer.link.ask(
+                "overlay-edit",
+                {
+                    **command,
+                    "practiceHandoff": {
+                        "token": token,
+                        "nativeFocusRevision": editor["nativeFocusRevision"],
+                        "contextGeneration": editor["contextGeneration"],
+                    },
+                },
+            )
+            if self._editor_opening_current(identity, revision):
+                self.complete_practice_edit(editor, reply)
+
+    def finish_editor_opening(self, identity):
+        opening = self._editor_openings.pop(identity, None)
+        editor = opening["editor"] if opening else None
+        if editor is not None and editor["phase"] != "editor":
+            self.retire_practice(editor["runId"])
+
+    def observe_overlay_focus(self, source, focused):
+        editor = self.practice_editor
+        if editor and editor["phase"] != "editor":
+            return False
+        self.set_overlay_focus(focused is True and self.source_connected(source, focused=True))
+        return True
+
+    def presented(self, value, revision):
+        """Observe display association without acquiring source authority."""
+        self._presentation = {
+            "token": copy.deepcopy(value.get("viewContext", {}).get("token")),
+            "state": value.get("state"),
+            "revision": revision,
+        }
+        owner = self._editor_regenerate
+        if owner is not None:
+            token = value.get("viewContext", {}).get("token")
+            actual = owner["operation"]
+            owner["viewToken"] = copy.deepcopy(token)
+            owner["viewState"] = value.get("state")
+            if token != owner["action"]["token"] and not (
+                value.get("state") == "ReturningToSource"
+                and actual is not None
+                and token == actual["operation"]
+            ):
+                # A render can precede its actual Return request. Keep only the
+                # receipt, never grant it authority from this unassociated view.
+                if (
+                    value.get("state") != "ReturningToSource"
+                    or not isinstance(token, dict)
+                    or token.get("target") != owner["action"]["token"]["target"]
+                    or token.get("commandGeneration")
+                    != owner["action"]["token"]["commandGeneration"]
+                ):
+                    self._editor_regenerate = None
+
+    def observe_editor_event(self, source, event):
+        peer = self._source_peer(source)
+        operation, value = event["operation"], event.get("value")
+        presentation = self._presentation or {}
+        owner = self._editor_regenerate
+        if operation in ("draft", "focus", "composition") and owner is not None:
+            action = owner["action"]
+            actual = owner["operation"]
+            current_token = presentation["token"]
+            owner_revision = type(event.get("revision")) is int and (
+                event["revision"] == owner["revision"]
+                or event["revision"] == presentation["revision"]
+                and (
+                    actual is not None
+                    and current_token == actual["operation"]
+                    or actual is None
+                    and presentation["state"] == "ReturningToSource"
+                    and current_token == owner["viewToken"]
+                )
+            )
+            if (
+                self.browser_regenerate_current(owner, pending_focus=True, pending_view=True)
+                and peer is owner["peer"]
+                and getattr(event, "route", None) == owner["route"]
+                and owner_revision
+                and event.get("generation") == action["token"]["commandGeneration"]
+            ):
+                if operation == "draft":
+                    text = (
+                        value
+                        if isinstance(value, str)
+                        else value.get("text")
+                        if (
+                            isinstance(value, dict)
+                            and set(value) == {"actionId", "text"}
+                            and value["actionId"] == action["actionId"]
+                        )
+                        else None
+                    )
+                    if isinstance(text, str):
+                        owner["draft"] = text
+                        if actual is None:
+                            # The UI task and Returning render each precede the
+                            # actual Return RPC. Keep only this exact owner's
+                            # observation locally; do not invent an operation.
+                            owner["laterDraftPending"] = True
+                        else:
+                            self.host.send("draft", text)
+                elif operation == "composition" and type(value) is bool:
+                    self.host.send("composition", value)
+                elif operation == "focus" and type(value) is bool and not owner["returned"]:
+                    # The original DOM blur can precede its queued new render.
+                    # Consume it normally before the real source focus event;
+                    # a completed receipt never restores the old editor role.
+                    self.set_overlay_focus(value and peer is self.focused_peer())
+            return True  # Never retarget an old action's event to a new view.
+        return False
+
+    async def regenerate_editor(self, action_id):
+        owner = self._editor_regenerate
+        if owner is None or owner["action"]["actionId"] != action_id:
+            return
+        # The source may have retired before the scheduled task ever runs.
+        if not self.browser_regenerate_current(owner):
+            if self._editor_regenerate is owner:
+                self._editor_regenerate = None
+            return
+        try:
+            accepted = await self.host.ask(
+                "editorRegenerate", {"action": owner["action"], "draft": owner["initialDraft"]}
+            )
+            if accepted is not True and self._editor_regenerate is owner:
+                if (
+                    self.browser_regenerate_current(owner)
+                    and (self._presentation or {}).get("state") == "EditingTranslation"
+                    and self.overlay_focused
+                    and (not owner["dispatched"] or owner.get("safeFailure"))
+                ):
+                    if owner["laterDraftPending"]:
+                        owner["laterDraftPending"] = False
+                        self.host.send("draft", owner["draft"])
+                    owner["peer"].link.command(
+                        "overlay-resume",
+                        {
+                            "target": owner["action"]["token"]["target"]["value"],
+                            "generation": owner["action"]["token"]["commandGeneration"],
+                            "revision": self._presentation["revision"],
+                            "editorRegenerate": owner["action"],
+                        },
+                    )
+                self._editor_regenerate = None
+        except (OSError, EOFError, TimeoutError):
+            if self._editor_regenerate is owner:
+                self._editor_regenerate = None
+
+    def withdraw_presentation(self):
+        self._presentation = None
+        self._editor_regenerate = None
+        self._glossary_opening = None
+        self._source_glossary = None
+        self._source_glossary_return = None
+        for identity in list(self._editor_openings):
+            self.finish_editor_opening(identity)
+
+    def _retire_source_operations(self, peer, route=None):
+        for name in (
+            "_editor_regenerate",
+            "_glossary_opening",
+            "_source_glossary",
+            "_source_glossary_return",
+        ):
+            operation = getattr(self, name)
+            if (
+                operation
+                and operation["peer"] is peer
+                and (route is None or operation.get("route") == route)
+            ):
+                setattr(self, name, None)
+        for identity, opening in list(self._editor_openings.items()):
+            if opening["peer"] is peer and (route is None or opening["route"] == route):
+                self.finish_editor_opening(identity)
+
+    def begin_browser_regenerate(self, source, event, token):
+        peer = self._source_peer(source, focused=True)
+        if peer is None:
+            return None
+        record = self._bound_observation
         value = event.get("value")
         acknowledgement = self.current_session_acknowledgement(record)
         if (
-            self.editor_regenerate is not None
+            self._editor_regenerate is not None
             or peer.backend != "browser"
             or not record
             or record["peer"] is not peer
@@ -3381,15 +4415,15 @@ class Input:
             "viewToken": token,
             "viewState": "EditingTranslation",
         }
-        self.editor_regenerate = owner
-        return owner
+        self._editor_regenerate = owner
+        return action["actionId"]
 
     def browser_regenerate_current(
         self, owner, *, request=None, pending_focus=False, pending_view=False
     ):
         return bool(
             owner is not None
-            and self.editor_regenerate is owner
+            and self._editor_regenerate is owner
             and owner["settings"] == self.settings_generation
             and owner["foreground"] == self.foreground_epoch
             and (
@@ -3417,7 +4451,7 @@ class Input:
             and owner["action"]["token"]["target"] == self.bound
             and owner["action"]["token"]["commandGeneration"]
             == self.shortcut_config.get("generation")
-            and owner["peer"] in self.peers
+            and owner["peer"] in self._peers
             and self.focused_peer() is owner["peer"]
             and self.fresh()
             and self.browser_source_local(
@@ -3426,7 +4460,7 @@ class Input:
         )
 
     def observe_browser_return_focus(self, peer, value, route, before_window):
-        owner = self.editor_regenerate
+        owner = self._editor_regenerate
         if owner is None or not owner["dispatched"] or owner["returned"]:
             return
         owner["focusCount"] += 1
@@ -3447,7 +4481,7 @@ class Input:
             owner["focusWindow"] = None
 
     async def return_browser_editor(self, context):
-        owner, request = self.editor_regenerate, context.get("editorReturn")
+        owner, request = self._editor_regenerate, context.get("editorReturn")
         lost = {"returned": False, "contextLost": True}
         if (
             not isinstance(request, dict)
@@ -3581,7 +4615,7 @@ class Input:
     async def _return_to_source(self, context, trace):
         if context.get("editorReturn") is not None:
             return await self.return_browser_editor(context)
-        record = self.bound_observation
+        record = self._bound_observation
         configuration = context.get("sessionShortcuts")
         request = context.get("practiceReturn")
         editor = self.practice_editor if isinstance(request, dict) else None
@@ -3612,9 +4646,9 @@ class Input:
                     editor is None
                     or (self.practice_editor is editor and self.practice_editing(editor["runId"]))
                 )
-                and record is self.bound_observation
+                and record is self._bound_observation
                 and self.bound == context.get("boundTarget")
-                and record["peer"] in self.peers
+                and record["peer"] in self._peers
                 and self.focused_peer() is record["peer"]
                 and self.fresh()
                 and acknowledgement
@@ -3723,7 +4757,7 @@ class Input:
                 for key, value in list(self.observations.items()):
                     if value["peer"] is peer and value["target"] == editor["target"]:
                         self.observations.pop(key)
-                self.bound_observation = None
+                self._bound_observation = None
                 trace["phase"] = "revoke-ack"
                 acknowledged = await self.confirm_practice_retirement(editor["runId"])
                 if acknowledged:
@@ -3801,7 +4835,7 @@ class Input:
             self.enabled = value.get("enabled")
             self.invalidate_pause()
             if self.enabled is not True:
-                self.bound = self.bound_observation = None
+                self.bound = self._bound_observation = None
                 self.observations.clear()
                 self.revoke(shortcuts=True)
             self.state()
@@ -3821,7 +4855,7 @@ class Input:
         self.glib.source_remove(self.expiry_timer)
         self.glib.source_remove(self.listener_watch)
         self.niri.close()
-        for peer in list(self.peers):
+        for peer in list(self._peers):
             peer.link.close()
         self.listener.close()
         self.paths.native.unlink(missing_ok=True)

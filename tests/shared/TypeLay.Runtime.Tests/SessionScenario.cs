@@ -82,7 +82,7 @@ internal sealed class SessionScenario : IDisposable
             ExperimentalWriteback = experimental
         });
         Controller = new(Settings, Model, View, Input, Service, Loop, retireOwnedPractice ?? (_ => Task.FromResult(true)),
-            confirmRetiredOwnedPractice, translationRelease);
+            confirmRetiredOwnedPractice, translationRelease, sourceInteraction: View);
         if (start)
             Controller.StartAsync().GetAwaiter().GetResult();
     }
@@ -262,6 +262,19 @@ internal sealed class SessionScenario : IDisposable
         {
             get; private set;
         }
+        private InputLease? _publication;
+        private readonly HashSet<Guid> _executingWrites = [];
+        public void BeginSourceWrite(AcceptancePermit permit) => _executingWrites.Add(permit.Plan.Id);
+
+        private void RetireUnusedPublication()
+        {
+            if (Permit is { } permit && _publication is { } lease
+                && !_executingWrites.Contains(permit.Plan.Id)
+                && !Notices.Any(notice => notice.Permit?.Plan.Id == permit.Plan.Id && notice.CompletedReceipt is not null))
+                Notices.Enqueue(new("write-retired", Target: permit.Plan.Expected.Target,
+                    CommandGeneration: lease.CommandGeneration, RetiredUnusedPlanId: permit.Plan.Id));
+            _publication = null;
+        }
         public Func<SessionViewToken, AcceptancePermit, long, bool>? AcceptanceReadiness
         {
             get; set;
@@ -299,6 +312,7 @@ internal sealed class SessionScenario : IDisposable
         }
         public void ConfigureShortcuts(bool enabled, string wake, string direct, SessionShortcutBindings sessionBindings, bool sessionEnabled)
         {
+            RetireUnusedPublication();
             ShortcutsEnabled = enabled;
             SessionBindings = sessionBindings;
             SessionEnabled = sessionEnabled;
@@ -309,6 +323,8 @@ internal sealed class SessionScenario : IDisposable
         public List<ShortcutLease> PublishedShortcuts { get; } = [];
         public void Publish(InputLease lease, AcceptancePermit? permit)
         {
+            RetireUnusedPublication();
+            _publication = lease;
             PublishedLeases.Add(lease);
             Permit = permit;
         }
@@ -323,6 +339,7 @@ internal sealed class SessionScenario : IDisposable
         }
         public void Revoke()
         {
+            RetireUnusedPublication();
             AcceptanceModifierTransition = null;
             Permit = null;
             Shortcut = null;
@@ -330,6 +347,7 @@ internal sealed class SessionScenario : IDisposable
         }
         public void RevokeAcceptanceModifier(AcceptanceModifierTransition transition)
         {
+            RetireUnusedPublication();
             if (!ReferenceEquals(AcceptanceModifierTransition, transition))
                 AcceptanceModifierTransition = null;
             Permit = null;
@@ -380,6 +398,7 @@ internal sealed class SessionScenario : IDisposable
         {
             get; set;
         }
+        public TaskCompletionSource<WriteReceipt>? PendingWrite { get; set; }
         public WriteReceipt DirectReceipt { get; set; } = new(WriteStatus.RejectedBeforeMutation, Denial.Unsupported);
         public TaskCompletionSource<InputCapture>? PendingCapture
         {
@@ -469,7 +488,7 @@ internal sealed class SessionScenario : IDisposable
         public Task<WriteReceipt> WriteAsync(WritePlan plan, InputContext context, long expiresAtMs)
         {
             Writes.Add(plan);
-            return Task.FromResult(new WriteReceipt(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome));
+            return PendingWrite?.Task ?? Task.FromResult(new WriteReceipt(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome));
         }
         public Task<WriteReceipt> WriteDirectAsync(WritePlan plan, string[] excluded)
         {
@@ -524,7 +543,7 @@ internal sealed class SessionScenario : IDisposable
             pending.SetResult(new(1, status, text));
         }
     }
-    internal sealed class SessionView : ISessionView
+    internal sealed class SessionView : ISessionView, ISourceInteraction
     {
         public Func<SessionViewToken, bool>? BeginEditing
         {
@@ -675,8 +694,9 @@ internal sealed class SessionScenario : IDisposable
             Visible = session.State is not (SessionState.NoSession or SessionState.Paused);
             Rendered?.Invoke();
         }
-        public void RenderPaused(PauseAnchor anchor, long revision)
+        public void RenderPaused(PauseAnchor anchor, long revision, PresentationIdentity? identity = null)
         {
+            PauseIdentity = identity;
             Context = null;
             Anchor = anchor;
             PauseRevision = revision;
@@ -685,6 +705,7 @@ internal sealed class SessionScenario : IDisposable
             CanAccept = false;
             Visible = true;
         }
+        public PresentationIdentity? PauseIdentity { get; private set; }
         public void HideQuietly()
         {
             Context = null;

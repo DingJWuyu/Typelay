@@ -2,6 +2,30 @@
 
 本页只维护现役任务。要求以[产品基线](../product/README.md)、[原型](../design/README.md)和[原型对照](../design/prototype-parity.md)为准；历史执行记录查 Git。
 
+## 本轮范围：实施架构目标
+
+用户已明确授权开始实施[目标架构](architecture-target.md)。当前分支为 `work/architecture-deepening`，从已评估的 `work/linux-usability` 基线 `48baf7f` 创建；产品规格、已确认原型和有效 ADR 保持。本轮在本地完成迁移和必要验证，不操作用户桌面，不启动 GitHub 流程或此前平台诊断。
+
+[固定 rubric](architecture-rubric.md)保持不变，[独立评估](architecture-assessment.md)的 **90.3/100** 和 **90.5/100** 仍只是设计分数。目标文件保留两位 advisor 审查的原文，实施授权与进度以本页为准。后续实现分数只由全新上下文 advisor 给出。
+
+| DAG 切片 | 负责人 | 当前状态与下一动作 | 完成条件 |
+| --- | --- | --- | --- |
+| M0 基线与环境 | 主代理 | 已完成，固定 SDK 10.0.401 与基线 Runtime 1565 项通过；GTK3/4、Qt6 可编译 | 区分既有失败、可保持路径与未测平台能力 |
+| M1 设置提交 | `/root/implement_settings` | 实现完成；全 Runtime 回归通过，Linux host 保存验证及 Windows App 交叉编译通过 | 视图不再推断提交点，旧重复协调退出，受影响行为验证完成 |
+| M2 Linux 输入所有权 | `/root/implement_linux_input` | 实现完成；受控输入 221、setup 117、desktop 20、practice 14 项通过；原生 GUI 未测 | Overlay 的 Input 私有记录读写退出，回源与断连语义保持 |
+| M3 交互身份与呈现 | 主代理、`/root/implement_presentation_consumers` | 实现完成；暂停呈现和表单单向身份已整合，浏览器三组共 34 项真实 DOM 回归、三端原生编译通过 | 显示与行为身份分离，各消费者旧比较退出 |
+| M4 会话与结算 | `/root/implement_session_operations`、`/root/implement_write_settlement`、`/root/implement_windows_write_retirement` | 实现完成；具体操作、写入唯一结算、两端未用许可事实与正常关闭已整合；真实 Linux host 关闭交接通过，原生桌面未测 | 具体操作拥有寿命，主 Capture/Stop 退出专用分支，关闭先交还结果 |
+| M5 教程职责 | `/root/implement_session_operations` | 实现完成；教程步骤只消费确认事实，完成记录退休及保存重入回归通过 | 进度不参与权限，真实自有源证据保留 |
+| M6 清理与复评 | 主代理、后续全新 advisor | 目录归属、模型合同与现役文档已整理；最终 Runtime 1591、Core 320 项通过，正在独立审查与实际实现复评 | 旧路径退出，受影响构建/验证完成，实际实现独立复评 |
+
+实现代理均以 `fork_turns=none` 创建，请求配置为 `gpt-6-astra`、`xhigh`；工具只确认创建，实际配置未核实。主代理负责集成、冲突与检查，不让每项常规动作再等待用户确认。
+
+实现取舍已由各次独立上下文 advisor 核对。`/root/implementation_advisor_writes` 明确指出：Published 许可不能凭 TTL、容量或断连当作未执行；普通未使用许可靠原执行者的精确未用退休事实结束，已认领执行靠原回执结算。Windows 复用原 Grant 的 `Quiet && !Claimed`，GTK/Qt/browser 在原源线程区分在途执行和已经完全退休的许可。超期缺事实才按原目标记为未知。正常关闭保持两端事件循环和原回执消费，结算后再释放。没有新持久账本、重试或通用 Quiet。
+
+验证证据在 `artifacts/architecture/validation/` 与 `artifacts/m3-consumers/`。Windows WPF 运行、原生 GUI 和物理 IME 尚未在本轮验证；App.Tests 交叉编译受 Linux 缺少原生 `TypeLay.NativeInput.dll` fixture 限制，不宣称完整测试项目通过。后文旧 CI 与桌面事实只说明基线限制，不能替代当前工作区验证。
+
+本次改进针对编辑回源、菜单呈现和保存设置的实际知识分散，证据与收益见目标文档的四项深化目标。用户故障发生频率未知；验证优先复用现有生产入口，只为新的责任交接补充必要场景，不扩展完整桌面或模型矩阵。
+
 ## 当前身份与最近 CI
 
 截至 **2026-11-06**，最近已核平台验收对应开发分支 `work/linux-usability` 的提交 [`ff5394f70391745e8e6e06549482485f79007b01`](https://github.com/DingJWuyu/Typelay/commit/ff5394f70391745e8e6e06549482485f79007b01)。[CI587](https://github.com/DingJWuyu/Typelay/actions/runs/42157722940) 于 2026-11-06 03:58:09 UTC 终态 failure，Linux 和 Windows 均已执行。`main` 保持 `09fe613a606073876483b51446211030a66a9597`，`trunk` 保持 `438c49789777beca9b14136dbbbbf41426c4d888`；不更新两者、不 force、不自动 PR。

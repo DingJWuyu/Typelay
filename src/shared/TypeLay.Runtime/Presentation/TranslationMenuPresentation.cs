@@ -42,7 +42,7 @@ public sealed partial class SessionController
         var style = GetStyleSettingsState(StyleScope.CurrentApplication, TranslationStyle.Natural);
         var inherit = GetStyleSettingsState(StyleScope.CurrentApplication, null);
         var alternative = GetAlternativeState();
-        string? glossaryReason = QualifyGlossaryEntry(style.Session);
+        string? glossaryReason = _glossary.QualifyGlossaryEntry(style.Session);
         TranslationStyle? applicationStyle = style.Application is { } application
             && style.SavedPreferences?.Applications?.TryGetValue(application, out var selected) == true ? selected : null;
         string? feedback = _translationMenuFeedback is { } current && current.Token == CurrentTranslationToken()

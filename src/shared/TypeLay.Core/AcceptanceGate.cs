@@ -10,7 +10,8 @@ public readonly record struct GateContext(TargetId? Target, bool SourceFocused, 
 // PhysicalKey is only an opaque pairing identity; it never grants permission.
 public readonly record struct AcceptanceKeyInput(uint PhysicalKey, bool Down, bool Repeated, bool BindingMatches,
     ShortcutModifiers ExpectedModifiers = ShortcutModifiers.None);
-public readonly record struct AcceptanceDecision(bool Consume, AcceptancePermit? Permit);
+public readonly record struct AcceptanceDecision(bool Consume, AcceptancePermit? Permit,
+    AcceptancePermit? RetiredUnusedPermit = null);
 
 /// <summary>
 /// Only ProcessAcceptanceKey is called by the dedicated input thread. Publish/Revoke are atomic.
@@ -27,7 +28,9 @@ public sealed class AcceptanceGate
     // Explicit process-level opt-in for automation; production callers retain rejection.
     public AcceptanceGate(bool allowInjectedInput = false) => _allowInjectedInput = allowInjectedInput;
 
-    public void Publish(AcceptancePermit permit)
+    // The returned permit was atomically removed without a successful claim.
+    // Republish of the same plan still leaves that plan installed.
+    public AcceptancePermit? Publish(AcceptancePermit permit)
     {
         if (permit.ObservedAtMs != permit.Plan.Expected.ObservedAtMs
             || permit.InputEpoch != permit.Plan.Expected.InputEpoch
@@ -35,17 +38,17 @@ public sealed class AcceptanceGate
             || permit.ExpiresAtMs < permit.ObservedAtMs
             || permit.ExpiresAtMs - permit.ObservedAtMs > Limits.PermitMaxAgeMs)
             throw new ArgumentException("Permit lifetime exceeds its independent safety budget.");
-        Interlocked.Exchange(ref _permit, permit);
+        var previous = Interlocked.Exchange(ref _permit, permit);
+        return previous?.Plan.Id != permit.Plan.Id ? previous : null;
     }
 
-    public void Revoke() => Interlocked.Exchange(ref _permit, null);
+    public AcceptancePermit? Revoke() => Interlocked.Exchange(ref _permit, null);
 
     public AcceptanceDecision ProcessAcceptanceKey(AcceptanceKeyInput input, GateContext context)
     {
         if (context.Injected && !_allowInjectedInput)
         {
-            Revoke();
-            return new(false, null);
+            return new(false, null, Revoke());
         }
         if (!input.Down)
         {
@@ -60,8 +63,8 @@ public sealed class AcceptanceGate
         {
             if (held == input.PhysicalKey)
                 return new(_consumed, null); // Pair the original press even after rebinding.
-            Revoke(); // A second key cannot replace the outstanding release owner.
-            return new(false, null);
+            // A second key cannot replace the outstanding release owner.
+            return new(false, null, Revoke());
         }
         if (!input.BindingMatches || input.Repeated)
             return new(false, null);
@@ -76,6 +79,6 @@ public sealed class AcceptanceGate
             && context.InputEpoch == permit.InputEpoch && context.FocusEpoch == permit.FocusEpoch
             && context.NowMs >= permit.ObservedAtMs && context.NowMs <= permit.ExpiresAtMs;
         _consumed = valid;
-        return new(valid, valid ? permit : null);
+        return new(valid, valid ? permit : null, valid ? null : permit);
     }
 }

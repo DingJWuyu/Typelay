@@ -84,6 +84,8 @@ FCITX_BUILD_INPUTS = (
     *(f"eng/linux/cooperative/patches/{project}.patch" for project in PATCH_PROJECTS),
     "src/linux/native/fcitx5/typelay-fcitx-v1.h",
     "src/linux/native/common/gtk-textbuffer-write.inc",
+    "src/linux/native/common/presentation-identity.h",
+    "src/linux/native/common/write-settlement.h",
     "src/linux/native/common/overlay-design.h",
     *(
         str(path.relative_to(ROOT))

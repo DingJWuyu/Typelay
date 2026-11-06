@@ -495,7 +495,9 @@ async def exercise_quick_panel(
 
     for locale in ("zh-CN", "en"):
         for theme in ("light", "dark"):
-            assert await host.ask("settingsPatch", {"uiLanguage": locale, "theme": theme}) is True
+            assert (await host.ask("settingsPatch", {"uiLanguage": locale, "theme": theme}))[
+                "saved"
+            ] is True
             await settled()
             await show()
             tray.report({**model_state, "lastApplication": "editor"})
@@ -692,7 +694,9 @@ async def exercise_download_progress(tray, owner, host, settled, calls, requests
     match(5 / 11)
     assert not publish(first)
     for language, theme in (("zh-CN", "light"), ("en", "dark")):
-        assert await host.ask("settingsPatch", {"uiLanguage": language, "theme": theme}, timeout=3)
+        assert (
+            await host.ask("settingsPatch", {"uiLanguage": language, "theme": theme}, timeout=3)
+        )["saved"]
         await settled()
         # Configuration may legitimately refresh other model facts. Capture the
         # new view once; the following progress record itself must not mutate it.
@@ -1008,9 +1012,11 @@ async def exercise_progress_display(tray, owner, host, settled, output):
 
     async def model_page(mode, os_motion):
         gtk_settings.set_property("gtk-enable-animations", os_motion)
-        assert await host.ask(
-            "settingsPatch", {"motion": mode, "theme": "light", "accent": "clay"}, timeout=3
-        )
+        assert (
+            await host.ask(
+                "settingsPatch", {"motion": mode, "theme": "light", "accent": "clay"}, timeout=3
+            )
+        )["saved"]
         await settled()
         tray.hide_panel()
         owner.tutorial.dismiss()
@@ -1164,7 +1170,7 @@ async def exercise_progress_display(tray, owner, host, settled, output):
 
         async def reduce(expected):
             expected["ready"] = lambda: owner.value["motion"] == "reduce"
-            assert await host.ask("settingsPatch", {"motion": "reduce"}, timeout=3)
+            assert (await host.ask("settingsPatch", {"motion": "reduce"}, timeout=3))["saved"]
             await settled()
 
         async def pause(expected):
@@ -1228,7 +1234,7 @@ async def exercise_progress_display(tray, owner, host, settled, output):
         assert not bar.get_visible(), "unknown total retained a fabricated fraction bar"
         # Theme-only updates must recolor this bar without a new bytes record.
         bar, window = await model_page("reduce", False)
-        assert await host.ask("settingsPatch", {"theme": "dark"}, timeout=3)
+        assert (await host.ask("settingsPatch", {"theme": "dark"}, timeout=3))["saved"]
         await settled()
         bounds, image = await capture(bar, window)
         assert abs(coverage(image, (217, 119, 87)) - bounds[2] * 0.25) <= 2

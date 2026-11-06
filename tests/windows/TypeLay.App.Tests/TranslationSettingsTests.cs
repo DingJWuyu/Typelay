@@ -653,7 +653,8 @@ public sealed partial class TranslationSettingsTests(WpfDesktopFixture desktop)
             var release = releasePolicy ?? (released ? new TranslationReleasePolicy([
                 new(TranslationOperation.Style, "hy-mt2-1-8b-q4-k-m", "a0c709d9fac510f2c807aa3af52872340dc37a4a", "zh_ja"),
                 new(TranslationOperation.Glossary, "hy-mt2-1-8b-q4-k-m", "a0c709d9fac510f2c807aa3af52872340dc37a4a", "zh_ja")]) : new TranslationReleasePolicy([]));
-            Controller = new(Settings, _model, _overlay, Input, Input, new SettingsLoop(), retireOwnedPractice: retire, translationRelease: release);
+            Controller = new(Settings, _model, _overlay, Input, Input, new SettingsLoop(), retireOwnedPractice: retire, translationRelease: release,
+                sourceInteraction: _overlay);
             Window = new(Settings, _model, () => { }, controller: Controller)
             {
                 SessionMustEnd = Controller.StopSession,

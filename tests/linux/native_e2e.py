@@ -469,8 +469,12 @@ class Native:
         self.connection.settimeout(2)
         self.id = 0
         self.events = []
+        self.presentation_sequence = 0
+        self.presentation_interactions = {}
+        self.presentation_form = None
         first = self.receive()
         assert first["event"] == "hello" and first["data"]["protocol"] == 2
+        assert first["data"]["presentationVersion"] == 1
         self.hello = first["data"]
 
     def receive(self):
@@ -482,11 +486,45 @@ class Native:
         return receive_sync(self.connection)
 
     def call(self, operation, data=None):
+        # Controlled hosts publish the formal presentation contract. A supplied
+        # identity stays untouched so rejection cases reach the actual renderer.
+        if operation == "overlay-render" and data and "view" in data:
+            data = json.loads(json.dumps(data))
+            view = data["view"]
+            context = view.setdefault("viewContext", {})
+            key = json.dumps(
+                [
+                    data.get("generation"),
+                    data.get("target"),
+                    view.get("state"),
+                    context.get("token"),
+                ],
+                sort_keys=True,
+            )
+            interaction = self.presentation_interactions.setdefault(key, str(uuid.uuid4()))
+            self.presentation_sequence += 1
+            context.setdefault(
+                "identity",
+                {
+                    "version": 1,
+                    "interactionId": interaction,
+                    "displaySequence": self.presentation_sequence,
+                    "draftRevision": 0,
+                    "actionRevision": 1
+                    + context.get("translationActions", {}).get("settingsRevision", 0),
+                },
+            )
+            if self.presentation_form is not None:
+                context.setdefault("glossaryForm", self.presentation_form.copy())
         self.id += 1
         self.connection.sendall(encode({"id": self.id, "op": operation, "data": data or {}}))
         while True:
             frame = self.receive()
             if frame.get("id") == self.id:
+                if operation == "overlay-glossary-open" and frame["data"].get("opened"):
+                    self.presentation_form = {"formId": data["entry"]["formId"], "current": True}
+                elif operation in ("overlay-hide", "overlay-glossary-close"):
+                    self.presentation_form = None
                 self.capture_trace = frame.get("captureTrace")
                 self.capture_continuity = frame.get("captureContinuity")
                 return frame["data"]
@@ -2354,6 +2392,14 @@ def inside(arguments, notifications=None):
         assert after_tab["first"] == original and after_tab["second"] == initial["second"]
         client.describe()  # Drain events through a subsequent real protocol response.
         assert not any(event.get("event") in ("accepted", "shortcut") for event in client.events)
+        retired = [
+            event["data"]
+            for event in client.events
+            if event.get("event") == "writeRetired" and event["data"].get("planId") == write["id"]
+        ]
+        assert retired == [{"planId": write["id"], "target": target, "generation": generation}], (
+            retired
+        )
         key("shift+Tab")
         wait_state(lambda value: value.get("focus") == "fixture-first")
         control_generation = str(uuid.uuid4())

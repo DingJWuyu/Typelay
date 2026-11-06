@@ -57,7 +57,7 @@ internal static class WindowsRuntime
         loop.Tick += browserView.Poll;
         var controller = new SessionController(settings, model, view, input, input, loop,
             practice is null ? null : practice.RetireAutomaticAsync,
-            practice is null ? null : practice.ConfirmRetiredAutomaticAsync);
+            practice is null ? null : practice.ConfirmRetiredAutomaticAsync, sourceInteraction: view);
         overlay.ConfigureSourceRegenerate(controller);
         controller.OperationFeedback += browser.ObserveFeedback;
         if (practice is not null)

@@ -143,6 +143,18 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
             await self.send({"event": "quit", "data": None})
             await asyncio.wait_for(self.process.communicate(), 3)
 
+    async def test_normal_shutdown_returns_ownership_before_the_private_channel_exits(self):
+        result = await self.ask("shutdown")
+        self.assertEqual(result, {"verified": 0, "rejectedBeforeMutation": 0, "outcomeUnknown": 0})
+        self.assertIsNone(self.process.returncode)
+        self.assertIsNone(
+            await self.ask("allowField", {"process": "fixture", "enabled": True, "password": False})
+        )
+        self.assertEqual(await self.ask("shutdown"), result)
+        await self.send({"event": "quit", "data": None})
+        await asyncio.wait_for(self.process.communicate(), 3)
+        self.assertEqual(self.process.returncode, 0)
+
     def model_generation(
         self,
         *,
@@ -1430,7 +1442,9 @@ while True:
         self.assertNotIn("glossary", ordinary)
 
     async def test_motion_patch_preserves_explicit_mode_and_legacy_boolean_intent(self):
-        self.assertTrue(await self.ask("settingsPatch", {"motion": "full", "accent": "ocean"}))
+        self.assertTrue(
+            (await self.ask("settingsPatch", {"motion": "full", "accent": "ocean"}))["saved"]
+        )
         settings_path = self.home / "config/settings.json"
         for patch, mode, reduced in (
             ({"reduceMotion": True, "motion": "full"}, "full", False),
@@ -1442,7 +1456,7 @@ while True:
             ({"motion": "system"}, "system", False),
         ):
             with self.subTest(patch=patch):
-                self.assertTrue(await self.ask("settingsPatch", patch))
+                self.assertTrue((await self.ask("settingsPatch", patch))["saved"])
                 state = self.latest("settings")
                 self.assertEqual((state["motion"], state["reduceMotion"]), (mode, reduced))
                 self.assertEqual(state["accent"], "ocean")
@@ -1452,7 +1466,9 @@ while True:
         for mode in (None, "", "FULL", "unknown", False, 1, {}, []):
             with self.subTest(invalid=mode):
                 self.assertFalse(
-                    await self.ask("settingsPatch", {"motion": mode, "reduceMotion": True})
+                    (await self.ask("settingsPatch", {"motion": mode, "reduceMotion": True}))[
+                        "saved"
+                    ]
                 )
                 self.assertEqual(settings_path.read_bytes(), before)
                 self.assertEqual(self.latest("settings")["motion"], "system")
@@ -1522,7 +1538,7 @@ while True:
             "expectedSettingsRevision": state["settingsRevision"],
             "knownApplications": known,
         }
-        self.assertTrue(await self.ask("settingsPatch", {"accent": "ocean"}))
+        self.assertTrue((await self.ask("settingsPatch", {"accent": "ocean"}))["saved"])
         before = settings_file.read_bytes()
         result = await self.ask("changeApplicationList", request)
         self.assertFalse(result["saved"])
@@ -1546,7 +1562,7 @@ while True:
         )
         # Old Undo cannot re-add membership after another committed preference.
         undo = {**request, "included": True, "expectedSettingsRevision": result["settingsRevision"]}
-        self.assertTrue(await self.ask("settingsPatch", {"textSize": 17}))
+        self.assertTrue((await self.ask("settingsPatch", {"textSize": 17}))["saved"])
         before = settings_file.read_bytes()
         self.assertEqual(
             (await self.ask("changeApplicationList", undo))["code"], "settings-changed"
@@ -1636,7 +1652,11 @@ while True:
 
     async def test_appearance_patches_pause_and_managed_app_preserve_other_settings(self):
         self.assertTrue(
-            await self.ask("settingsPatch", {"accent": "iris", "textSize": 18, "uiLanguage": "en"})
+            (
+                await self.ask(
+                    "settingsPatch", {"accent": "iris", "textSize": 18, "uiLanguage": "en"}
+                )
+            )["saved"]
         )
         self.assertTrue(await self.ask("manageApplication", "editor"))
         self.assertTrue(await self.ask("manageApplication", "mail"))
@@ -1654,7 +1674,7 @@ while True:
             {"reduceMotion": 1},
             {"uiLanguage": "fr"},
         ):
-            self.assertFalse(await self.ask("settingsPatch", invalid))
+            self.assertFalse((await self.ask("settingsPatch", invalid))["saved"])
         state = self.latest("settings")
         self.assertEqual(
             (state["accent"], state["textSize"], state["uiLanguage"]), ("iris", 18, "en")
@@ -2427,6 +2447,36 @@ while True:
         self.assertIsNone(await self.ask("settings", {**saved, "startup": True}))
         self.assertEqual(settings_file.read_bytes(), before)
         self.assertEqual(self.events, [])
+
+    async def test_settings_patch_reports_startup_applied_even_when_file_save_fails(self):
+        first = await self.ask("settingsPatch", {"theme": "dark"})
+        self.assertTrue(first["saved"])
+        settings_file = self.home / "config/settings.json"
+        before = settings_file.read_bytes()
+        blocker = settings_file.with_suffix(".json.tmp")
+        blocker.mkdir()
+        result = await self.ask("settingsPatch", {"startup": True})
+        self.assertFalse(result["saved"])
+        self.assertEqual(result["state"], "NotCommitted")
+        self.assertEqual(result["startup"], "Applied")
+        self.assertIs(result["requestedStartup"], True)
+        self.assertEqual(result["revision"], first["revision"])
+        self.assertEqual(settings_file.read_bytes(), before)
+        self.assertTrue((self.home / "autostart/typelay.desktop").is_file())
+        self.assertIn("系统设置已更改", result["message"])
+
+    async def test_settings_patch_reports_unknown_startup_without_claiming_a_file_commit(self):
+        first = await self.ask("settingsPatch", {"theme": "dark"})
+        settings_file = self.home / "config/settings.json"
+        before = settings_file.read_bytes()
+        (self.home / "autostart").write_text("not a directory")
+        result = await self.ask("settingsPatch", {"startup": True})
+        self.assertFalse(result["saved"])
+        self.assertEqual(result["state"], "ExternalEffectUnknown")
+        self.assertEqual(result["startup"], "OutcomeUnknown")
+        self.assertEqual(result["revision"], first["revision"])
+        self.assertEqual(settings_file.read_bytes(), before)
+        self.assertIn("系统状态未能确认", result["message"])
 
     async def test_tray_persistence_failure_keeps_current_settings_and_allows_explicit_retry(self):
         self.assertTrue(await self.ask("settings", {"enabled": True, "theme": "dark"}))

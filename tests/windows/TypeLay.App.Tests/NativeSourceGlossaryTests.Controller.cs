@@ -51,7 +51,8 @@ public sealed partial class NativeSourceGlossaryTests
             var release = new TranslationReleasePolicy(applicationReleased
                 ? [new(TranslationOperation.Glossary, GlossaryProtocolPeer.Package, GlossaryProtocolPeer.Version, "zh_ja")]
                 : []);
-            controller = new(settings, model.Client, view, monitor, input, new DesktopLoop(), translationRelease: release);
+            controller = new(settings, model.Client, view, monitor, input, new DesktopLoop(), translationRelease: release,
+                sourceInteraction: view);
             await controller.StartAsync();
             await native.Prepare(native.A, "你好", new(0, 2));
             while (controller.LastApplication is null)

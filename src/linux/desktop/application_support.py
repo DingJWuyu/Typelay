@@ -258,15 +258,15 @@ class ApplicationSupport:
                 process.terminate()
                 await process.wait()
 
-    def facts(self, peers=(), enabled=True):
+    def facts(self, connections=(), enabled=True):
         """Return recent diagnostics, never authority to capture or modify a field."""
         connected = set()
         observations = {}
         stamp = now_ms()
         checked_at = datetime.now(timezone.utc)
         capability_keys = ("preview", "tabAccept", "directReplace")
-        for peer in peers:
-            if not peer.lifetime or not peer.link.channel.alive:
+        for peer in connections:
+            if not peer.lifetime or not peer.connected:
                 continue
             identity = (
                 "desktop-text"
@@ -283,10 +283,14 @@ class ApplicationSupport:
                 ):
                     continue
             connected.add(identity)
-            observation = getattr(peer, "support_observation", None)
+            observation = {
+                "atMs": peer.observed_at_ms,
+                "preview": peer.preview,
+                "tabAccept": peer.tab_accept,
+                "directReplace": peer.direct_replace,
+            }
             if (
-                not isinstance(observation, dict)
-                or type(observation.get("atMs")) is not int
+                type(observation.get("atMs")) is not int
                 or not 0 <= stamp - observation["atMs"] <= 30000
                 or any(type(observation.get(key)) is not bool for key in capability_keys)
             ):

@@ -3,10 +3,11 @@ using TypeLay.Runtime;
 
 namespace TypeLay.App;
 
-internal sealed class WindowsSessionView : ISessionView
+internal sealed class WindowsSessionView : ISessionView, ISourceInteraction
 {
     private readonly ISessionView _native, _browser;
     private ISessionView? _active;
+    private ISourceInteraction? SourceInteraction => _active as ISourceInteraction;
     public WindowsSessionView(ISessionView native, ISessionView browser)
     {
         _native = native;
@@ -77,13 +78,13 @@ internal sealed class WindowsSessionView : ISessionView
     }
     public SessionGlossaryFocus? GlossaryEntryFocus => _active?.GlossaryEntryFocus;
     public bool SupportsSourceGlossaryEntry(SessionViewToken token) =>
-        _active?.SupportsSourceGlossaryEntry(token) == true;
+        SourceInteraction?.SupportsSourceGlossaryEntry(token) == true;
     public bool IsGlossarySourceWindowCurrent(SessionGlossaryEntry entry, long original, long current) =>
-        _active?.IsGlossarySourceWindowCurrent(entry, original, current) == true;
+        SourceInteraction?.IsGlossarySourceWindowCurrent(entry, original, current) == true;
     public bool IsGlossarySourceReturnPending(SessionGlossaryEntry entry) =>
-        _active?.IsGlossarySourceReturnPending(entry) == true;
+        SourceInteraction?.IsGlossarySourceReturnPending(entry) == true;
     public Task<bool> ReturnGlossaryToSourceAsync(SessionGlossaryEntry entry) =>
-        _active?.ReturnGlossaryToSourceAsync(entry) ?? Task.FromResult(false);
+        SourceInteraction?.ReturnGlossaryToSourceAsync(entry) ?? Task.FromResult(false);
     public Action? ExcludeRequested
     {
         get; set;
@@ -119,11 +120,11 @@ internal sealed class WindowsSessionView : ISessionView
             native.RetireLanguageConfigurationForNewView();
         Select(source.Target).Render(session, settings, canAccept, statusOverride, context);
     }
-    public void RenderPaused(PauseAnchor anchor, long revision)
+    public void RenderPaused(PauseAnchor anchor, long revision, PresentationIdentity? identity = null)
     {
         if (_native is OverlayWindow native)
             native.RetireLanguageConfigurationForNewView();
-        Select(anchor.Target).RenderPaused(anchor, revision);
+        Select(anchor.Target).RenderPaused(anchor, revision, identity);
     }
     public void HideQuietly()
     {
@@ -132,5 +133,5 @@ internal sealed class WindowsSessionView : ISessionView
         _active = null;
     }
     public void ResumeEditor() => _active?.ResumeEditor();
-    public bool IsEditorExitPrearmed(SessionViewToken token) => _active?.IsEditorExitPrearmed(token) == true;
+    public bool IsEditorExitPrearmed(SessionViewToken token) => SourceInteraction?.IsEditorExitPrearmed(token) == true;
 }

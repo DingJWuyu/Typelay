@@ -13,7 +13,7 @@ internal sealed record OwnedAcceptanceControl(Guid PlanId = default, long PlanSe
     long PlanHandle = 0, int PlanBytes = 0, long ResultHandle = 0, int ResultBytes = 0,
     long WitnessHandle = 0, int WitnessBytes = 0, OwnedCaptureDescriptor? Descriptor = null,
     long WitnessSequence = 0, bool AllowInjectedInput = false, int Version = OwnedPracticeAcceptanceProtocol.Version,
-    bool ObserveInputCompletion = false, bool ControlPrefixObserved = false);
+    bool ObserveInputCompletion = false, bool ControlPrefixObserved = false, bool RetiredUnused = false);
 
 internal sealed record OwnedAcceptancePlan(Guid Connection, Guid Run, long PlanSequence,
     OwnedCaptureDescriptor Descriptor, AcceptancePermit Permit, long UserEpoch, long ForegroundEpoch,

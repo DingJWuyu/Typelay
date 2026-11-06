@@ -1609,7 +1609,7 @@ async def check_language_configuration(
     focus_instances = {}
 
     def owned(actual):
-        assert peer in overlay.input.peers and peer.link.channel.alive
+        assert overlay.input.source_connected(peer.source)
         assert peer.lifetime == peer_lifetime and peer.connection_id == peer_connection
         assert overlay.input.focused_peer() is peer
         assert parent_geometry_ready(actual, dimensions)
@@ -1625,9 +1625,12 @@ async def check_language_configuration(
         return actual
 
     def config_current():
-        assert overlay.language_configuration is configuration
-        assert configuration["phase"] == "Open"
-        assert overlay.language_configuration_current(configuration)
+        assert (
+            overlay.input.diagnostics()["languageConfiguration"]["openingId"]
+            == configuration["openingId"]
+        )
+        assert overlay.input.diagnostics()["languageConfiguration"]["phase"] == "Open"
+        assert overlay.input.source_connected(peer.source, focused=True)
         assert overlay.value is None and overlay.peer is None
         assert not overlay.visible and not overlay.editing and not overlay.acceptance_ready
         actual = owned(observe())
@@ -1637,7 +1640,7 @@ async def check_language_configuration(
     def input_target(name, *, composing=None, closed_source=False):
         actual = owned(observe()) if closed_source else config_current()
         if closed_source:
-            assert overlay.language_configuration is None and overlay.value is None
+            assert not overlay.input.language_configuration_open and overlay.value is None
             assert not overlay.visible and actual.get("candidate") is None
             assert actual[name]["focused"]
         else:
@@ -1807,7 +1810,7 @@ async def check_language_configuration(
     async def closed():
         actual = await language_wait_for(
             lambda: (value := state())
-            and overlay.language_configuration is None
+            and not overlay.input.language_configuration_open
             and not value.get("overlayControls", {}).get(popup_name, {}).get("visible")
             and value,
             "configuration opening did not retire",
@@ -1848,7 +1851,7 @@ async def check_language_configuration(
     await click(trigger, opening=True)
     await language_wait_for(lambda: calls["begin"], "real trigger did not request configuration")
     old_render = json.loads(json.dumps(evidence["configurationRender"]))
-    configuration = overlay.language_configuration
+    configuration = overlay.input.diagnostics()["languageConfiguration"]
     assert configuration is not None and len(calls["begin"]) == 1
     evidence["beginElapsedMs"] = now_ms() - actions[0]["clickStartedAtMs"]
     evidence["handshakeExpiresAtMs"] = configuration["expiresAtMs"]
@@ -1871,11 +1874,7 @@ async def check_language_configuration(
             )
         begin_release.set()  # Deliberately deliver the held old reply, not a new begin/ACK.
         await language_wait_for(
-            lambda: all(
-                job.done()
-                for job in jobs
-                if job.get_coro().cr_code == overlay.begin_language_configuration.__func__.__code__
-            ),
+            lambda: all(job.done() for job in jobs),
             "late controlled Host reply not drained",
         )
         await peer.link.ask("describe")
@@ -2033,7 +2032,7 @@ async def check_language_configuration(
             "no fresh source observation after retired search Return release",
         )
         await peer.link.ask("describe")
-        assert overlay.language_configuration is None and observe().get("candidate") is None
+        assert not overlay.input.language_configuration_open and observe().get("candidate") is None
         assert observe()["secondEntry"]["instance"] == source_instances["secondEntry"]
         assert observe()["secondEntry"]["focused"]
         assert final["firstEntry"]["topActive"]
@@ -2605,7 +2604,7 @@ def run_owned_language_options(
                         evidence.get("configurationTimelineOmitted", 0) + 1
                     )
                     return
-                current = overlay.language_configuration
+                current = overlay.input.diagnostics()["languageConfiguration"]
                 phase = current.get("phase") if current else None
                 at = now_ms()
                 # Reuse the existing asynchronous compositor snapshot. This is
@@ -2785,7 +2784,7 @@ def run_owned_language_options(
                     return {}
 
             peer = await language_wait_for(
-                lambda: next((peer for peer in input_service.peers if peer.lifetime), None),
+                lambda: next((peer for peer in input_service._peers if peer.lifetime), None),
                 "language fixture handshake missing",
             )
             assert fixture.pid in process_lineage(peer.pid), "unexpected native test peer"
@@ -3035,6 +3034,7 @@ def run_owned_language_options(
             else:
                 await check_language_options(
                     overlay,
+                    peer,
                     source,
                     generation,
                     state,
@@ -3063,7 +3063,7 @@ def run_owned_language_options(
                 pass  # A failed job's diagnostic must not mask the failure or skip cleanup.
             observing = False
             if configuration_stage:
-                overlay.cancel_language_configuration()
+                overlay.input.cancel_language_configuration()
                 evidence.pop("configurationRender", None)
                 evidence["configurationCallCounts"] = {
                     key: len(value) for key, value in configuration_calls.items()
@@ -3179,6 +3179,7 @@ def check_language_dto(client, source, generation, state, initial, evidence):
 
 async def check_language_options(
     overlay,
+    peer,
     source,
     generation,
     state,
@@ -3191,7 +3192,6 @@ async def check_language_options(
     environment,
 ):
     """Real menu interactions under the production owner; no installed model claim."""
-    peer = overlay.input.bound_observation["peer"]
     backend = peer.backend
     trigger = "typelay-menu-trigger"
     menu = "typelay-language-menu"

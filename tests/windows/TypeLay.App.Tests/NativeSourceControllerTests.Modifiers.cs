@@ -397,8 +397,13 @@ public sealed partial class NativeSourceControllerTests
                     // Pump only the existing monitor retirement, not another
                     // controller Tick/capture. Quiet releases the delivery fence;
                     // the next Render proves Runtime processed this held response.
-                    Assert.False(hook.TryRead(out var notice));
-                    Assert.Null(notice);
+                    if (hook.TryRead(out var notice))
+                    {
+                        Assert.Equal("write-retired", notice!.Kind);
+                        Assert.NotNull(notice.RetiredUnusedPlanId);
+                        Assert.Null(notice.Permit);
+                        Assert.Null(notice.CompletedReceipt);
+                    }
                     return view.RenderCount > renders;
                 }, native.Token);
                 Assert.Equal(captures, broker.Captures);

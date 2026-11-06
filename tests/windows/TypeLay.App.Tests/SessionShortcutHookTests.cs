@@ -59,6 +59,13 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
                 Assert.Equal(1, down);
                 Assert.Equal(original + "\t", input.Text);
                 Assert.True(input.IsKeyboardFocused);
+                Assert.True(hook.TryRead(out var retired));
+                Assert.Equal(plan.Id, retired!.RetiredUnusedPlanId);
+                Assert.Equal(snapshot.Target, retired.Target);
+                Assert.Equal(hook.CommandGeneration, retired.CommandGeneration);
+                Assert.Equal("write-retired", retired.Kind);
+                Assert.Null(retired.Permit);
+                Assert.Null(retired.CompletedReceipt);
                 Assert.False(hook.TryRead(out _));
             }
             finally
@@ -116,7 +123,7 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
                 Assert.DoesNotContain(Key.F8, up);
                 Assert.Equal(1, down.Count(key => key == Key.F9));
                 Assert.Equal(1, up.Count(key => key == Key.F9));
-                Assert.False(hook.TryRead(out _));
+                Assert.False(ReadAction(hook, out _));
                 Publish();
                 Send(0x78, true);
                 Send(0x78, false);
@@ -140,7 +147,7 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
                 Assert.DoesNotContain(Key.F6, up);
                 Assert.Contains(Key.F7, down);
                 Assert.Contains(Key.F7, up);
-                Assert.False(hook.TryRead(out _));
+                Assert.False(ReadAction(hook, out _));
                 // Ctrl keeps ordinary source writing closed while unmodified exit
                 // remains available, without releasing the earlier consumed press.
                 Configure("F8", "F7");
@@ -174,7 +181,7 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
                 Assert.Equal(functionDown + 1, down.Count(key => key == Key.F8));
                 Assert.Equal(1, up.Count(key => key == Key.F8));
                 Assert.Equal(hook.CommandGeneration, (await Notice("escape")).CommandGeneration);
-                Assert.False(hook.TryRead(out _));
+                Assert.False(ReadAction(hook, out _));
                 Configure("Tab", "Esc");
                 Assert.True(hook.CanInterceptAcceptance);
                 Assert.Equal("Synthetic hook source", input.Text);
@@ -211,7 +218,7 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
             async Task<InputNotice> Notice(string kind)
             {
                 InputNotice? notice = null;
-                await Until(() => notice is not null || hook.TryRead(out notice), deadline.Token);
+                await Until(() => notice is not null || ReadAction(hook, out notice), deadline.Token);
                 Assert.Equal(kind, notice!.Kind);
                 return notice;
             }
@@ -280,7 +287,7 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
             if (automation)
             {
                 InputNotice? notice = null;
-                await Until(() => notice is not null || hook.TryRead(out notice), deadline.Token);
+                await Until(() => notice is not null || ReadAction(hook, out notice), deadline.Token);
                 Assert.Equal("escape", notice!.Kind);
                 Assert.Null(notice.Permit);
                 Assert.Equal(snapshot.Target, notice.Target);
@@ -313,7 +320,7 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
             await Until(() => controlUp == 1, deadline.Token);
             Assert.Equal(automation ? 2 : 4, functionDown);
             Assert.Equal(automation ? 1 : 2, functionUp);
-            Assert.False(hook.TryRead(out _));
+            Assert.False(ReadAction(hook, out _));
 
             if (automation)
             {
@@ -328,7 +335,7 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
                 await Until(() => controlUp == 2, deadline.Token);
                 Assert.Equal(3, functionDown);
                 Assert.Equal(2, functionUp);
-                Assert.False(hook.TryRead(out _));
+                Assert.False(ReadAction(hook, out _));
             }
             Assert.Equal(original, input.Text);
             Assert.True(input.IsKeyboardFocused);
@@ -415,7 +422,7 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
             Assert.False(returning.Released);
             Assert.Equal(new OwnedReturnKeyPress(control ? 0x42u : 1u, false, true, exitKey,
                 control ? ShortcutModifiers.Control : ShortcutModifiers.None), returning.KeyPress);
-            Assert.False(hook.TryRead(out _));
+            Assert.False(ReadAction(hook, out _));
 
             // The stopped reader isolates the real Hook's owned-source early
             // return. Controlled metadata grants no native field or write authority.
@@ -440,7 +447,7 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
             Send(exitKey, true);
             Send(exitKey, false);
             InputNotice? notice = null;
-            await Until(() => notice is not null || hook.TryRead(out notice), deadline.Token);
+            await Until(() => notice is not null || ReadAction(hook, out notice), deadline.Token);
             Assert.Equal("escape", notice!.Kind);
             Assert.Equal(snapshot.Target, notice.Target);
             Assert.Equal(23, notice.SessionRevision);
@@ -449,7 +456,7 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
             await Until(() => barrierUp == 2, deadline.Token);
             Assert.Equal(1, escapeDown);
             Assert.Equal(1, escapeUp);
-            Assert.False(hook.TryRead(out _));
+            Assert.False(ReadAction(hook, out _));
             Assert.Equal("controlled return source", input.Text);
         }
         finally
@@ -576,7 +583,7 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
                     Assert.Equal(1u, SendInput(1, [new KeyboardInput { Type = 1, Key = 0x78, Flags = 2 }], Marshal.SizeOf<KeyboardInput>()));
                     pressed = false;
                     InputNotice? notice = null;
-                    await Until(() => (notice is not null || hook.TryRead(out notice)) && hook.CommandsReleased, deadline.Token);
+                    await Until(() => (notice is not null || ReadAction(hook, out notice)) && hook.CommandsReleased, deadline.Token);
                     // This registered command owns both edges, including a
                     // refusal. Drain the source dispatcher before asserting
                     // that no second consumer received either edge.
@@ -635,10 +642,10 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
                 await Until(() => Native.GetForegroundWindow() == otherHwnd, deadline.Token);
                 for (int index = 0; index < 12; index++)
                     Assert.Equal(FocusMember.Other, hook.GetFocus(target));
-                Assert.False(hook.TryRead(out _)); // Flush the existing diagnostic queue.
+                Assert.False(ReadAction(hook, out _)); // Flush the existing diagnostic queue.
                 for (int index = 0; index < 12; index++)
                     Assert.Equal(FocusMember.Other, hook.GetFocus(target));
-                Assert.False(hook.TryRead(out _)); // Repeated flushes cannot grow refusal output.
+                Assert.False(ReadAction(hook, out _)); // Repeated flushes cannot grow refusal output.
                 source.Activate();
                 await Until(() => Native.GetForegroundWindow() == sourceHwnd, deadline.Token);
                 Assert.Equal(FocusMember.Source, hook.GetFocus(target));
@@ -667,6 +674,22 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
             Environment.SetEnvironmentVariable("TYPELAY_TRACE", previous);
             File.Delete(path);
         }
+    }
+
+    private static bool ReadAction(KeyboardHook hook, out InputNotice? notice)
+    {
+        while (hook.TryRead(out notice))
+        {
+            if (notice?.RetiredUnusedPlanId is null)
+                return true;
+            Assert.Equal("write-retired", notice.Kind);
+            Assert.NotNull(notice.Target);
+            Assert.NotEqual(Guid.Empty, notice.CommandGeneration);
+            Assert.Null(notice.Permit);
+            Assert.Null(notice.Source);
+            Assert.Null(notice.CompletedReceipt);
+        }
+        return false;
     }
 
     private static async Task Until(Func<bool> ready, CancellationToken cancellation)

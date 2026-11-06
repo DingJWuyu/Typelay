@@ -75,7 +75,7 @@ public sealed class SettingsConflictException : InvalidOperationException
     public SettingsConflictException() : base("settings-changed") { }
 }
 
-public sealed class SettingsStore
+public sealed partial class SettingsStore
 {
     private readonly string _path;
     private readonly Action<bool> _setStartup;
@@ -181,7 +181,7 @@ public sealed class SettingsStore
         settings = Canonical(settings);
         if (!CanUpdateOrdinary(settings))
             throw new ArgumentException("style-change-requires-session-controller");
-        Save(settings, feature: null);
+        RethrowFailure(Save(settings, feature: null));
     }
     // Immediate saves and toast undo use the revision observed with their draft.
     // A stale request must fail before startup or any persistent state changes.
@@ -194,30 +194,24 @@ public sealed class SettingsStore
     public bool CanUpdateOrdinary(UserSettings settings) => StylesEqual(CanonicalStyles(settings.Styles), _committedValue.Styles)
         && GlossaryEqual(settings.Glossary, _committedValue.Glossary);
 
-    internal void CommitStyles(long expectedRevision, TranslationStyles? styles, Action apply)
+    private SettingsCommitResult Save(UserSettings settings, string? feature, Action? apply = null)
     {
-        if (expectedRevision != Revision || ChangesFromCommitted(Value))
-            throw new InvalidOperationException("settings-changed");
-        Save(Value with
-        {
-            Styles = CanonicalStyles(styles)
-        }, feature: "style", apply);
-    }
-
-    internal void CommitGlossary(long expectedRevision, GlossarySnapshot glossary, Action apply)
-    {
-        if (expectedRevision != Revision || ChangesFromCommitted(Value))
-            throw new InvalidOperationException("settings-changed");
-        Save(Value with
-        {
-            Glossary = glossary
-        }, feature: "glossary", apply);
-    }
-
-    private void Save(UserSettings settings, string? feature, Action? apply = null)
-    {
+        var committed = Snapshot(settings);
+        bool changed = ChangesFromCommitted(settings);
+        var startup = SettingsStartupEffect.NotRequested;
         if (settings.Startup != Value.Startup)
-            _setStartup(settings.Startup);
+        {
+            try
+            {
+                _setStartup(settings.Startup);
+                startup = SettingsStartupEffect.Applied;
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                return new(SettingsCommitState.ExternalEffectUnknown, Revision,
+                    SettingsStartupEffect.OutcomeUnknown, settings.Startup, "startup-failed", error);
+            }
+        }
         string temporary = _path + ".tmp";
         try
         {
@@ -231,25 +225,37 @@ public sealed class SettingsStore
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
         {
-            throw new SettingsPersistenceException(ex);
+            return new(SettingsCommitState.NotCommitted, Revision, startup,
+                startup == SettingsStartupEffect.NotRequested ? null : settings.Startup,
+                "persistence-failed", new SettingsPersistenceException(ex));
         }
-        bool changed = ChangesFromCommitted(settings);
-        _committedValue = Snapshot(settings);
+        _committedValue = committed;
         Value = settings;
+        long committedRevision = changed ? ++Revision : Revision;
         if (changed)
         {
-            Revision++;
-            if (feature is not null)
+            try
             {
-                apply!();
-                if (feature == "style")
-                    StyleChanged?.Invoke();
+                if (feature is not null)
+                {
+                    apply!();
+                    if (feature == "style")
+                        StyleChanged?.Invoke();
+                    else
+                        GlossarySaved?.Invoke();
+                }
                 else
-                    GlossarySaved?.Invoke();
+                    Changed?.Invoke();
             }
-            else
-                Changed?.Invoke();
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                return new(SettingsCommitState.CommittedNotificationFailed, committedRevision, startup,
+                    startup == SettingsStartupEffect.NotRequested ? null : settings.Startup,
+                    "notification-failed", error);
+            }
         }
+        return new(changed ? SettingsCommitState.Committed : SettingsCommitState.Unchanged, committedRevision,
+            startup, startup == SettingsStartupEffect.NotRequested ? null : settings.Startup);
     }
     // UserSettings is only shallowly immutable. Keep the comparison baseline
     // independent of arrays exposed through Value or supplied by its caller.

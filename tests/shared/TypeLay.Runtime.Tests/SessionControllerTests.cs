@@ -514,6 +514,7 @@ public sealed class SessionControllerTests
         s.Service.TransformAcknowledgement = acknowledgement => acknowledgement with { SourceLocalAcceptanceVersion = 1 };
         s.ReadyCandidate();
         var permit = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        s.Input.BeginSourceWrite(permit);
         s.Service.TransformAcknowledgement = acknowledgement => acknowledgement;
         s.Tick();
         Assert.Null(s.Input.Permit);
@@ -973,11 +974,154 @@ public sealed class SessionControllerTests
     }
 
     [Fact]
+    public void RetiredAcceptedWriteCanReleaseItsOriginalTargetAfterExplicitRejection()
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        var permit = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        s.Service.PendingWrite = new();
+        s.Input.Notices.Enqueue(new("accept", permit, s.Loop.NowMs, s.Input.UserEpoch, s.Input.ForegroundEpoch,
+            CommandGeneration: s.Input.CommandGeneration));
+        s.Tick();
+        Assert.Single(s.Service.Writes);
+        // A source notice cannot settle the separate asynchronous executor.
+        s.Input.Notices.Enqueue(new("accepted", permit, CompletedReceipt:
+            new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome)));
+        s.Tick();
+        s.Controller.StopSession();
+        s.Tick();
+        Assert.Null(s.Input.Permit);
+        s.Service.PendingWrite.SetResult(new(WriteStatus.RejectedBeforeMutation, Denial.EpochChanged));
+        s.Tick();
+        s.ReadyCandidate();
+        Assert.NotNull(s.Input.Permit);
+        Assert.True(s.View.CanAccept);
+        Assert.Single(s.Service.Writes);
+    }
+
+    [Fact]
+    public void RetiredNativeWriteStillQuarantinesItsOriginalTarget()
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        var issued = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        s.Input.BeginSourceWrite(issued);
+        s.Controller.StopSession();
+        s.Input.Notices.Enqueue(new("accepted", issued, CompletedReceipt:
+            new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome)));
+        s.Tick();
+        s.Tick(Limits.DebounceMs);
+        Assert.Null(s.Input.Permit);
+        Assert.Equal(SessionState.OutcomeUnknown, s.View.State);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public async Task RepeatedUnusedPublicationsRetireWithoutBlockingAcceptanceOrShutdown()
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        for (int observation = 0; observation < 80; observation++)
+            s.Tick();
+        Assert.NotNull(s.Input.Permit);
+        Assert.True(s.View.CanAccept);
+        Assert.Equal(new WriteSettlementSummary(0, 0, 0), await s.Controller.ShutdownAsync());
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public async Task ShutdownCannotTreatUnconfirmedSourceExecutionAsAnUnusedExpiredPermit()
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        var permit = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        s.Input.BeginSourceWrite(permit);
+        var closing = s.Controller.ShutdownAsync();
+        s.Input.Notices.Enqueue(new("write-retired", Target: permit.Plan.Expected.Target,
+            CommandGeneration: Guid.NewGuid(), RetiredUnusedPlanId: permit.Plan.Id));
+        s.Tick(2000);
+        Assert.Equal(new WriteSettlementSummary(0, 0, 1), await closing);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public async Task NormalShutdownKeepsTheOriginalDirectWriteReceiverUntilItsResultReturns()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        s.Service.PendingDirectWrite = new();
+        s.Command("direct");
+        s.Tick();
+        s.CompleteTranslation("translated");
+        var plan = Assert.Single(s.Service.DirectWrites);
+        var closing = s.Controller.ShutdownAsync();
+        Assert.False(closing.IsCompleted);
+        Assert.True(s.Loop.Running);
+        Assert.False(s.Input.Disposed);
+        Assert.False(s.Service.Disposed);
+        Assert.False(s.View.Visible);
+        int captures = s.Service.Captures;
+        s.Command("direct");
+        s.Tick();
+        Assert.Equal(captures, s.Service.Captures);
+        s.Service.PendingDirectWrite.SetResult(new(WriteStatus.Verified, Denial.None,
+            plan.Expected with { Text = "translated", Selection = new(10, 10) }));
+        s.Tick();
+        Assert.True(closing.IsCompletedSuccessfully);
+        Assert.Equal(new WriteSettlementSummary(1, 0, 0), await closing);
+        Assert.Single(s.Service.DirectWrites);
+        Assert.False(s.Input.Disposed);
+        s.Controller.Dispose();
+        Assert.True(s.Input.Disposed);
+        Assert.False(s.Loop.Running);
+    }
+
+    [Fact]
+    public async Task NormalShutdownDrainsTheOriginalSynchronousReceiptExactlyOnce()
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        var permit = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        s.Input.BeginSourceWrite(permit);
+        var closing = s.Controller.ShutdownAsync();
+        var notice = new InputNotice("accepted", permit, CompletedReceipt:
+            new(WriteStatus.Verified, Denial.None,
+                permit.Plan.Expected with { Text = "translated", Selection = new(10, 10) }));
+        s.Input.Notices.Enqueue(notice);
+        s.Input.Notices.Enqueue(notice);
+        s.Tick(2000);
+        Assert.True(closing.IsCompletedSuccessfully);
+        var summary = await closing;
+        Assert.Equal(1, summary.Verified);
+        Assert.Equal(0, summary.OutcomeUnknown);
+        Assert.Empty(s.Service.Writes);
+        Assert.False(s.View.Visible);
+    }
+
+    [Fact]
+    public async Task NormalShutdownReturnsUnknownWhenSubmittedWriteDoesNotReturnWithinItsBudget()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        s.Service.PendingDirectWrite = new();
+        s.Command("direct");
+        s.Tick();
+        s.CompleteTranslation("translated");
+        var closing = s.Controller.ShutdownAsync();
+        s.Tick(2000);
+        Assert.True(closing.IsCompletedSuccessfully);
+        Assert.Equal(new WriteSettlementSummary(0, 0, 1), await closing);
+        s.Service.PendingDirectWrite.SetResult(new(WriteStatus.RejectedBeforeMutation, Denial.Unsupported));
+        s.Tick();
+        Assert.Equal(new WriteSettlementSummary(0, 0, 1), await closing);
+        Assert.Single(s.Service.DirectWrites);
+    }
+
+    [Fact]
     public void ResumeRecoveryDoesNotEraseANewerUnconfirmedNativeWriteStatus()
     {
         using var s = new SessionScenario(experimental: true);
         s.ReadyCandidate();
         var issued = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        s.Input.BeginSourceWrite(issued);
         s.Settings.Update(s.Settings.Value with
         {
             Enabled = false
@@ -1990,7 +2134,8 @@ public sealed class SessionControllerTests
         using var s = new SessionScenario(WorkMode.OnDemand);
         var feedback = new List<CommandFeedback>();
         s.Controller.OperationFeedback += feedback.Add;
-        s.Service.DirectReceipt = new(WriteStatus.Verified, Denial.None);
+        s.Service.DirectReceipt = new(WriteStatus.Verified, Denial.None,
+            s.Fresh with { Text = "translated", Selection = new(10, 10) });
         s.Command("direct");
         s.Tick();
         s.CompleteTranslation("translated");
@@ -2452,7 +2597,8 @@ public sealed class SessionControllerTests
         s.CompleteTranslation("submitted");
         Assert.Single(s.Service.DirectWrites);
         Assert.True(await s.Controller.PrepareModelChangeAsync());
-        s.Service.PendingDirectWrite.SetResult(new(status, reason));
+        s.Service.PendingDirectWrite.SetResult(new(status, reason,
+            status == WriteStatus.Verified ? s.Fresh with { Text = "submitted", Selection = new(9, 9) } : null));
         s.Tick();
         Assert.Contains(status == WriteStatus.Verified ? "已直接替换" : "未获确认", s.Controller.OperationStatus);
         s.Tick(5000);
@@ -3067,6 +3213,7 @@ public sealed class SessionControllerTests
         using var s = new SessionScenario(experimental: true);
         s.ReadyCandidate();
         var original = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        s.Input.BeginSourceWrite(original);
         s.Tick(200);
         var renewed = Assert.IsType<AcceptancePermit>(s.Input.Permit);
         Assert.NotEqual(original.Plan.Id, renewed.Plan.Id);
@@ -3093,6 +3240,7 @@ public sealed class SessionControllerTests
         using var s = new SessionScenario(experimental: true);
         s.ReadyCandidate();
         var permit = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        s.Input.BeginSourceWrite(permit);
         s.Service.PendingCapture = new();
         s.Tick();
         s.CompleteCapture(new(null));

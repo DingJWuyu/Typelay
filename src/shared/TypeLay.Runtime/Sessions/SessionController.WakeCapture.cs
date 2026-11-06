@@ -46,7 +46,7 @@ public sealed partial class SessionController
         {
             Generation = _generation
         };
-        _practiceWakeCommand = null;
+        _onDemandPractice._practiceWakeCommand = null;
         RevokeInput("wake-fresh-capture");
         _permitUntil = 0;
         _nextCapture = 0;
@@ -60,7 +60,7 @@ public sealed partial class SessionController
         // Real source/focus changes still pass through the ordinary session gates.
         _pendingWakeCapture = null;
         _generation++;
-        _practiceWakeCommand = null;
+        _onDemandPractice._practiceWakeCommand = null;
         RevokeInput("wake-capture-invalid");
         _permitUntil = 0;
         Render();

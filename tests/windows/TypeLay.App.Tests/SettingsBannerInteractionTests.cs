@@ -129,7 +129,7 @@ public sealed partial class TranslationSettingsTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public Task UnconfirmedSaveBannerNeverReplaysUnknownOrAlreadyCommittedWrites(bool committed) => desktop.RunAsync(async () =>
+    public Task SaveBannerNeverReplaysRejectedOrAlreadyCommittedWrites(bool committed) => desktop.RunAsync(async () =>
     {
         using var scene = new SettingsScene(new(Motion: "reduce"));
         scene.Window.ShortcutRecovery = new(() => null, _ => { }, _ => []);
@@ -149,10 +149,10 @@ public sealed partial class TranslationSettingsTests
         Assert.Equal(committed ? "F8" : "Tab", scene.Reload().AcceptShortcut);
         scene.Window.UpdateLayout();
         Assert.Contains(Descendants(scene.Window).OfType<TextBlock>(), text => text.IsVisible && text.Text ==
-            (committed ? "已保存，请重新打开设置确认当前状态。" : SettingsDraftPresentation.UnknownSaveMessage));
+            (committed ? "已保存，请重新打开设置确认当前状态。" : "设置未保存，练习状态未能确认。请重新打开设置检查当前状态。"));
         Assert.DoesNotContain(Descendants(scene.Window).OfType<TextBlock>(), text => text.IsVisible && text.Text == SettingsDraftPresentation.Create().InvalidMessage);
         var banner = SettingsBanner(scene.Window, "SettingsSaveBanner");
-        Assert.Contains(Descendants(banner).OfType<TextBlock>(), text => text.Text == (committed ? "设置已保存，部分状态未能更新。" : "无法确认设置是否已保存"));
+        Assert.Contains(Descendants(banner).OfType<TextBlock>(), text => text.Text == (committed ? "设置已保存，部分状态未能更新。" : "设置未保存，练习状态未能确认。请重新打开设置检查当前状态。"));
         var view = BannerAction(banner);
         Assert.Equal("查看", view.Content);
         string persisted = File.ReadAllText(scene.PathToSettings);

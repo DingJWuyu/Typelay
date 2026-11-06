@@ -158,7 +158,6 @@ internal sealed partial class QuickPanel : Window
         if (_saving || callerCurrent?.Invoke() == false)
             return false;
         _saving = true;
-        var expected = _settings.Value;
         long expectedRevision = _settings.Revision;
         FontFamily = UiTheme.UiFont;
         string? focusedMode = Keyboard.FocusedElement is RadioButton focused && _modeChoices.Contains(focused)
@@ -176,9 +175,9 @@ internal sealed partial class QuickPanel : Window
             PreviewMouseDown -= PointerUsed;
             _body.IsEnabled = true;
         }
-        try
+        async Task<bool> Prepare(UserSettings proposed)
         {
-            var preparation = _session.PrepareSettingsChangeAsync(value);
+            var preparation = _session.PrepareSettingsChangeAsync(proposed);
             if (!preparation.IsCompleted)
             {
                 waiting = true;
@@ -189,38 +188,17 @@ internal sealed partial class QuickPanel : Window
             }
             bool prepared = await preparation;
             EnableContent();
-            if (!prepared || !ReferenceEquals(expected, _settings.Value))
-            {
-                _saveError = SettingsDraftPresentation.SaveUnconfirmedMessage;
-                Refresh();
-                return false;
-            }
-            // Configuration callers can supply their exact UI-lifetime
-            // guard. It cannot grant input rights; all ordinary saves keep their
-            // existing behavior. Check after preparation, immediately at commit.
-            if (callerCurrent?.Invoke() == false)
-                return false;
-            _settings.Update(expectedRevision, value);
-            // A confirmed write of the same settings does not publish Changed.
-            _saveError = null;
-            Refresh();
-            return true;
+            return prepared;
         }
-        catch (Exception error) when (_settings.Revision == expectedRevision && error is SettingsPersistenceException or SettingsConflictException or ArgumentException)
+        try
         {
+            var result = await _settings.CommitAsync(expectedRevision, value, Prepare, callerCurrent);
             EnableContent();
-            _saveError = error is ArgumentException && !ModelCatalog.IsSupportedSetting(value.Source, value.Target)
-                ? "请选择支持的源语言和目标语言。" : SettingsDraftPresentation.SaveUnconfirmedMessage;
+            _saveError = result.Saved && result.State != SettingsCommitState.CommittedNotificationFailed ? null
+                : result.Reason == "invalid-settings" && !ModelCatalog.IsSupportedSetting(value.Source, value.Target)
+                    ? "请选择支持的源语言和目标语言。" : SettingsCommitPresentation.Message(result);
             Refresh();
-            return false;
-        }
-        catch (Exception error) when (error is not OutOfMemoryException)
-        {
-            EnableContent();
-            bool committed = _settings.Revision > expectedRevision && !_settings.HasChanges(value);
-            _saveError = committed ? "已保存，请重新打开设置确认当前状态。" : SettingsDraftPresentation.UnknownSaveMessage;
-            Refresh();
-            return committed;
+            return result.Saved;
         }
         finally
         {

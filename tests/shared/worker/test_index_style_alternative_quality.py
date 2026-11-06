@@ -88,7 +88,7 @@ class StyleAlternativeCaptureTests(unittest.IsolatedAsyncioTestCase):
                 target = worker / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(original / name, target)
-            profile = root / "src/shared/TypeLay.Runtime/IndexInferenceProfile.json"
+            profile = root / "src/shared/TypeLay.Runtime/Models/IndexInferenceProfile.json"
             profile.parent.mkdir(parents=True)
             shutil.copyfile(capture.PROFILE, profile)
             scripts = root / "tests/shared/worker"

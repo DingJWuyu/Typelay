@@ -216,7 +216,7 @@ internal sealed class BrowserPeer : IDisposable
                 if (!Alive)
                 {
                     Dispose();
-                    if (name != "accepted")
+                    if (name is not ("accepted" or "writeRetired"))
                         return;
                 }
                 _message(new(this, name, data, route));
@@ -510,7 +510,7 @@ internal sealed class BrowserPeerInbox
                     break;
                 }
                 message = _events.Dequeue();
-                deliver = !_closed || message.Name == "accepted";
+                deliver = !_closed || message.Name is "accepted" or "writeRetired";
             }
             try
             {

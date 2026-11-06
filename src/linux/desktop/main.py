@@ -520,7 +520,7 @@ async def desktop(paths, background, lock, tutorial=False):
         elif operation == "hide":
             overlay.hide()
         elif operation == "languageConfigurationClosed":
-            overlay.language_configuration_closed(value)
+            components["input"].language_configuration_closed(value)
         elif operation == "resumeEditor":
             overlay.resume()
         elif operation == "status":
@@ -750,7 +750,7 @@ async def desktop(paths, background, lock, tutorial=False):
         async def support_view():
             await support.refresh()
             facts = support.facts(
-                components["input"].peers,
+                components["input"].connection_facts(),
                 enabled=bool(
                     components["settings"].value and components["settings"].value["enabled"]
                 ),
@@ -945,7 +945,9 @@ async def desktop(paths, background, lock, tutorial=False):
                     **status,
                     "trayAvailable": components["tray"].indicator is not None,
                     "trayConnected": components["tray"].connected,
-                    "nativePeers": sum(bool(peer.lifetime) for peer in components["input"].peers),
+                    "nativePeers": sum(
+                        bool(peer.lifetime) for peer in components["input"].connection_facts()
+                    ),
                     "overlayVisible": components["overlay"].visible,
                     "editing": components["overlay"].editing,
                     "acceptanceReady": components["overlay"].acceptance_ready
@@ -1041,6 +1043,13 @@ async def desktop(paths, background, lock, tutorial=False):
         elif not background and not components["settings"].tutorial.window.get_visible():
             components["settings"].show()
         await stopping.wait()
+        # The original input peer calls and both owner loops must remain alive
+        # until Runtime has received their results or exhausted its write budget.
+        if host.channel.alive:
+            try:
+                await host.ask("shutdown", timeout=2.5)
+            except (OSError, EOFError, TimeoutError):
+                pass
     finally:
         for future in list(tasks):
             future.cancel()

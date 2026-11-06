@@ -83,7 +83,8 @@ internal sealed partial class BrowserInput : IDisposable
         _current = null;
         foreach (var item in _frozen.Where(item => item.Value.Observation.Peer.Origin == origin).ToArray())
             _frozen.Remove(item.Key);
-        var receipts = _notices.Where(item => item.Notice.CompletedReceipt is not null).ToArray();
+        var receipts = _notices.Where(item => item.Notice.CompletedReceipt is not null
+            || item.Notice.RetiredUnusedPlanId is not null).ToArray();
         _notices.Clear();
         foreach (var receipt in receipts)
             _notices.Enqueue(receipt);
@@ -170,6 +171,7 @@ internal sealed partial class BrowserInput : IDisposable
             direct = _direct,
             sourceLocalAcceptanceVersion = 1,
             editorRegenerateVersion = 1,
+            presentationVersion = 1,
             trace = !string.IsNullOrWhiteSpace(_tracePath),
             traceCommand = !string.IsNullOrWhiteSpace(_tracePath)
         };
@@ -402,6 +404,8 @@ internal sealed partial class BrowserInput : IDisposable
             if (!ValidAuthority(authority))
                 return Reject(ObservationReason.AuthorityInvalid, reply);
             var applied = data.GetProperty("sessionBindings");
+            if (Number(applied, "presentationVersion") != 1)
+                return Reject(ObservationReason.MalformedReply, reply);
             if (String(applied, "shortcutDispatch") != "source-local")
                 return Reject(ObservationReason.DispatchMismatch, reply);
             if (!Guid.TryParse(String(applied, "generation"), out var generation))
@@ -439,6 +443,8 @@ internal sealed partial class BrowserInput : IDisposable
         try
         {
             var applied = data.GetProperty("sessionBindings");
+            if (Number(applied, "presentationVersion") != 1)
+                return null;
             var source = applied.GetProperty("sourceReady").ValueKind;
             var editor = applied.GetProperty("editorReady").ValueKind;
             if (returned is not null)
@@ -556,9 +562,10 @@ internal sealed partial class BrowserInput : IDisposable
             _frozen.Remove(key);
         foreach (var id in _issued.Where(item => now > item.Value.Deadline).Select(item => item.Key).ToArray())
         {
-            _issued.Remove(id);
-            // A delivered permit without a receipt is not assumed to have executed.
-            // Runtime's existing outcome timeout owns uncertainty after an actual press.
+            var issued = _issued[id];
+            // A missing source result is not evidence of non-execution. Transfer
+            // the original plan's uncertainty before releasing its body.
+            CompleteIssued(issued, Unknown(), 0);
         }
     }
     public bool TryRead(out InputNotice? notice)

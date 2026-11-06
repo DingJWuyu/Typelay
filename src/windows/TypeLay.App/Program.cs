@@ -105,6 +105,7 @@ internal static class Program
                     if (await session.RetireAutomaticPracticeAsync())
                     {
                         await support.CompletePendingAsync();
+                        await session.ShutdownAsync();
                         app.Shutdown();
                     }
                     else

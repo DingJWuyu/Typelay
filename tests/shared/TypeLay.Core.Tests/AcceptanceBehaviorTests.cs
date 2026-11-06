@@ -125,6 +125,35 @@ public sealed class AcceptanceBehaviorTests
     }
 
     [Fact]
+    public void ReplacedAndRevokedPermitsRetireUnusedButAClaimedPermitDoesNot()
+    {
+        var (gate, original, context) = NewGate();
+        var replacement = original with { Plan = original.Plan with { Id = Guid.NewGuid() } };
+        Assert.Null(gate.Publish(original));
+        Assert.Equal(original, gate.Publish(replacement));
+        Assert.Equal(replacement, gate.Revoke());
+        Assert.Null(gate.Revoke());
+        gate.Publish(original);
+        var accepted = gate.ProcessAcceptanceKey(new(9, true, false, true), context);
+        Assert.Equal(original, accepted.Permit);
+        Assert.Null(accepted.RetiredUnusedPermit);
+        Assert.Null(gate.Revoke());
+    }
+
+    [Fact]
+    public void ARefusedAcceptanceReturnsOnlyItsOriginalUnusedPermit()
+    {
+        var (gate, permit, context) = NewGate();
+        gate.Publish(permit);
+        var refused = gate.ProcessAcceptanceKey(new(9, true, false, true), context with { Ime = ImeState.Unknown });
+        Assert.False(refused.Consume);
+        Assert.Null(refused.Permit);
+        Assert.Equal(permit, refused.RetiredUnusedPermit);
+        Assert.Null(gate.Revoke());
+        Assert.Null(gate.ProcessAcceptanceKey(new(9, true, true, true), context).RetiredUnusedPermit);
+    }
+
+    [Fact]
     public void ConfiguredFunctionKeyUsesTheSamePermitOnce()
     {
         var (gate, permit, context) = NewGate();

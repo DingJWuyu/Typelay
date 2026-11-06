@@ -581,6 +581,176 @@ public sealed class SettingsBehaviorTests : IDisposable
         Assert.Equal(0, notifications);
     }
 
+    [Fact]
+    public async Task CommitReportsItsOwnVersionWhenANotificationReentersAndThenFails()
+    {
+        var store = new SettingsStore(SettingsPath);
+        SettingsCommitResult? later = null;
+        store.Changed += () =>
+        {
+            if (store.Value.Target == "zh" && store.Value.Theme == "system")
+            {
+                later = store.CommitAsync(store.Revision, store.Value with
+                {
+                    Theme = "dark"
+                }, cancellationToken: TestContext.Current.CancellationToken).GetAwaiter().GetResult();
+                throw new IOException("notification-failed");
+            }
+        };
+        var result = await store.CommitAsync(store.Revision, store.Value with
+        {
+            Target = "zh"
+        }, cancellationToken: TestContext.Current.CancellationToken);
+        Assert.True(result.Saved);
+        Assert.Equal(SettingsCommitState.CommittedNotificationFailed, result.State);
+        Assert.Equal(1, result.Revision);
+        Assert.Equal(2, later!.Revision);
+        Assert.Equal(2, store.Revision);
+        Assert.Equal("dark", new SettingsStore(SettingsPath).Value.Theme);
+    }
+
+    [Fact]
+    public async Task CancellationDuringNotificationCannotUndoTheCommittedResult()
+    {
+        var store = new SettingsStore(SettingsPath);
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        store.Changed += () =>
+        {
+            cancellation.Cancel();
+            throw new OperationCanceledException(cancellation.Token);
+        };
+        var result = await store.CommitAsync(store.Revision, store.Value with { Target = "zh" },
+            cancellationToken: cancellation.Token);
+        Assert.True(result.Saved);
+        Assert.Equal(SettingsCommitState.CommittedNotificationFailed, result.State);
+        Assert.Equal(1, result.Revision);
+        Assert.Equal("zh", new SettingsStore(SettingsPath).Value.Target);
+    }
+
+    [Fact]
+    public async Task CommitReportsStartupAppliedWhenTheFileCannotBeReplaced()
+    {
+        var startup = new List<bool>();
+        var store = new SettingsStore(SettingsPath, startup.Add);
+        await store.CommitAsync(store.Revision, store.Value, cancellationToken: TestContext.Current.CancellationToken);
+        var before = store.Value;
+        Directory.CreateDirectory(SettingsPath + ".tmp");
+        var result = await store.CommitAsync(store.Revision, before with
+        {
+            Startup = true
+        }, cancellationToken: TestContext.Current.CancellationToken);
+        Assert.False(result.Saved);
+        Assert.Equal(SettingsCommitState.NotCommitted, result.State);
+        Assert.Equal(SettingsStartupEffect.Applied, result.Startup);
+        Assert.True(result.RequestedStartup);
+        Assert.Equal("persistence-failed", result.Reason);
+        Assert.Equal(0, result.Revision);
+        Assert.Same(before, store.Value);
+        Assert.False(new SettingsStore(SettingsPath).Value.Startup);
+        Assert.Equal([true], startup); // No implicit compensation or retry.
+    }
+
+    [Fact]
+    public async Task CommitDoesNotClaimAnUnknownStartupFailureWasRolledBack()
+    {
+        bool externalStartup = false;
+        var store = new SettingsStore(SettingsPath, enabled =>
+        {
+            externalStartup = enabled;
+            throw new IOException("startup-result-unknown");
+        });
+        var result = await store.CommitAsync(store.Revision, store.Value with
+        {
+            Startup = true
+        }, cancellationToken: TestContext.Current.CancellationToken);
+        Assert.True(externalStartup);
+        Assert.Equal(SettingsCommitState.ExternalEffectUnknown, result.State);
+        Assert.Equal(SettingsStartupEffect.OutcomeUnknown, result.Startup);
+        Assert.False(result.Saved);
+        Assert.False(store.Value.Startup);
+        Assert.False(File.Exists(SettingsPath));
+    }
+
+    [Theory]
+    [InlineData("cancel")]
+    [InlineData("window")]
+    [InlineData("version")]
+    public async Task AWaitingCommitRechecksCancellationWindowAndVersionBeforeAnySideEffect(string invalidation)
+    {
+        var startup = new List<bool>();
+        var store = new SettingsStore(SettingsPath, startup.Add);
+        var retirement = new TaskCompletionSource<bool>();
+        using var cancellation = new CancellationTokenSource();
+        bool current = true;
+        var pending = store.CommitAsync(store.Revision, store.Value with
+        {
+            Startup = true
+        },
+            _ => retirement.Task, () => current, cancellation.Token);
+        Assert.False(pending.IsCompleted);
+        if (invalidation == "cancel")
+            cancellation.Cancel();
+        else if (invalidation == "window")
+            current = false;
+        else
+            Assert.True((await store.CommitAsync(store.Revision, store.Value with
+            {
+                Theme = "dark"
+            }, cancellationToken: TestContext.Current.CancellationToken)).Saved);
+        retirement.SetResult(true);
+        var result = await pending;
+        Assert.False(result.Saved);
+        Assert.Equal(invalidation == "version" ? "settings-changed" : "canceled", result.Reason);
+        Assert.Empty(startup);
+        Assert.False(new SettingsStore(SettingsPath).Value.Startup);
+        Assert.Equal(invalidation == "version" ? 1 : 0, result.Revision);
+    }
+
+    [Fact]
+    public async Task AWaitingCommitFreezesTheExplicitlyConfirmedDraft()
+    {
+        var store = new SettingsStore(SettingsPath);
+        string[] exclusions = ["first"];
+        var retirement = new TaskCompletionSource<bool>();
+        var pending = store.CommitAsync(store.Revision, store.Value with
+        {
+            ExcludedApplications = exclusions
+        },
+            _ => retirement.Task, cancellationToken: TestContext.Current.CancellationToken);
+        exclusions[0] = "later";
+        retirement.SetResult(true);
+        Assert.True((await pending).Saved);
+        Assert.Equal(["first"], new SettingsStore(SettingsPath).Value.Excluded);
+    }
+
+    [Fact]
+    public async Task CanonicallyUnchangedCommitStillWritesButDoesNotRetireOrNotify()
+    {
+        var store = new SettingsStore(SettingsPath);
+        int preparations = 0, notifications = 0;
+        store.Changed += () => notifications++;
+        Task<bool> Prepare(UserSettings _)
+        {
+            preparations++;
+            return Task.FromResult(true);
+        }
+        var next = store.Value with
+        {
+            WakeShortcut = "shift+ctrl+f9"
+        };
+        var result = await store.CommitAsync(store.Revision, next, Prepare, cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(SettingsCommitState.Unchanged, result.State);
+        Assert.True(result.Saved);
+        Assert.Equal(0, result.Revision);
+        Assert.True(File.Exists(SettingsPath));
+        Directory.CreateDirectory(SettingsPath + ".tmp");
+        result = await store.CommitAsync(store.Revision, next, Prepare, cancellationToken: TestContext.Current.CancellationToken);
+        Assert.False(result.Saved);
+        Assert.Equal("persistence-failed", result.Reason);
+        Assert.Equal(0, preparations);
+        Assert.Equal(0, notifications);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_directory))

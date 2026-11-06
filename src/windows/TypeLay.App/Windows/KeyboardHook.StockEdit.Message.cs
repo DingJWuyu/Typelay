@@ -64,6 +64,7 @@ internal sealed partial class KeyboardHook
                 return;
             if (!owner.CompletionQueued && !result.Claimed)
             {
+                RetireUnusedAcceptance(owner.Lease, owner.Permit);
                 Interlocked.CompareExchange(ref _stockDelivery, null, owner);
                 owner.Delivered.TrySetResult(); // Exact terminal proves no write.
             }
@@ -77,15 +78,21 @@ internal sealed partial class KeyboardHook
         if (_orderedSourceMessageWitness && !await PrepareStockWitnessAsync(candidate))
         {
             Interlocked.CompareExchange(ref _stockLatest, null, candidate);
+            RetireUninstalledStockCandidate(candidate);
             return;
         }
+        if (Interlocked.CompareExchange(ref candidate.Installation, 1, 0) != 0)
+            return;
         _stockOwner = candidate; // Own an install even if its ACK is lost.
         var installed = await _stockExchange!("source-install", StockRequest(candidate, install: true));
         if (!StockReplyMatches(installed, candidate) || !installed!.Installed || !installed.Acknowledged || installed.Endpoint is null)
         {
             Interlocked.CompareExchange(ref _stockLatest, null, candidate);
             if (StockReplyMatches(installed, candidate) && !installed!.Installed && installed.Quiet && !installed.Claimed)
+            {
+                RetireUnusedAcceptance(candidate.Lease, candidate.Permit);
                 _stockOwner = null;
+            }
             return;
         }
         var control = new StockEditActivation(installed.Endpoint.Nonce, installed.Endpoint.Command,

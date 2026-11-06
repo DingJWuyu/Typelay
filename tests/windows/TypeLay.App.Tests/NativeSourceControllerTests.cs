@@ -771,7 +771,7 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
             Candidate = session.Candidate;
             RenderCount++;
         }
-        public void RenderPaused(PauseAnchor anchor, long revision)
+        public void RenderPaused(PauseAnchor anchor, long revision, PresentationIdentity? identity = null)
         {
         }
         public void HideQuietly() => CanAccept = false;

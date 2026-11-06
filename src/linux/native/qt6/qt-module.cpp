@@ -405,6 +405,8 @@ public:
             refreshGlossaryFocus();
         });
         expiry_.start(25);
+        writeSettlementTimer_.setSingleShot(true);
+        connect(&writeSettlementTimer_, &QTimer::timeout, this, &Native::flushWriteSettlements);
         discover(QApplication::focusWidget());
         connectPeer();
     }
@@ -498,7 +500,8 @@ public:
     }
     bool viewCurrent(Target *target, const QJsonObject &data) const {
         const auto view = data.value("view").toObject();
-        if (!target || !sessionApplied() || data.value("generation") != shortcutConfiguration_.value("generation")) return false;
+        if (!target || !sessionApplied() || data.value("generation") != shortcutConfiguration_.value("generation")
+            || presentationIdentity(view).isEmpty()) return false;
         if (view.value("state").toString() == "Paused") return true;
         const auto context = view.value("viewContext").toObject();
         const auto token = context.value("token").toObject();
@@ -608,6 +611,8 @@ public:
         consumed_.append(id);
         while (consumed_.size() > 128) consumed_.removeFirst();
         const qint64 accepted = now();
+        const auto settlement = beginSourceWrite(id);
+        const auto settled = qScopeGuard([this, settlement] { endSourceWrite(settlement); });
         clearPermit();
         const auto result = write(target, {{"plan", plan}, {"authority", basis},
             {"expiresAtMs", permit.value("expiresAtMs")}, {"generation", generation}}, false);
@@ -698,6 +703,8 @@ public:
         consumed_.append(planId);
         while (consumed_.size() > 128) consumed_.removeFirst();
         const auto accepted = now();
+        const auto settlement = beginSourceWrite(planId);
+        const auto settled = qScopeGuard([this, settlement] { endSourceWrite(settlement); });
         loseProof();
         OrderedWriteContext context{ticket, false};
         const auto result = write(target, {{"plan", plan}, {"authority", basis},
@@ -707,7 +714,7 @@ public:
         return true;
     }
     void retireOrdered(quint64 ticket) override {
-        if (ordered_ && ordered_->id == ticket) ordered_.reset();
+        if (ordered_ && ordered_->id == ticket) { ordered_.reset(); scheduleWriteSettlements(); }
         if (editorOrdered_ && editorOrdered_->id == ticket) editorOrdered_.reset();
     }
 
@@ -1207,13 +1214,71 @@ private:
         return {{"ready", allowed}, {"planId", allowed ? permit.value("plan").toObject().value("id") : QJsonValue()},
             {"readyUntilHostMs", allowed ? permit.value("expiresAtMs") : QJsonValue()}};
     }
-    void loseProof() { publication_ = {}; refreshHint(); }
+    struct WriteSettlement {
+        QString plan, target;
+        QJsonValue generation;
+        quint64 connection;
+        unsigned admitting = 0, inFlight = 0;
+    };
+    static QString publicationPlan(const QJsonObject &value) {
+        return value.value("permit").toObject().value("plan").toObject().value("id").toString();
+    }
+    void scheduleWriteSettlements() {
+        if (!writeSettlements_.isEmpty()) writeSettlementTimer_.start(0);
+    }
+    std::shared_ptr<WriteSettlement> admitPublication(const QJsonObject &data) {
+        const auto id = publicationPlan(data), target = data.value("target").toString();
+        if (id.isEmpty() || id.size() > 256 || target.isEmpty() || !data.value("generation").isString()
+            || consumed_.contains(id)) return {};
+        auto record = writeSettlements_.value(id);
+        if (!record) {
+            record = std::make_shared<WriteSettlement>(WriteSettlement{id, target, data.value("generation"), connectionGeneration_});
+            writeSettlements_.insert(id, record);
+        }
+        ++record->admitting;
+        return record;
+    }
+    std::shared_ptr<WriteSettlement> beginSourceWrite(const QString &id) {
+        const auto record = writeSettlements_.value(id);
+        if (record) ++record->inFlight;
+        return record;
+    }
+    void endSourceWrite(const std::shared_ptr<WriteSettlement> &record) {
+        if (record && record->inFlight) --record->inFlight;
+        scheduleWriteSettlements();
+    }
+    void flushWriteSettlements() {
+        const auto observedConnection = connectionGeneration_;
+        const auto current = now();
+        qint64 next = std::numeric_limits<qint64>::max();
+        QJsonArray events;
+        for (auto entry = writeSettlements_.begin(); entry != writeSettlements_.end();) {
+            const auto record = entry.value();
+            if (fd_ < 0 || record->connection != connectionGeneration_) { entry = writeSettlements_.erase(entry); continue; }
+            if (record->admitting || record->inFlight) { ++entry; continue; }
+            auto until = publicationPlan(publication_) == record->plan
+                ? integer(publication_.value("permit").toObject(), "expiresAtMs", -1) : -1;
+            if (ordered_ && !ordered_->revoked && publicationPlan(ordered_->publication) == record->plan)
+                until = std::max(until, integer(ordered_->publication.value("permit").toObject(), "expiresAtMs", -1));
+            if (until >= current) { next = std::min(next, until - current + 1); ++entry; continue; }
+            events.append(QJsonObject{{"planId", record->plan}, {"target", record->target}, {"generation", record->generation}});
+            consumed_.append(record->plan);
+            while (consumed_.size() > 128) consumed_.removeFirst();
+            entry = writeSettlements_.erase(entry);
+        }
+        if (next != std::numeric_limits<qint64>::max())
+            writeSettlementTimer_.start(int(std::min(next, qint64(std::numeric_limits<int>::max()))));
+        for (const auto &event : events)
+            if (fd_ >= 0 && observedConnection == connectionGeneration_) sendEvent("writeRetired", event.toObject());
+    }
+    void loseProof() { publication_ = {}; scheduleWriteSettlements(); refreshHint(); }
     void revokeOrdered() {
         const auto ticket = std::move(ordered_);
         if (!ticket) return;
         ticket->revoked = true;
         auto *provider = ticket->provider ? qobject_cast<TypeLayFcitxQtOrderedProviderV1 *>(ticket->provider.data()) : nullptr;
         if (provider) provider->cancelOrdered(ticket->id);
+        scheduleWriteSettlements();
     }
     void revokeEditorOrdered() {
         const auto ticket = std::move(editorOrdered_);
@@ -1222,13 +1287,34 @@ private:
         auto *provider = ticket->provider ? qobject_cast<TypeLayFcitxQtOrderedProviderV1 *>(ticket->provider.data()) : nullptr;
         if (provider) provider->cancelOrdered(ticket->id);
     }
-    static QJsonObject editorViewIdentity(QJsonObject view) {
-        if (view.value("viewContext").isObject()) {
-            auto context = view.value("viewContext").toObject();
-            context.remove("translationActions");
-            view.insert("viewContext", context);
-        }
-        return view;
+    static QJsonObject presentationIdentity(const QJsonObject &view) {
+        const auto context = view.value("viewContext").toObject();
+        const auto identity = context.value("identity").toObject();
+        const auto guid = [](const QJsonValue &value) {
+            return value.isString() && value.toString().size() == 36 && !QUuid(value.toString()).isNull();
+        };
+        const auto number = [](const QJsonValue &value, qint64 minimum) {
+            return value.isDouble() && value.toInteger(-1) >= minimum
+                && value.toDouble() == double(value.toInteger(-1)) && value.toDouble() <= 9007199254740991.;
+        };
+        if (identity.size() != 5 || identity.value("version") != 1 || !guid(identity.value("interactionId"))
+            || !number(identity.value("displaySequence"), 1) || !number(identity.value("draftRevision"), 0)
+            || !number(identity.value("actionRevision"), 1)) return {};
+        const auto form = context.value("glossaryForm");
+        if (!form.isUndefined() && !form.isNull()
+            && (!form.isObject() || form.toObject().size() != 2 || !guid(form.toObject().value("formId"))
+                || !form.toObject().value("current").isBool())) return {};
+        return identity;
+    }
+    static bool sameInteraction(const QJsonObject &before, const QJsonObject &after) {
+        return !before.isEmpty() && !after.isEmpty() && before.value("interactionId") == after.value("interactionId");
+    }
+    static bool sameDraftAction(const QJsonObject &before, const QJsonObject &after) {
+        return sameInteraction(before, after) && before.value("draftRevision") == after.value("draftRevision")
+            && before.value("actionRevision") == after.value("actionRevision");
+    }
+    static QJsonObject formPresentation(const QJsonObject &view) {
+        return view.value("viewContext").toObject().value("glossaryForm").toObject();
     }
     bool editorOrderedCurrent(const std::shared_ptr<EditorOrderedTicket> &ticket) const {
         return ticket && !ticket->revoked && editorOrdered_ == ticket && fd_ >= 0
@@ -1238,7 +1324,7 @@ private:
             && card_ == ticket->card && editor_ == ticket->editor
             && ticket->editor->document() == ticket->document
             && ticket->document->revision() == ticket->documentRevision
-            && overlayRevision_ == ticket->revision && editorViewIdentity(overlayView_) == editorViewIdentity(ticket->view)
+            && overlayRevision_ == ticket->revision && sameDraftAction(presentationIdentity(overlayView_), presentationIdentity(ticket->view))
             && overlayGeneration_ == ticket->generation && sessionCurrent(ticket->generation)
             && ticket->target->input == ticket->input && ticket->target->content == ticket->content
             && metadataMatches(ticket->target, overlayAuthority_) && overlayActive() && !paused()
@@ -2175,7 +2261,9 @@ private:
             && overlayGeneration_ == rendered.generation && overlayRevision_ == rendered.revision;
     }
     bool overlayMenuCurrent(const QPointer<QWidget> &panel) const {
-        return panel && panel == openedMenu_ && menuView_ && languageCurrent(*menuView_)
+        return panel && panel == openedMenu_ && menuView_ && menuView_->card && menuView_->card == card_
+            && menuView_->generation == overlayGeneration_ && menuView_->revision == overlayRevision_
+            && sameInteraction(presentationIdentity(menuView_->view), presentationIdentity(overlayView_))
             && overlayActive() && !paused();
     }
     void closeOverlayMenus() {
@@ -2914,7 +3002,7 @@ private:
         QPointer<QWidget> field, top;
         QPointer<QObject> provider;
         QPointer<QTextDocument> draft;
-        QJsonObject authority, view;
+        QJsonObject authority;
         quint64 storage = 0, selection = 0;
         int draftRevision = 0;
     };
@@ -2946,7 +3034,7 @@ private:
         quint64 escapePassedThrough = 0;
         bool passedEscapeToIme = false;
         int submittedScope = -1;
-        bool pending = false, finished = false;
+        bool pending = false, finished = false, current = true;
     };
     bool glossaryContextCurrent(const TranslationActionMenu &context, bool exactRevision = true) const {
         return context.card && context.card == card_ && overlayTarget_ && context.target == overlayTarget_->id
@@ -3020,23 +3108,9 @@ private:
         for (const auto *key : {"context", "field", "input"})
             if (basis.value("contextStamp").toObject().value(QLatin1String(key))
                 != form->source->authority.value("contextStamp").toObject().value(QLatin1String(key))) return false;
-        const auto before = form->source->view;
-        auto after = data.value("view").toObject();
-        auto context = after.value("viewContext").toObject();
-        const auto oldContext = before.value("viewContext").toObject();
-        if (overlayView_.value("editable") == false && after.value("editable") == true) return false;
-        if (overlayView_.value("viewContext").toObject().value("canEdit") == false && context.value("canEdit") == true) return false;
-        if (before.value("editable") == true && after.value("editable") == false) after.insert("editable", true);
-        if (oldContext.value("canEdit") == true && context.value("canEdit") == false) context.insert("canEdit", true);
-        auto actions = context.value("translationActions").toObject();
-        const auto oldActions = oldContext.value("translationActions").toObject();
-        const QString pending = QStringLiteral("请先完成当前术语表单"), stale = QStringLiteral("内容或设置已变化，请重新打开表单");
-        if (translationActions(overlayView_).value("glossaryUnavailableReason") == stale
-            && actions.value("glossaryUnavailableReason") == pending) return false;
-        if (oldActions.value("glossaryUnavailableReason") == pending && actions.value("glossaryUnavailableReason") == stale)
-            actions.insert("glossaryUnavailableReason", pending);
-        context.insert("translationActions", actions); after.insert("viewContext", context);
-        return before == after;
+        const auto view = data.value("view").toObject();
+        return sameInteraction(presentationIdentity(overlayView_), presentationIdentity(view))
+            && formPresentation(view).value("formId") == form->entry.value("formId");
     }
     void flushGlossaryTransfer(GlossaryTransfer &transfer, bool marked) {
         const auto frames = std::exchange(transfer.frames, {});
@@ -3207,7 +3281,7 @@ private:
         const qsizetype step = event->key() == Qt::Key_Backtab || event->modifiers() == Qt::ShiftModifier ? -1 : 1;
         for (qsizetype offset = 1; offset <= controls.size(); ++offset) {
             auto *next = controls[(index + step * offset + controls.size()) % controls.size()];
-            if ((form->pending || form->finished) && next != form->save && next != form->cancel) continue;
+            if ((!form->current || form->pending || form->finished) && next != form->save && next != form->cancel) continue;
             if (next && next->isVisible() && next->isEnabled()) {
                 next->setFocus(step > 0 ? Qt::TabFocusReason : Qt::BacktabFocusReason);
                 return true;
@@ -3225,7 +3299,7 @@ private:
         if (context.state != QStringLiteral("EditingTranslation")) {
             auto *target = overlayTarget_;
             glossaryOpeningSource_ = GlossarySource{target, target->field, target->field->window(),
-                target->provider, editor_->document(), overlayAuthority_, overlayView_, target->storage,
+                target->provider, editor_->document(), overlayAuthority_, target->storage,
                 target->selection, editor_->document()->revision()};
         }
         revokeEditorOrdered();
@@ -3237,7 +3311,7 @@ private:
         if (card_ == context.card) arrangeOverlay();
     }
     void saveGlossary(const std::shared_ptr<GlossaryForm> &form) {
-        if (!glossaryCurrent(form) || form->pending || form->finished || probingGlossary_) return;
+        if (!glossaryCurrent(form) || !form->current || form->pending || form->finished || probingGlossary_) return;
         QScopedValueRollback<bool> probing(probingGlossary_, true);
         const auto ime = glossaryIme(form);
         if (!glossaryCurrent(form)) return;
@@ -3315,7 +3389,6 @@ private:
         clearPermit();
         auto form = std::make_shared<GlossaryForm>();
         form->context = context; form->entry = entry; form->editor = editor_; form->source = source;
-        if (form->source) form->source->view = overlayView_;
         auto *panel = new QWidget(card_);
         panel->setObjectName(QStringLiteral("typelay-glossary"));
         panel->setAccessibleName(QStringLiteral("加入术语表"));
@@ -3337,7 +3410,7 @@ private:
                 // Accessibility/programmatic edits can bypass widget input
                 // events. Preserve the submitted display, but revoke Clear
                 // normally; restoring text does not mint new IM evidence.
-                if ((current->pending || current->finished) && current->terms[index]
+                if ((!current->current || current->pending || current->finished) && current->terms[index]
                     && current->terms[index]->text() != current->submittedText[index]) {
                     const QSignalBlocker blocked(current->terms[index]);
                     current->terms[index]->setText(current->submittedText[index]);
@@ -3355,7 +3428,7 @@ private:
         form->scope = scope;
         connect(scope, &QComboBox::currentIndexChanged, this, [this, weak = std::weak_ptr<GlossaryForm>(form)](int index) {
             const auto current = weak.lock();
-            if (!glossaryCurrent(current) || (!current->pending && !current->finished)
+            if (!glossaryCurrent(current) || (current->current && !current->pending && !current->finished)
                 || index == current->submittedScope || current->submittedScope < 0) return;
             const QSignalBlocker blocked(current->scope);
             current->scope->setCurrentIndex(current->submittedScope);
@@ -3777,11 +3850,24 @@ private:
         else if (op == "overlay-render") {
             if (!viewCurrent(target, data)) return {{"visible", false}, {"editing", false}};
             const auto view = data.value("view").toObject();
+            const auto identity = presentationIdentity(view);
             const auto presentation = view.value("presentation").toObject();
             const auto basis = data.value("authority").toObject();
             const qint64 until = integer(data, "expiresAtMs", 0), current = now();
-            if (overlayTarget_ == target && integer(data, "revision", 0) < overlayRevision_)
+            if (overlayTarget_ == target && (integer(data, "revision", 0) < overlayRevision_
+                || integer(identity, "displaySequence") < integer(presentationIdentity(overlayView_), "displaySequence")))
                 return {{"visible", overlayActive()}, {"editing", editor_ && !editor_->isReadOnly()}};
+            const auto previousIdentity = presentationIdentity(overlayView_);
+            if (overlayTarget_ == target && overlayGeneration_ == data.value("generation")
+                && (integer(identity, "actionRevision") < integer(previousIdentity, "actionRevision")
+                    || (identity.value("displaySequence") == previousIdentity.value("displaySequence")
+                        && !sameDraftAction(previousIdentity, identity))
+                    || (sameInteraction(previousIdentity, identity)
+                        && (integer(identity, "draftRevision") < integer(previousIdentity, "draftRevision")
+                            || view.value("state") != overlayView_.value("state")
+                            || view.value("viewContext").toObject().value("token")
+                                != overlayView_.value("viewContext").toObject().value("token")))))
+                return {{"visible", false}, {"editing", false}};
             const bool isPaused = view.value("state").toString() == "Paused";
             const bool retainEditor = !isPaused && target && target == overlayTarget_
                 && presentation.value("editorOwnsText").toBool() && target->field
@@ -3796,15 +3882,9 @@ private:
             if (!valid) hideOverlay();
             else {
                 closeLanguageConfiguration();
-                const bool menuOnly = card_ && overlayTarget_ == target
-                    && overlayGeneration_ == data.value("generation") && overlayRevision_ == integer(data, "revision", 0)
-                    && data.value("theme").toString(QStringLiteral("system")) == overlayTheme_
-                    && data.value("appearance").toObject() == overlayAppearance_
-                    && (!glossary_ || !glossary_->source || retainedSourceForm)
-                    && overlayView_ != view && editorViewIdentity(overlayView_) == editorViewIdentity(view);
-                const bool retainLanguageMenu = menuOnly && menu_ && menu_->isVisible() && overlayMenuCurrent(menu_);
-                if (menuView_ && !retainLanguageMenu && (menuView_->revision != integer(data, "revision", 0)
-                    || menuView_->generation != data.value("generation") || menuView_->view != view)) {
+                if (menuView_ && (menuView_->revision != integer(data, "revision", 0)
+                    || menuView_->generation != data.value("generation")
+                    || !sameInteraction(presentationIdentity(menuView_->view), identity))) {
                     const QPointer<QWidget> observedMenu = qEnvironmentVariableIsSet("TYPELAY_QT_PROBE")
                         && openedMenu_ == menu_ && menu_ && menu_->isVisible() ? menu_ : nullptr;
                     QJsonObject retirement;
@@ -3819,21 +3899,6 @@ private:
                         retirement.insert("closedAtMs", now());
                         observedMenu->setProperty("typelay.qt.menu.retirement", QVariant::fromValue(retirement));
                     }
-                }
-                if (menuOnly) {
-                    // Keep the original editor control ticket and its deadline.
-                    // Only the new read-only menu subtree changed; do not touch
-                    // editor text, focus, IME or its document in this repaint.
-                    overlayView_ = view; overlayAuthority_ = basis; overlayUntil_ = until;
-                    // Only the still-current language menu follows unrelated
-                    // More metadata. Never retarget a translation-action ticket.
-                    if (retainLanguageMenu) menuView_->view = view;
-                    if (renderTranslationActions() && status_) {
-                        auto status = view.value("status").toString();
-                        if (status.isEmpty()) status = translationActions(view).value("feedback").toString();
-                        if (!setOverlayStatus(status)) return {{"visible", overlayActive()}, {"editing", editor_ && !editor_->isReadOnly()}};
-                    }
-                    return {{"visible", overlayActive()}, {"editing", editor_ && !editor_->isReadOnly()}};
                 }
                 const bool continueMotion = overlayMotion_.isActive()
                     && integer(data, "visualExpansionFrom", -1) == overlayRevision_
@@ -3866,6 +3931,7 @@ private:
                     || glossary_->context.generation != data.value("generation")
                     || glossary_->context.revision != integer(data, "revision", 0)
                     || view.value("state").toString() != glossary_->context.state
+                    || formPresentation(view).value("formId") != glossary_->entry.value("formId")
                     || (glossary_->source && !retainedSourceForm))) closeGlossary(glossary_, false, true);
                 if (glossaryOpening_ && (glossaryOpening_->token != nextToken
                     || glossaryOpening_->generation != data.value("generation")
@@ -3880,9 +3946,20 @@ private:
                     glossaryEditorContext_.reset();
                     glossaryOwnedEditor_ = nullptr;
                 }
-                if (overlayRevision_ != integer(data, "revision", 0) || overlayView_ != view) revokeEditorOrdered();
+                if (overlayRevision_ != integer(data, "revision", 0)
+                    || !sameDraftAction(presentationIdentity(overlayView_), identity)) revokeEditorOrdered();
                 if (overlayRevision_ != integer(data, "revision", 0)) pendingResume_ = false;
                 overlayView_ = view; overlayAuthority_ = basis; overlayGeneration_ = data.value("generation");
+                if (menuView_) menuView_->view = view;
+                if (glossary_ && !formPresentation(view).value("current").toBool()) {
+                    const auto form = glossary_;
+                    if (form->current && !form->pending && !form->finished) {
+                        for (int index = 0; index < 2; ++index) form->submittedText[index] = form->terms[index]->text();
+                        form->submittedScope = form->scope->currentIndex();
+                    }
+                    form->current = false;
+                    if (QApplication::focusWidget() != form->save) form->save->setEnabled(false);
+                }
                 overlayAppearance_ = data.value("appearance").toObject();
                 if (focused() == target && sessionProvider(target->field)) overlaySourceProvider_ = target->provider;
                 const auto shortcuts = view.value("sessionShortcuts").toObject();
@@ -4016,7 +4093,7 @@ private:
             if (event->type() == QEvent::KeyPress || event->type() == QEvent::InputMethod
                 || event->type() == QEvent::FocusIn || event->type() == QEvent::FocusOut
                 || event->type() == QEvent::MouseButtonPress || event->type() == QEvent::TouchBegin) revokeEditorOrdered();
-            const bool lockedInput = (form->pending || form->finished) && object != form->save && object != form->cancel;
+            const bool lockedInput = (!form->current || form->pending || form->finished) && object != form->save && object != form->cancel;
             if (lockedInput && event->type() == QEvent::FocusIn) {
                 // Mouse/accessibility focus must not re-enter an editable word
                 // while its submitted value is frozen. Only redirect the real
@@ -4227,6 +4304,11 @@ private:
             respond(id);
         }
         else if (op == "publish") {
+            const auto settlement = admitPublication(data);
+            const auto admitted = qScopeGuard([this, settlement] {
+                if (settlement && settlement->admitting) --settlement->admitting;
+                scheduleWriteSettlements();
+            });
             if (!sessionCurrent(data.value("generation"))) { respond(id, QJsonObject{{"published", false}}); return; }
             const bool renewal = sameOrderedPublication(data);
             if (!renewal) { ++authorizationGeneration_; clearPermit(); }
@@ -4270,7 +4352,9 @@ private:
         respond(id, value.isEmpty() ? QJsonValue() : QJsonValue(value));
     }
     void sendEvent(const char *event, const QJsonObject &data) {
+        if (qstrcmp(event, "accepted") == 0) writeSettlements_.remove(data.value("planId").toString());
         const QJsonObject frame{{"event", QLatin1String(event)}, {"data", data}};
+        if (qstrcmp(event, "writeRetired") == 0) { sendFrame(frame); return; }
         if (glossaryTransfer_ && !glossaryTransfer_->failed) {
             auto &transfer = *glossaryTransfer_;
             if (qstrcmp(event, "input") == 0 && transfer.frames.size() < 8
@@ -4293,6 +4377,7 @@ private:
         if (writer_) writer_->setEnabled(true);
     }
     void disconnectPeer() {
+        writeSettlements_.clear(); writeSettlementTimer_.stop();
         closeLanguageConfiguration(false);
         cancelShortcut(nullptr, "PlatformFailure", false);
         ++connectionGeneration_;
@@ -4363,7 +4448,7 @@ private:
                 command(frame.object());
             }
         });
-        sendEvent("hello", {{"protocol", 2}, {"backend", "qt6"}, {"lifetime", lifetime_}, {"pid", qint64(getpid())}});
+        sendEvent("hello", {{"protocol", 2}, {"presentationVersion", 1}, {"backend", "qt6"}, {"lifetime", lifetime_}, {"pid", qint64(getpid())}});
     }
 
     QHash<QObject *, Target *> targets_;
@@ -4371,7 +4456,8 @@ private:
     QList<Target *> retired_;
     QStringList consumed_;
     QString lifetime_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    QTimer reconnect_, expiry_;
+    QTimer reconnect_, expiry_, writeSettlementTimer_;
+    QHash<QString, std::shared_ptr<WriteSettlement>> writeSettlements_;
     QTimer overlayMotion_;
     QElapsedTimer motionClock_;
     qint64 motionLastFrame_ = 0;

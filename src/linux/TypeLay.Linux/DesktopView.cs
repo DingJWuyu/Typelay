@@ -4,7 +4,7 @@ using TypeLay.Runtime;
 
 namespace TypeLay.Linux;
 
-internal sealed class DesktopView(DesktopLink link, DesktopInput input) : ISessionView
+internal sealed class DesktopView(DesktopLink link, DesktopInput input) : ISessionView, ISourceInteraction
 {
     internal sealed record LanguageConfigurationChoice(string Code, string Label, string NativeLabel, bool Selectable);
     internal sealed record LanguageConfigurationPresentation(string Source, string Target,
@@ -229,50 +229,25 @@ internal sealed class DesktopView(DesktopLink link, DesktopInput input) : ISessi
         _editing = session.State == SessionState.EditingTranslation;
         _sourceGlossary = session.State is SessionState.ValidTranslation or SessionState.EditedTranslationPending;
         RefreshGlossaryFocus();
-        var value = new
-        {
-            presentation,
-            viewContext = context,
-            sessionShortcuts = SettingsDraftPresentation.SessionShortcuts(
-                context?.Bindings ?? SessionShortcutBindings.Restore(settings.AcceptShortcut, settings.ExitShortcut)),
-            canAccept,
-            state = session.State,
-            source = new
-            {
-                source.Target,
-                source.Bounds,
-                source.Ime
-            },
-            text = presentation.EditorOwnsText ? session.Draft : session.Preview,
-            editable = session.Candidate.Length > 0 && context?.CanEdit is true,
-            status = statusOverride ?? presentation.Status,
-            sourceLanguage = settings.Source,
-            targetLanguage = settings.Target
-        };
+        var value = SessionPresentation.From(session, settings, canAccept, statusOverride, context)!;
         string key = JsonSerializer.Serialize(value, DesktopLink.Json);
         if (key == _last)
             return;
         _last = key;
         link.Send("render", value);
     }
-    public void RenderPaused(PauseAnchor anchor, long revision)
+    public void RenderPaused(PauseAnchor anchor, long revision, PresentationIdentity? identity = null)
     {
         SourceViewPresented?.Invoke();
         Token = null;
         _editing = _sourceGlossary = false;
         _glossaryFocus = null;
-        var value = new
+        if (identity is null)
         {
-            presentation = Presentation.From(SessionState.Paused, false, hasPauseAnchor: true),
-            canAccept = false,
-            state = SessionState.Paused,
-            source = new
-            {
-                anchor.Target,
-                anchor.Bounds
-            },
-            pauseRevision = revision
-        };
+            HideQuietly();
+            return;
+        }
+        var value = PausedSessionPresentation.From(anchor, revision, identity);
         string key = JsonSerializer.Serialize(value, DesktopLink.Json);
         if (key == _last)
             return;

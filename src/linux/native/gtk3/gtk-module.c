@@ -50,6 +50,7 @@ static gint64 shortcut_started_at = -1;
 static GQueue consumed_ids = G_QUEUE_INIT;
 static gboolean trigger_shortcut(const char *kind, Target *target, JsonObject *approved, gint64 triggered_at, gboolean require_revisions);
 static gboolean already_consumed(const char *id);
+static void remember(const char *id);
 
 const char *tl_string(JsonObject *object, const char *member) {
     if (!object || !json_object_has_member(object, member)) return NULL;
@@ -217,6 +218,8 @@ static AcceptanceOperation acceptance_command_operation(JsonObject *frame) {
             return (AcceptanceOperation)(ACCEPTANCE_DESCRIBE + index);
     return ACCEPTANCE_UNKNOWN;
 }
+#include "../common/write-settlement.h"
+
 void tl_drop_publication(void) {
     if (publication_timer) {
         AcceptanceSpanScope span = acceptance_span_begin(ACCEPTANCE_TIMER_CANCEL);
@@ -224,6 +227,7 @@ void tl_drop_publication(void) {
         acceptance_span_end(span);
     }
     if (publication) { json_object_unref(publication); publication = NULL; }
+    write_settlements_schedule();
     tl_overlay_acceptance();
 }
 static OrderedTicket *ordered_ref(OrderedTicket *ticket) {
@@ -243,6 +247,7 @@ static void ordered_revoke(void) {
     ticket->revoked = TRUE;
     tl_prefix_cancel(ticket->target, ticket->context, ticket->id);
     ordered_unref(ticket);
+    write_settlements_schedule();
 }
 void tl_clear_permit(void) {
     tl_overlay_control_cancel();
@@ -253,6 +258,7 @@ static void clear_shortcut(void) {
     if (shortcut_authority) { json_object_unref(shortcut_authority); shortcut_authority = NULL; }
 }
 static void disconnect_peer(void) {
+    write_settlements_reset();
     connection_generation++;
     configuration_sequence++;
     configuring = FALSE;
@@ -343,6 +349,7 @@ gboolean tl_glossary_transfer_end(gboolean valid) {
     return valid;
 }
 void tl_send_event(const char *event, JsonObject *data) {
+    if (strcmp(event, "accepted") == 0) write_settlement_completed(tl_string(data, "planId"));
     /* Diagnostics must not disturb the real focus-transfer collector, even
      * after it has failed but before transfer_end releases it. Ownership is
      * consumed here just as by the ordinary frame below. */
@@ -355,6 +362,7 @@ void tl_send_event(const char *event, JsonObject *data) {
     json_object_set_string_member(frame, "event", event);
     json_object_set_object_member(frame, "data", data);
     GlossaryEvents *events = glossary_events;
+    if (strcmp(event, "writeRetired") == 0) { send_frame(frame); return; }
     if (events && !events->failed) {
         if (strcmp(event, "input") == 0 && events->count < G_N_ELEMENTS(events->frames)
             && g_strcmp0(tl_string(data, "target"), events->target->id) == 0
@@ -975,6 +983,7 @@ static void command(JsonObject *frame) {
         }
         respond(id, NULL);
     } else if (strcmp(operation, "publish") == 0) {
+        write_settlement_admit(data);
         AcceptanceTiming timing = {.entered_at = tl_now()};
         if (same_ordered_publication(data)) tl_drop_publication();
         else tl_clear_permit();
@@ -999,6 +1008,7 @@ static void command(JsonObject *frame) {
             json_object_set_string_member(state, "target", target->id);
             tl_send_event("publication", state);
         } else json_object_unref(state);
+        write_settlement_admitted(data);
         respond(id, reply);
         trace_acceptance_timing("publish", data, &timing, published, NULL);
     } else { disconnect_peer(); }
@@ -1083,6 +1093,7 @@ static gboolean connect_peer(gpointer data) {
     g_io_channel_unref(channel);
     JsonObject *hello = json_object_new();
     json_object_set_int_member(hello, "protocol", 2);
+    json_object_set_int_member(hello, "presentationVersion", 1);
     json_object_set_string_member(hello, "backend", "gtk3");
     json_object_set_string_member(hello, "lifetime", lifetime);
     json_object_set_int_member(hello, "pid", getpid());
@@ -1387,6 +1398,7 @@ static gboolean acceptance_event(GdkEventKey *event, gint64 entered_at,
     char *plan_id = g_strdup(id);
     remember(id); /* single use, even if a later publication repeats a rejected plan */
     gint64 accepted = tl_now();
+    write_settlement_begin(plan_id);
     tl_clear_permit();
     JsonObject *reply = tl_write(target, request, FALSE);
     json_object_unref(request);
@@ -1404,6 +1416,7 @@ static gboolean acceptance_event(GdkEventKey *event, gint64 entered_at,
     }
     trace_acceptance_timing("key", current, &timing, TRUE, delivery);
     json_object_unref(current);
+    write_settlement_end(plan_id);
     g_free(plan_id);
     return consumed;
 }
@@ -1450,6 +1463,7 @@ static gboolean ordered_acceptance(GdkEventKey *event, guint64 sequence) {
         json_object_set_int_member(request, "expiresAtMs", ticket->accept_until);
         remember(id);
         gint64 accepted = tl_now();
+        write_settlement_begin(id);
         tl_drop_publication();
         JsonObject *reply = tl_write_ordered(ticket->target, request, ticket);
         json_object_unref(request);
@@ -1460,6 +1474,7 @@ static gboolean ordered_acceptance(GdkEventKey *event, guint64 sequence) {
             json_object_set_object_member(message, "receipt", reply);
             tl_send_event("accepted", message);
         } else json_object_unref(reply);
+        write_settlement_end(id);
     }
 finished:
     consumed = ticket->claimed;

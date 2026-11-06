@@ -2332,6 +2332,11 @@ def ordered_controls(
                         assert accepted[-1]["data"]["planId"] == publication["permit"]["plan"]["id"]
                         assert accepted[-1]["data"]["planId"] != renewed["permit"]["plan"]["id"]
                         assert accepted[-1]["data"]["receipt"]["status"] == "Verified"
+                        assert not any(
+                            event.get("event") == "writeRetired"
+                            and event["data"].get("planId") == publication["permit"]["plan"]["id"]
+                            for event in native.events
+                        ), "the retained original Ctrl ticket cannot be reported unused"
                         fixture("undo", field="first")
                         assert state()["first"]["text"] == "Original source"
                         result["same_candidate_renewal_receipt_keeps_original_plan"] = True

@@ -59,6 +59,7 @@ public sealed partial class Session
         if (!DormantEditIsCurrent(edit))
             return false;
         edit.Text = text;
+        _draftRevision++;
         return true;
     }
 

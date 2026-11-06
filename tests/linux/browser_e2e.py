@@ -51,14 +51,20 @@ TRANSPORT = """(() => {
       code: event.code, repeat: event.repeat, trusted: event.isTrusted});
   }, true);
   window.fixtureHostClock = () => ({wallTimeMs: Date.now(), boottimeMs: Math.floor(performance.now()) + 1000000});
-  window.fixtureBindings = {generation: 'browser-default', sessionEnabled: true,
+  window.fixtureBindings = {presentationVersion: 1, generation: 'browser-default', sessionEnabled: true,
     enabled: false, accept: 'Tab', exit: 'Esc'};
-  let revision = 0;
+  let revision = 0, displaySequence = 0, glossaryForm = null;
+  const interactions = new Map();
   // Test host builders emit the current protocol. Raw commands below retain
   // exact missing/stale fields for fail-closed compatibility regression cases.
   window.fixtureCommand = message => {
     const data = message.data ||= {};
-    if (message.op === 'configure-shortcuts') window.fixtureBindings = {...data};
+    if (message.op === 'configure-shortcuts') {
+      data.presentationVersion ??= 1;
+      window.fixtureBindings = {...data};
+    }
+    if (message.op === 'overlay-glossary-open') glossaryForm = {formId: data.entry.formId, current: true};
+    if (['overlay-hide', 'overlay-glossary-close'].includes(message.op)) glossaryForm = null;
     const bindings = window.fixtureBindings;
     if (['publish', 'direct', 'return', 'overlay-render', 'overlay-renew',
       'overlay-edit', 'overlay-resume'].includes(message.op)) data.generation ??= bindings.generation;
@@ -75,6 +81,19 @@ TRANSPORT = """(() => {
         acceptHint: `${bindings.accept} 接受译文`, passThroughHint: `${bindings.accept} 交还应用`,
         returnHint: `${bindings.accept} 返回原输入框`, exitLabel: '退出当前翻译',
         exitKey: bindings.exit, exitHint: `${bindings.exit} 退出当前翻译`};
+    }
+    if (message.op === 'overlay-render') {
+      const context = data.view.viewContext ||= {};
+      const key = JSON.stringify([data.generation, data.target, data.view.state, context.token]);
+      if (!interactions.has(key)) interactions.set(key, crypto.randomUUID());
+      // This controlled host acknowledges the actual draft messages delivered
+      // by the real DOM. Raw commands still exercise unmodified invalid schemas.
+      context.identity ??= {version: 1, interactionId: interactions.get(key),
+        displaySequence: ++displaySequence,
+        draftRevision: output.filter(item => item.event === 'ui' && item.data.operation === 'draft').length,
+        actionRevision: 1 + (context.translationActions?.settingsRevision || 0)};
+      if (glossaryForm) context.glossaryForm ??= {...glossaryForm};
+      window.fixtureLastRender = structuredClone(data);
     }
     if (['overlay-edit', 'overlay-resume'].includes(message.op)) data.revision ??= revision;
     return window.fixtureRawCommand(message);
@@ -172,6 +191,7 @@ HELD_KEY_OBSERVER = r"""(() => {
 
 
 class BrowserContract(unittest.TestCase):
+    headless = False
     executable = "/usr/bin/chromium"
 
     @classmethod
@@ -207,7 +227,11 @@ class BrowserContract(unittest.TestCase):
             "XDG_CACHE_HOME": str(root / "cache"),
         }
         self.browser_scope = chromium_context(
-            self.playwright, self.executable, root / "profile", environment
+            self.playwright,
+            self.executable,
+            root / "profile",
+            environment,
+            arguments=("--headless=new",) if self.headless else (),
         )
         self.context = self.browser_scope.__enter__()
         self.addCleanup(self.browser_scope.__exit__, None, None, None)
@@ -418,7 +442,7 @@ class BrowserContract(unittest.TestCase):
             "observedAtMs": snapshot["observedAtMs"],
         }
         return {
-            "id": "test-plan",
+            "id": str(uuid.uuid4()),
             "expected": expected,
             "replacement": replacement,
             "scope": scope,
@@ -485,6 +509,7 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(
             snapshot.get("sessionBindings"),
             {
+                "presentationVersion": 1,
                 "generation": "session-f1-f24",
                 "accept": "F1",
                 "exit": "F24",
@@ -1178,13 +1203,14 @@ class BrowserContract(unittest.TestCase):
         snapshot = self.type_source()
         self.assertTrue(snapshot["sessionBindings"]["sourceReady"])
         self.assertTrue(snapshot["sessionBindings"]["editorReady"])
-        self.assertTrue(self.publish_control(snapshot)["published"])
+        original_plan = self.plan(snapshot)
+        self.assertTrue(self.publish_control(snapshot, original_plan)["published"])
         self.page.keyboard.down("Control")
         # A normal same-candidate host renewal cannot replace the old plan or
         # lend it a newer deadline, even with a fresh authority token.
         next_snapshot = self.capture()
         next_plan = self.plan(next_snapshot)
-        next_plan["id"] = "new-plan"
+        next_plan["id"] = str(uuid.uuid4())
         self.assertTrue(self.publish_control(next_snapshot, next_plan)["published"])
         self.page.keyboard.down("F7")
         self.page.keyboard.down("F7")
@@ -1193,9 +1219,68 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.page.locator("#source").input_value(), "你好")
         accepted = self.accepted()
         self.assertEqual(len(accepted), 1)
-        self.assertEqual(accepted[0]["data"]["planId"], "test-plan")
+        self.assertEqual(accepted[0]["data"]["planId"], original_plan["id"])
         self.assertEqual(accepted[0]["data"]["receipt"]["status"], "Verified")
         self.assertEqual(self.page.evaluate("controlEvents"), [])
+        self.assertNotIn(
+            original_plan["id"],
+            self.page.evaluate("""fixtureMessages
+          .filter(message=>message.event==='writeRetired').map(message=>message.data.planId)"""),
+        )
+
+    def test_unused_source_publication_reports_exact_retirement_and_cannot_be_reused(self):
+        for revoke in (True, False):
+            with self.subTest(revoke=revoke):
+                self.page.reload()
+                self.command("configure-shortcuts", self.page.evaluate("fixtureBindings"))
+                self.page.locator("#source").focus()
+                snapshot = self.type_source()
+                plan = self.plan(snapshot)
+                self.assertTrue(self.publish(snapshot, plan)["published"])
+                if revoke:
+                    self.command("revoke", {"target": snapshot["target"]})
+                self.page.wait_for_function(
+                    """id => fixtureMessages.some(message =>
+                  message.event==='writeRetired' && message.data.planId===id)""",
+                    arg=plan["id"],
+                    timeout=1000,
+                )
+                retired = self.page.evaluate("""fixtureMessages.filter(message=>message.event==='writeRetired')
+                  .map(message=>message.data)""")
+                self.assertEqual(
+                    retired,
+                    [
+                        {
+                            "planId": plan["id"],
+                            "target": snapshot["target"],
+                            "generation": "browser-default",
+                        }
+                    ],
+                )
+                self.assertFalse(self.publish(self.capture(), plan)["published"])
+                self.page.keyboard.press("Tab")
+                self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+                self.assertEqual(self.accepted(), [])
+
+    def test_reentrant_revoke_during_source_write_keeps_only_accepted_receipt(self):
+        snapshot = self.type_source()
+        self.page.locator(
+            "#source"
+        ).evaluate("""element => element.addEventListener('input', () => {
+          fixtureCommand({id:9901, op:'revoke', data:{}});
+        }, {once:true})""")
+        plan = self.plan(snapshot)
+        self.assertTrue(self.publish(snapshot, plan)["published"])
+        self.page.keyboard.press("Tab")
+        self.assertEqual(self.page.locator("#source").input_value(), "你好")
+        accepted = self.accepted()
+        self.assertEqual(len(accepted), 1)
+        self.assertEqual(accepted[0]["data"]["planId"], plan["id"])
+        self.assertEqual(accepted[0]["data"]["receipt"]["status"], "Verified")
+        self.assertEqual(
+            self.page.evaluate("fixtureMessages.filter(message=>message.event==='writeRetired')"),
+            [],
+        )
 
     def test_control_source_exit_and_ordinary_binding_restore(self):
         self.configure_control()
@@ -1764,8 +1849,8 @@ class BrowserContract(unittest.TestCase):
         self.assertTrue(published["published"], diagnostic)
         self.assertTrue(published["publication"]["ready"], diagnostic)
         self.assertTrue(published["acknowledged"]["ready"], diagnostic)
-        self.assertEqual(published["acknowledged"]["planId"], "test-plan")
-        self.assertEqual(published["publication"]["planId"], "test-plan")
+        self.assertEqual(published["acknowledged"]["planId"], template["id"])
+        self.assertEqual(published["publication"]["planId"], template["id"])
         self.assertLessEqual(published["publication"]["readyUntilHostMs"], published["expiresAtMs"])
         # Wait on the actual issued host deadline, never on an arbitrary sleep.
         self.page.wait_for_function("performance.now() > fixtureOriginalDeadline + 2", timeout=1000)
@@ -2170,7 +2255,7 @@ class BrowserContract(unittest.TestCase):
         self.assertTrue(result["published"]["published"], result)
         self.assertTrue(result["older"]["visible"], result)
         self.assertTrue(result["publication"]["ready"], result)
-        self.assertEqual(result["publication"]["planId"], "test-plan")
+        self.assertEqual(result["publication"]["planId"], template["id"])
         cdp = self.context.new_cdp_session(self.page)
         self.addCleanup(cdp.detach)
         candidates = [
@@ -2498,6 +2583,79 @@ class BrowserContract(unittest.TestCase):
             fonts = actual_fonts(object_id)
             self.assertTrue(any(font["glyphCount"] > 0 for font in fonts), fonts)
             self.assertFalse(any(font["isCustomFont"] for font in fonts), fonts)
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+
+    def test_presentation_identity_orders_display_without_retiring_same_interaction(self):
+        self.motion_view()
+        data = self.page.evaluate("fixtureLastRender")
+        self.click_overlay_control("更多")
+        menu = self.overlay_control("更多操作", "group")
+        editor = self.overlay_control("TypeLay 译文", "textbox")
+        old = json.loads(json.dumps(data))
+        data["view"]["viewContext"]["identity"]["displaySequence"] += 1
+        data["view"]["text"] = "Updated visible candidate"
+        data["view"]["status"] = "更新后的显示反馈"
+        self.assertTrue(self.command("overlay-render", data)["visible"])
+        self.assertFalse(self.overlay_dom(menu, "function() {return this.hidden;}"))
+        self.assertEqual(
+            self.overlay_dom(editor, "function() {return this.value;}"), "Updated visible candidate"
+        )
+        self.assertTrue(self.command("overlay-render", old)["visible"])
+        self.assertEqual(
+            self.overlay_dom(editor, "function() {return this.value;}"), "Updated visible candidate"
+        )
+        self.assertTrue(self.command("overlay-render", data)["visible"])
+        self.assertFalse(self.overlay_dom(menu, "function() {return this.hidden;}"))
+        # Host-local guidance can change labels/status without a new shared
+        # projection. The same sequence still updates visible content.
+        data["view"].update(
+            text="Same-sequence visible refresh",
+            status="本地语言设置反馈",
+            sourceLanguageLabel="English refreshed",
+            targetLanguageLabel="中文刷新",
+        )
+        self.assertTrue(self.command("overlay-render", data)["visible"])
+        self.assertEqual(
+            self.overlay_dom(editor, "function() {return this.value;}"),
+            "Same-sequence visible refresh",
+        )
+        self.assertFalse(self.overlay_dom(menu, "function() {return this.hidden;}"))
+        self.overlay_control("English refreshed → 中文刷新")
+        for change in (
+            {"version": 2},
+            {"version": True},
+            {"unknown": True},
+            {"interactionId": "00000000-0000-0000-0000-000000000000"},
+            {"displaySequence": 0},
+            {"displaySequence": 1.5},
+            {"draftRevision": -1},
+            {"actionRevision": 0},
+            {"interactionId": str(uuid.uuid4())},
+        ):
+            with self.subTest(change=change):
+                invalid = json.loads(json.dumps(data))
+                invalid["view"]["viewContext"]["identity"].update(change)
+                self.assertFalse(self.command("overlay-render", invalid)["visible"])
+        for form in (
+            {"formId": str(uuid.uuid4()), "current": True, "unknown": 1},
+            {"formId": str(uuid.uuid4()), "current": 1},
+        ):
+            invalid = json.loads(json.dumps(data))
+            invalid["view"]["viewContext"]["glossaryForm"] = form
+            self.assertFalse(self.command("overlay-render", invalid)["visible"])
+        invalid = json.loads(json.dumps(data))
+        invalid["view"]["viewContext"]["token"]["revision"] += 1
+        self.assertFalse(self.command("overlay-render", invalid)["visible"])
+        for version in (None, 0, 2, "1"):
+            configuration = self.page.evaluate("fixtureBindings")
+            configuration["presentationVersion"] = version
+            self.sequence += 1
+            self.page.evaluate(
+                "message => fixtureRawCommand(message)",
+                {"id": self.sequence, "op": "configure-shortcuts", "data": configuration},
+            )
+            self.assertFalse(self.command("overlay-render", data)["visible"])
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(self.accepted(), [])
 
@@ -3830,7 +3988,14 @@ class BrowserContract(unittest.TestCase):
                     self.overlay_dom(
                         menu, "function() { return this.isConnected && !this.hidden; }"
                     ),
-                    phase == "current-draft",
+                    phase
+                    in (
+                        "current-draft",
+                        "stale-draft",
+                        "status-changed",
+                        "edit-revoked",
+                        "readonly-view",
+                    ),
                 )
                 if phase == "current-draft":
                     self.assertTrue(
@@ -4303,6 +4468,63 @@ class BrowserContract(unittest.TestCase):
         self.assertTrue(self.command("overlay-render", data)["visible"])
         editor = self.overlay_control("TypeLay 译文", "textbox")
         self.assertEqual(self.overlay_dom(editor, "function() { return this.value; }"), value)
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+
+    def test_glossary_form_identity_preserves_feedback_and_never_restores_retired_save(self):
+        data = self.motion_view()
+        self.set_translation_menu(
+            data,
+            self.translation_menu_state(
+                glossaryReleased=True, canOpenGlossary=True, glossaryUnavailableReason=None
+            ),
+        )
+        self.click_overlay_control("更多")
+        self.click_overlay_control("加入术语表")
+        entry = {
+            "formId": str(uuid.uuid4()),
+            "token": data["view"]["viewContext"]["token"],
+            "settingsRevision": 12,
+            "directions": [],
+            "sourceOrigin": True,
+        }
+        envelope = {
+            "target": data["target"],
+            "generation": entry["token"]["commandGeneration"],
+            "revision": data["revision"],
+            "entry": entry,
+        }
+        self.assertTrue(self.command("overlay-glossary-open", envelope)["opened"])
+        source = self.overlay_control("源词", "textbox")
+        self.page.keyboard.insert_text("PR")
+        self.page.keyboard.press("Tab")
+        self.page.keyboard.insert_text("pull request")
+        data["view"]["viewContext"]["glossaryForm"] = {"formId": entry["formId"], "current": True}
+        data["view"]["status"] = "任意更新的显示提示"
+        data["authority"] = self.command("describe", {"target": data["target"]})["authority"]
+        self.assertTrue(self.command("overlay-render", data)["visible"])
+        self.assertEqual(
+            self.overlay_dom(
+                source, "function() {return [this.isConnected,this.value,this.readOnly];}"
+            ),
+            [True, "PR", False],
+        )
+        for current in (False, True):
+            data["view"]["viewContext"]["glossaryForm"]["current"] = current
+            data["authority"] = self.command("describe", {"target": data["target"]})["authority"]
+            self.assertTrue(self.command("overlay-render", data)["visible"])
+            self.assertEqual(
+                self.overlay_dom(
+                    source, "function() {return [this.isConnected,this.value,this.readOnly];}"
+                ),
+                [True, "PR", True],
+            )
+            self.click_overlay_control("保存")
+            self.assertFalse(
+                self.page.evaluate("""fixtureMessages.some(message =>
+              message.event==='ui' && message.data.operation==='sessionGlossaryAdd')""")
+            )
+        self.click_overlay_control("取消")
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(self.accepted(), [])
 
@@ -5085,8 +5307,9 @@ class BrowserContract(unittest.TestCase):
                 const snapshot = fixtureCommand({id: 964, op: 'capture', data: {
                   target: description.target, authority: description.authority, requireFocused: true}});
                 if (!snapshot) return false;
-                plan.expected = {...plan.expected, target: {...plan.expected.target, value: snapshot.target},
-                  text: snapshot.text, selection: snapshot.selection, observedAtMs: snapshot.observedAtMs};
+                plan = {...plan, id: crypto.randomUUID(), expected: {...plan.expected,
+                  target: {...plan.expected.target, value: snapshot.target},
+                  text: snapshot.text, selection: snapshot.selection, observedAtMs: snapshot.observedAtMs}};
                 const command = {id: 965, op: 'publish', data: {
                   target: snapshot.target, authority: snapshot.authority, permit: {plan}}};
                 const result = fixtureCommand(command);
@@ -6416,6 +6639,8 @@ class BrowserContract(unittest.TestCase):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--chromium", default=shutil.which("chromium") or "/usr/bin/chromium")
+    parser.add_argument("--headless", action="store_true")
     arguments, remaining = parser.parse_known_args()
     BrowserContract.executable = arguments.chromium
+    BrowserContract.headless = arguments.headless
     unittest.main(argv=[__file__, *remaining])

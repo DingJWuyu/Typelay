@@ -71,6 +71,26 @@ internal sealed partial class PracticeHost
     internal (WriteStatus Status, Denial Reason)? RejectedAcceptance(Guid run) =>
         _rejectedAcceptance is { } rejected && rejected.Run == run ? (rejected.Status, rejected.Reason) : null;
     private (InputLease Lease, AcceptancePermit Permit, long ReplacesPlanSequence, long ContentEpoch)? _nextAcceptance;
+    private void DiscardNextAcceptance()
+    {
+        var next = _nextAcceptance;
+        _nextAcceptance = null;
+        if (next is { } unpublished)
+            RetireUnpublishedAcceptance(unpublished.Lease, unpublished.Permit);
+    }
+    private void RetireUnpublishedAcceptance(InputLease lease, AcceptancePermit? permit)
+    {
+        if (permit is not null && _acceptance?.Plan.Permit.Plan.Id != permit.Plan.Id
+            && _nextAcceptance?.Permit.Plan.Id != permit.Plan.Id)
+            _monitor?.RetireUnusedAcceptance(lease, permit);
+    }
+    private void QueueNextAcceptance(InputLease lease, AcceptancePermit permit, long replacesPlanSequence, long contentEpoch)
+    {
+        if (_nextAcceptance?.Permit.Plan.Id == permit.Plan.Id)
+            return;
+        DiscardNextAcceptance();
+        _nextAcceptance = (lease, permit, replacesPlanSequence, contentEpoch);
+    }
     public bool IsAutomatic => _automatic && _runId != Guid.Empty;
     internal void Initialize(SettingsStore settings, KeyboardHook monitor, bool allowInjectedInput)
     {
@@ -328,7 +348,8 @@ internal sealed partial class PracticeHost
         _dispatcher.VerifyAccess();
         if (_monitor?.PreserveOwnedPrefix(lease, permit) == true)
         {
-            _nextAcceptance = null;
+            DiscardNextAcceptance();
+            RetireUnpublishedAcceptance(lease, permit);
             return; // Keep only the original installed plan/exit and their deadlines.
         }
         PublishExit(lease);
@@ -337,6 +358,7 @@ internal sealed partial class PracticeHost
             || lease.CommandGeneration != _monitor.CommandGeneration)
         {
             RevokeAcceptance(revokeExit: false);
+            RetireUnpublishedAcceptance(lease, permit);
             return;
         }
         if (_acceptance is { } current && SameAcceptanceOperation(current.Plan.Permit.Plan, permit.Plan))
@@ -344,6 +366,7 @@ internal sealed partial class PracticeHost
             if (!CurrentAcceptanceBasis(current) || !SameAcceptanceLease(current.Lease, lease) || current.Received)
             {
                 RevokeAcceptance();
+                RetireUnpublishedAcceptance(lease, permit);
                 return;
             }
             // Losing renewal eligibility does not revoke the original Tab
@@ -351,19 +374,23 @@ internal sealed partial class PracticeHost
             // The original watermark and deadline still bound that transaction.
             if (!RenewalCurrent(lease, permit, current.RenewalAttemptFloor, current.ContentEpoch))
             {
-                _nextAcceptance = null;
+                DiscardNextAcceptance();
+                RetireUnpublishedAcceptance(lease, permit);
                 PollAcceptance();
                 return;
             }
             if (permit.ObservedAtMs <= current.Plan.Permit.ObservedAtMs
                 || _nextAcceptance is { } queued && queued.ReplacesPlanSequence == current.Plan.PlanSequence
                 && permit.ObservedAtMs <= queued.Permit.ObservedAtMs)
+            {
+                RetireUnpublishedAcceptance(lease, permit);
                 return;
-            _nextAcceptance = (lease, permit, current.Plan.PlanSequence, current.ContentEpoch);
+            }
+            QueueNextAcceptance(lease, permit, current.Plan.PlanSequence, current.ContentEpoch);
             PollAcceptance();
             return;
         }
-        _nextAcceptance = (lease, permit, 0, _monitor.ContentEpoch);
+        QueueNextAcceptance(lease, permit, 0, _monitor.ContentEpoch);
         if (_acceptance is null)
             InstallNextAcceptance();
         else if (_acceptance.State is "install" or "installed")
@@ -525,7 +552,7 @@ internal sealed partial class PracticeHost
         if (_acceptance is not { } current)
         {
             if (_nextAcceptance is { ReplacesPlanSequence: > 0 })
-                _nextAcceptance = null;
+                DiscardNextAcceptance();
             return;
         }
         bool attempted = _monitor?.OwnedPlanAttempted(current.Plan.PlanSequence) == true;
@@ -540,12 +567,12 @@ internal sealed partial class PracticeHost
         long now = WindowsInterruptClock.NowMs;
         if (_monitor?.OwnedPrefixPending == true)
         {
-            _nextAcceptance = null;
+            DiscardNextAcceptance();
             return; // GUI FIFO decides at the original deadline, never a renewed ticket.
         }
         if (attempted)
         {
-            _nextAcceptance = null;
+            DiscardNextAcceptance();
             if (now > current.Plan.Permit.ExpiresAtMs)
                 RevokeAcceptance(revokeExit: false);
             return;
@@ -556,7 +583,7 @@ internal sealed partial class PracticeHost
                 || !SameAcceptanceOperation(current.Plan.Permit.Plan, next.Permit.Plan)
                 || !SameAcceptanceLease(current.Lease, next.Lease)
                 || !RenewalCurrent(next.Lease, next.Permit, current.RenewalAttemptFloor, next.ContentEpoch))
-                _nextAcceptance = null;
+                DiscardNextAcceptance();
             else
             {
                 if (current.State is "install" or "installed" && current.Plan.Permit.ExpiresAtMs - now <= KeyboardHook.OwnedAcceptanceHandoffMs)
@@ -574,7 +601,7 @@ internal sealed partial class PracticeHost
     {
         if (revokeExit)
             RevokeExit();
-        _nextAcceptance = null;
+        DiscardNextAcceptance();
         _monitor?.RevokeOwnedPlan();
         if (_acceptance is { State: "install" or "installed" })
             RevokeCurrentAcceptance();
@@ -594,13 +621,21 @@ internal sealed partial class PracticeHost
     {
         var desired = _nextAcceptance;
         _nextAcceptance = null;
-        if (desired is not { } next || _acceptance is not null || _descriptor is not { } descriptor
+        if (desired is not { } next)
+            return;
+        if (_acceptance is not null || _descriptor is not { } descriptor
             || _child is null || !SourceReady(next.Lease.Source.Target) || _witnessWriter is null
             || WindowsInterruptClock.NowMs > next.Permit.ExpiresAtMs)
+        {
+            RetireUnpublishedAcceptance(next.Lease, next.Permit);
             return;
+        }
         if (next.ReplacesPlanSequence > 0 && (next.ReplacesPlanSequence != releasedPlanSequence
             || !RenewalCurrent(next.Lease, next.Permit, attemptFloorSequence, next.ContentEpoch)))
+        {
+            RetireUnpublishedAcceptance(next.Lease, next.Permit);
             return;
+        }
         OwnedPracticeAcceptanceProtocol.TryParseKey(_settings!.Value.AcceptShortcut, out uint acceptKey, out var acceptModifiers);
         var plan = new OwnedAcceptancePlan(_connection, _runId, checked(++_planSequence), descriptor,
             next.Permit, next.Lease.UserEpoch, next.Lease.ForegroundEpoch, next.Lease.CommandGeneration,
@@ -621,6 +656,7 @@ internal sealed partial class PracticeHost
                 result.Clear();
                 result.Dispose();
                 result = null;
+                RetireUnpublishedAcceptance(next.Lease, next.Permit);
                 return;
             }
             var current = new PendingPlan(plan, next.Lease, input, result, next.ContentEpoch,
@@ -630,6 +666,7 @@ internal sealed partial class PracticeHost
         }
         catch (Exception error) when (error is IOException or InvalidOperationException or ArgumentException)
         {
+            RetireUnpublishedAcceptance(next.Lease, next.Permit);
             if (input is not null)
             {
                 input.CloseUndeliveredRemote(_child.Process.Handle);
@@ -734,7 +771,7 @@ internal sealed partial class PracticeHost
         {
             if (current.Received)
                 throw new InvalidDataException("practice-plan-duplicate-receipt");
-            _nextAcceptance = null;
+            DiscardNextAcceptance();
             var result = OwnedPracticeAcceptanceProtocol.ReadResult(current.Result);
             if (result.Connection != _connection || result.Run != _runId || result.PlanSequence != current.Plan.PlanSequence
                 || result.PlanId != current.Plan.Permit.Plan.Id || result.WitnessSequence != control.WitnessSequence
@@ -746,8 +783,7 @@ internal sealed partial class PracticeHost
                 throw new InvalidDataException("practice-receipt-identity");
             current.Received = true;
             _monitor?.CompleteOwnedPrefixAction(result.WitnessSequence, result.AcceptedAtMs > 0);
-            if (result.AcceptedAtMs > 0)
-                _monitor?.CompleteOwnedAcceptance(current.Lease, current.Plan.Permit, result);
+            _monitor?.CompleteOwnedAcceptance(current.Lease, current.Plan.Permit, result);
             RevokeAcceptance();
             if (result.AcceptedAtMs == 0)
             {
@@ -769,7 +805,9 @@ internal sealed partial class PracticeHost
                 && (next.ReplacesPlanSequence != releasedPlanSequence || current.Received
                     || !SameAcceptanceOperation(current.Plan.Permit.Plan, next.Permit.Plan)
                     || !RenewalCurrent(next.Lease, next.Permit, attemptFloorSequence, next.ContentEpoch)))
-                _nextAcceptance = null;
+                DiscardNextAcceptance();
+            if (control.RetiredUnused && !current.Received)
+                _monitor?.RetireUnusedAcceptance(current.Lease, current.Plan.Permit);
             // A matched release always frees the old mapping, even if the next
             // observation expired or an input attempt invalidated its renewal.
             current.Input.Clear();
@@ -812,7 +850,7 @@ internal sealed partial class PracticeHost
         _monitor?.ClearOwnedChannel();
         if (_witnessWriter?.Stop() == false)
             throw new InvalidOperationException("practice-hook-stop");
-        _nextAcceptance = null;
+        DiscardNextAcceptance();
         if (_acceptance is { } current)
         {
             if (!current.Received && _witnessWriter is not null

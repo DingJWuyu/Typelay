@@ -88,7 +88,7 @@ internal static partial class Program
     private static AutomaticPracticeProgress? _automaticProgress;
     private static byte[]? _transaction;
     private static long _lastPlanSequence, _installWitnessFloor, _lastWitnessAcknowledged, _sourceReadyRevision;
-    private static bool _automatic, _allowInjectedInput, _planActive, _planReported, _witnessFailed;
+    private static bool _automatic, _allowInjectedInput, _planActive, _planReported, _planClaimed, _witnessFailed;
     private static bool _observeInputCompletion;
     private static long _inputCompletionSequence;
     private static Queue<PracticeMessage>? _inputCompletions;
@@ -597,7 +597,12 @@ internal static partial class Program
                             break;
                         case "release-plan" when _automatic:
                             RequirePlan(message.Acceptance);
-                            var released = PlanControl();
+                            // The original GUI owner proves non-execution. A
+                            // reentrant release during execution cannot do so.
+                            var released = PlanControl() with
+                            {
+                                RetiredUnused = !_planActive && !_planClaimed && !_planReported
+                            };
                             ReleasePlan();
                             Reply("released-plan", released);
                             break;
@@ -1180,6 +1185,7 @@ internal static partial class Program
             _installWitnessFloor = _witness.Sequence;
             _transaction = CreateTransaction(plan);
             _planReported = false;
+            _planClaimed = false;
             _planActive = true;
             if (trace)
                 appliedAtMs = WindowsInterruptClock.NowMs;
@@ -1696,6 +1702,7 @@ internal static partial class Program
                 return false;
             }
             OwnedInputContext? expectedInput = null;
+            _planClaimed = true;
             long now = WindowsInterruptClock.NowMs;
             // Nullable facts preserve the original short circuit: null means not
             // evaluated, not a failed gate. Prefix consumption is never repeated.

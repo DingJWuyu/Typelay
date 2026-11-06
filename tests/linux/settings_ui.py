@@ -557,8 +557,7 @@ def main(arguments=None):
                 for theme in ("light", "dark"):
                     assert (
                         await host.ask("settingsPatch", {"uiLanguage": language, "theme": theme})
-                        is True
-                    )
+                    )["saved"] is True
                     await settle(
                         lambda: state.get("uiLanguage") == language
                         and state.get("theme") == theme
@@ -633,8 +632,7 @@ def main(arguments=None):
                         for enabled in (True, False):
                             assert (
                                 await host.ask("settingsPatch", {"mode": mode, "enabled": enabled})
-                                is True
-                            )
+                            )["saved"] is True
                             await settle(
                                 lambda: state.get("mode") == mode
                                 and state.get("enabled") is enabled
@@ -670,8 +668,7 @@ def main(arguments=None):
                             )
                     assert (
                         await host.ask("settingsPatch", {"mode": "Automatic", "enabled": True})
-                        is True
-                    )
+                    )["saved"] is True
                     await settle(
                         lambda: state.get("mode") == "Automatic"
                         and state.get("enabled") is True
@@ -1093,7 +1090,7 @@ def main(arguments=None):
                 and not jobs
             )
             assert motion.get_active_id() == "full"
-            assert await host.ask("settingsPatch", {"uiLanguage": "en"}) is True
+            assert (await host.ask("settingsPatch", {"uiLanguage": "en"}))["saved"] is True
             await settle(lambda: state["uiLanguage"] == "en" and not jobs)
             assert [row[0] for row in motion.get_model()] == ["Match system", "Full", "Reduced"]
             print(
@@ -2177,8 +2174,7 @@ def main(arguments=None):
                 for theme in ("light", "dark"):
                     assert (
                         await host.ask("settingsPatch", {"uiLanguage": language, "theme": theme})
-                        is True
-                    )
+                    )["saved"] is True
                     await settle(
                         lambda: state["uiLanguage"] == language
                         and state["theme"] == theme
@@ -2204,7 +2200,9 @@ def main(arguments=None):
             measurements = []
             actions = []
             for theme in ("light", "dark"):
-                assert await host.ask("settingsPatch", {"theme": theme, "uiLanguage": "en"}) is True
+                assert (await host.ask("settingsPatch", {"theme": theme, "uiLanguage": "en"}))[
+                    "saved"
+                ] is True
                 await settle(lambda: state.get("theme") == theme and not jobs)
                 surface.search.grab_focus()
                 before_focus = surface.window.get_focus()
@@ -2429,14 +2427,14 @@ def main(arguments=None):
 
             # A stale modal and stale Undo cannot overwrite a newer real save.
             retired = await question("mail")
-            assert await host.ask("settingsPatch", {"accent": "sage"}) is True
+            assert (await host.ask("settingsPatch", {"accent": "sage"}))["saved"] is True
             await ready()
             retired.response(Gtk.ResponseType.OK)
             await ready()
             assert "mail" in pane.rows
             await remove("mail")
             undo = surface.toast.undo
-            assert await host.ask("settingsPatch", {"textSize": 16}) is True
+            assert (await host.ask("settingsPatch", {"textSize": 16}))["saved"] is True
             await ready()
             undo.clicked()
             await ready()
@@ -2541,8 +2539,7 @@ def main(arguments=None):
                     "settingsPatch",
                     {"uiLanguage": "en", "theme": "dark", "accent": "clay", "textSize": 15},
                 )
-                is True
-            )
+            )["saved"] is True
             await ready()
             assert surface.toast.identity is toast_identity and surface.toast.undo is toast_peer
             assert surface.toast.text.get_text() == "App added; existing settings retained"
@@ -2581,7 +2578,7 @@ def main(arguments=None):
             surface.sidebar.select_row(surface.nav_rows["general"])
             await settle(lambda: not surface.pages.get_transition_running())
             await image(surface.window, "apps-toast-general-dark")
-            assert await host.ask("settingsPatch", {"theme": "light"}) is True
+            assert (await host.ask("settingsPatch", {"theme": "light"}))["saved"] is True
             await settle()
             await image(surface.window, "apps-toast-general-light")
             # The summary's actual missing-component action owns its chooser.
@@ -2889,7 +2886,9 @@ def main(arguments=None):
             surface.report(status)
             assert all(not button.is_sensitive() for button in tutorial.practice_buttons.values())
             tutorial.dismiss()
-            assert await host.ask("settingsPatch", {"uiLanguage": "en", "theme": "dark"}) is True
+            assert (await host.ask("settingsPatch", {"uiLanguage": "en", "theme": "dark"}))[
+                "saved"
+            ] is True
             surface.open_tutorial()
             await settle(lambda: tutorial.window.is_active())
             assert tutorial.step == 2, (
@@ -2901,7 +2900,7 @@ def main(arguments=None):
             tutorial.skip.clicked()
             await settle(lambda: not tutorial.window.get_visible())
             assert state["onboardingComplete"] is True
-            assert await host.ask("settingsPatch", original_preferences) is True
+            assert (await host.ask("settingsPatch", original_preferences))["saved"] is True
             await settle(
                 lambda: all(state.get(key) == value for key, value in original_preferences.items())
             )
@@ -3223,7 +3222,7 @@ def main(arguments=None):
             system_family = Pango.FontDescription.from_string(
                 surface.window.get_settings().get_property("gtk-font-name")
             ).get_family()
-            assert await host.ask("settingsPatch", {"font": "system"}) is True
+            assert (await host.ask("settingsPatch", {"font": "system"}))["saved"] is True
             await settle(lambda: state.get("font") == "system")
             for widget in (surface.search, surface.page_headings["general"], surface.preview_text):
                 actual_family = (
@@ -3236,16 +3235,16 @@ def main(arguments=None):
                 )
 
             print("SYSTEM FONT PASS", system_family, flush=True)
-            assert await host.ask("settingsPatch", {"font": "claude"}) is True
+            assert (await host.ask("settingsPatch", {"font": "claude"}))["saved"] is True
             await settle(lambda: state.get("font") == "claude")
             # A retired language window must not leave an older screen-wide
             # provider overriding the owner's current saved appearance.
-            assert await host.ask("settingsPatch", {"font": "sans"}) is True
+            assert (await host.ask("settingsPatch", {"font": "sans"}))["saved"] is True
             await settle(lambda: state.get("font") == "sans")
             surface.show_language_picker()
             await settle(lambda: surface.language_dialog.get_visible())
             surface.language_dialog.destroy()
-            assert await host.ask("settingsPatch", {"font": "claude"}) is True
+            assert (await host.ask("settingsPatch", {"font": "claude"}))["saved"] is True
             await settle(lambda: state.get("font") == "claude")
             assert (
                 surface.page_headings["language"]
@@ -3308,7 +3307,7 @@ def main(arguments=None):
             assert not source_picker.opened and not source_picker.popover.get_visible()
             surface.pages.set_visible_child_name("language")
             await settle(lambda: source_picker.get_mapped())
-            assert await host.ask("settingsPatch", {"source": "auto"}) is True
+            assert (await host.ask("settingsPatch", {"source": "auto"}))["saved"] is True
             await settle(lambda: state.get("source") == "auto")
             assert list(surface.translation.style.buttons) == [
                 "Natural",
@@ -3391,7 +3390,7 @@ def main(arguments=None):
                 and saved["TextSize"] == 18
                 and saved["ReduceMotion"] is True
             )
-            assert await host.ask("settingsPatch", {"textSize": 99}) is False
+            assert (await host.ask("settingsPatch", {"textSize": 99}))["saved"] is False
             assert state["textSize"] == 18
             # CRUD is available offline, but never grants model application quality.
             translation = surface.translation
@@ -3642,7 +3641,7 @@ def main(arguments=None):
             try:
                 surface.force_shortcuts.clicked()
                 await asyncio.sleep(0.05)
-                assert await host.ask("settingsPatch", {"accent": "sage"}) is True
+                assert (await host.ask("settingsPatch", {"accent": "sage"}))["saved"] is True
             finally:
                 surface.settings_lock.release()
             await settle()
@@ -3700,7 +3699,7 @@ def main(arguments=None):
             await toggle_fixture_application(False)
             await settle(lambda: "fixture-editor" in (state.get("excludedApplications") or []))
             await settle()
-            assert await host.ask("settingsPatch", {"font": "sans"}) is True
+            assert (await host.ask("settingsPatch", {"font": "sans"}))["saved"] is True
             surface.toast.undo.clicked()
             await settle()
             assert "fixture-editor" in state["excludedApplications"]
@@ -3839,7 +3838,9 @@ def main(arguments=None):
                 "target": "en",
             }
             for theme in ("light", "dark"):
-                assert await host.ask("settingsPatch", {**canonical, "theme": theme}) is True
+                assert (await host.ask("settingsPatch", {**canonical, "theme": theme}))[
+                    "saved"
+                ] is True
                 await settle(
                     lambda: all(state.get(key) == value for key, value in canonical.items())
                     and state.get("theme") == theme

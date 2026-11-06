@@ -20,7 +20,7 @@ internal sealed partial class SettingsWindow
     // Only a confirmed persistence failure has a retry. Unknown results and
     // notification failures expose the current settings, never replay a write.
     private sealed record SaveIssue(string Page, long Revision, bool Unknown, bool Committed,
-        Func<bool>? StillCurrent = null, Func<Func<bool>, Task>? Retry = null);
+        Func<bool>? StillCurrent = null, Func<Func<bool>, Task>? Retry = null, string? Detail = null);
 
     private void BuildSettingsBanners()
     {
@@ -102,9 +102,9 @@ internal sealed partial class SettingsWindow
         RefreshSaveBanner();
     }
 
-    private void SetSaveIssue(bool unknown, bool committed = false, Func<bool>? current = null, Func<Func<bool>, Task>? retry = null, string? page = null)
+    private void SetSaveIssue(bool unknown, bool committed = false, Func<bool>? current = null, Func<Func<bool>, Task>? retry = null, string? page = null, string? detail = null)
     {
-        _saveIssue = new(page ?? _page, _settings.Revision, unknown, committed, current, retry);
+        _saveIssue = new(page ?? _page, _settings.Revision, unknown, committed, current, retry, detail);
         RefreshSaveBanner();
     }
 
@@ -134,9 +134,9 @@ internal sealed partial class SettingsWindow
             _renderedSaveIssue = issue;
             _renderedSaveRetry = retry;
             object page = _pageIdentity;
-            var label = UiTheme.Text(issue.Committed ? UiTheme.L("设置已保存，部分状态未能更新。", "Settings were saved, but some status updates failed.")
+            var label = UiTheme.Text(issue.Detail ?? (issue.Committed ? UiTheme.L("设置已保存，部分状态未能更新。", "Settings were saved, but some status updates failed.")
                 : issue.Unknown ? UiTheme.L("无法确认设置是否已保存", "Couldn’t confirm settings were saved")
-                : UiTheme.L("设置未能保存", "Settings weren’t saved"), 13);
+                : UiTheme.L("设置未能保存", "Settings weren’t saved")), 13);
             label.FontWeight = FontWeights.Medium;
             AutomationProperties.SetAutomationId(label, "SettingsSaveBannerText");
             var action = UiTheme.Button(retry ? UiTheme.L("重试", "Retry") : UiTheme.L("查看", "View"), async () =>

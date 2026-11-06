@@ -9,7 +9,7 @@ public sealed class UnchangedSettingsSessionTests
     [InlineData("same-record")]
     [InlineData("rebuilt-exclusions")]
     [InlineData("normalized-shortcuts")]
-    public void SavingUnchangedSettingsPreservesTheManualDraftAndActiveWake(string submission)
+    public async Task SavingUnchangedSettingsPreservesTheManualDraftAndActiveWake(string submission)
     {
         using var s = new SessionScenario(WorkMode.OnDemand, experimental: true);
         s.Settings.Update(s.Settings.Value with
@@ -26,7 +26,8 @@ public sealed class UnchangedSettingsSessionTests
         var token = s.View.Token;
         Guid generation = s.Input.CommandGeneration;
 
-        s.Settings.Update(Unchanged(s.Settings.Value, submission));
+        Assert.True((await s.Settings.CommitAsync(s.Settings.Revision, Unchanged(s.Settings.Value, submission),
+            s.Controller.PrepareSettingsChangeAsync, cancellationToken: TestContext.Current.CancellationToken)).Saved);
         s.Tick();
 
         Assert.Equal(token, s.View.Token);
@@ -51,7 +52,7 @@ public sealed class UnchangedSettingsSessionTests
     [InlineData("same-record")]
     [InlineData("rebuilt-exclusions")]
     [InlineData("normalized-shortcuts")]
-    public void SavingUnchangedSettingsKeepsPracticeAndItsPendingDirectReplacement(string submission)
+    public async Task SavingUnchangedSettingsKeepsPracticeAndItsPendingDirectReplacement(string submission)
     {
         using var s = new SessionScenario(WorkMode.OnDemand, experimental: true);
         s.Settings.Update(s.Settings.Value with
@@ -63,17 +64,20 @@ public sealed class UnchangedSettingsSessionTests
         s.ReadyCandidate();
         var progress = Assert.IsType<OnDemandPracticeProgress>(s.Controller.PracticeProgress);
         Assert.True(progress.PreviewCompleted);
-        s.Settings.Update(Unchanged(s.Settings.Value, submission));
+        Assert.True((await s.Settings.CommitAsync(s.Settings.Revision, Unchanged(s.Settings.Value, submission),
+            s.Controller.PrepareSettingsChangeAsync, cancellationToken: TestContext.Current.CancellationToken)).Saved);
         Assert.Equal(progress, s.Controller.PracticeProgress);
         Assert.Equal(run, s.Controller.PracticeProgress!.RunId);
 
         s.Service.PendingDirectWrite = new();
         s.Command("direct", 2);
         s.Tick();
-        s.Settings.Update(Unchanged(s.Settings.Value, submission));
+        Assert.True((await s.Settings.CommitAsync(s.Settings.Revision, Unchanged(s.Settings.Value, submission),
+            s.Controller.PrepareSettingsChangeAsync, cancellationToken: TestContext.Current.CancellationToken)).Saved);
         s.CompleteTranslation("replacement");
         var plan = Assert.Single(s.Service.DirectWrites);
-        s.Settings.Update(Unchanged(s.Settings.Value, submission));
+        Assert.True((await s.Settings.CommitAsync(s.Settings.Revision, Unchanged(s.Settings.Value, submission),
+            s.Controller.PrepareSettingsChangeAsync, cancellationToken: TestContext.Current.CancellationToken)).Saved);
         s.Service.PendingDirectWrite.SetResult(new(WriteStatus.Verified, Denial.None,
             plan.Expected with
             {
@@ -87,7 +91,7 @@ public sealed class UnchangedSettingsSessionTests
     }
 
     [Fact]
-    public void FailedUnchangedSaveLeavesTheDraftAndWakeUsableForRetry()
+    public async Task FailedUnchangedSaveLeavesTheDraftAndWakeUsableForRetry()
     {
         using var s = new SessionScenario(WorkMode.OnDemand, experimental: true);
         s.Tick();
@@ -99,12 +103,15 @@ public sealed class UnchangedSettingsSessionTests
         s.Tick();
         var token = s.View.Token;
         s.BlockSettingsWrites();
-        var failure = Assert.Throws<SettingsPersistenceException>(() => s.Settings.Update(s.Settings.Value));
-        Assert.IsType<UnauthorizedAccessException>(failure.InnerException);
+        var result = await s.Settings.CommitAsync(s.Settings.Revision, s.Settings.Value,
+            s.Controller.PrepareSettingsChangeAsync, cancellationToken: TestContext.Current.CancellationToken);
+        Assert.False(result.Saved);
+        Assert.IsType<UnauthorizedAccessException>(Assert.IsType<SettingsPersistenceException>(result.Error).InnerException);
         s.Tick();
         Assert.Equal(token, s.View.Token);
         s.AllowSettingsWrites();
-        s.Settings.Update(s.Settings.Value);
+        Assert.True((await s.Settings.CommitAsync(s.Settings.Revision, s.Settings.Value,
+            s.Controller.PrepareSettingsChangeAsync, cancellationToken: TestContext.Current.CancellationToken)).Saved);
         s.View.ReturnRequested!(s.View.Token);
         s.Tick();
         Assert.Equal("manual draft", s.View.Preview);
@@ -119,7 +126,7 @@ public sealed class UnchangedSettingsSessionTests
 
     [Theory]
     [MemberData(nameof(ChangedFields))]
-    public void EveryRealSettingsChangeStillRetiresTheDraftWakeAndPractice(string field)
+    public async Task EveryRealSettingsChangeStillRetiresTheDraftWakeAndPractice(string field)
     {
         using var s = new SessionScenario(WorkMode.OnDemand, experimental: true, setStartup: _ => { });
         Guid run = BindPractice(s);
@@ -135,7 +142,8 @@ public sealed class UnchangedSettingsSessionTests
         int changes = 0;
         s.Settings.Changed += () => changes++;
 
-        s.Settings.Update(Changed(s.Settings.Value, field));
+        Assert.True((await s.Settings.CommitAsync(s.Settings.Revision, Changed(s.Settings.Value, field),
+            s.Controller.PrepareSettingsChangeAsync, cancellationToken: TestContext.Current.CancellationToken)).Saved);
 
         Assert.Equal(1, changes);
         Assert.Equal("", s.View.Draft);
@@ -150,14 +158,15 @@ public sealed class UnchangedSettingsSessionTests
 
     [Theory]
     [MemberData(nameof(ChangedFields))]
-    public void EveryRealSettingsChangeStillCancelsAnUnsubmittedDirectReplacement(string field)
+    public async Task EveryRealSettingsChangeStillCancelsAnUnsubmittedDirectReplacement(string field)
     {
         using var s = new SessionScenario(WorkMode.OnDemand, experimental: true, setStartup: _ => { });
         s.Command("direct", 1);
         s.Tick();
         Assert.Single(s.Model.Jobs);
 
-        s.Settings.Update(Changed(s.Settings.Value, field));
+        Assert.True((await s.Settings.CommitAsync(s.Settings.Revision, Changed(s.Settings.Value, field),
+            s.Controller.PrepareSettingsChangeAsync, cancellationToken: TestContext.Current.CancellationToken)).Saved);
         s.CompleteTranslation("obsolete replacement");
         s.Tick();
 

@@ -155,7 +155,7 @@ public sealed class QuickPanelUndoTests(WpfDesktopFixture desktop)
         {
         }
         public void Render(Session session, UserSettings settings, bool canAccept, string? statusOverride = null, SessionViewContext? context = null) => Assert.False(canAccept);
-        public void RenderPaused(PauseAnchor anchor, long revision)
+        public void RenderPaused(PauseAnchor anchor, long revision, PresentationIdentity? identity = null)
         {
         }
         public void HideQuietly()

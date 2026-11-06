@@ -1433,6 +1433,8 @@ public sealed class AutomaticPracticeProgressTests
                 });
                 break;
         }
+        if (change is "configuration" or "closed")
+            Assert.Null(s.Controller.AutomaticPracticeProgress);
         Assert.Equal(change == "no-op", await s.Controller.FinishAutomaticPracticeAsync(binding.RunId));
         Assert.Equal(change == "no-op", s.ReloadSettings().OnboardingComplete);
         Assert.Null(s.Input.Permit);
@@ -1547,6 +1549,7 @@ public sealed class AutomaticPracticeProgressTests
     private static InputNotice AcceptedNotice(SessionScenario s)
     {
         var permit = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        s.Input.BeginSourceWrite(permit);
         var lease = s.Input.PublishedLeases.Last();
         var plan = permit.Plan;
         var after = plan.Expected with

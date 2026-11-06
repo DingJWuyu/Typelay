@@ -22,6 +22,7 @@ public sealed class BrowserContractTests
             {
                 sessionBindings = new
                 {
+                    presentationVersion = 1,
                     sourceReady = false,
                     editorReady = false,
                     sourceLocalAcceptanceVersion = version,
@@ -80,6 +81,7 @@ public sealed class BrowserContractTests
         {
             sessionBindings = new
             {
+                presentationVersion = 1,
                 sourceReady = false,
                 editorReady = false,
                 sourceLocalAcceptanceVersion = version,
@@ -220,8 +222,10 @@ public sealed class BrowserContractTests
             Assert.NotNull(await request);
     }
 
-    [Fact(Timeout = 5000)]
-    public async Task BrowserOverflowKeepsTheLastAcceptedEventAndCapturedDirectReceiptOnly()
+    [Theory(Timeout = 5000)]
+    [InlineData("accepted")]
+    [InlineData("writeRetired")]
+    public async Task BrowserOverflowKeepsTheLastTerminalEventAndCapturedDirectReceiptOnly(string terminal)
     {
         var delivered = new List<string>();
         await using var transport = await BrowserIngress.CreateAsync(delivered.Add);
@@ -233,14 +237,14 @@ public sealed class BrowserContractTests
         await transport.Reply("authority-1", "approved");
         for (int index = 1; index < 64; index++)
             await transport.Event("input");
-        await transport.Event("accepted"); // The bounded overflow frame is terminal too.
+        await transport.Event(terminal); // The bounded overflow frame is terminal too.
         await transport.Reader;
         Assert.Null(await missing);
         Assert.Null(await authority);
         Assert.False(direct.IsCompleted);
         Assert.Null(await transport.Request("describe", "closed"));
         transport.Ui.RunNext();
-        Assert.Equal(new[] { "accepted" }, delivered);
+        Assert.Equal(new[] { terminal }, delivered);
         Assert.Equal("verified", (await direct)!.Data.GetString());
         await transport.Inbox.Completion;
     }

@@ -1937,13 +1937,11 @@ class ApplicationSupportTests(unittest.TestCase):
             lifetime="existing-browser-session",
             backend="browser",
             application="firefox",
-            link=SimpleNamespace(channel=SimpleNamespace(alive=True)),
-            support_observation={
-                "atMs": now_ms(),
-                "preview": True,
-                "tabAccept": True,
-                "directReplace": True,
-            },
+            connected=True,
+            observed_at_ms=now_ms(),
+            preview=True,
+            tab_accept=True,
+            direct_replace=True,
         )
 
         def row():
@@ -1960,7 +1958,7 @@ class ApplicationSupportTests(unittest.TestCase):
         self.assertIsNone(row()["checkedAt"])
         asyncio.run(self.support.execute("firefox", "Refresh"))
         self.assertEqual(row()["state"], "RestartRequired")
-        peer.link.channel.alive = False
+        peer.connected = False
         self.assertEqual(row()["state"], "NeedsInstall")
         self.assertEqual(row()["reason"], "RegistrationMissing")
         self.assertIn("Connect", row()["supportedActions"])
@@ -2048,13 +2046,11 @@ class ApplicationSupportTests(unittest.TestCase):
             lifetime="owned-connection",
             backend="browser",
             application="firefox",
-            link=SimpleNamespace(channel=SimpleNamespace(alive=True)),
-            support_observation={
-                "atMs": now_ms(),
-                "preview": True,
-                "tabAccept": True,
-                "directReplace": True,
-            },
+            connected=True,
+            observed_at_ms=now_ms(),
+            preview=True,
+            tab_accept=True,
+            direct_replace=True,
         )
 
         def row(enabled=True):
@@ -2076,19 +2072,19 @@ class ApplicationSupportTests(unittest.TestCase):
         self.assertEqual(paused["reason"], "Paused")
         self.assertFalse(any(paused["capabilities"].values()))
         self.assertIsNone(paused["checkedAt"])
-        peer.link.channel.alive = False
+        peer.connected = False
         disconnected = row()
         self.assertEqual(disconnected["state"], "Registered")
         self.assertFalse(any(disconnected["capabilities"].values()))
         self.assertIsNone(disconnected["checkedAt"])
-        peer.link.channel.alive = True
-        peer.support_observation["atMs"] = now_ms() - 30001
+        peer.connected = True
+        peer.observed_at_ms = now_ms() - 30001
         self.assertEqual(row()["reason"], "FieldUnobserved")
         self.assertFalse(any(row()["capabilities"].values()))
-        peer.support_observation["atMs"] = now_ms() + 60000
+        peer.observed_at_ms = now_ms() + 60000
         self.assertEqual(row()["reason"], "FieldUnobserved")
-        peer.support_observation["atMs"] = now_ms()
-        peer.support_observation["preview"] = "true"
+        peer.observed_at_ms = now_ms()
+        peer.preview = "true"
         self.assertEqual(row()["reason"], "FieldUnobserved")
 
     def test_desktop_uses_latest_live_observation_without_merging_fields(self):
@@ -2097,13 +2093,11 @@ class ApplicationSupportTests(unittest.TestCase):
                 lifetime="owned-connection",
                 backend="gtk3",
                 application="fixture",
-                link=SimpleNamespace(channel=SimpleNamespace(alive=True)),
-                support_observation={
-                    "atMs": stamp,
-                    "preview": True,
-                    "tabAccept": tab,
-                    "directReplace": direct,
-                },
+                connected=True,
+                observed_at_ms=stamp,
+                preview=True,
+                tab_accept=tab,
+                direct_replace=direct,
             )
 
         stamp = now_ms()
@@ -2116,8 +2110,8 @@ class ApplicationSupportTests(unittest.TestCase):
         self.assertEqual(
             result["capabilities"], {"preview": True, "tabAccept": False, "directReplace": False}
         )
-        newer.support_observation = None
-        older.link.channel.alive = False
+        newer.observed_at_ms = None
+        older.connected = False
         result = next(
             fact for fact in self.support.facts([newer, older]) if fact["id"] == "desktop-text"
         )
@@ -2766,13 +2760,11 @@ class ApplicationSupportTests(unittest.TestCase):
                         lifetime="live",
                         backend="gtk3",
                         application="practice",
-                        link=SimpleNamespace(channel=SimpleNamespace(alive=True)),
-                        support_observation={
-                            "atMs": now_ms(),
-                            "preview": True,
-                            "tabAccept": False,
-                            "directReplace": True,
-                        },
+                        connected=True,
+                        observed_at_ms=now_ms(),
+                        preview=True,
+                        tab_accept=False,
+                        direct_replace=True,
                     )
                     practice_fact = next(
                         row

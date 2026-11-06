@@ -539,7 +539,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             if (session.State != SessionState.NoSession)
                 Hidden = false;
         }
-        public void RenderPaused(PauseAnchor anchor, long revision)
+        public void RenderPaused(PauseAnchor anchor, long revision, PresentationIdentity? identity = null)
         {
         }
         public void HideQuietly() => Hidden = true;
@@ -1223,7 +1223,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             host.InitializeEditing(overlay);
             using var input = new WindowsInputService(new BrokerClient(), overlay.Handle, monitor: hook, practice: host);
             using var controller = new SessionController(settings, model, overlay, hook, input, new ManualPracticeLoop(),
-                host.RetireAutomaticAsync, host.ConfirmRetiredAutomaticAsync);
+                host.RetireAutomaticAsync, host.ConfirmRetiredAutomaticAsync, sourceInteraction: overlay);
             host.Bind(controller);
             await controller.StartAsync().WaitAsync(deadline.Token);
             host.Open(path);
@@ -1780,7 +1780,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             });
             using var hook = new KeyboardHook(allowInjectedInput: true);
             using var input = new WindowsInputService(new BrokerClient(), overlay.Handle, monitor: hook, practice: host);
-            using var controller = new SessionController(settings, model, overlay, hook, input, new ManualPracticeLoop());
+            using var controller = new SessionController(settings, model, overlay, hook, input, new ManualPracticeLoop(), sourceInteraction: overlay);
             host.Bind(controller);
             var original = SynchronizationContext.Current;
             try
