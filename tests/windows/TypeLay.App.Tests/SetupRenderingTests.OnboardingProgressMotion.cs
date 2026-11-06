@@ -124,26 +124,52 @@ public sealed partial class SetupRenderingTests
             var track = Assert.IsType<Border>(bar.Template.FindName("PART_Track", bar));
             double width = track.ActualWidth;
             double? beforeRetarget = null;
-            long? firstReport = null;
+            long? firstReport = null, secondReport = null, releasedAt = null;
+            long? firstFrameAt = null, lastFrameAt = null;
+            long? first75At = null, last75At = null, first875At = null;
+            int frameCount = 0;
+            FillFrame? first75 = null, last75 = null, first875 = null, lastFrame = null;
+            bool released = false;
             RoutedPropertyChangedEventHandler<double> changed = (_, args) =>
             {
                 if (args.NewValue == 75)
                     firstReport = Stopwatch.GetTimestamp();
                 if (args.NewValue == 87.5)
+                {
                     beforeRetarget = fill.Width;
+                    secondReport = Stopwatch.GetTimestamp();
+                }
             };
             bar.ValueChanged += changed;
             try
             {
                 await Task.Delay(80, TestContext.Current.CancellationToken);
-                bool released = false;
                 var samples = await ObserveOnboardingFill(bar, () => transfers[0].Body.Continue.TrySetResult(), 87.5, frame =>
                 {
+                    // Keep only phase boundaries and the latest real frame.
+                    // The observer never induces layout or releases an extra segment.
+                    frameCount++;
+                    lastFrameAt = Stopwatch.GetTimestamp();
+                    firstFrameAt ??= lastFrameAt;
+                    lastFrame = frame;
+                    if (frame.Value == 75)
+                    {
+                        first75 ??= frame;
+                        first75At ??= lastFrameAt;
+                        last75 = frame;
+                        last75At = lastFrameAt;
+                    }
+                    if (frame.Value == 87.5)
+                    {
+                        first875 ??= frame;
+                        first875At ??= lastFrameAt;
+                    }
                     if (!released && bar.Value == 75 && firstReport is { } reported
                         && Stopwatch.GetElapsedTime(reported).TotalMilliseconds >= 80
                         && fill.Width > width * .5 && fill.Width < width * .75)
                     {
                         released = true;
+                        releasedAt = Stopwatch.GetTimestamp();
                         transfers[0].Body.FinalSegment.TrySetResult();
                     }
                 });
@@ -157,6 +183,45 @@ public sealed partial class SetupRenderingTests
                 Assert.Single(transfers);
                 Assert.False(scene.Model.Ready);
                 RenderTray(window, "onboarding-progress-retarget-settled-zh-CN-dark.png");
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                try
+                {
+                    TestContext.Current.TestOutputHelper?.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        operation = "onboarding-progress-retarget-failed",
+                        failure = error.GetType().Name,
+                        timestampFrequency = Stopwatch.Frequency,
+                        firstReport,
+                        secondReport,
+                        released,
+                        releasedAt,
+                        frameCount,
+                        firstFrameAt,
+                        lastFrameAt,
+                        first75At,
+                        last75At,
+                        first875At,
+                        first75,
+                        last75,
+                        first875,
+                        lastFrame,
+                        beforeRetarget,
+                        valueAtFailure = bar.Value,
+                        paintedWidthAtFailure = fill.Width,
+                        trackWidthAtFailure = track.ActualWidth,
+                        visibleAtFailure = bar.IsVisible,
+                        loadedAtFailure = bar.IsLoaded,
+                        // These are later UI reads, not another rendering sample.
+                        observedAtTimestamp = Stopwatch.GetTimestamp()
+                    }, new System.Text.Json.JsonSerializerOptions
+                    {
+                        NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals
+                    }));
+                }
+                catch (Exception diagnosticError) when (diagnosticError is not OutOfMemoryException) { }
+                throw;
             }
             finally { bar.ValueChanged -= changed; }
         }

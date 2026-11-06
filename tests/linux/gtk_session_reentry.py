@@ -2828,15 +2828,54 @@ def run_owned_language_options(
             dimensions = int(geometry["WIDTH"]), int(geometry["HEIGHT"])
             evidence["nestedSize"] = dimensions
             evidence["nestedOrigin"] = [int(geometry["X"]), int(geometry["Y"])]
-            initial = await language_wait_for(
-                lambda: (value := state())
-                and value.get("focus") == "fixture-first"
-                and value.get("imeClear")
-                and parent_geometry_ready(value, dimensions)
-                and input_service.focused_peer() is peer
-                and value,
-                "language source IME/parent/compositor did not become ready",
-            )
+            last_readiness = {}
+
+            def source_ready():
+                nonlocal last_readiness
+                last_readiness = state()
+                return (
+                    last_readiness
+                    and last_readiness.get("focus") == "fixture-first"
+                    and last_readiness.get("imeClear")
+                    and parent_geometry_ready(last_readiness, dimensions)
+                    and input_service.focused_peer() is peer
+                    and last_readiness
+                )
+
+            try:
+                initial = await language_wait_for(
+                    source_ready, "language source IME/parent/compositor did not become ready"
+                )
+            except AssertionError:
+                try:
+                    if configuration_stage == "language-configuration-window-focus":
+                        # The outer Host status is a different owner and cleanup
+                        # closes this peer. Retain the last existing native report
+                        # and current compositor identity before either is retired.
+                        source_entry = last_readiness.get("firstEntry", {})
+                        configuration_note(
+                            "source-readiness-failed",
+                            expectedWindowId=window["id"],
+                            expectedPeerPid=peer.pid,
+                            sourceObservedAtMonoMs=last_readiness.get("observedAtMs"),
+                            sourceInstance=source_entry.get("instance"),
+                            sourceTopInstance=source_entry.get("topInstance"),
+                            sourceFocused=source_entry.get("focused"),
+                            sourceTopActive=source_entry.get("topActive"),
+                            sourceImeFlags=(source_entry.get("ime") or {}).get("flags"),
+                            sourceImeContext=(source_entry.get("ime") or {}).get("context"),
+                            sourceFocusIn=source_entry.get("focusIn"),
+                            sourceFocusOut=source_entry.get("focusOut"),
+                            sourceIsCurrentFocus=last_readiness.get("focus") == "fixture-first",
+                            sourceImeClear=last_readiness.get("imeClear"),
+                            sourceCooperative=last_readiness.get("cooperative"),
+                            parentGeometryReady=parent_geometry_ready(last_readiness, dimensions),
+                        )
+                except MemoryError:
+                    raise
+                except Exception:
+                    pass  # Projection failures must preserve the original readiness assertion.
+                raise
             captured = await input_service.request("capture", {})
             assert captured and captured.get("snapshot"), input_service.capture_status
             source = captured["snapshot"]

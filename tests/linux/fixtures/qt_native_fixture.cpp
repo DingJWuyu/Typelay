@@ -40,6 +40,7 @@
 #include <QTimer>
 #include <QToolTip>
 #include <QVBoxLayout>
+#include <QWindow>
 #include <cstdio>
 #include <fcntl.h>
 #include <memory>
@@ -125,6 +126,10 @@ public:
     QJsonObject configurationReceipts;
     QPointer<QObject> configurationPreeditField;
     bool configurationPreedit = false;
+    QJsonArray configurationMouseTrace;
+    QPointer<QAbstractButton> configurationMouseTarget;
+    quint64 configurationMouseInstance = 0, configurationMouseSequence = 0;
+    bool configurationMouseStarted = false, configurationMouseTracing = false, configurationMouseTruncated = false;
     QJsonArray motionInputs;
     bool observeMotionInputs = false;
     QJsonObject counts;
@@ -179,6 +184,40 @@ public slots:
         if (state == "dispatched") applyCommandAction(commandDispatchedAction);
     }
 public:
+    void configurationMouseEvent(const char *event, const OverlayObject &object, QJsonObject extra = {}) {
+        if (!configurationMouseTracing) return;
+        // One composing mouse transaction, independent of the earlier menu's
+        // log budget. Preserve the first 8 and latest 16 records so intervening
+        // layout events cannot crowd out release. Gaps remain explicit.
+        // Read widget state only; never inspect/reset the provider.
+        if (configurationMouseTrace.size() >= 24) {
+            configurationMouseTruncated = true;
+            configurationMouseTrace.removeAt(8);
+        }
+        extra.insert("sequence", qint64(++configurationMouseSequence));
+        extra.insert("atMs", observedAtMs());
+        extra.insert("event", QLatin1String(event));
+        extra.insert("role", object.role);
+        extra.insert("instance", qint64(object.instance));
+        const auto bounds = [](const QRect &rect) {
+            return QJsonObject{{"x", rect.x()}, {"y", rect.y()}, {"width", rect.width()}, {"height", rect.height()}};
+        };
+        extra.insert("geometry", bounds(object.bounds));
+        QJsonObject target{{"instance", qint64(configurationMouseInstance)}, {"alive", bool(configurationMouseTarget)}};
+        if (configurationMouseTarget) {
+            auto *button = configurationMouseTarget.data();
+            target.insert("sameWindow", button->window() == window);
+            target.insert("visible", button->isVisible()); target.insert("enabled", button->isEnabled());
+            target.insert("down", button->isDown()); target.insert("underMouse", button->underMouse());
+            if (button->window() == window) target.insert("geometry", bounds(QRect(button->mapTo(window, QPoint()), button->size())));
+        }
+        extra.insert("target", target);
+        extra.insert("preedit", configurationPreeditField && configurationPreedit);
+        extra.insert("searchFocused", configurationPreeditField && QApplication::focusWidget() == configurationPreeditField);
+        configurationMouseTrace.append(extra);
+        if (object.instance == configurationMouseInstance
+            && (qstrcmp(event, "clicked") == 0 || qstrcmp(event, "destroy") == 0)) configurationMouseTracing = false;
+    }
     void overlayEvent(const char *event, const OverlayObject &object, QJsonObject extra = {}) {
         // Owned TypeLay control roles and numeric geometry/timing only. Never
         // log widget text, unrelated object names or native addresses.
@@ -189,6 +228,8 @@ public:
         extra.insert("instance", qint64(object.instance));
         extra.insert("geometry", QJsonObject{{"x", bounds.x()}, {"y", bounds.y()},
             {"width", bounds.width()}, {"height", bounds.height()}});
+        if (object.instance == configurationMouseInstance || qstrcmp(event, "mouse-press") == 0
+            || qstrcmp(event, "mouse-release") == 0) configurationMouseEvent(event, object, extra);
         // Independent actual-widget receipts survive the earlier menu cases' log
         // budget. Counts contain no input text and cannot authorize product actions.
         if (object.role.startsWith(QStringLiteral("typelay-language-choice-"))
@@ -248,6 +289,40 @@ public:
     }
     bool eventFilter(QObject *object, QEvent *event) override {
         const auto type = event->type();
+        if (window && (type == QEvent::MouseButtonPress || type == QEvent::MouseButtonRelease)) {
+            auto *mouseWidget = qobject_cast<QWidget *>(object);
+            const bool mouseReceiver = object == window->windowHandle()
+                || (mouseWidget && mouseWidget->window() == window);
+            const auto *mouse = static_cast<QMouseEvent *>(event);
+            if (mouseReceiver && !configurationMouseStarted && type == QEvent::MouseButtonPress
+                && configurationPreeditField && configurationPreedit
+                && QApplication::focusWidget() == configurationPreeditField) {
+                configurationMouseStarted = configurationMouseTracing = true;
+                // This is Qt's current geometric hit, not an input recipient or
+                // acceptance claim. Subsequent events record the actual receiver.
+                const auto point = window->mapFromGlobal(mouse->globalPosition().toPoint());
+                configurationMouseTarget = qobject_cast<QAbstractButton *>(window->childAt(point));
+                observeOverlay(configurationMouseTarget);
+                configurationMouseInstance = overlayObjects.value(configurationMouseTarget).instance;
+            }
+            if (configurationMouseTracing && object == window->windowHandle()) {
+                const auto point = window->mapFromGlobal(mouse->globalPosition().toPoint());
+                configurationMouseEvent(type == QEvent::MouseButtonPress ? "window-mouse-press" : "window-mouse-release",
+                    {QStringLiteral("window"), 0, window->rect()},
+                    {{"x", point.x()}, {"y", point.y()}, {"button", int(mouse->button())},
+                        {"buttons", int(mouse->buttons())}, {"spontaneous", event->spontaneous()}});
+            }
+        }
+        if (configurationMouseTracing && type == QEvent::KeyPress) {
+            configurationMouseEvent("key-ends-observation", {QStringLiteral("other"), 0, {}});
+            configurationMouseTracing = false;
+        }
+        if (configurationMouseTracing && object == configurationMouseTarget
+            && (type == QEvent::Move || type == QEvent::Resize || type == QEvent::EnabledChange)) {
+            observeOverlay(configurationMouseTarget);
+            configurationMouseEvent(type == QEvent::Move ? "move" : type == QEvent::Resize ? "resize" : "enabled-change",
+                overlayObjects.value(configurationMouseTarget));
+        }
         if (type == QEvent::DynamicPropertyChange
             && static_cast<QDynamicPropertyChangeEvent *>(event)->propertyName() == "typelay.qt.menu.retirement") {
             // Optional native probe facts share the existing finite event log.
@@ -280,7 +355,8 @@ public:
                 const auto observed = overlayObjects.value(object, {QStringLiteral("other"), 0,
                     QRect(widget->mapTo(window, QPoint()), widget->size())});
                 overlayEvent(type == QEvent::MouseButtonPress ? "mouse-press" : "mouse-release", observed,
-                    {{"x", point.x()}, {"y", point.y()}, {"spontaneous", event->spontaneous()}});
+                    {{"x", point.x()}, {"y", point.y()}, {"button", int(mouse->button())},
+                        {"buttons", int(mouse->buttons())}, {"spontaneous", event->spontaneous()}});
             }
         }
         if (object == qApp && event->type() == QEvent::DynamicPropertyChange
@@ -691,6 +767,8 @@ int main(int argc, char **argv) {
             {"first", field(first, firstChanges, firstEdits)},
             {"second", field(second, secondChanges, secondEdits)},
             {"languageConfiguration", configuration}, {"configurationReceipts", observer.configurationReceipts},
+            {"configurationMouseTrace", observer.configurationMouseTrace},
+            {"configurationMouseTruncated", observer.configurationMouseTruncated},
             {"glossary", glossary}, {"providerEvents", observer.providerEvents},
             {"providerSequence", qint64(observer.providerSequence)},
             {"overlayVisible", overlay && overlay->isVisible()},

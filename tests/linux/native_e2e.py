@@ -673,6 +673,7 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
     current_case = None
     capture_admission = None
     protocol_observations = []
+    fixture_command_observations = []
     (out / f"{toolkit}-glossary-result.json").unlink(missing_ok=True)
     with (
         socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server,
@@ -802,17 +803,45 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                         if toolkit == "gtk4" and action == "capture-more"
                         else ""
                     )
-                    temporary.write_text(f"{serial} {action}{suffix}\n")
-                    temporary.replace(command_path)
+                    # The two More commands do not renew the display lease.
+                    # Keep only bounded caller timing, not fixture/source contents.
+                    observation = None
+                    if toolkit == "gtk4" and action in ("capture-more", "retain-more-button"):
+                        observation = {
+                            "serial": serial,
+                            "action": action,
+                            "startedAtMs": now_ms(),
+                            "startedAtMonoUs": time.monotonic_ns() // 1000,
+                        }
+                        fixture_command_observations.append(observation)
+                        del fixture_command_observations[:-8]
 
                     def completed():
                         status = process.poll()
                         assert status is None, (
                             f"GTK fixture exited {status} during {action}; see {toolkit}-glossary.log"
                         )
-                        return state().get("glossaryCommand") == serial
+                        value = state()
+                        if value.get("glossaryCommand") != serial:
+                            return False
+                        if observation is not None:
+                            observation["acknowledgedAtMonoUs"] = time.monotonic_ns() // 1000
+                            observation["snapshotObservedAtMonoMs"] = value.get("observedAtMs")
+                        return True
 
-                    wait_for(completed, action)
+                    try:
+                        temporary.write_text(f"{serial} {action}{suffix}\n")
+                        temporary.replace(command_path)
+                        if observation is not None:
+                            observation["publishedAtMonoUs"] = time.monotonic_ns() // 1000
+                        wait_for(completed, action)
+                    except BaseException as error:
+                        if observation is not None:
+                            observation["errorType"] = type(error).__name__
+                        raise
+                    finally:
+                        if observation is not None:
+                            observation["finishedAtMonoUs"] = time.monotonic_ns() // 1000
 
                 clicks = []
                 click_path = out / f"{toolkit}-glossary-clicks.json"
@@ -2022,6 +2051,7 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                         "failed_case": current_case,
                         "captureAdmission": capture_admission,
                         "protocolObservations": protocol_observations,
+                        "fixtureCommandObservations": fixture_command_observations,
                         "error": f"{type(error).__name__}: {error}",
                         "real_model_quality": False,
                     },

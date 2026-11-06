@@ -303,8 +303,14 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
         Guid opening = Guid.NewGuid(), confirmation = Guid.NewGuid();
         ushort enter = Scan(13);
         int cancellations = 0;
+        long observationSequence = 0;
+        object? firstCancellation = null, beforeExpiredClaim = null, afterExpiredClaim = null;
+        bool? expiredClaimReturned = null, anchorAtAssertion = null;
+        string stage = "ready";
         var captures = new List<KeyboardHook.LocalDraftPress?>();
         var ups = new List<uint>();
+        var inputObservations = new List<object>(4);
+        int inputObservationsDropped = 0;
         KeyEventHandler down = (_, e) =>
         {
             e.Handled = true;
@@ -312,34 +318,60 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                 return;
             var message = ComponentDispatcher.CurrentKeyboardMessage;
             uint scan = (uint)(message.lParam.ToInt64() >> 16) & 255;
-            captures.Add(hook.CaptureLocalDraftReplacePress(opening, confirmation,
-                unchecked((uint)message.time), 13, scan, (message.lParam.ToInt64() & 0x01000000) != 0));
+            uint time = unchecked((uint)message.time);
+            var press = hook.CaptureLocalDraftReplacePress(opening, confirmation,
+                time, 13, scan, (message.lParam.ToInt64() & 0x01000000) != 0);
+            captures.Add(press);
+            ObserveInput("down", time, press);
         };
         KeyEventHandler up = (_, e) =>
         {
             e.Handled = true;
             if (e.Key == Key.Enter)
-                ups.Add(unchecked((uint)ComponentDispatcher.CurrentKeyboardMessage.time));
+            {
+                uint time = unchecked((uint)ComponentDispatcher.CurrentKeyboardMessage.time);
+                ups.Add(time);
+                ObserveInput("up", time, null);
+            }
         };
         window.AddHandler(Keyboard.PreviewKeyDownEvent, down, true);
         window.AddHandler(Keyboard.PreviewKeyUpEvent, up, true);
         try
         {
             await Until(() => hook.ShortcutsReady && Native.GetForegroundWindow() == hwnd && replace.IsKeyboardFocused);
-            hook.BeginLocalDraftAnchor(opening, hwnd, hwnd, _ => Interlocked.Increment(ref cancellations));
+            hook.BeginLocalDraftAnchor(opening, hwnd, hwnd, id =>
+            {
+                if (Interlocked.Increment(ref cancellations) != 1)
+                    return;
+                // This observes the existing cancellation callback, not the
+                // native foreground event that may have preceded it.
+                Volatile.Write(ref firstCancellation, new { openingMatches = id == opening, state = ObserveState() });
+            });
             hook.SetLocalDraftPrompt(opening, confirmation, replaceFocused: true);
+            stage = "original-pair";
             SendPair();
             await Until(() => ups.Count == 1);
             var expired = Assert.IsType<KeyboardHook.LocalDraftPress>(captures.Single());
             Assert.True(WindowsInterruptClock.NowMs < expired.ExpiresAtMs); // Original LL down/up was timely.
+            stage = "await-expiry";
             await Until(() => WindowsInterruptClock.NowMs >= expired.ExpiresAtMs);
-            Assert.Null(hook.ClaimLocalDraftReplaceTap(expired, ups[0])); // Delayed consumer, not a held key.
-            Assert.True(hook.LocalDraftAnchorCurrent(opening));
+            stage = "expired-claim";
+            beforeExpiredClaim = ObserveState();
+            var rejected = hook.ClaimLocalDraftReplaceTap(expired, ups[0]);
+            expiredClaimReturned = rejected is not null;
+            afterExpiredClaim = ObserveState();
+            Assert.Null(rejected); // Delayed consumer, not a held key.
+            stage = "anchor-after-expired-claim";
+            bool anchorCurrent = hook.LocalDraftAnchorCurrent(opening);
+            anchorAtAssertion = anchorCurrent;
+            Assert.True(anchorCurrent);
+            stage = "first-fresh-pair";
             SendPair(); // The very first new real action must work, not only a second retry.
             await Until(() => ups.Count == 2);
             var fresh = Assert.IsType<KeyboardHook.LocalDraftPress>(captures[1]);
             Assert.NotSame(expired, fresh);
             Assert.Equal(fresh.ReceivedAtMs + 500, fresh.ExpiresAtMs);
+            stage = "fresh-claim";
             Assert.Null(hook.ClaimLocalDraftReplaceTap(expired, ups[0]));
             var claimed = Assert.IsType<KeyboardHook.LocalDraftTap>(hook.ClaimLocalDraftReplaceTap(fresh, ups[1]));
             Assert.Same(fresh, claimed.Press);
@@ -347,11 +379,79 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
             Assert.Equal(0, Volatile.Read(ref cancellations));
             Assert.False(hook.TryRead(out _));
         }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            try
+            {
+                TestContext.Current.TestOutputHelper?.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    operation = "local-draft-replace-expiry-failed",
+                    failure = error.GetType().Name,
+                    stage,
+                    timestampFrequency = Stopwatch.Frequency,
+                    beforeExpiredClaim,
+                    afterExpiredClaim,
+                    expiredClaimReturned,
+                    anchorAtAssertion,
+                    cancelCallbacksAtFailure = Volatile.Read(ref cancellations),
+                    firstCancellation = Volatile.Read(ref firstCancellation),
+                    inputObservations,
+                    inputObservationsDropped,
+                    captures = captures.Take(2).Select(press => press is null ? null : new
+                    {
+                        press.Sequence,
+                        press.ReceivedAtMs,
+                        press.ExpiresAtMs,
+                        press.NativeTime
+                    }).ToArray(),
+                    capturesDropped = Math.Max(0, captures.Count - 2),
+                    ups = ups.Take(2).ToArray(),
+                    upsDropped = Math.Max(0, ups.Count - 2),
+                    stateAtFailure = ObserveState(),
+                    replaceFocusedAtFailure = replace.IsKeyboardFocused
+                }));
+            }
+            catch (Exception diagnosticError) when (diagnosticError is not OutOfMemoryException) { }
+            throw;
+        }
         finally
         {
             window.RemoveHandler(Keyboard.PreviewKeyDownEvent, down);
             window.RemoveHandler(Keyboard.PreviewKeyUpEvent, up);
             hook.EndLocalDraftAnchor(opening);
+        }
+        object? ObserveState()
+        {
+            try
+            {
+                // These separate reads are not an atomic snapshot or an
+                // original WinEvent. Never use them to admit or retry input.
+                long sequence = Interlocked.Increment(ref observationSequence);
+                long observedAtTimestamp = Stopwatch.GetTimestamp();
+                long observedAtMs = WindowsInterruptClock.NowMs;
+                bool current = hook.LocalDraftAnchorCurrent(opening);
+                long inputSequence = hook.EditorInputSequence;
+                nint foreground = Native.GetForegroundWindow();
+                return new
+                {
+                    observationSequence = sequence,
+                    observedAtTimestamp,
+                    observedAtMs,
+                    anchorCurrent = current,
+                    inputSequence,
+                    foreground = foreground == hwnd ? "overlay" : foreground == 0 ? "none" : "other"
+                };
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { return null; }
+        }
+        void ObserveInput(string phase, uint nativeTime, KeyboardHook.LocalDraftPress? press)
+        {
+            if (inputObservations.Count == 4)
+            {
+                inputObservationsDropped++;
+                return;
+            }
+            inputObservations.Add(new { phase, nativeTime, pressSequence = press?.Sequence, state = ObserveState() });
         }
         async Task Until(Func<bool> condition)
         {

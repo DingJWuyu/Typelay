@@ -155,6 +155,13 @@ typedef struct {
     gboolean ready, retired;
 } MoreCapture;
 static MoreCapture more_capture;
+/* Keep one capture's timing through clear/unmap. Only the existing failed
+ * retain assertion prints it, so observation adds no per-frame file/log I/O. */
+static struct {
+    guint serial, snapshots;
+    gint64 started, snapshot_started, snapshot_finished, render_started, rendered, saved, completed;
+    gint64 report[4];
+} more_capture_timing;
 static void glossary_capture_clear(void) {
     MoreCapture *capture = &more_capture;
     if (capture->after_paint) g_signal_handler_disconnect(capture->clock, capture->after_paint);
@@ -188,6 +195,14 @@ static void more_capture_require_current(void) {
 static gboolean capture_more_when_ready(guint serial, gint64 deadline, const char *path) {
     MoreCapture *capture = &more_capture;
     if (!capture->popup) {
+        more_capture_timing.serial = serial;
+        more_capture_timing.snapshots = 0;
+        more_capture_timing.started = g_get_monotonic_time();
+        more_capture_timing.snapshot_started = more_capture_timing.snapshot_finished = 0;
+        more_capture_timing.render_started = more_capture_timing.rendered = 0;
+        more_capture_timing.saved = more_capture_timing.completed = 0;
+        for (guint i = 0; i < G_N_ELEMENTS(more_capture_timing.report); i++)
+            more_capture_timing.report[i] = 0;
         GtkWidget *popup = find_named_widget(report_window, "typelay-more-popup");
         GtkNative *native = popup ? gtk_widget_get_native(popup) : NULL;
         GdkSurface *surface = native ? gtk_native_get_surface(native) : NULL;
@@ -216,11 +231,14 @@ static gboolean capture_more_when_ready(guint serial, gint64 deadline, const cha
         glossary_capture_clear();
         g_error("More popup allocation missing");
     }
+    more_capture_timing.snapshots++;
+    more_capture_timing.snapshot_started = g_get_monotonic_time();
     GtkSnapshot *snapshot = gtk_snapshot_new();
     /* Read the paintable's current natural widget image. A mapped/allocated
      * widget may not have a render node yet. Never request a new frame here. */
     gdk_paintable_snapshot(capture->paintable, GDK_SNAPSHOT(snapshot), width, height);
     GskRenderNode *node = gtk_snapshot_free_to_node(snapshot);
+    more_capture_timing.snapshot_finished = g_get_monotonic_time();
     more_capture_require_current();
     if (!node) return FALSE;
     GskRenderer *renderer = gtk_native_get_renderer(capture->native);
@@ -230,20 +248,34 @@ static gboolean capture_more_when_ready(guint serial, gint64 deadline, const cha
     }
     /* Exactly one texture render/save after a real nonempty node, not a
      * compositor screenshot or proof of physical input delivery. */
+    more_capture_timing.render_started = g_get_monotonic_time();
     GdkTexture *texture = gsk_renderer_render_texture(renderer, node, NULL);
+    more_capture_timing.rendered = g_get_monotonic_time();
     gsk_render_node_unref(node);
     more_capture_require_current();
     char *image = g_strdup_printf("%s.more.png", path);
     gboolean saved = texture && gdk_texture_save_to_png(texture, image);
+    more_capture_timing.saved = g_get_monotonic_time();
     g_free(image); g_clear_object(&texture);
     more_capture_require_current();
     glossary_capture_clear();
     if (!saved) g_error("Cannot capture the current More popup");
+    more_capture_timing.completed = g_get_monotonic_time();
     return TRUE;
 }
 #endif
 
 static void glossary_host_command(void) {
+#if GTK_MAJOR_VERSION == 4
+    /* At the next callback, the preceding publication is exactly the first
+     * report acknowledging this capture. Keep it even if later reports run
+     * before the caller submits retain; no extra publication is performed. */
+    if (more_capture_timing.completed && glossary_command == more_capture_timing.serial
+        && !more_capture_timing.report[3]) {
+        for (guint i = 0; i < G_N_ELEMENTS(more_capture_timing.report); i++)
+            more_capture_timing.report[i] = previous_report_timing[i];
+    }
+#endif
     const char *path = g_getenv("TYPELAY_FIXTURE_GLOSSARY_COMMAND");
     char *body = NULL;
     if (!path || !g_file_get_contents(path, &body, NULL, NULL)) return;
@@ -276,8 +308,30 @@ static void glossary_host_command(void) {
             probe_more_action("typelay-regenerate", 1u, FALSE);
         } else if (g_str_equal(action, "retain-more-button")) {
             GtkWidget *button = find_named_widget(report_window, "typelay-glossary-add");
-            if (!button || !GTK_IS_BUTTON(button) || !gtk_widget_get_mapped(button))
+            if (!button || !GTK_IS_BUTTON(button) || !gtk_widget_get_mapped(button)) {
+#if GTK_MAJOR_VERSION == 4
+                if (g_getenv("TYPELAY_TRACE"))
+                    g_printerr("[DEBUG-gtk-more] retain-failed serial=%u atMonoUs=%" G_GINT64_FORMAT
+                        " captureSerial=%u snapshots=%u captureStartedUs=%" G_GINT64_FORMAT
+                        " snapshotStartedUs=%" G_GINT64_FORMAT " snapshotFinishedUs=%" G_GINT64_FORMAT
+                        " renderStartedUs=%" G_GINT64_FORMAT " renderedUs=%" G_GINT64_FORMAT
+                        " savedUs=%" G_GINT64_FORMAT " completedUs=%" G_GINT64_FORMAT
+                        " captureReportStartedUs=%" G_GINT64_FORMAT " captureReportImeObservedUs=%" G_GINT64_FORMAT
+                        " captureReportSerializedUs=%" G_GINT64_FORMAT " captureReportPublishedUs=%" G_GINT64_FORMAT
+                        " lastReportStartedUs=%" G_GINT64_FORMAT " lastReportImeObservedUs=%" G_GINT64_FORMAT
+                        " lastReportSerializedUs=%" G_GINT64_FORMAT " lastReportPublishedUs=%" G_GINT64_FORMAT "\n",
+                        serial, g_get_monotonic_time(), more_capture_timing.serial,
+                        more_capture_timing.snapshots, more_capture_timing.started,
+                        more_capture_timing.snapshot_started, more_capture_timing.snapshot_finished,
+                        more_capture_timing.render_started, more_capture_timing.rendered,
+                        more_capture_timing.saved, more_capture_timing.completed,
+                        more_capture_timing.report[0], more_capture_timing.report[1],
+                        more_capture_timing.report[2], more_capture_timing.report[3],
+                        previous_report_timing[0], previous_report_timing[1],
+                        previous_report_timing[2], previous_report_timing[3]);
+#endif
                 g_error("Expected the current visible more-menu button");
+            }
             g_set_object(&saved_more_button, button);
         } else if (g_str_equal(action, "activate-retired-more")) {
             if (!saved_more_button || gtk_widget_get_mapped(saved_more_button))

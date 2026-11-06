@@ -863,6 +863,19 @@ def language_options(native, captured, generation, state, window, environment, n
     }
 
 
+def run_configuration_click(command, environment, observation):
+    """Keep the one requested action and its failure; log only after dispatch."""
+    try:
+        return run(command, env=environment)
+    finally:
+        try:
+            print("qt-configuration-click-request " + json.dumps(observation), flush=True)
+        except Exception:
+            # Evidence is best effort; a broken diagnostic sink must not replace
+            # either the original subprocess failure or its successful result.
+            pass
+
+
 def language_configuration(native, generation, state, window, environment, fixture, out):
     """Actual Qt/Fcitx search input and config-only messages, with a controlled Host."""
     from wire import now_ms
@@ -916,24 +929,36 @@ def language_configuration(native, generation, state, window, environment, fixtu
             for event in native.events[start_events:]
         )
 
-    def click(name, phase="click", *, enabled=True):
+    def click(name, phase="click", *, enabled=True, diagnostic=False):
         value = state()
         control = value["overlayControls"][name]
         assert control["visible"] and control["enabled"] is enabled, control
         bounds = control["geometry"]
-        run(
-            [
-                "xdotool",
-                "mousemove",
-                "--window",
-                window,
-                str(int((bounds["x"] + bounds["width"] / 2) * value["scale"])),
-                str(int((bounds["y"] + bounds["height"] / 2) * value["scale"])),
-                phase,
-                "1",
-            ],
-            env=environment,
-        )
+        x = int((bounds["x"] + bounds["width"] / 2) * value["scale"])
+        y = int((bounds["y"] + bounds["height"] / 2) * value["scale"])
+        command = ["xdotool", "mousemove", "--window", window, str(x), str(y), phase, "1"]
+        if diagnostic:
+            # Preserve exactly the snapshot used for this one click. Do not
+            # refresh it, pump Qt, inspect the provider or retry the action.
+            run_configuration_click(
+                command,
+                environment,
+                {
+                    "observedAtMs": value["observedAtMs"],
+                    "requestedAtMs": now_ms(),
+                    "role": name,
+                    "instance": control["instance"],
+                    "geometry": bounds,
+                    "scale": value["scale"],
+                    "x": x,
+                    "y": y,
+                    "receipts": value.get("configurationReceipts", {}).get(name, {}),
+                    "preedit": value["languageConfiguration"]["preedit"],
+                    "searchFocused": value["languageConfiguration"]["searchFocused"],
+                },
+            )
+        else:
+            run(command, env=environment)
 
     def key(value, phase="key"):
         run(["xdotool", phase, "--clearmodifiers", value], env=environment)
@@ -1311,7 +1336,7 @@ def language_configuration(native, generation, state, window, environment, fixtu
         "all original search pinyin replies retired while composing",
     )
     before_receipt = state().get("configurationReceipts", {}).get(control, {}).get("clicked", 0)
-    click(control)
+    click(control, diagnostic=True)
     wait(
         lambda: state().get("configurationReceipts", {}).get(control, {}).get("clicked", 0)
         == before_receipt + 1,
