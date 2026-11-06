@@ -670,13 +670,7 @@ class ApplicationsPane:
             if not self.current(opening):
                 return
             saved = isinstance(result, dict) and result.get("saved") is True
-            self.owner.report_save_result(
-                saved,
-                self.owner.tr(
-                    "设置已变化或保存失败，请检查当前列表后重试。",
-                    "Settings changed or could not be saved. Review the current list and try again.",
-                ),
-            )
+            self.owner.report_settings_commit(result)
             if saved:
                 if undo is not None:
                     revision = result["settingsRevision"]

@@ -14,6 +14,8 @@ from design import (
     style,
 )
 from model_status import activity_status, model_notice, render_download, set_status_tone
+from settings_feedback import notice as commit_notice
+from settings_feedback import saved as commit_saved
 from status_notifier import StatusNotifier
 
 gi.require_version("Gtk", "3.0")
@@ -560,7 +562,7 @@ class Tray:
                 and not self.pending
                 and not self.closed
             )
-            message = (self.guidance or {}).get(self.save_problem, "")
+            message = (self.guidance or {}).get(self.save_problem, self.save_problem or "")
             self.save_notice.set_label(message)
             self.save_notice.set_visible(bool(message))
             self.enabled.set_sensitive(ready)
@@ -698,7 +700,7 @@ class Tray:
                 timeout=3,
             )
             saved = isinstance(result, dict) and result.get("saved") is True
-            self.save_problem = None if saved else "saveUnconfirmedMessage"
+            self.save_problem = commit_notice(result) or None
             if saved and expected_revision is None and not enabled:
                 revision = result["settingsRevision"]
                 self.toast.show_message(
@@ -815,11 +817,7 @@ class Tray:
                     },
                     timeout=3,
                 )
-                self.save_problem = (
-                    None
-                    if isinstance(result, dict) and result.get("saved") is True
-                    else "saveUnconfirmedMessage"
-                )
+                self.save_problem = commit_notice(result) or None
             except (OSError, ValueError, EOFError, TimeoutError):
                 self.save_problem = "saveUnconfirmedMessage"
             finally:
@@ -939,18 +937,11 @@ class Tray:
                 result = None
             if self.closed:
                 return
-            if result is True:
-                self.save_problem = None
-                # A newer settings broadcast can arrive before this continuation.
-                # Only fill in an acknowledged no-op when no broadcast replaced it.
+            self.save_problem = commit_notice(result) or None
+            if commit_saved(result):
+                # The host explicitly confirmed this value. Preserve a newer broadcast.
                 if self.value is before_save:
                     self.value = {**before_save, **values}
-            elif result is False:
-                self.save_problem = "saveUnconfirmedMessage"
-            else:
-                # Missing acknowledgements can follow a committed write. Do not
-                # claim failure, restore an old snapshot, or automatically retry.
-                self.save_problem = "unknownSaveMessage"
         finally:
             self.pending = False
             if not self.closed:

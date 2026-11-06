@@ -178,7 +178,7 @@ def run(presentation):
                     assert lesson.close_button.has_focus()
                     lesson.start.clicked()
                     assert lesson.close_button.has_focus(), "pending Begin accepted a second action"
-                    dispatch(begin, True)
+                    dispatch(begin, {"started": True, "settings": None})
                     assert lesson.close_button.has_focus(), (
                         "late Begin stole the newer widget focus"
                     )
@@ -200,7 +200,7 @@ def run(presentation):
                     assert not technical.get_expanded()
                     assert lesson.capability_note.get_text() == presentation["capabilityNote"]
                     lesson.finish("completed")
-                    dispatch(pending("finishOnboarding"), False)
+                    dispatch(pending("finishOnboarding"), {"completed": False, "settings": None})
                     assert not lesson.complete.get_sensitive()
                     assert "正在确认" in lesson.status.get_text()
                     reply(
@@ -218,7 +218,7 @@ def run(presentation):
                     until(lambda: lesson.complete.get_sensitive())
                     lesson.source.set_text(source)
                     lesson.source.select_region(2, 7)
-                    reply(restart(state(old, completed=True)), True)
+                    reply(restart(state(old, completed=True)), {"started": True, "settings": None})
                     new = str(uuid.uuid4())
                     reply(pending("practiceStatus"), state(new, bound=False))
                     until(lambda: "等待确认" in lesson.status.get_text())
@@ -245,7 +245,7 @@ def run(presentation):
                         other.show_all()
                         other_source.grab_focus()
                         until(lambda: other.is_active() and other_source.has_focus())
-                        dispatch(begin, True)
+                        dispatch(begin, {"started": True, "settings": None})
                         assert other.is_active() and other_source.has_focus()
                         assert not lesson.window.is_active(), "late Begin activated the old window"
                         unchanged()
@@ -260,7 +260,7 @@ def run(presentation):
 
                     begin = restart(state(previous))
                     lesson.close_button.grab_focus()
-                    dispatch(begin, False)
+                    dispatch(begin, {"started": False, "settings": None})
                     assert lesson.close_button.has_focus()
                     refresh = pending("practiceStatus")
                     assert "未能开始" in lesson.status.get_text()
@@ -274,7 +274,7 @@ def run(presentation):
                     assert lesson.reset_button.get_sensitive()
                     assert "未能开始" in lesson.status.get_text()
                     assert not lesson.complete.get_sensitive()
-                    reply(restart(state()), True)
+                    reply(restart(state()), {"started": True, "settings": None})
                     dispatch(pending("practiceStatus"), state(previous, completed=True))
                     assert not lesson.reset_button.get_sensitive()
                     assert not lesson.complete.get_sensitive()

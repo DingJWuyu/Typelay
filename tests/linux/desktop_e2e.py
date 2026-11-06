@@ -33,6 +33,7 @@ from setup import (
 )
 from support.gtk_settings_geometry import settings_scroll_snapshot, settings_viewport_from_pane
 from support.session_lifecycle import session_exit_confirmed
+from support.settings_commit import practice_allowed
 from support.xtest import prepare_key, prepare_xtest
 from wire import Decoder, encode, now_ms
 
@@ -4530,7 +4531,9 @@ def run(arguments):
                             # current managed-run proof. Only explicit skip can
                             # save the prompt preference after these Tab checks.
                             assert (
-                                control(paths, "finishOnboarding", {"outcome": "completed"})
+                                practice_allowed(
+                                    control(paths, "finishOnboarding", {"outcome": "completed"})
+                                )
                                 is False
                             )
                             key("alt+s")
@@ -5871,14 +5874,18 @@ def run(arguments):
                         typed(original)
                         wait_for(lambda: text(source) == original, "practice lost keyboard input")
                         assert (
-                            control(paths, "startAutomaticPractice", {"confirmedSwitch": True})
+                            practice_allowed(
+                                control(paths, "startAutomaticPractice", {"confirmedSwitch": True})
+                            )
                             is False
                         )
                         assert (
-                            control(
-                                paths,
-                                "startAutomaticPractice",
-                                {"confirmedSwitch": True, "target": {"value": "caller-chosen"}},
+                            practice_allowed(
+                                control(
+                                    paths,
+                                    "startAutomaticPractice",
+                                    {"confirmedSwitch": True, "target": {"value": "caller-chosen"}},
+                                )
                             )
                             is False
                         ), "ordinary control caller supplied its own practice target"
@@ -6974,7 +6981,10 @@ def run(arguments):
                 )
                 saved = json.loads(paths.settings.read_text())
                 assert (
-                    control(paths, "startOnDemandPractice", {"confirmedSwitch": True}) is False
+                    practice_allowed(
+                        control(paths, "startOnDemandPractice", {"confirmedSwitch": True})
+                    )
+                    is False
                 ), "practice silently enabled a paused client"
                 assert not json.loads(paths.settings.read_text())["Enabled"]
                 settings_page("关于")
@@ -7339,7 +7349,9 @@ def run(arguments):
                         )
                         latest_preferences = json.loads(paths.settings.read_text())
                         assert (
-                            control(paths, "startOnDemandPractice", {"confirmedSwitch": False})
+                            practice_allowed(
+                                control(paths, "startOnDemandPractice", {"confirmedSwitch": False})
+                            )
                             is False
                         )
                         assert json.loads(paths.settings.read_text())["Mode"] == 0
@@ -7422,7 +7434,12 @@ def run(arguments):
                             and restart_ready(),
                             "restarted practice identity was not bound before the first command",
                         )
-                        assert control(paths, "finishOnboarding", {"outcome": "completed"}) is False
+                        assert (
+                            practice_allowed(
+                                control(paths, "finishOnboarding", {"outcome": "completed"})
+                            )
+                            is False
+                        )
                         key("ctrl+shift+F9")
                         wait_for(
                             lambda: view("ValidTranslation"),
@@ -7470,7 +7487,10 @@ def run(arguments):
                             "verified direct receipt did not complete the current practice",
                         )
                         assert (
-                            control(paths, "finishOnboarding", {"outcome": "completed"}) is False
+                            practice_allowed(
+                                control(paths, "finishOnboarding", {"outcome": "completed"})
+                            )
+                            is False
                         ), "unowned control client claimed completion"
                         practice_text = text(source)
                         finished_window = managed_window
@@ -7557,7 +7577,9 @@ def run(arguments):
                         assert changed_view["languageNeedsChange"]
                         assert changed_view["sampleText"] != practice_view["sampleText"]
                         assert (
-                            control(paths, "startOnDemandPractice", {"confirmedSwitch": True})
+                            practice_allowed(
+                                control(paths, "startOnDemandPractice", {"confirmedSwitch": True})
+                            )
                             is False
                         ), "practice accepted equal source and target languages"
                         assert any(

@@ -1361,7 +1361,7 @@ public sealed class AutomaticPracticeProgressTests
             OnboardingComplete = previouslyDismissed
         });
         var binding = Bind(s);
-        Assert.False(await s.Controller.FinishAutomaticPracticeAsync(Guid.NewGuid()));
+        Assert.False((await s.Controller.FinishAutomaticPracticeAsync(Guid.NewGuid())).Saved);
         FinishSteps(s, confirmed: false);
         var finishing = s.Controller.FinishAutomaticPracticeAsync(binding.RunId);
         Assert.False(finishing.IsCompleted);
@@ -1369,11 +1369,26 @@ public sealed class AutomaticPracticeProgressTests
         Assert.Null(s.Input.Permit);
         acknowledgement.SetResult(true);
         s.Tick();
-        Assert.True(await finishing);
+        Assert.True((await finishing).Saved);
         Assert.True(s.ReloadSettings().OnboardingComplete);
         Assert.Equal(WorkMode.Automatic, s.ReloadSettings().Mode);
         Assert.False(s.ReloadSettings().ExperimentalWriteback);
         Assert.True(s.Controller.BeginAutomaticPractice(Guid.NewGuid()));
+    }
+
+    [Fact]
+    public async Task ACommittedFinishReportsNotificationFailureWithoutOfferingAnotherSave()
+    {
+        using var s = new SessionScenario();
+        var binding = Bind(s);
+        FinishSteps(s);
+        s.Settings.Changed += () => throw new IOException("controlled-notification-failure");
+        var result = await s.Controller.FinishAutomaticPracticeAsync(binding.RunId);
+        Assert.True(result.Saved);
+        Assert.Equal(SettingsCommitState.CommittedNotificationFailed, result.State);
+        Assert.True(s.ReloadSettings().OnboardingComplete);
+        Assert.False(s.Controller.CanRetryAutomaticPracticeSave(binding.RunId));
+        Assert.Null(s.Input.Permit);
     }
 
     [Fact]
@@ -1383,7 +1398,7 @@ public sealed class AutomaticPracticeProgressTests
         var binding = Bind(s);
         FinishSteps(s);
         s.BlockSettingsWrites();
-        await Assert.ThrowsAsync<SettingsPersistenceException>(() => s.Controller.FinishAutomaticPracticeAsync(binding.RunId));
+        Assert.IsType<SettingsPersistenceException>((await s.Controller.FinishAutomaticPracticeAsync(binding.RunId)).Error);
         Assert.False(s.Settings.Value.OnboardingComplete);
         Assert.False(s.ReloadSettings().OnboardingComplete);
         Assert.Null(s.Input.Permit);
@@ -1391,7 +1406,7 @@ public sealed class AutomaticPracticeProgressTests
         Assert.True(s.Controller.CanRetryAutomaticPracticeSave(binding.RunId));
         int jobs = s.Model.Jobs.Count;
         s.AllowSettingsWrites();
-        Assert.True(await s.Controller.FinishAutomaticPracticeAsync(binding.RunId));
+        Assert.True((await s.Controller.FinishAutomaticPracticeAsync(binding.RunId)).Saved);
         Assert.True(s.ReloadSettings().OnboardingComplete);
         Assert.Equal(WorkMode.Automatic, s.ReloadSettings().Mode);
         Assert.False(s.ReloadSettings().ExperimentalWriteback);
@@ -1410,7 +1425,7 @@ public sealed class AutomaticPracticeProgressTests
         var binding = Bind(s);
         FinishSteps(s);
         s.BlockSettingsWrites();
-        await Assert.ThrowsAsync<SettingsPersistenceException>(() => s.Controller.FinishAutomaticPracticeAsync(binding.RunId));
+        Assert.IsType<SettingsPersistenceException>((await s.Controller.FinishAutomaticPracticeAsync(binding.RunId)).Error);
         s.AllowSettingsWrites();
         switch (change)
         {
@@ -1435,7 +1450,7 @@ public sealed class AutomaticPracticeProgressTests
         }
         if (change is "configuration" or "closed")
             Assert.Null(s.Controller.AutomaticPracticeProgress);
-        Assert.Equal(change == "no-op", await s.Controller.FinishAutomaticPracticeAsync(binding.RunId));
+        Assert.Equal(change == "no-op", (await s.Controller.FinishAutomaticPracticeAsync(binding.RunId)).Saved);
         Assert.Equal(change == "no-op", s.ReloadSettings().OnboardingComplete);
         Assert.Null(s.Input.Permit);
     }
@@ -1486,7 +1501,7 @@ public sealed class AutomaticPracticeProgressTests
             Assert.True(s.Controller.EndAutomaticPractice(binding.RunId));
         acknowledgement.SetResult(closed);
         s.Tick();
-        Assert.False(await finishing);
+        Assert.False((await finishing).Saved);
         Assert.Null(s.Controller.AutomaticPracticeProgress);
         Assert.False(s.Controller.CanRetryAutomaticPracticeSave(binding.RunId));
         Assert.False(s.ReloadSettings().OnboardingComplete);

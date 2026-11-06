@@ -14,6 +14,8 @@ import time
 import uuid
 from pathlib import Path
 
+from support.settings_commit import saved as commit_saved
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 from setup import FAILURE_PREFIX, failure_code  # noqa: E402
@@ -236,7 +238,9 @@ class Check:
         self.host = None
 
     async def translate(self, text, source, target):
-        assert await self.ask("settings", {"source": source, "target": target}) is True
+        assert (
+            commit_saved(await self.ask("settings", {"source": source, "target": target})) is True
+        )
         request = {
             "id": 1,
             "operation": "translateEditorSnapshot",

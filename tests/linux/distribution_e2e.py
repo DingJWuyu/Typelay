@@ -318,7 +318,8 @@ class DistributionTests(unittest.TestCase):
                         replies[response["reply"]] = response["data"]
                     if len(replies) == 2:
                         break
-                self.assertEqual(replies, {5: True, 6: False})
+                self.assertIs(replies[5]["saved"], True)
+                self.assertIs(replies[6], False)
                 saved = json.loads(settings.read_text())
                 self.assertFalse(saved["Enabled"])
                 self.assertEqual(saved["Mode"], 0)

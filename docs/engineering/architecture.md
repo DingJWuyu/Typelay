@@ -146,13 +146,13 @@ Windows 自有练习源的人工稿进入 More 时，旧编辑 attempt 永久退
 
 Browser 的 `EditingTranslation` 重译确认使用独立于 owned 练习源的[一次操作关联](../../src/shared/TypeLay.Runtime/Sessions/SessionController.EditorRegenerate.cs)。Host 配置 `editorRegenerateVersion=1`，只在当前 DOM 的实际 `sessionBindings` 与 fresh describe 同样回显版本 1 时消费专用对象；缺省或未知版本不算支持。旧版未协商 Editing 与原非 Editing 的 plain 操作保持兼容，已协商的 plain 或任何状态的畸形对象不能降级为旧重译入口。非浏览器消费者不接入这个协议。
 
-Browser 的确认框在用户实际点击或按键选择 Replace 前只是显示，不创建返回意图或许可。同一合法 field/view/token 下，Host 对当前人工稿的精确回显可以保留原确认：原编辑序列未变、当前/原确认/回显三稿一致，且除 text 外的完整视图身份（含动作设置）不变。后来编辑含 ABA、撤权、新 owner 或失效 lease 仍关闭。显示沿既有 owner 的合法续租，不增加人类确认超时；回显不重开提示、不授新票或延长操作期限。真实 Replace 才按下面的单次操作规则受理。
+Browser 的确认框在用户实际点击或按键选择 Replace 前只是显示，不创建返回意图或许可。同一合法 field/view/token 下，Host 对当前人工稿的精确回显可以保留原确认：共享交互和动作身份不变，原本地编辑序列未变，当前/原确认/回显三稿一致。共享草稿版本可以追上这份已发送的本地稿，但不能倒退；文案与菜单反馈不参与身份比较。后来编辑含 ABA、撤权、新 owner 或失效 lease 仍关闭。显示沿既有 owner 的合法续租，不增加人类确认超时；回显不重开提示、不授新票或延长操作期限。真实 Replace 才按下面的单次操作规则受理。
 
-真实 Replace 发出后，在 Host 关联实际 Returning 操作之前，DOM 只保留原 pending 的精确当前稿回显：本次动作冻结的 field、配置、token、revision、完整非 text 身份（含动作设置）、稿件版本与三份稿件均未变，实际编辑器仍聚焦、Clear 且合法，原 500ms 仍有效。该回显不重发、续期或创建关联。真实编辑含 ABA、组合输入及离焦永久撤销这项回显例外；既有 receipt 仍可结算，不代表旧重译意图继续有效。新 view、撤权、超期、已退休或已返源的动作不能由后来回显复活，原 Return/fresh/Core 门保持。
+真实 Replace 发出后，在 Host 关联实际 Returning 操作之前，DOM 只保留原 pending 的精确当前稿回显：本次动作冻结的 field、配置、token、transport revision、交互和动作身份、本地编辑序列与三份稿件均未变，共享草稿版本只允许追上而不倒退；实际编辑器仍聚焦、Clear 且合法，原 500ms 仍有效。该回显不重发、续期或创建关联。真实编辑含 ABA、组合输入及离焦永久撤销这项回显例外；既有 receipt 仍可结算，不代表旧重译意图继续有效。新 view、撤权、超期、已退休或已返源的动作不能由后来回显复活，原 Return/fresh/Core 门保持。
 
 Host 在真实受理点冻结本次 Action、原 view/peer/document/route/target 与操作时间；Runtime 产生实际 Returning Operation 后，通过既有 Return 请求传递关联，不从 token 加一或最新全局状态猜身份。原操作起 500ms 不续期，关联不是读取、编辑、接受或写回许可。UI 受理到异步调用、Returning Render 到 Return RPC 的间隙内，后来稿仅作为该 exact owner 的本地观察暂存；实际请求匹配后才送入同一 Runtime 操作，失权则丢弃旧关联。真实 DraftChanged（含 ABA 及协议允许范围内的超长稿）永久废弃旧 Replace 意图，成功回源后走当前稿的普通路径；非法稿仍沿既有 Core 规则，不新增接受承诺。没有后来编辑时，ACK 也只说明这次返回，必须再 fresh Capture 当前合法原源并经 Core 判定才重译；合法正文改变可翻译完整当前源，已退休旧会话不得复活或重复调度。全局焦点/源 epoch 如实推进，后继观察 receipt 仅能关联本次实际返回，不能代替 fresh 身份或 IME 校验。
 
-只有已证明尚未派发且原 editor 仍合法，或 exact 回执明确返回失败且未失权时，才保留最新稿并一次迁移后继 Editing token；sent unknown、坏回执和明确失权沿既有退休。早期 null-id 终结仅清该未受理的 exact pending，不能撤销另一个已派发动作。标准 input/textarea 是本切片的完整当前源路径；未变化 rich editor 沿原 provider 的合法 bookmark/focus，正文改变使旧 bookmark 失效时仍安全拒绝，不绕过富文本结构保护。两端消费者见 [Windows](../../src/windows/TypeLay.App/Windows/BrowserInput.EditorRegenerate.cs) 与 [Linux](../../src/linux/desktop/input.py)，实际平台证据与未验边界见[当前状态](development-state.md#最近真实平台结果)和[原型对照](../design/prototype-parity.md)。
+只有已证明尚未派发且原 editor 仍合法，或 exact 回执明确返回失败且未失权时，才保留最新稿并一次迁移后继 Editing token；sent unknown、坏回执和明确失权沿既有退休。早期 null-id 终结仅清该未受理的 exact pending，不能撤销另一个已派发动作。标准 input/textarea 是本切片的完整当前源路径；未变化 rich editor 沿原 provider 的合法 bookmark/focus，正文改变使旧 bookmark 失效时仍安全拒绝，不绕过富文本结构保护。两端消费者见 [Windows](../../src/windows/TypeLay.App/Windows/BrowserInput.EditorRegenerate.cs) 与 [Linux](../../src/linux/desktop/input.py)，实际平台证据与未验边界见[当前状态](development-state.md#当前验证环境与交付范围)和[原型对照](../design/prototype-parity.md)。
 
 GTK、Qt 和共享浏览器沿用现有视图状态，在 `Translating`、正文非空且 `editorOwnsText=false` 时以现有弱化文字色显示旧译文，与 Windows 更新态对齐；新结果恢复正常色，编辑与回源人工稿保持原色，不增加协议字段或接受资格。
 
@@ -174,7 +174,7 @@ worker 入口在加载模型依赖前保存不可继承的专用二进制输出�
 
 GTK3 的目标搜索属于既有语言 child 的未应用配置，不建立新会话协议：真实 Entry 始终位于已标记的 overlay 子树，排除源发现；过滤消费当前目录的 code 与既有多语显示名，选择按 model code 校验当前目录，而非筛选后的行号。源选择与显式 Apply 保留，隐藏的目标草案可保留，普通取消选中仍禁用 Apply。搜索按次 ownership 与是否消费分离：只有原次实际 IME Clear、同 opening/view/控件及原期限才执行选择/关闭；Unknown/Composing 或重入退休的原事件仍交 GTK/Fcitx，且不再作为通用 auxiliary Escape 补执行。普通源 Enter 不加入会话接受链，显示本地化不重建输入控件或续许可。
 
-GTK4 语言配置使用同 root 的非模态 child，避免 autohide 原生 keyboard grab 的合成焦点出入与现失权门冲突。配置 opening 内的捕获观察只对真实外部点击/触摸取消并透传原事件，内部点击与滚动保留；退出移除该观察。Tab/ShiftTab 正常移动，越出配置由既有焦点门取消；Escape 只关闭配置，不主动恢复旧源焦点或接受票。新源点击之后仍不能用旧票，合法捕获须独立重建。原 top inactive、opening、IME 与操作期限不变；此行为与 modal 的自动回焦不同，真实平台验收见[当前状态](development-state.md#最近真实平台结果)。
+GTK4 语言配置使用同 root 的非模态 child，避免 autohide 原生 keyboard grab 的合成焦点出入与现失权门冲突。配置 opening 内的捕获观察只对真实外部点击/触摸取消并透传原事件，内部点击与滚动保留；退出移除该观察。Tab/ShiftTab 正常移动，越出配置由既有焦点门取消；Escape 只关闭配置，不主动恢复旧源焦点或接受票。新源点击之后仍不能用旧票，合法捕获须独立重建。原 top inactive、opening、IME 与操作期限不变；此行为与 modal 的自动回焦不同，真实平台验收见[当前状态](development-state.md#当前验证环境与交付范围)。
 
 GTK4 搜索 Return 在自身 popup 的 SAME_NATIVE capture 阶段处理，避免 GtkText 默认 activate 先消费后才到 bubble。仅当前搜索的真实原次按下进入既有 held 表，保存前核实际 IME Clear 与原 keycode/sequence，再一次 claim；拒绝的原次仍交 GTK/Fcitx，不在 activate 后重新探测。已有该 search Return 的同硬件未释放记录不能在配置行按钮上以 repeat 升级为新动作，release 仍清原槽；不增加普通源 Return 的全局观察。Unknown、Composing 和退休 opening 不借后来的 Clear 执行旧操作；普通源先持键再跨焦点进入搜索的未登记按次不在本切片覆盖范围。真实键路由和输入法验收独立于静态审查。
 
@@ -206,9 +206,9 @@ Hy 保留通用 8192 UTF-16 文本上限，并在结构分段前对整请求加 
 
 Windows 与 Linux 设置使用同一控制器状态和专用风格/术语命令；普通全量设置不能夹带这些字段。管理控件与实际模型采用分别按共享资格判断，已保存偏好仍可显式恢复：无源会话时按已提交的应用键删除单个风格覆盖，或确认清除全局与全部覆盖；旧术语可删除。打开设置沿既有流程结束源会话，不能借用旧 token 或上一应用创建覆盖。术语草稿在保存失败、取消关闭和外部更新时保留；若基线规则未变，仅其他设置推进版本，可使用最新版本保存；规则确已改变则展示最新完整列表，明确确认替换并绑定该次版本，再次变化仍拒绝。退休等待期间关闭或放弃会取消精确请求，已经提交的结果不回滚。两端接线的编译与协议回归不等于实际 GTK/WPF 桌面或模型质量验收。
 
-浮层更多菜单复用共享只读资格与短反馈：风格仅操作当前可靠应用的覆盖，继承独立于自然/正式，客户端不传应用名。菜单展开时冻结原 view token 与设置版本，点击仍由控制器重验；另述失败保留原候选，不恢复旧接受资格。发布门关闭时新增入口隐藏。反馈只属于原动作代次，不能覆盖既有输入法、写回或错误状态；浏览器与 Linux 桥仅排除新增菜单呈现子对象对编辑身份的影响，其余原字段仍沿原生命周期规则。WPF/GTK/Qt/浏览器实际桌面交互及模型质量仍须分别验收，主动加词不得借用译文编辑身份。
+浮层更多菜单复用共享只读资格与短反馈：风格仅操作当前可靠应用的覆盖，继承独立于自然/正式，客户端不传应用名。菜单展开时冻结原 view token 与设置版本，点击仍由控制器重验；另述失败保留原候选，不恢复旧接受资格。发布门关闭时新增入口隐藏。反馈只属于原动作代次，不能覆盖既有输入法、写回或错误状态。浏览器与 Linux 桥使用共享交互、草稿和动作身份决定继续关系，显示正文、文案和菜单反馈不再通过完整视图相等参与判断；原生事实和具体操作的期限仍独立校验。WPF/GTK/Qt/浏览器实际桌面交互及模型质量仍须分别验收，主动加词不得借用译文编辑身份。
 
-Qt 的语言 child 与 More child 分别退休。仅原 `valid/menuOnly` 合同确认 target、generation、revision、主题、完整非 `translationActions` 编辑身份均未变，且原语言 opening 仍有效/可见时，无关 More 动作刷新可保语言菜单并同步其同合法 view；More 自身仍退休。目录、方向、权限、owner 或新 revision 变化不适用该例外，动作仍经原当前身份和期限门。
+Qt 的语言 child 与 More child 保留各自的原生控件和 opening。合法显示刷新按共享交互身份、原 generation 和 transport revision 保留菜单；交互变化先撤回旧回调再关闭，原生失焦与非法目标仍立即退休。动作点击继续校验原 token、设置及动作版本，显示身份不授予操作权限。完整视图比较只用于一次渲染的重入检查和视觉动画连续性，不再承担菜单交互身份。
 
 Browser 术语 handoff 的新鲜只读捕获有独立可选 `InputCapture.SourceReadStartedAtMs` 因果证据。仅 Browser Host 在该次 target-bound Overlay capture 实际派发前取本 Host 时钟，完整响应、身份、IME 与 ACK 合格后附于本次结果外壳；不是页面自报字段，不写入 snapshot、remember、lease 或 permit。仅 Glossary recheck 在原观测下界早于请求时可用 request ≤ read-start ≤ completion 证明读取先后；原观测 age/future 与所有源身份门不变。缺字段或坏界限沿原拒绝，其他消费者忽略；不能把因果下界当新的观测时间或续期。
 

@@ -20,7 +20,7 @@ public sealed partial class SessionController
     public bool BindAutomaticPractice(OwnedPracticeBinding binding) => _ownedSource.BindAutomaticPractice(binding);
     public bool EndAutomaticPractice(Guid runId) => _ownedSource.EndAutomaticPractice(runId);
     public Task<bool> EndAutomaticPracticeAsync(Guid runId) => _ownedSource.EndAutomaticPracticeAsync(runId);
-    public Task<bool> FinishAutomaticPracticeAsync(Guid runId) => _ownedSource.FinishAutomaticPracticeAsync(runId);
+    public Task<SettingsCommitResult> FinishAutomaticPracticeAsync(Guid runId) => _ownedSource.FinishAutomaticPracticeAsync(runId);
     public bool CanRetryAutomaticPracticeSave(Guid runId) => _ownedSource.CanRetryAutomaticPracticeSave(runId);
     public Task<bool> PrepareSettingsChangeAsync(UserSettings next) => _ownedSource.PrepareSettingsChangeAsync(next);
     public Task<bool> RetireAutomaticPracticeAsync() => _ownedSource.RetireAutomaticPracticeAsync();
@@ -237,22 +237,24 @@ public sealed partial class SessionController
             return _automaticRetirement is null ? !_automaticRetirementUnconfirmed : await _automaticRetirement;
         }
 
-        public async Task<bool> FinishAutomaticPracticeAsync(Guid runId)
+        public async Task<SettingsCommitResult> FinishAutomaticPracticeAsync(Guid runId)
         {
             var expected = owner._settings.Value;
+            SettingsCommitResult Rejected() => new(SettingsCommitState.NotCommitted, owner._settings.Revision,
+                Reason: "practice-retirement-unconfirmed");
             var pending = _pendingPracticeCompletion;
             if (pending is null || pending.RunId != runId)
             {
                 if (AutomaticPracticeProgress?.RunId == runId)
                     await RetireAutomaticPracticeAsync();
-                return false;
+                return Rejected();
             }
             var retirement = _automaticRetirement;
             if (retirement is null || !await retirement || !pending.Confirmed
                 || !ReferenceEquals(pending, _pendingPracticeCompletion)
                 || pending.ConfigurationRevision != owner._configurationRevision || owner._disposed
                 || !ReferenceEquals(expected, owner._settings.Value))
-                return false;
+                return Rejected();
             // A recoverable persistence failure leaves only this run's body-free
             // completion watermark. A new run, real settings change or close clears it.
             var saved = await owner._settings.CommitAsync(owner._settings.Revision, expected with
@@ -260,12 +262,7 @@ public sealed partial class SessionController
                 OnboardingComplete = true
             });
             if (!saved.Saved)
-            {
-                // Completion callers already expose an explicit retry for storage failures.
-                if (saved.Error is SettingsPersistenceException persistence)
-                    throw persistence;
-                return false;
-            }
+                return saved;
             _pendingPracticeCompletion = null;
             // A repeated lesson may save an already-true preference, so Configure
             // need not run. Consume its read-only completion after a successful save.
@@ -273,7 +270,7 @@ public sealed partial class SessionController
             {
                 _practiceProgress.ClearAutomatic();
             }
-            return true;
+            return saved;
         }
 
         public bool CanRetryAutomaticPracticeSave(Guid runId) => !owner._disposed
@@ -440,7 +437,7 @@ public sealed partial class SessionController
             _retiredAutomaticTarget = request.Binding.Target;
             _automaticPlans.Clear();
             owner._pendingWakeCapture = null;
-            owner._onDemandPractice._practiceWakeCommand = null;
+            owner._onDemandPractice.RetirePreview();
             RotatePracticeConfiguration();
             _ownedSourceRun = _ownedSourceRun! with
             {
@@ -510,7 +507,7 @@ public sealed partial class SessionController
             _automaticEditRevision = -1;
             owner._session.LeaveFamily();
             owner._pendingWakeCapture = null;
-            owner._onDemandPractice._practiceWakeCommand = null;
+            owner._onDemandPractice.RetirePreview();
             if (rotateConfiguration)
                 RotatePracticeConfiguration();
             else

@@ -728,9 +728,9 @@ public sealed partial class SessionController : IDisposable
                 if (_session.State == SessionState.NoSession)
                     _session.LeaveFamily();
                 _activation.Wake(freshSource.Target);
-                _onDemandPractice._practiceWakeCommand = _onDemandPractice.PracticeCommand(new("wake", AcceptedAtMs: freshWake.Intent!.TriggeredAtMs,
+                _onDemandPractice.RecordPreviewCommand(new("wake", AcceptedAtMs: freshWake.Intent!.TriggeredAtMs,
                     Source: freshSource, CommandGeneration: freshWake.CommandGeneration,
-                    CommandSequence: freshWake.CommandSequence), false);
+                    CommandSequence: freshWake.CommandSequence));
                 _pendingWakeCapture = null;
                 OperationStatus = null;
             }
@@ -1131,7 +1131,7 @@ public sealed partial class SessionController : IDisposable
             if (_session.State == SessionState.NoSession)
                 _session.LeaveFamily();
             _generation++;
-            _onDemandPractice._practiceWakeCommand = _onDemandPractice.PracticeCommand(notice, false);
+            _onDemandPractice.RecordPreviewCommand(notice);
             _pendingWakeCapture = awaitingCapture
                 ? new(source.Target, _generation, _commandFeedbackRevision, notice.CommandGeneration, notice.CommandSequence)
                 : null;
@@ -1181,7 +1181,7 @@ public sealed partial class SessionController : IDisposable
         // Ending a foreground session never clears a pending direct operation.
         StopSession();
         _pendingDirect = operation;
-        _onDemandPractice._pendingDirectPractice = _onDemandPractice.PracticeCommand(notice, true);
+        _onDemandPractice.RecordDirectCommand(notice, operation.Job);
         _pendingDirectFeedbackRevision = _commandFeedbackRevision;
         _pendingDirectCommandGeneration = notice.CommandGeneration;
         _pendingDirectSequence = notice.CommandSequence;
@@ -1192,7 +1192,7 @@ public sealed partial class SessionController : IDisposable
         _directRunning = true;
         WriteSettlement? write = null;
         long configuration = _configurationRevision;
-        var practiceCommand = _onDemandPractice._pendingDirectPractice;
+        var practiceCommand = _onDemandPractice.TakeDirectCommand(operation.Job);
         try
         {
             var response = await DispatchTranslationAsync(operation.Job);
@@ -1241,11 +1241,7 @@ public sealed partial class SessionController : IDisposable
                 _ => ("直接写回未获确认，请检查原输入框；不会自动重试。", "write-unconfirmed")
             };
             SetCommandStatus(message, feedbackRevision, code);
-            if (practiceCommand?.Target == plan.Expected.Target
-                && result.Status == WriteStatus.Verified && result.Reason == Denial.None
-                && result.VerifiedSnapshot is { IsUsable: true } after && after.Target == plan.Expected.Target
-                && after.Text == plan.ResultText && after.Selection == new TextRange(plan.Caret, plan.Caret))
-                _onDemandPractice.CompletePracticeCommand(practiceCommand, true);
+            _onDemandPractice.ObserveDirectReplacement(practiceCommand, plan, result);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
@@ -1611,7 +1607,7 @@ public sealed partial class SessionController : IDisposable
         _translationRunning = true;
         _statusOverride = null;
         Trace("translate-start");
-        var practiceCommand = _onDemandPractice._practiceWakeCommand;
+        var practiceCommand = _onDemandPractice.PreviewCommandFor(job);
         var automaticPractice = _ownedSource.AutomaticPracticeFor(job.Basis.Target);
         long generation = _generation, feedbackRevision = _commandFeedbackRevision;
         var commandGeneration = _hook.CommandGeneration;
@@ -1670,9 +1666,7 @@ public sealed partial class SessionController : IDisposable
                     _ => "暂时无法翻译"
                 };
             Render();
-            if (completed && practiceCommand?.Target == job.Basis.Target && job.Kind == TranslationKind.FullOrSelection
-                && _hook.GetFocus(job.Basis.Target) != FocusMember.Other)
-                _onDemandPractice.CompletePracticeCommand(practiceCommand, false);
+            _onDemandPractice.ObserveTranslatedPreview(practiceCommand, job, completed);
             if (completed)
                 _ownedSource.CompleteAutomaticPreview(automaticPractice, job);
             Trace("translate-done");
@@ -1833,8 +1827,7 @@ public sealed partial class SessionController : IDisposable
             EndOnDemandPractice(practice.RunId);
         _configurationRevision++;
         _pendingWakeCapture = null;
-        _onDemandPractice._practiceWakeCommand = null;
-        _onDemandPractice._pendingDirectPractice = null;
+        _onDemandPractice.RetireCommands();
         if (!_directWriteSubmitted)
         {
             _commandFeedbackRevision++;
@@ -1891,7 +1884,7 @@ public sealed partial class SessionController : IDisposable
             Trace(reason);
         _activation.End();
         _pendingWakeCapture = null;
-        _onDemandPractice._practiceWakeCommand = null;
+        _onDemandPractice.RetirePreview();
         _sessionShortcuts = null;
         InvalidatePauseAnchor();
         ClearBrokerSnapshot();

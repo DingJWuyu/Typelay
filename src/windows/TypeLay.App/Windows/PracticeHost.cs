@@ -37,6 +37,7 @@ internal sealed partial class PracticeHost : IDisposable
     private bool _disposed;
     public PracticeHost(Func<ProcessStartInfo, IChildProcess>? start = null) => _start = start ?? (info => new ChildProcess(info));
     public event Action? Failed;
+    public event Action<SettingsCommitResult>? SettingsSaveReported;
 
     public void Bind(SessionController session)
     {

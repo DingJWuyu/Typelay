@@ -2132,7 +2132,7 @@ class InputFeedbackTests(unittest.TestCase):
             self.input,
             SimpleNamespace(owns_practice=lambda pid: pid == self.peer.pid),
         )
-        self.assertTrue(await practice.begin(self.peer.pid, True, lesson="automatic"))
+        self.assertTrue((await practice.begin(self.peer.pid, True, lesson="automatic")).allowed)
         operation = asyncio.create_task(practice.progress(self.peer.pid, lesson="automatic"))
         await asyncio.sleep(0)
         requests = self.native_frames(self.peer)

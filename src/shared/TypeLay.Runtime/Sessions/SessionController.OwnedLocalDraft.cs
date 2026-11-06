@@ -490,7 +490,7 @@ public sealed partial class SessionController
             _automaticPlans.Clear();
             owner._sessionShortcuts = null;
             owner._pendingWakeCapture = null;
-            owner._onDemandPractice._practiceWakeCommand = null;
+            owner._onDemandPractice.RetirePreview();
             owner._manualObservation = null;
             owner._styleObservation = null;
             owner._glossary.Retire();

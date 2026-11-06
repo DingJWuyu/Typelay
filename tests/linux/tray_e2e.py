@@ -16,6 +16,8 @@ from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
 
+from support.settings_commit import saved as commit_saved
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 
@@ -1591,7 +1593,7 @@ def main():
                 "wakeShortcut": "Ctrl+Shift+F9",
                 "directShortcut": "Ctrl+Shift+F10",
             }
-            assert await host.ask("settings", initial, timeout=3) is True
+            assert commit_saved(await host.ask("settings", initial, timeout=3)) is True
             assert not jobs, "rendering acknowledged settings wrote settings again"
             if options.model_action_only or options.panel_only or options.progress_only:
                 preparation_calls = {"install": [], "pause": [], "package": []}
@@ -2365,7 +2367,7 @@ def main():
                 assert editor.get_text() == "zz" and editor.get_selection_bounds() == (0, 1)
                 assert editor.has_focus() and picker.popover.get_visible()
                 assert not jobs and settings_file.read_bytes() == before_search
-                assert await host.ask("traySettings", {"enabled": False}) is True
+                assert commit_saved(await host.ask("traySettings", {"enabled": False})) is True
                 await settled()
                 assert editor.get_text() == "zz" and editor.get_selection_bounds() == (0, 1)
                 if not editor.has_focus() or state[key] != original:
@@ -2405,7 +2407,7 @@ def main():
                 assert editor.has_focus() and state[key] == original
                 # External commits update the selected button without replacing
                 # this popup's local query, its selection or keyboard focus.
-                assert await host.ask("traySettings", {key: replacement}) is True
+                assert commit_saved(await host.ask("traySettings", {key: replacement})) is True
                 await settled()
                 assert picker.get_active_id() == replacement and picker.caption.get_text() == label
                 assert editor.get_text() == "zz" and editor.has_focus()
@@ -2429,7 +2431,7 @@ def main():
                 assert state[key] == original and picker.get_active_id() == original
                 assert picker.has_focus()
                 assert state["enabled"] is False and state["theme"] == "dark"
-                assert await host.ask("traySettings", {"enabled": True}) is True
+                assert commit_saved(await host.ask("traySettings", {"enabled": True})) is True
                 await settled()
             source_picker = settings_surface.controls["source"]
             target_picker = settings_surface.controls["target"]
@@ -2437,14 +2439,14 @@ def main():
             target_editor = target_picker.search
             target_editor.set_text("zz")
             target_editor.select_region(0, 1)
-            assert await host.ask("traySettings", {"source": "ja"}) is True
+            assert commit_saved(await host.ask("traySettings", {"source": "ja"})) is True
             await settled()
             assert source_picker.get_active_id() == "ja"
             assert source_picker.caption.get_text() == "日语（当前不可用）"
             assert target_editor.get_text() == "zz"
             assert target_editor.get_selection_bounds() == (0, 1)
             assert target_editor.has_focus()
-            assert await host.ask("traySettings", {"source": "en"}) is True
+            assert commit_saved(await host.ask("traySettings", {"source": "en"})) is True
             await settled()
             assert source_picker.get_active_id() == "en"
             assert target_editor.get_text() == "zz"
@@ -2701,8 +2703,11 @@ def main():
             dialog = await question("术语规则已更改")
             # The rule list does not change here, but its confirmed revision does.
             assert (
-                await host.ask(
-                    "settings", {**state, "theme": "light" if state["theme"] != "light" else "dark"}
+                commit_saved(
+                    await host.ask(
+                        "settings",
+                        {**state, "theme": "light" if state["theme"] != "light" else "dark"},
+                    )
                 )
                 is True
             )
@@ -2722,8 +2727,11 @@ def main():
             remove_selected()
             await settled()
             assert (
-                await host.ask(
-                    "settings", {**state, "theme": "dark" if state["theme"] != "dark" else "light"}
+                commit_saved(
+                    await host.ask(
+                        "settings",
+                        {**state, "theme": "dark" if state["theme"] != "dark" else "light"},
+                    )
                 )
                 is True
             )

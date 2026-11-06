@@ -524,7 +524,12 @@ public enum StyleScope
 {
     Global, CurrentApplication
 }
-public sealed record StyleChangeResult(bool Saved, string Code);
+public sealed record StyleChangeResult(bool Saved, string Code)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Message => Code == "style-saved-notification-failed"
+        ? SettingsCommitPresentation.NotificationFailedMessage : null;
+}
 public sealed record StyleOverrideRemovalState(long SettingsRevision, bool CanRemove, string? UnavailableReason);
 // Technical availability is not language-quality approval or an open UI entry.
 public sealed record StyleSettingsState(long SettingsRevision, TranslationStyles? SavedPreferences,
@@ -570,7 +575,12 @@ internal sealed class TranslationGlossaryConverter : JsonConverter<GlossarySnaps
         writer.WriteEndObject();
     }
 }
-public sealed record GlossaryChangeResult(bool Saved, string Code);
+public sealed record GlossaryChangeResult(bool Saved, string Code)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Message => Code is "glossary-saved-notification-failed" or "glossary-saved-inactive-notification-failed"
+        ? SettingsCommitPresentation.NotificationFailedMessage : null;
+}
 public sealed record GlossarySettingsState(long SettingsRevision, GlossarySnapshot? SavedSnapshot,
     GlossarySnapshot? AppliedSnapshot, SessionViewToken? Session, bool TechnicalAvailable, string? UnavailableReason,
     bool CanSave = false, bool CanApply = false, string? ApplyUnavailableReason = null, bool IsReleased = false);

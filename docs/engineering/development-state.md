@@ -6,91 +6,60 @@
 
 用户已明确授权开始实施[目标架构](architecture-target.md)。当前分支为 `work/architecture-deepening`，从已评估的 `work/linux-usability` 基线 `48baf7f` 创建；产品规格、已确认原型和有效 ADR 保持。本轮在本地完成迁移和必要验证，不操作用户桌面，不启动 GitHub 流程或此前平台诊断。
 
-[固定 rubric](architecture-rubric.md)保持不变，[独立评估](architecture-assessment.md)的 **90.3/100** 和 **90.5/100** 仍只是设计分数。目标文件保留两位 advisor 审查的原文，实施授权与进度以本页为准。后续实现分数只由全新上下文 advisor 给出。
+**本批已收完，按用户要求暂停，等待关机后回来继续。** 设置结果修正、必要整合检查和本地提交已完成；下一轮 advisor 与完整平台验收尚未开始。全部未完成进度与证据保留，不在后台继续执行。
+
+[固定 rubric](architecture-rubric.md)保持不变，[独立评估](architecture-assessment.md)的 **90.3/100** 和 **90.5/100** 仍只是设计分数。首次实现复评针对 `663948e` 给出 **82.5/100，未收敛**，指出设置结果交付遗漏与原生验收缺口。目标文件保留设计审查原文，实施授权与进度以本页为准；修正后的实现仍须由全新上下文 advisor 评分。
 
 | DAG 切片 | 负责人 | 当前状态与下一动作 | 完成条件 |
 | --- | --- | --- | --- |
 | M0 基线与环境 | 主代理 | 已完成，固定 SDK 10.0.401 与基线 Runtime 1565 项通过；GTK3/4、Qt6 可编译 | 区分既有失败、可保持路径与未测平台能力 |
-| M1 设置提交 | `/root/implement_settings` | 实现完成；全 Runtime 回归通过，Linux host 保存验证及 Windows App 交叉编译通过 | 视图不再推断提交点，旧重复协调退出，受影响行为验证完成 |
-| M2 Linux 输入所有权 | `/root/implement_linux_input` | 实现完成；受控输入 221、setup 117、desktop 20、practice 14 项通过；原生 GUI 未测 | Overlay 的 Input 私有记录读写退出，回源与断连语义保持 |
-| M3 交互身份与呈现 | 主代理、`/root/implement_presentation_consumers` | 实现完成；暂停呈现和表单单向身份已整合，浏览器三组共 34 项真实 DOM 回归、三端原生编译通过 | 显示与行为身份分离，各消费者旧比较退出 |
-| M4 会话与结算 | `/root/implement_session_operations`、`/root/implement_write_settlement`、`/root/implement_windows_write_retirement` | 实现完成；具体操作、写入唯一结算、两端未用许可事实与正常关闭已整合；真实 Linux host 关闭交接通过，原生桌面未测 | 具体操作拥有寿命，主 Capture/Stop 退出专用分支，关闭先交还结果 |
-| M5 教程职责 | `/root/implement_session_operations` | 实现完成；教程步骤只消费确认事实，完成记录退休及保存重入回归通过 | 进度不参与权限，真实自有源证据保留 |
-| M6 清理与复评 | 主代理、后续全新 advisor | 目录归属、模型合同与现役文档已整理；最终 Runtime 1591、Core 320 项通过，正在独立审查与实际实现复评 | 旧路径退出，受影响构建/验证完成，实际实现独立复评 |
+| M1 设置提交 | `/root/implement_settings` | 已补齐 Linux 简化保存入口、教程及 Windows 教程完成的明确结果交付；通知失败沿既有反馈显示，已保存教程仍按原行为关闭。真实 host 相关 10 项、反馈 4 项、练习 15 项与相关输入 4 项通过，待独立复评 | 视图不再推断提交点，所有保存入口交付明确结果，受影响行为验证完成 |
+| M2 Linux 输入所有权 | `/root/implement_linux_input` | 实现完成；受控输入 221、setup 117、desktop 20、practice 14 项通过；完整原生交互未验收 | Overlay 的 Input 私有记录读写退出，回源与断连语义保持 |
+| M3 交互身份与呈现 | 主代理、`/root/implement_presentation_consumers` | 实现完成；暂停呈现和表单单向身份已整合，浏览器三组共 34 项真实 DOM 回归、三端原生编译通过；GTK3 拒绝路径已在隔离桌面验证 | 显示与行为身份分离，各消费者旧比较退出 |
+| M4 会话与结算 | `/root/implement_session_operations`、`/root/implement_write_settlement`、`/root/implement_windows_write_retirement` | 实现完成；真实 Linux host 关闭交接和 GTK3 精确未用许可退休通过；其它原生写入与退出路径仍缺平台证据 | 具体操作拥有寿命，主 Capture/Stop 退出专用分支，关闭先交还结果 |
+| M5 教程职责 | `/root/implement_session_operations` | 已补齐按需练习命令的登记、观察和退休，主控制器不再写其私有字段；65 项受影响回归与最终全套 Runtime 通过 | 进度不参与权限，真实自有源证据保留 |
+| M6 清理与复评 | 主代理 | 目录归属与文档已整理；修正后的全套 Runtime 1592 项通过，Linux 与 Windows App 编译通过；按用户要求留待恢复后创建新 advisor，完整平台验收仍未完成 | 旧路径退出，受影响构建/验证完成，实际实现独立复评 |
 
 实现代理均以 `fork_turns=none` 创建，请求配置为 `gpt-6-astra`、`xhigh`；工具只确认创建，实际配置未核实。主代理负责集成、冲突与检查，不让每项常规动作再等待用户确认。
 
 实现取舍已由各次独立上下文 advisor 核对。`/root/implementation_advisor_writes` 明确指出：Published 许可不能凭 TTL、容量或断连当作未执行；普通未使用许可靠原执行者的精确未用退休事实结束，已认领执行靠原回执结算。Windows 复用原 Grant 的 `Quiet && !Claimed`，GTK/Qt/browser 在原源线程区分在途执行和已经完全退休的许可。超期缺事实才按原目标记为未知。正常关闭保持两端事件循环和原回执消费，结算后再释放。没有新持久账本、重试或通用 Quiet。
 
-验证证据在 `artifacts/architecture/validation/` 与 `artifacts/m3-consumers/`。Windows WPF 运行、原生 GUI 和物理 IME 尚未在本轮验证；App.Tests 交叉编译受 Linux 缺少原生 `TypeLay.NativeInput.dll` fixture 限制，不宣称完整测试项目通过。后文旧 CI 与桌面事实只说明基线限制，不能替代当前工作区验证。
+验证证据在 `artifacts/architecture/validation/`、`artifacts/m3-consumers/` 与 `artifacts/m3gtk/`。原生 GUI 目前仅通过 GTK3 Unknown IME 拒绝及未用许可退休路径；Windows WPF 运行和物理 IME 尚未在本轮验证。App.Tests 交叉编译受 Linux 缺少原生 `TypeLay.NativeInput.dll` fixture 限制，不宣称完整测试项目通过。后文旧 CI 与桌面事实只说明基线限制，不能替代当前工作区验证。
 
 本次改进针对编辑回源、菜单呈现和保存设置的实际知识分散，证据与收益见目标文档的四项深化目标。用户故障发生频率未知；验证优先复用现有生产入口，只为新的责任交接补充必要场景，不扩展完整桌面或模型矩阵。
 
-## 当前身份与最近 CI
+## 当前验证环境与交付范围
 
-截至 **2026-11-06**，最近已核平台验收对应开发分支 `work/linux-usability` 的提交 [`ff5394f70391745e8e6e06549482485f79007b01`](https://github.com/DingJWuyu/Typelay/commit/ff5394f70391745e8e6e06549482485f79007b01)。[CI587](https://github.com/DingJWuyu/Typelay/actions/runs/42157722940) 于 2026-11-06 03:58:09 UTC 终态 failure，Linux 和 Windows 均已执行。`main` 保持 `09fe613a606073876483b51446211030a66a9597`，`trunk` 保持 `438c49789777beca9b14136dbbbbf41426c4d888`；不更新两者、不 force、不自动 PR。
+本机固定 .NET SDK 为 `artifacts/tools/dotnet/dotnet`，版本 10.0.401。GTK3、GTK4、Qt6 开发库可用，三端原生源码已编译。Windows App、Broker、Practice 与 NativeFixture 可交叉编译；本机不能运行 WPF。App.Tests 的 C# 编译成功，但完整构建仍缺生产 `TypeLay.NativeInput.dll`，不能把该结果写成完整测试项目通过。
 
-本头已验证前批 Qt 正式 fixture 生命周期、两项 Unicode 查询输入与 GTK4 焦点拒绝诊断。现役后续限定为三个已有失败边界的有界诊断：Qt Composing 点按回执、GTK4 租期耗时与焦点生命周期、Windows 两项既有 WPF 回归。诊断候选已准备，本地检查已完成，独立审查进行中；后继目标平台验证待完成，尚无已验证的产品修法，也未启动新的 CI。
+浏览器验证使用隔离的 headless Chromium，没有连接用户的浏览器配置。GTK3 补验沿现有 `native_e2e.py --gtk-refusal`，使用独立 Xvfb、niri 和私有 D-Bus，原入口退出码为 0，覆盖 Unknown IME 拒绝、按键透传和精确单次 `writeRetired`，另含原有 8 项通知与 19 项受控直接写入边界。原始证据见 `artifacts/m3gtk/native-result.json` 与 `run.log`；自有测试进程已退出。Xvfb/xdotool 只解包到 `artifacts/tools/x11/`，已核系统包签名，未安装到系统。
 
-实施范围保持原型 I-III；IV 的 N06-N11 只做真实禁用前端与[能力缺口](../design/implementation-gaps.md)，V 演示不做。不增加产品功能，不实施 O02 hover 或 O04 几何、材质、动效候选。旧模型、同语、源选择、人工稿、Undo 与输入安全不降级。
+GTK3 成功捕获、编辑与接受、GTK4/Qt GUI 仍未验证；完整合作 Fcitx 环境未准备。本轮没有操作用户桌面，没有物理键盘、IME 或逐页像素验收。已有模型生命周期和质量事实保持，未下载模型或扩大质量矩阵。
 
-## 最近真实平台结果
+本轮本地变更的完成条件是职责迁移、受影响验证、现役文档与独立实现评估。平台桌面验收缺口单独保留，不将其计作本轮已经通过，不自动恢复 CI、发布或此前诊断任务。
 
-以下均为 ff5394f7 的 CI587 原始证据。原始 ZIP 已核 SHA-256；JSON、TRX 与日志从下列 CI artifact 入口获取，不提交模型或原始日志。下表通过、失败和未执行分开记录。
+## 暂停后的接续顺序
 
-### Linux
+1. 用户回来要求继续后，先核对 `work/architecture-deepening` 的最新本地提交与工作树。保留现有源码、工具链和验证证据，不重做已通过且未再变动的检查。
+2. 当前修正后的 Runtime 原件为 `artifacts/architecture/validation/runtime-pause.trx`，1592 项通过；Linux 宿主与 Windows App 最新构建均为零警告、零错误。Core、Linux 输入与浏览器原验证仍见前文；编译与受控端口不能冒充原生桌面通过。
+3. 创建新的 `fork_turns=none` advisor，按固定 rubric 对最新代码提交做实现复评。只给目标文件第 1 至 332 行、必要代码和原始验证证据，不给本页评分段、评估页、旧 advisor 报告或期待分数。请求配置仍为 `gpt-6-astra`、`xhigh`，实际未回显则记为未核实。
+4. 主代理处理新证据支持的必须修正项；原生平台缺少运行条件时继续保持未验收，不能靠改 rubric 或制造通用抽象收敛。取得新的独立结论后更新评估页与本页，评分原件保持 advisor 原文。
 
-证据入口：[Linux job 127695797543](https://github.com/DingJWuyu/Typelay/actions/runs/42157722940/job/127695797543)、[正式桌面 artifact](https://github.com/DingJWuyu/Typelay/actions/runs/42157722940/artifacts/13475449422)。Qt 完整 probe 失败后，正式桌面使用已校验的未封装构建收集独立交互证据；`qt-desktop-admission.json` 明确为 `unbundled-build-input-interaction`、`distributionAcceptance: false`，不能抵消 probe 失败或冒发行包通过。
+当前整体验收未完成，按用户要求保留 `artifacts/architecture-baseline` 基线 worktree、临时诊断和测试证据，待达到完成条件后再清理。暂停不撤销已授权的架构目标，不启动 GitHub 流程或另一个重构方案。
 
-| 场景 | 当前事实 | 下一动作与边界 |
-| --- | --- | --- |
-| 共享 / Linux Browser | Core 318、Runtime 1565、Protocol 28、Windows Contracts 211 全过；正式 DOM 100/100 与 Browser 七项通过 | 保留 pending echo、后来稿/ABA、中断与 focus 恢复重入边界；不外推 Windows 可恢复拒绝重试、混版 GUI、非 Editing 确认或 rich 正文变更后 bookmark 体验 |
-| Settings / 教程 / VS Code / GTK3 | 三条桌面链通过，GTK3 正式 21 项完成 | 目标搜索、源选择与显式 Apply 保持；Unknown 专项仍未测。各项交互不替代完整视觉、可信物理输入或全部应用验收 |
-| Qt 正式桌面 | 正式桌面 artifact 的 Qt `desktop-result.json` 记录全部 26 项通过，包括真实 Host 目标搜索、先前未到达的 multiline UTF-16 选区替换/原生 Undo/redo、QPlainTextEdit 实际 pinyin、只读/特殊文档拒绝及未知回执不重试 | 这是本头未封装构建的完整已记录交互链。停用正式 caller 的固定 60s 自退后越过原失败，不证明自退是旧失败的排他原因；原外层 240s、进程退出观察与 cleanup 保持 |
-| Qt 受控搜索 | 真实 MOC/C++ 构建通过；两项 Unicode 查询、保存/交换、provider 恢复、Tab/ShiftTab/Escape、外点取消与旧 opening 退休均已越过。随后 Composing 日语行点按的 `clicked` 回执等待失败：实际日语行收到新 press，未增加 clicked | [Qt probe artifact](https://github.com/DingJWuyu/Typelay/actions/runs/42157722940/artifacts/13475533531) 已保留 `language-options-native-state.json` 与日志；旧事件记录达到上限，不能据此断言 release 接收者或几何根因。后续 Composing 零保存断言、Return/held/fresh 和配置主题截图未执行；有界点按事务诊断候选已准备，待目标平台验证。Unicode 通过来自真实剪贴板 Ctrl+V，不是物理 Unicode 键盘验收 |
-| GTK4 早期术语 | [早期 GTK artifact](https://github.com/DingJWuyu/Typelay/actions/runs/42157722940/artifacts/13476255484) 的 `gtk4-glossary-result.json` 首例 entry / ValidTranslation / save 在 capture-more→retain-more 间因 fixture abort 退出，`cases=[]`，40 项中完成 0 项；最后 800ms lease 已过期，最后快照源仍持焦，未证实源焦点丢失 | 具体慢阶段未知，不能先归因 GTK 截图、IPC 或产品焦点。仅记录既有操作耗时、到期点与 fixture 状态，不加 renew、retry 或延长租期 |
-| GTK4 正式配置 | 前七个独立场景通过，包括 Enter 保存、实际 pinyin、held repeat、跨 row 与释放后 fresh 保存。第八个 window-focus 仍在 Begin 前 readiness 失败，Begin/Save/Cancel 均为 0；TRACE 新证实服务器焦点为 0、本地焦点为 1、local flags=2 | flags=2 是本地标志，不是 IME Known/Clear。分歧何时产生仍未知；不是已经进入配置壳后的失焦。后续场景未执行，完整外点/自然越界/Esc 与原 Composing 行点按接收目标未闭，焦点生命周期诊断候选已准备但尚未目标平台验证，原资格门保持 |
-| 发行附件 / GIMP / 正式 Hy | Qt probe 失败阻断原发行附件/准入，GIMP 和正式 Linux Hy 本头均为 SKIPPED | 在新头满足原发行准入后执行；不能以旧头结果或 Qt 未封装交互替代 |
+设置修正的验证先沿真实 host 复现结果被压成布尔值，再验证实际 Python 保存方法能保留共享消息。原 Host 回归的一个旧 setup 仍断言布尔值，迁移到明确 `saved` 后该项通过；练习 fixture 改读 `PracticeResult.allowed`，不把结果对象的 truthiness 当作允许。没有放宽实际安全断言。Ruff 检查本批 20 个 Python 文件通过，差异空白检查通过；完整 Runtime 和双端构建后仅 Python 反馈与测试收尾，相关 4 项反馈回归再次通过。
 
-### Windows
+## 仍需目标平台验证的已有问题
 
-证据入口：[Windows job 127695797538](https://github.com/DingJWuyu/Typelay/actions/runs/42157722940/job/127695797538)、[Contracts artifact](https://github.com/DingJWuyu/Typelay/actions/runs/42157722940/artifacts/13475757602) 与[桌面 artifact](https://github.com/DingJWuyu/Typelay/actions/runs/42157722940/artifacts/13476750238)。Contracts 中 App 的 `runneradmin_runnervmhao91_2026-11-06_03_42_09_net10.0[1].trx` 共 1470 项，实际执行 1448，1446 通过、2 失败，其余 22 未执行；共享四套计数见上表。
+这些问题来自基线 [CI587](https://github.com/DingJWuyu/Typelay/actions/runs/42157722940)，不是本轮新头结果。它们仍限制产品验收；只有取得对应新证据才能关闭。具体产品缺口以[产品基线](../product/README.md)和[原型对照](../design/prototype-parity.md)为准。
 
-| 场景 | 当前事实 | 下一动作与边界 |
-| --- | --- | --- |
-| Onboarding 进度重定向 | `ANewDownloadReportRetargetsFromTheLastPaintedWidthRatherThanJumpingAhead` 在原 3s 观察期限超时，停在 `ObserveOnboardingFill`，尚未到达重定向断言；本头无帧轨迹 | 既有 Rendering/进度阶段及失效状态诊断候选已准备，待目标平台区分未观察到目标帧与产品轨迹错误；不改原时限、断言或动效 |
-| LocalDraft 过期 claim | `AReleasedReplaceThatExpiresBeforeClaimDoesNotConsumeTheFirstFreshRetry` 在旧过期 claim 后的 anchor 仍有效断言失败，位于第一组 fresh retry 输入之前 | 现有原件不能确定 anchor 失效来源，也不能称 fresh retry 被吞。现有取消/claim 时间线诊断候选已准备，尚待目标平台验证；不续原 down+500ms，不改变接受资格 |
-| 构建 / 主链 / 原 sheet-hide | 构建、Continuous、搬迁发行包、Hy ABI5 与 Settings 生命周期通过；CI584 失败的 `ApplicationSheetRetirementClearsOnlyItsBackgroundAndCannotReuseOldConsent(retirement: "hide")` 在本头 TRX 为 Passed | 旧 red 项不继续写成当前失败；单次通过不能证明旧故障排他根因。源确认 Keep 与 General 动效已有回归仍保留，不外推全部页面流畅或逐像素一致 |
-| Browser | setup + 8 场通过；Editing 确认 4 Keep / 3 Replace（click、Enter、Space），原源不变、submit=0；术语生命周期、按需/直接/断连与正向 submit 控制通过 | physicalIme 未测，safe-false 后重试、混版及非 Editing 完整确认仍未闭；旧头缺 render 身份不由本头成功补成因果证明 |
-| Notepad / 物理输入 | 桌面 artifact 中 Notepad 的 `result.json` 五场通过：预检、模型设置、自动预览、按需取消/直接替换/Undo、退出。自动接受/Undo 为 `trusted-source-input-required`，`acceptanceAttempted=false`；编辑回源/Undo 为 `dependency-unavailable`。原文件不变，cleanupErrors 为空 | 总结果为 failed，但不是已验证的写回回归；两项可信源输入仍未执行。软件注入或 physical-Tab 包准备不能替代实际输入验证 |
+| 已有问题 | 当前已知事实与后续验证边界 |
+| --- | --- |
+| Qt 目标语言搜索 | 实际 Composing 日语行的新 press 已到，clicked 等待失败；release 接收者与几何根因未明。验证原单次动作，不改原期限、次数或 IME 门 |
+| GTK4 术语及配置 | 源端术语首例在 capture-more 到 retain-more 之间 fixture 退出，40 个案例未完成；另有配置窗口 readiness 时服务器焦点为 0、本地为 1 的分歧。不能以耗时或本地标志推断真实源失焦或 IME Clear |
+| Windows 设置进度 | 首个目标帧未在原 3s 观察期限内出现，尚未到后续重定向断言。需沿实际 WPF 渲染定位，不放宽时限 |
+| Windows 本地稿 Replace | 过期 claim 后原 anchor 已无效，尚未验证下一次 fresh 操作；需核实际取消与 claim 顺序，不续原 down 起算的 500ms |
+| 普通输入框与浏览器 | 物理 Tab、完整中文 IME、不同显示器/DPI、完整混版及恢复路径尚未形成同头验收；软件注入、DOM 合同与受控端口不能替代 |
+| 分发与视觉 | 搬迁后的完整发行包、真实原生 Undo/redo 与各端逐页像素一致性仍需对应平台证据；构建和静态检查不关闭这些缺口 |
 
-## 模型能力边界
-
-CI587 两个平台独立 Index 包生命周期均完成全部 12 阶段，Linux 用时 107.309s；质量仍为 `not-reviewed`，两项任务均未运行 Index 桌面验收。生命周期通过不等于翻译质量、桌面体验或先前断连根因已闭合。
-
-Index 仍是新用户明确准备时的默认，保留旧 Argos/Hy 安装与选择，不扩模型。固定 Index profile 的中英双向 Glossary 登记范围保持；其他方向、缺失或不匹配 profile、风格/组合/另述仍不由该证据放行。自然/正式风格和换种说法仍是未完成功能，不归 N06-N11 前端例外，也不重启优化研究。
-
-## 当前工作与收束条件
-
-本批诊断对应用户搜索目标语言、打开术语菜单、首次设置进度及重译重试路径的已观察阻塞。日常发生频率未知，实际影响与根因需分开验证。只在既有测试和失败点保留有界状态与时序，成本和维护范围有限，收益是让下一次失败能区分产品行为、观察缺口和测试调度；没有新假设或新证据时不重复重跑。
-
-| 责任 / 模块 | 当前工作与依赖 | 收束条件 |
-| --- | --- | --- |
-| Qt测试 | Composing 单次点按的有界 geometry / press / release 诊断候选已准备，本地检查已完成，独立审查进行中，目标平台验证待完成；依赖现有 `language-options-native-state.json`、fixture 和[受控输入边界](../../tests/linux/qt_cooperative/run.py) | 原输入次数、等待、clicked 断言与 IME 门不变；查明 press/release/命中和布局关系后再决定修法。未取得下一同头 Qt GUI 结果前保持失败未闭 |
-| GTK4合作组件 | 早期 capture-more→retain-more 的阶段耗时及第八场本地/服务器焦点生命周期诊断候选已准备，本地检查已完成，独立审查进行中，目标平台验证待完成；依赖现有术语、[配置测试](../../tests/linux/gtk_session_reentry.py)和合作组件 TRACE | 保原 800ms、readiness 时限与焦点/IME 门；不加 renew、retry、抢焦点或补发 Begin。分别找出耗时阶段与首次焦点分歧，再决定是否需要产品修改 |
-| Windows桌面测试 | [Onboarding](../../tests/windows/TypeLay.App.Tests/SetupRenderingTests.OnboardingProgressMotion.cs) Rendering/进度阶段与 [LocalDraft](../../tests/windows/TypeLay.App.Tests/LocalDraftTapInputTests.cs) 取消/claim 诊断候选已准备，本地检查已完成，独立审查进行中，目标平台验证待完成；依赖同头 WPF 原生运行 | 不改 3s、动画时长、原 down+500ms 或断言；分别定位首个未到阶段与 anchor 失效来源，不以测试名推断未执行的重试结果 |
-| 集成与文档 | 三个诊断候选本地检查已完成，独立审查进行中，目标平台验证待完成；同步维护本页及两份设计边界，尚未发布诊断或启动新 CI | 先核精确 head、未覆盖他人提交及原发行门，再按已有授权推进验证。没有目标平台条件时继续静态/局部检查，写清依赖；CI 等待不代表项目完成 |
-
-Qt 目标搜索沿用 config-only Begin→退休 ACK→配置保存链，原 source/target/交换保留；仅按需快捷键已启用的源态开放，自动/禁快捷键及编辑态禁用。Host 原 generation/owner 门仍在 StopSession 前拒绝陈旧请求。GTK4 原次 Return 的 capture/IME/held claim 已有真实证据，Unknown/Composing 不借后续 Clear 升级，同硬件 held 跨 row 不升级，release 后才可接受 fresh 保存。GTK3 保源选择与显式 Apply，不冒完整原型方向头/交换/即时保存。
-
-## 验证环境与未闭边界
-
-CI587 已提供本头 Qt/GTK 原生构建与实际桌面、WPF 及模型生命周期证据，范围如上。后继诊断候选已准备，本地检查已完成，独立审查进行中，目标平台验证待完成；CI587 结果不能替代这些候选的新头平台结果。文档检查只覆盖事实、UTF-8/换行、精确基线差异与引用，不冒原生构建、GUI 或模型验收。
-
-后继候选最终代码已完成仓库 Ruff 0.14.0 lint/format（181 文件）、受影响 Python compileall、既有 Qt 候选观察 18/18、GTK geometry 79 项与 preview 3 项合计 82/82、input-feedback 218/218，以及新增 Qt 日志 helper 4 项测试（含 6 次真实子进程操作）。状态发布场景已计入 79 项 geometry，不另计套件。GTK 补丁与受控 C/C++ 的严格局部检查只证明相应局部边界；本地没有原生 Qt/GTK 开发 SDK，也没有 .NET/WPF 编译与运行环境，仍需目标 CI 验证。
-
-- Qt 本头正式桌面已生成六张主题、两张中文编辑、两张暂停图；产出不等于逐图复核完成。此前已阅 More 三点、Expand 箭头与 paused 采色证据保留，英文 UI 与展开态 Collapse 实图仍未齐。受控配置失败后的新主题图未运行，不能混作正式桌面已有图。
-- “暂时隐藏”的既有受控单次 escape/旧 view 拒绝及 More 全部 12 项可见证据保留；完整 Host 隐藏、再次聚焦恢复用户链仍未闭。
-- 完整双端逐页、真实键鼠与 IME 验收未完。Browser safe-false→retry、混版 GUI、非 Editing 确认和 changed-rich bookmark 体验仍未闭。
-- S08 材质/中间组合像素、多 DPI、跨页 Full 动效及 O02/O03/O04 余项仍有差距。26px/15px 等控件断言不代替逐像素 1:1；当前没有整端视觉完成结论。
-- 原 down+500ms、FirstWake 150ms、焦点/IME/源身份、接受资格、写回和 Undo 条件保持。安全退休与材质回退不能冒完整原型呈现。
+Index 仍是用户明确准备时的默认模型，保留已有 Argos/Hy 安装与选择。术语仅对已登记固定 Index profile 的中英双向开放；风格、另述及组合质量门不因架构整理而开放。安装、握手、采集和语言质量是不同证据。

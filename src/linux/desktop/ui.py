@@ -17,6 +17,8 @@ from design import (
 )
 from design import row as design_row
 from model_status import activity_status, model_notice, render_download, set_status_tone
+from settings_feedback import notice as commit_notice
+from settings_feedback import saved as commit_saved
 from setup import InstallationProgress
 
 gi.require_version("Gtk", "3.0")
@@ -581,15 +583,11 @@ class Tutorial:
                     return
                 saved = await self.owner.host.ask("dismissOnboarding")
             if self.current(opening, revision) and self.pending is token:
-                if saved is True:
+                if commit_saved(saved):
+                    self.owner.report_settings_commit(saved)
                     self.dismiss()
                 else:
-                    self.message.set_text(
-                        self.owner.tr(
-                            "教程提示偏好未保存，请重试。",
-                            "The tutorial preference was not saved. Try again.",
-                        )
-                    )
+                    self.message.set_text(commit_notice(saved))
         except (OSError, ValueError, EOFError, TimeoutError):
             if self.current(opening, revision) and self.pending is token:
                 self.message.set_text(
@@ -3978,6 +3976,12 @@ class Settings:
             self.message.set_text(failure)
             self.settings_feedback_owned = True
 
+    def report_settings_commit(self, result):
+        message = commit_notice(result)
+        self.report_save_result(
+            commit_saved(result), message, notice=message if commit_saved(result) else None
+        )
+
     async def load_draft_messages(self):
         if self.draft_messages is not None or self.loading_draft_messages:
             return
@@ -4239,12 +4243,7 @@ class Settings:
                     )
                 except (OSError, ValueError, EOFError, TimeoutError):
                     saved = None
-                self.report_save_result(
-                    saved is True,
-                    "未保存，已恢复原设置。请检查语言方向或系统权限。"
-                    if saved is False
-                    else "上次设置操作结果未确认，请打开设置检查。",
-                )
+                self.report_settings_commit(saved)
         finally:
             self.swapping_languages = False
             # Only broadcasts from the host replace the committed direction.
@@ -5034,13 +5033,7 @@ class Settings:
                 saved = await self.host.ask("traySettings", patch, timeout=3)
                 if dialog is not self.language_dialog:
                     return
-                feedback.set_text(
-                    ""
-                    if saved is True
-                    else self.tr(
-                        "未确认保存，请重新打开检查。", "Save was not confirmed. Reopen to check."
-                    )
-                )
+                feedback.set_text(commit_notice(saved))
             except (OSError, ValueError, EOFError, TimeoutError):
                 feedback.set_text(
                     self.tr(

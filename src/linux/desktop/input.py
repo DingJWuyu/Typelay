@@ -292,6 +292,7 @@ class Input:
         self.practice_return = None
         self.practice_retired = lambda _run: None
         self.practice_settings_changed = lambda: None
+        self.settings_commit_reported = lambda _result: None
         self.closing = False
         self.niri = Niri(glib, self.changed)
         self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -569,6 +570,8 @@ class Input:
                     "expectedRevision": configuration["settingsRevision"],
                 },
             )
+            if isinstance(reply, dict) and reply.get("state") == "CommittedNotificationFailed":
+                self.settings_commit_reported(reply)
             if self._language_configuration is not configuration:
                 return  # A committed save may already have retired via settings notification.
             if not self.language_configuration_current(configuration):

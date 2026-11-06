@@ -18,6 +18,8 @@ import time
 from collections import deque
 from pathlib import Path
 
+from support.settings_commit import saved as commit_saved
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -2750,7 +2752,10 @@ def main(arguments=None):
             # Actual empty inventory is the negative readiness proof. The final
             # ready-frame below is explicitly a renderer input, not a model.
             assert status.get("modelReady") is False
-            assert await host.ask("traySettings", {"source": "auto", "target": "en"}) is True
+            assert (
+                commit_saved(await host.ask("traySettings", {"source": "auto", "target": "en"}))
+                is True
+            )
             surface.open_tutorial()
             await settle(lambda: tutorial.window.is_active())
             tutorial.window.unmaximize()
@@ -3380,9 +3385,9 @@ def main(arguments=None):
             )
             surface.controls["textSize"].set_value(18)
             await settle(lambda: state.get("textSize") == 18)
-            assert await host.ask("togglePause") is True
+            assert commit_saved(await host.ask("togglePause")) is True
             await settle(lambda: state.get("enabled") is False)
-            assert await host.ask("togglePause") is True
+            assert commit_saved(await host.ask("togglePause")) is True
             await settle(lambda: state.get("enabled") is True)
             saved = json.loads((directory / "config/settings.json").read_text())
             assert (
@@ -3653,7 +3658,7 @@ def main(arguments=None):
             await settle(lambda: state["wakeShortcut"] == "Ctrl+Shift+F9")
 
             async def toggle_fixture_application(enabled):
-                assert await host.ask("manageApplication", "fixture-editor") is True
+                assert commit_saved(await host.ask("manageApplication", "fixture-editor")) is True
                 surface.sidebar.select_row(surface.nav_rows["application-support"])
                 surface.window.present()
                 await settle(

@@ -6,6 +6,15 @@ Progress is metadata only; the authenticated native peer supplies the binding.
 
 import asyncio
 import uuid
+from dataclasses import dataclass
+
+from settings_feedback import saved as commit_saved
+
+
+@dataclass(frozen=True)
+class PracticeResult:
+    allowed: bool
+    settings: dict | None = None
 
 
 class PracticeSession:
@@ -123,25 +132,28 @@ class PracticeSession:
         return confirmed
 
     async def begin(self, pid, confirmed_switch, *, lesson="onDemand"):
+        commit = None
         if lesson not in ("onDemand", "automatic") or self.ending or self.end_unconfirmed:
-            return False
+            return PracticeResult(False, commit)
         async with self.lock:
             if not self.support.owns_practice(pid) or not await self.retire():
-                return False
+                return PracticeResult(False, commit)
             self.finish_pending = None
             self.lesson = lesson
-            if await self.host.ask(self.operation("start"), confirmed_switch) is not True:
-                return False
+            start = await self.host.ask(self.operation("start"), confirmed_switch)
+            commit = start if isinstance(start, dict) else None
+            if start is not True and not commit_saved(start):
+                return PracticeResult(False, commit)
             if not self.support.owns_practice(pid):
-                return False
+                return PracticeResult(False, commit)
             run = str(uuid.uuid4())
             if await self.host.ask(self.operation("begin"), run) is not True:
-                return False
+                return PracticeResult(False, commit)
             if not self.support.owns_practice(pid):
                 await self.host.ask(self.operation("end"), run)
-                return False
+                return PracticeResult(False, commit)
             self.pid, self.run = pid, run
-            return True
+            return PracticeResult(True, commit)
 
     async def end(self, pid):
         # The window destroys its native source immediately. Releasing ownership
@@ -270,12 +282,12 @@ class PracticeSession:
                 async with self.lock:
                     if pid == self.pid and self.lesson == lesson:
                         await self.retire()
-            return False
+            return PracticeResult(False)
         async with self.lock:
             pending = self.finish_pending
             if pending is None:
                 if pid != self.pid or self.run is None or lesson != self.lesson:
-                    return False
+                    return PracticeResult(False)
                 pending = {"pid": pid, "run": self.run, "lesson": lesson}
                 self.finish_pending = pending
             if (
@@ -285,12 +297,13 @@ class PracticeSession:
                 or self.ending
                 or self.end_unconfirmed
             ):
-                return False
+                return PracticeResult(False)
             if lesson != "automatic":
-                saved = await self.host.ask(self.operation("finish"), pending["run"]) is True
+                result = await self.host.ask(self.operation("finish"), pending["run"])
+                saved = commit_saved(result)
                 if saved:
                     self.finish_pending = None
-                return saved
+                return PracticeResult(saved, result)
             result = None
             try:
                 result = await self.host.ask(self.operation("finish"), pending["run"])
@@ -321,4 +334,4 @@ class PracticeSession:
             if self.run == pending["run"]:
                 self.pid = self.run = self.target = None
             self.ending = False
-            return saved and not self.end_unconfirmed
+            return PracticeResult(saved and not self.end_unconfirmed, result)

@@ -16,6 +16,8 @@ import time
 import uuid
 
 from paths import Paths, connect_private, peer_credentials
+from settings_feedback import notice as commit_notice
+from settings_feedback import saved as commit_saved
 from setup import FAILURE_PREFIX, PREPARED_PREFIX, PROGRESS_PREFIX, failure_code
 from wire import MAX_FRAME, Decoder, encode, now_ms, receive_sync
 
@@ -862,13 +864,22 @@ async def desktop(paths, background, lock, tutorial=False):
         )
         components["tray"].bind_model_owner(components["settings"])
 
+        def report_settings_commit(result):
+            components["settings"].report_settings_commit(result)
+            components["tray"].save_problem = commit_notice(result) or None
+            components["tray"].refresh()
+
+        components["input"].settings_commit_reported = report_settings_commit
+
         async def command(operation, value, caller_pid=None):
             if operation == "activateModel":
                 return await activate_model(host, value)
             if operation in ("wake", "direct"):
                 return await components["input"].trigger(operation, value)
             if operation == "togglePause":
-                return await host.ask("togglePause")
+                result = await host.ask("togglePause")
+                report_settings_commit(result)
+                return result
             if operation == "quickPanel":
                 components["tray"].show_panel()
                 return True
@@ -911,11 +922,14 @@ async def desktop(paths, background, lock, tutorial=False):
                     or type(value["confirmedSwitch"]) is not bool
                 ):
                     return False
-                return await practice.begin(
+                started = await practice.begin(
                     caller_pid,
                     value["confirmedSwitch"],
                     lesson="automatic" if operation == "startAutomaticPractice" else "onDemand",
                 )
+                if started.settings is not None:
+                    report_settings_commit(started.settings)
+                return {"started": started.allowed, "settings": started.settings}
             if operation == "endOnDemandPractice":
                 return await practice.end(caller_pid) if value is None else False
             if operation == "finishOnboarding":
@@ -928,14 +942,18 @@ async def desktop(paths, background, lock, tutorial=False):
                 ):
                     return False
                 if value["outcome"] == "completed":
-                    saved = await practice.complete(
+                    finished = await practice.complete(
                         caller_pid, lesson=value.get("lesson", "onDemand")
                     )
+                    saved, report = finished.allowed, finished.settings
                 else:
-                    saved = await host.ask("dismissOnboarding") is True
+                    report = await host.ask("dismissOnboarding")
+                    saved = commit_saved(report)
+                if report is not None:
+                    report_settings_commit(report)
                 if saved:
                     components["settings"].tutorial.dismiss()
-                return saved
+                return {"completed": saved, "settings": report}
             if operation == "quit":
                 GLib.timeout_add(50, lambda: (stopping.set(), False)[1])
                 return True
@@ -1131,9 +1149,12 @@ def main():
             parser.error("--editor-host does not accept application arguments")
         return editor_host(paths)
     if args.toggle_pause or args.quick_panel:
-        return (
-            0 if control(paths, "togglePause" if args.toggle_pause else "quickPanel") is True else 1
-        )
+        result = control(paths, "togglePause" if args.toggle_pause else "quickPanel")
+        if args.toggle_pause:
+            if message := commit_notice(result):
+                print(message, file=sys.stderr)
+            return 0 if commit_saved(result) else 1
+        return 0 if result is True else 1
     if args.wake or args.direct:
         from niri import contents, request
 

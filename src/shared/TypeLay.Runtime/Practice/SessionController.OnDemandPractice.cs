@@ -6,7 +6,8 @@ public sealed partial class SessionController
 {
     private sealed class OnDemandPracticeCoordinator(SessionController owner)
     {
-        internal OnDemandPracticeProgress? _practiceWakeCommand, _pendingDirectPractice;
+        private OnDemandPracticeProgress? _practiceWakeCommand;
+        private (Guid JobId, OnDemandPracticeProgress Command)? _pendingDirectCommand;
         private Guid _lastRetiredPracticeRun;
         private long _practiceBoundAt, _practicePreviewAt;
         public OnDemandPracticeProgress? PracticeProgress
@@ -27,7 +28,7 @@ public sealed partial class SessionController
                 return true;
             if (PracticeProgress is { } previous)
                 _lastRetiredPracticeRun = previous.RunId;
-            _practiceWakeCommand = null;
+            RetireCommands();
             PracticeProgress = new(runId, null, owner._hook.CommandGeneration, 0, owner._commandFeedbackRevision, false, false);
             PracticeProgressChanged?.Invoke(PracticeProgress);
             return true;
@@ -80,12 +81,65 @@ public sealed partial class SessionController
             if (PracticeProgress?.RunId != runId)
                 return false;
             _lastRetiredPracticeRun = runId;
-            _practiceWakeCommand = null;
+            RetireCommands();
             PracticeProgress = null;
             PracticeProgressChanged?.Invoke(null);
             return true;
         }
-        internal OnDemandPracticeProgress? PracticeCommand(InputNotice notice, bool direct)
+        internal void RecordPreviewCommand(InputNotice notice)
+        {
+            _practiceWakeCommand = notice.Kind == "wake" ? PracticeCommand(notice, direct: false) : null;
+        }
+
+        internal OnDemandPracticeProgress? PreviewCommandFor(TranslationJob job) =>
+            job.Kind == TranslationKind.FullOrSelection && _practiceWakeCommand?.Target == job.Basis.Target
+                ? _practiceWakeCommand : null;
+
+        internal void ObserveTranslatedPreview(OnDemandPracticeProgress? command, TranslationJob job, bool completed)
+        {
+            if (completed && command is not null && ReferenceEquals(command, _practiceWakeCommand)
+                && job.Kind == TranslationKind.FullOrSelection && command.Target == job.Basis.Target
+                && owner._hook.GetFocus(job.Basis.Target) != FocusMember.Other)
+                CompletePracticeCommand(command, direct: false);
+        }
+
+        internal void RecordDirectCommand(InputNotice notice, TranslationJob job)
+        {
+            // Retain only provenance. The direct operation remains the sole
+            // owner of its source body and detached execution lifetime.
+            _pendingDirectCommand = notice.Kind == "direct" && notice.Source?.Target == job.Basis.Target
+                && PracticeCommand(notice, direct: true) is { } command ? (job.Id, command) : null;
+        }
+
+        internal OnDemandPracticeProgress? TakeDirectCommand(TranslationJob job)
+        {
+            if (_pendingDirectCommand is not { } pending || pending.JobId != job.Id
+                || pending.Command.Target != job.Basis.Target)
+                return null;
+            _pendingDirectCommand = null;
+            return pending.Command;
+        }
+
+        internal void ObserveDirectReplacement(OnDemandPracticeProgress? command, WritePlan plan, WriteReceipt receipt)
+        {
+            if (command?.Target == plan.Expected.Target
+                && receipt.Status == WriteStatus.Verified && receipt.Reason == Denial.None
+                && receipt.VerifiedSnapshot is { IsUsable: true } after && after.Target == plan.Expected.Target
+                && after.Text == plan.ResultText && after.Selection == new TextRange(plan.Caret, plan.Caret))
+                CompletePracticeCommand(command, direct: true);
+        }
+
+        // A foreground session can retire while its independent direct command
+        // is queued or executing. Only that preview loses its lesson provenance.
+        internal void RetirePreview() => _practiceWakeCommand = null;
+
+        internal void RetireCommands()
+        {
+            RetirePreview();
+            _pendingDirectCommand = null;
+        }
+
+        private OnDemandPracticeProgress? PracticeCommand(InputNotice notice, bool direct)
         {
             // AcceptedAtMs is the existing adapter acceptance timestamp, not proof of
             // a physical key-down. Ties are conservative: queued earlier commands
@@ -103,7 +157,7 @@ public sealed partial class SessionController
                 Revision = owner._commandFeedbackRevision
             };
         }
-        internal void CompletePracticeCommand(OnDemandPracticeProgress? command, bool direct)
+        private void CompletePracticeCommand(OnDemandPracticeProgress? command, bool direct)
         {
             // Begin publishes the current command revision as a watermark. Even a
             // reused host run ID cannot adopt work accepted before that registration.
@@ -114,7 +168,10 @@ public sealed partial class SessionController
                 || !direct && progress.PreviewCompleted)
                 return;
             if (!direct)
+            {
+                RetirePreview();
                 _practicePreviewAt = owner._loop.NowMs;
+            }
             PracticeProgress = command with
             {
                 PreviewCompleted = true,

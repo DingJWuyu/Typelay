@@ -22,6 +22,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from support.settings_commit import saved as commit_saved
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 from input import Input  # noqa: E402
@@ -394,9 +396,13 @@ while True:
             (french["labelZh"], french["labelEn"], french["nativeLabel"]),
             ("法语", "French", "français"),
         )
-        self.assertTrue(await self.ask("traySettings", {"source": "zh", "target": "fr"}))
+        self.assertTrue(
+            commit_saved(await self.ask("traySettings", {"source": "zh", "target": "fr"}))
+        )
         saved = (self.home / "config/settings.json").read_bytes()
-        self.assertFalse(await self.ask("traySettings", {"source": "fr", "target": "ja"}))
+        self.assertFalse(
+            commit_saved(await self.ask("traySettings", {"source": "fr", "target": "ja"}))
+        )
         self.assertEqual((self.home / "config/settings.json").read_bytes(), saved)
         switched, switched_root = self.model_generation(
             previous=generation, active_packages=["argos-zh-en"], operation="Select"
@@ -459,7 +465,9 @@ while True:
             ),
             "confirmed",
         )
-        self.assertTrue(await self.ask("traySettings", {"source": "zh", "target": "ja"}))
+        self.assertTrue(
+            commit_saved(await self.ask("traySettings", {"source": "zh", "target": "ja"}))
+        )
         preparation = {"phase": "Idle", "hyRuntimeAvailable": True, "hyUnavailableReason": None}
         view = await self.ask("translationPreparation", preparation)
         choices = self.latest("settingsGuidance")["languageChoices"]
@@ -576,7 +584,7 @@ while True:
             ),
             "confirmed",
         )
-        self.assertTrue(await self.ask("settings", {"source": "zh", "target": "ja"}))
+        self.assertTrue(commit_saved(await self.ask("settings", {"source": "zh", "target": "ja"})))
         request = self.editor_request()
         response = await self.ask(
             "translateEditorSnapshot", {"identity": uuid.uuid4().hex, "request": request}
@@ -646,7 +654,9 @@ while True:
                     while len((root / "requests").read_text().splitlines()) == before:
                         await asyncio.sleep(0.01)
                 if change == "settings":
-                    self.assertTrue(await self.ask("settings", {"source": "en", "target": "zh"}))
+                    self.assertTrue(
+                        commit_saved(await self.ask("settings", {"source": "en", "target": "zh"}))
+                    )
                 else:
                     await self.send(
                         {
@@ -1434,9 +1444,9 @@ while True:
             {**identity, "rules": [{"sourceTerm": "TypeLay", "targetTerm": "TypeLay"}]},
         )
         self.assertEqual(result, {"saved": True, "code": "glossary-saved-inactive"})
-        self.assertFalse(await self.ask("settings", {"styles": None}))
-        self.assertFalse(await self.ask("settings", {"glossary": None}))
-        self.assertTrue(await self.ask("settings", {"theme": "dark"}))
+        self.assertFalse(commit_saved(await self.ask("settings", {"styles": None})))
+        self.assertFalse(commit_saved(await self.ask("settings", {"glossary": None})))
+        self.assertTrue(commit_saved(await self.ask("settings", {"theme": "dark"})))
         ordinary = self.latest("settings")
         self.assertNotIn("styles", ordinary)
         self.assertNotIn("glossary", ordinary)
@@ -1472,13 +1482,15 @@ while True:
                 )
                 self.assertEqual(settings_path.read_bytes(), before)
                 self.assertEqual(self.latest("settings")["motion"], "system")
-                self.assertFalse(await self.ask("settings", {"motion": mode}))
+                self.assertFalse(commit_saved(await self.ask("settings", {"motion": mode})))
                 self.assertEqual(settings_path.read_bytes(), before)
         # Whole-object saves retain explicit mode even if an old boolean mirror disagrees.
-        self.assertTrue(await self.ask("settings", {"motion": "full", "reduceMotion": True}))
+        self.assertTrue(
+            commit_saved(await self.ask("settings", {"motion": "full", "reduceMotion": True}))
+        )
         self.assertEqual(self.latest("settings")["motion"], "full")
         self.assertFalse(self.latest("settings")["reduceMotion"])
-        self.assertTrue(await self.ask("settings", {"reduceMotion": False}))
+        self.assertTrue(commit_saved(await self.ask("settings", {"reduceMotion": False})))
         self.assertEqual(self.latest("settings")["motion"], "system")
 
     async def test_application_list_customization_preserves_policy_and_explicit_empty(self):
@@ -1593,7 +1605,7 @@ while True:
             self.assertTrue(changed["saved"])
             current = await self.ask("getApplicationList", {"knownApplications": known})
         self.assertEqual(current["applications"], [])
-        self.assertTrue(await self.ask("settings", old_form))
+        self.assertTrue(commit_saved(await self.ask("settings", old_form)))
         current = await self.ask("getApplicationList", {"knownApplications": known})
         self.assertTrue(current["customized"])
         self.assertEqual(current["applications"], [])
@@ -1607,7 +1619,7 @@ while True:
             },
         )
         self.assertTrue(changed["saved"])
-        self.assertTrue(await self.ask("settings", {**old_form, "theme": "dark"}))
+        self.assertTrue(commit_saved(await self.ask("settings", {**old_form, "theme": "dark"})))
         current = await self.ask("getApplicationList", {"knownApplications": known})
         self.assertEqual(current["applications"], ["new-editor"])
         self.assertTrue(current["customized"])
@@ -1658,15 +1670,15 @@ while True:
                 )
             )["saved"]
         )
-        self.assertTrue(await self.ask("manageApplication", "editor"))
-        self.assertTrue(await self.ask("manageApplication", "mail"))
-        self.assertTrue(await self.ask("manageApplication", "EDITOR"))
+        self.assertTrue(commit_saved(await self.ask("manageApplication", "editor")))
+        self.assertTrue(commit_saved(await self.ask("manageApplication", "mail")))
+        self.assertTrue(commit_saved(await self.ask("manageApplication", "EDITOR")))
         state = self.latest("settings")
         self.assertEqual(state["managedApplications"], ["editor", "mail"])
         self.assertFalse(state["excludedApplications"])
-        self.assertTrue(await self.ask("togglePause"))
+        self.assertTrue(commit_saved(await self.ask("togglePause")))
         self.assertFalse(self.latest("settings")["enabled"])
-        self.assertTrue(await self.ask("togglePause"))
+        self.assertTrue(commit_saved(await self.ask("togglePause")))
         self.assertTrue(self.latest("settings")["enabled"])
         for invalid in (
             {"accent": "unknown"},
@@ -1745,8 +1757,8 @@ while True:
             )
             self.assertFalse(rejected["saved"])
             self.assertEqual(rejected["code"], "invalid-application-policy")
-        self.assertFalse(await self.ask("togglePause", {"enabled": False}))
-        self.assertFalse(await self.ask("manageApplication", "bad\nidentity"))
+        self.assertFalse(commit_saved(await self.ask("togglePause", {"enabled": False})))
+        self.assertFalse(commit_saved(await self.ask("manageApplication", "bad\nidentity")))
 
     async def test_overlay_style_route_accepts_only_frozen_session_payload_and_keeps_release_closed(
         self,
@@ -1911,7 +1923,7 @@ while True:
             state["savedPreferences"], {"default": "Formal", "applications": {"mail": "Formal"}}
         )
         self.assertEqual((await self.ask("getGlossarySettings"))["savedSnapshot"]["rules"], rules)
-        self.assertTrue(await self.ask("settings", {"theme": "dark"}))
+        self.assertTrue(commit_saved(await self.ask("settings", {"theme": "dark"})))
         self.assertNotIn("styles", self.latest("settings"))
         self.assertNotIn("glossary", self.latest("settings"))
         self.assertEqual(
@@ -1947,7 +1959,7 @@ while True:
         state = await self.ask("getGlossarySettings")
         rules = state["savedSnapshot"]["rules"]
         draft = self.translation_request(state["settingsRevision"], rules=[rules[0]])
-        self.assertTrue(await self.ask("settings", {"theme": "dark"}))
+        self.assertTrue(commit_saved(await self.ask("settings", {"theme": "dark"})))
         before = settings_file.read_bytes()
         stale = await self.ask("changeGlossary", draft)
         self.assertEqual(stale, {"saved": False, "code": "glossary-stale"})
@@ -2090,7 +2102,7 @@ while True:
         }
 
     async def test_shortcut_validation_returns_finite_error_without_saving(self):
-        self.assertTrue(await self.ask("settings", {"theme": "dark"}))
+        self.assertTrue(commit_saved(await self.ask("settings", {"theme": "dark"})))
         before = (self.home / "config/settings.json").read_bytes()
         cases = (
             ({"wake": "F7"}, "InvalidOnDemandBindings"),
@@ -2109,7 +2121,7 @@ while True:
                 self.assertIsNot(response.get("confirmationRequired"), True)
 
     async def test_non_shortcut_outcomes_do_not_emit_shortcut_error(self):
-        self.assertTrue(await self.ask("settings", {"theme": "dark"}))
+        self.assertTrue(commit_saved(await self.ask("settings", {"theme": "dark"})))
         settings_file = self.home / "config/settings.json"
         before = settings_file.read_bytes()
         malformed = self.draft()
@@ -2143,7 +2155,11 @@ while True:
         self.assertNotEqual(saved, before)
 
         self.assertTrue(
-            await self.ask("settings", {"excludedApplications": [f"app-{n}" for n in range(256)]})
+            commit_saved(
+                await self.ask(
+                    "settings", {"excludedApplications": [f"app-{n}" for n in range(256)]}
+                )
+            )
         )
         before_exclusions = settings_file.read_bytes()
         exclusion = self.draft()
@@ -2154,7 +2170,7 @@ while True:
         self.assertEqual(settings_file.read_bytes(), before_exclusions)
 
     async def test_common_shortcut_conflict_keeps_settings_until_exact_draft_is_confirmed(self):
-        await self.ask("settings", {"theme": "dark"})
+        commit_saved(await self.ask("settings", {"theme": "dark"}))
         before = (self.home / "config/settings.json").read_bytes()
         draft = self.draft()
         draft["shortcuts"]["wake"] = "Ctrl+C"
@@ -2184,13 +2200,15 @@ while True:
             "values": ["removed-elsewhere", "KEEP", "added-here"],
         }
         self.assertTrue(
-            await self.ask(
-                "settings",
-                {
-                    "theme": "dark",
-                    "source": "zh",
-                    "excludedApplications": ["External", "Remove-Here", "Keep"],
-                },
+            commit_saved(
+                await self.ask(
+                    "settings",
+                    {
+                        "theme": "dark",
+                        "source": "zh",
+                        "excludedApplications": ["External", "Remove-Here", "Keep"],
+                    },
+                )
             )
         )
         self.assertTrue((await self.ask("saveSettingsDraft", draft))["saved"])
@@ -2254,7 +2272,9 @@ while True:
         self.assertEqual((self.home / "config/settings.json").read_bytes(), saved)
 
     async def test_failed_exclusion_save_keeps_disk_and_retry_merges_later_external_changes(self):
-        self.assertTrue(await self.ask("settings", {"excludedApplications": ["keep", "remove"]}))
+        self.assertTrue(
+            commit_saved(await self.ask("settings", {"excludedApplications": ["keep", "remove"]}))
+        )
         before = (self.home / "config/settings.json").read_bytes()
         draft = self.draft()
         draft["exclusions"] = {"baseline": ["keep", "remove"], "values": ["keep", "added"]}
@@ -2264,7 +2284,9 @@ while True:
         self.assertEqual((self.home / "config/settings.json").read_bytes(), before)
         obstruction.rmdir()
         self.assertTrue(
-            await self.ask("settings", {"excludedApplications": ["keep", "remove", "external"]})
+            commit_saved(
+                await self.ask("settings", {"excludedApplications": ["keep", "remove", "external"]})
+            )
         )
         draft["request"] += 1
         self.assertTrue((await self.ask("saveSettingsDraft", draft))["saved"])
@@ -2274,7 +2296,11 @@ while True:
 
     async def test_exclusion_capacity_rejects_the_whole_draft_without_saving_shortcuts(self):
         self.assertTrue(
-            await self.ask("settings", {"excludedApplications": [f"app-{n}" for n in range(256)]})
+            commit_saved(
+                await self.ask(
+                    "settings", {"excludedApplications": [f"app-{n}" for n in range(256)]}
+                )
+            )
         )
         before = (self.home / "config/settings.json").read_bytes()
         draft = self.draft()
@@ -2289,7 +2315,9 @@ while True:
         # Exercise the actual C# private-pipe contract without starting a model
         # or claiming that these supplied observations prove a native desktop.
         self.assertTrue(
-            await self.ask("settings", {"enabled": True, "mode": "Automatic", "theme": "dark"})
+            commit_saved(
+                await self.ask("settings", {"enabled": True, "mode": "Automatic", "theme": "dark"})
+            )
         )
         run = str(uuid.uuid4())
         self.assertTrue(await self.ask("beginAutomaticPractice", run))
@@ -2353,7 +2381,7 @@ while True:
             return False
 
         self.input_reply = refuse
-        self.assertFalse(await self.ask("traySettings", {"enabled": False}))
+        self.assertFalse(commit_saved(await self.ask("traySettings", {"enabled": False})))
         self.assertEqual(calls, [("retireAutomaticPractice", binding)])
         self.assertEqual((self.home / "config/settings.json").read_bytes(), before)
         self.assertTrue(self.latest("settings")["enabled"])
@@ -2373,7 +2401,7 @@ while True:
         self.input_reply = lambda operation, data: calls.append((operation, data))
         settings = self.latest("settings")
         before = await self.ask("automaticPracticeProgress")
-        self.assertTrue(await self.ask("settings", dict(settings)))
+        self.assertTrue(commit_saved(await self.ask("settings", dict(settings))))
         self.assertEqual(await self.ask("automaticPracticeProgress"), before)
         for key in ("runId", "connectionId", "commandGeneration"):
             self.assertFalse(
@@ -2401,13 +2429,13 @@ while True:
     async def test_automatic_presentation_keeps_the_explicit_mode_change_separate_from_progress(
         self,
     ):
-        self.assertTrue(await self.ask("settings", {"mode": "OnDemand"}))
+        self.assertTrue(commit_saved(await self.ask("settings", {"mode": "OnDemand"})))
         presentation = await self.ask("automaticPractice")
         self.assertIn("自动", presentation["confirmationText"])
         self.assertIn("不会自动恢复", presentation["confirmationText"])
         self.assertIn("新的原文", presentation["replaceStep"])
         self.assertFalse(presentation["completed"])
-        self.assertFalse(await self.ask("startAutomaticPractice", False))
+        self.assertFalse(commit_saved(await self.ask("startAutomaticPractice", False)))
         self.assertEqual(self.latest("settings")["mode"], "OnDemand")
         self.assertEqual(
             await self.ask("finishAutomaticPractice", str(uuid.uuid4())),
@@ -2415,7 +2443,7 @@ while True:
         )
 
     async def test_theme_persistence_failure_is_confirmed_and_allows_explicit_retry(self):
-        self.assertIs(await self.ask("settings", {"theme": "dark"}), True)
+        self.assertIs(commit_saved(await self.ask("settings", {"theme": "dark"})), True)
         saved = self.latest("settings")
         revision = self.latest("status")["commandFeedbackRevision"]
         settings_file = self.home / "config/settings.json"
@@ -2425,18 +2453,18 @@ while True:
         blocker.mkdir()
         try:
             self.events.clear()
-            self.assertIs(await self.ask("settings", requested), False)
+            self.assertIs(commit_saved(await self.ask("settings", requested)), False)
             self.assertEqual(settings_file.read_bytes(), before)
             self.assertEqual(self.events, [], "failed persistence reconfigured the session")
         finally:
             blocker.rmdir()
-        self.assertIs(await self.ask("settings", requested), True)
+        self.assertIs(commit_saved(await self.ask("settings", requested)), True)
         self.assertEqual(self.latest("settings")["theme"], "system")
         self.assertEqual(json.loads(settings_file.read_text())["Theme"], "system")
         self.assertEqual(self.latest("status")["commandFeedbackRevision"], revision + 1)
 
     async def test_ordinary_settings_host_side_effect_failure_remains_unconfirmed(self):
-        self.assertIs(await self.ask("settings", {"theme": "dark"}), True)
+        self.assertIs(commit_saved(await self.ask("settings", {"theme": "dark"})), True)
         saved = self.latest("settings")
         settings_file = self.home / "config/settings.json"
         before = settings_file.read_bytes()
@@ -2444,9 +2472,21 @@ while True:
         # as a confirmed persistence failure by the ordinary settings endpoint.
         (self.home / "autostart").write_text("not a directory")
         self.events.clear()
-        self.assertIsNone(await self.ask("settings", {**saved, "startup": True}))
+        result = await self.ask("settings", {**saved, "startup": True})
+        self.assertFalse(result["saved"])
+        self.assertEqual(result["state"], "ExternalEffectUnknown")
+        self.assertEqual(result["startup"], "OutcomeUnknown")
         self.assertEqual(settings_file.read_bytes(), before)
         self.assertEqual(self.events, [])
+
+    async def test_tray_save_preserves_the_shared_commit_report(self):
+        result = await self.ask("traySettings", {"mode": "OnDemand"})
+        self.assertIsInstance(result, dict)
+        self.assertIs(result["saved"], True)
+        self.assertEqual(result["state"], "Committed")
+        self.assertIs(type(result["revision"]), int)
+        self.assertEqual(result["message"], "设置已保存")
+        self.assertEqual(json.loads((self.home / "config/settings.json").read_text())["Mode"], 1)
 
     async def test_settings_patch_reports_startup_applied_even_when_file_save_fails(self):
         first = await self.ask("settingsPatch", {"theme": "dark"})
@@ -2479,22 +2519,26 @@ while True:
         self.assertIn("系统状态未能确认", result["message"])
 
     async def test_tray_persistence_failure_keeps_current_settings_and_allows_explicit_retry(self):
-        self.assertTrue(await self.ask("settings", {"enabled": True, "theme": "dark"}))
+        self.assertTrue(
+            commit_saved(await self.ask("settings", {"enabled": True, "theme": "dark"}))
+        )
         settings_file = self.home / "config/settings.json"
         before = settings_file.read_bytes()
         blocker = settings_file.with_suffix(".json.tmp")
         blocker.mkdir()
         self.events.clear()
-        self.assertIs(await self.ask("traySettings", {"enabled": False}), False)
+        self.assertIs(commit_saved(await self.ask("traySettings", {"enabled": False})), False)
         self.assertEqual(settings_file.read_bytes(), before)
         self.assertEqual(self.events, [], "failed persistence reconfigured the session")
         blocker.rmdir()
-        self.assertIs(await self.ask("traySettings", {"enabled": False}), True)
+        self.assertIs(commit_saved(await self.ask("traySettings", {"enabled": False})), True)
         self.assertFalse(self.latest("settings")["enabled"])
         self.assertFalse(json.loads(settings_file.read_text())["Enabled"])
 
     async def test_tray_intent_preserves_other_settings_changed_after_menu_was_rendered(self):
-        self.assertTrue(await self.ask("settings", {"enabled": True, "theme": "light"}))
+        self.assertTrue(
+            commit_saved(await self.ask("settings", {"enabled": True, "theme": "light"}))
+        )
         rendered = self.latest("settings")
         # The menu was rendered before another settings surface committed these fields.
         newer = {
@@ -2504,8 +2548,8 @@ while True:
             "source": "zh",
             "acceptShortcut": "F7",
         }
-        self.assertTrue(await self.ask("settings", newer))
-        self.assertTrue(await self.ask("traySettings", {"enabled": False}))
+        self.assertTrue(commit_saved(await self.ask("settings", newer)))
+        self.assertTrue(commit_saved(await self.ask("traySettings", {"enabled": False})))
         saved = self.latest("settings")
         self.assertEqual(saved, {**newer, "enabled": False})
         self.assertEqual(
@@ -2513,12 +2557,14 @@ while True:
         )
 
     async def test_tray_preserves_a_supported_same_language_preference(self):
-        self.assertTrue(await self.ask("traySettings", {"source": "fr", "target": "fr"}))
+        self.assertTrue(
+            commit_saved(await self.ask("traySettings", {"source": "fr", "target": "fr"}))
+        )
         saved = self.latest("settings")
         self.assertEqual((saved["source"], saved["target"]), ("fr", "fr"))
 
     async def test_tray_rejects_unknown_fields_wrong_types_and_invalid_values_without_writing(self):
-        self.assertTrue(await self.ask("settings", {"enabled": True}))
+        self.assertTrue(commit_saved(await self.ask("settings", {"enabled": True})))
         settings_file = self.home / "config/settings.json"
         before = settings_file.stat().st_mtime_ns
         self.events.clear()
@@ -2535,7 +2581,7 @@ while True:
             {},
         ):
             with self.subTest(patch=patch):
-                self.assertIs(await self.ask("traySettings", patch), False)
+                self.assertIs(commit_saved(await self.ask("traySettings", patch)), False)
         self.sequence += 1
         duplicate = (
             '{"id":%d,"op":"traySettings","data":{"enabled":false,"enabled":true}}' % self.sequence
@@ -2548,7 +2594,9 @@ while True:
         self.assertEqual(self.events, [])
 
     async def test_tray_preserves_a_known_same_language_choice_offline(self):
-        self.assertTrue(await self.ask("traySettings", {"source": "fr", "target": "fr"}))
+        self.assertTrue(
+            commit_saved(await self.ask("traySettings", {"source": "fr", "target": "fr"}))
+        )
         self.assertEqual(self.latest("settings")["source"], "fr")
         self.assertEqual(self.latest("settings")["target"], "fr")
         self.assertFalse(self.latest("status")["modelReady"])
@@ -2729,7 +2777,9 @@ while True:
         for source, target in (("auto", "zh"), ("zh", "zh"), ("en", "en"), ("en", "zh")):
             with self.subTest(source=source, target=target):
                 self.assertTrue(
-                    await self.ask("traySettings", {"source": source, "target": target})
+                    commit_saved(
+                        await self.ask("traySettings", {"source": source, "target": target})
+                    )
                 )
                 self.assertEqual(self.latest("settingsGuidance")["languageChoices"], choices)
                 self.assertEqual(
@@ -2758,7 +2808,7 @@ while True:
 
         saved = self.latest("settings")
         self.events.clear()
-        self.assertTrue(await self.ask("settings", {**saved, "mode": "OnDemand"}))
+        self.assertTrue(commit_saved(await self.ask("settings", {**saved, "mode": "OnDemand"})))
         self.assertEqual(
             [event["event"] for event in self.events if event["event"].startswith("settings")],
             ["settings", "settingsGuidance"],
@@ -2782,21 +2832,25 @@ while True:
             any(event["event"] == "settingsGuidance" for event in self.events[before:]),
             "a rejected draft was presented as active settings",
         )
-        self.assertTrue(await self.ask("settings", {**self.latest("settings"), "enabled": False}))
+        self.assertTrue(
+            commit_saved(await self.ask("settings", {**self.latest("settings"), "enabled": False}))
+        )
         self.assertIn("已暂停", self.latest("settingsGuidance")["modeDescription"])
 
     async def test_staged_shortcuts_merge_with_latest_settings_and_emit_one_generation(self):
         self.assertTrue(
-            await self.ask(
-                "settings",
-                {
-                    "enabled": False,
-                    "source": "zh",
-                    "target": "en",
-                    "theme": "dark",
-                    "experimentalWriteback": False,
-                    "excludedApplications": ["private-app"],
-                },
+            commit_saved(
+                await self.ask(
+                    "settings",
+                    {
+                        "enabled": False,
+                        "source": "zh",
+                        "target": "en",
+                        "theme": "dark",
+                        "experimentalWriteback": False,
+                        "excludedApplications": ["private-app"],
+                    },
+                )
             )
         )
         result = await self.ask("saveSettingsDraft", self.draft())
@@ -2837,8 +2891,11 @@ while True:
 
     async def test_practice_progress_requires_fresh_run_exact_target_and_real_completion(self):
         self.assertTrue(
-            await self.ask(
-                "settings", {"enabled": True, "mode": "OnDemand", "source": "en", "target": "zh"}
+            commit_saved(
+                await self.ask(
+                    "settings",
+                    {"enabled": True, "mode": "OnDemand", "source": "en", "target": "zh"},
+                )
             )
         )
         run = str(uuid.uuid4())
@@ -2848,7 +2905,7 @@ while True:
             "lifetime": str(uuid.uuid4()),
         }
         self.assertIsNone(await self.ask("onDemandPracticeProgress"))
-        self.assertFalse(await self.ask("finishOnDemandPractice", run))
+        self.assertFalse(commit_saved(await self.ask("finishOnDemandPractice", run)))
         self.assertTrue(await self.ask("beginOnDemandPractice", run))
         progress = await self.ask("onDemandPracticeProgress")
         self.assertEqual(progress["runId"], run)
@@ -2868,7 +2925,8 @@ while True:
         ):
             self.assertFalse(await self.ask("bindOnDemandPractice", invalid))
         self.assertFalse(
-            await self.ask("finishOnDemandPractice", run), "binding alone completed practice"
+            commit_saved(await self.ask("finishOnDemandPractice", run)),
+            "binding alone completed practice",
         )
         view = await self.ask("onDemandPractice", run)
         self.assertFalse(view["completed"])
@@ -2877,34 +2935,42 @@ while True:
         self.assertFalse(public_view["completed"])
         self.assertEqual("开始练习后，这里会显示进度。", public_view["progressNotice"])
         self.assertTrue(
-            await self.ask(
-                "settings", {"enabled": False, "mode": "OnDemand", "source": "en", "target": "zh"}
+            commit_saved(
+                await self.ask(
+                    "settings",
+                    {"enabled": False, "mode": "OnDemand", "source": "en", "target": "zh"},
+                )
             )
         )
         self.assertIsNone(await self.ask("onDemandPracticeProgress"))
         self.assertFalse(await self.ask("bindOnDemandPractice", {"runId": run, "target": target}))
-        self.assertFalse(await self.ask("finishOnDemandPractice", run))
+        self.assertFalse(commit_saved(await self.ask("finishOnDemandPractice", run)))
         self.assertFalse(self.latest("settings")["onboardingComplete"])
 
     async def test_tutorial_dismissal_preserves_latest_mode_language_and_practice_state(self):
         self.assertTrue(
-            await self.ask(
-                "settings", {"enabled": True, "mode": "OnDemand", "source": "en", "target": "zh"}
+            commit_saved(
+                await self.ask(
+                    "settings",
+                    {"enabled": True, "mode": "OnDemand", "source": "en", "target": "zh"},
+                )
             )
         )
         self.assertTrue(
-            await self.ask(
-                "settings",
-                {
-                    "enabled": False,
-                    "mode": "Automatic",
-                    "source": "zh",
-                    "target": "en",
-                    "theme": "dark",
-                },
+            commit_saved(
+                await self.ask(
+                    "settings",
+                    {
+                        "enabled": False,
+                        "mode": "Automatic",
+                        "source": "zh",
+                        "target": "en",
+                        "theme": "dark",
+                    },
+                )
             )
         )
-        self.assertTrue(await self.ask("dismissOnboarding"))
+        self.assertTrue(commit_saved(await self.ask("dismissOnboarding")))
         settings = self.latest("settings")
         self.assertTrue(settings["onboardingComplete"])
         self.assertFalse(settings["enabled"])
@@ -3070,7 +3136,9 @@ while True:
             owned = int((worker / name).read_text())
             self.addCleanup(lambda pid=owned: self.assertFalse(Path(f"/proc/{pid}").exists()))
         self.assertTrue((await self.ask("saveSettingsDraft", self.draft()))["saved"])
-        self.assertTrue(await self.ask("traySettings", {"source": "en", "target": "zh"}))
+        self.assertTrue(
+            commit_saved(await self.ask("traySettings", {"source": "en", "target": "zh"}))
+        )
         self.assertTrue(await self.ask("start"))
         target = {
             "backend": "linux-browser",
@@ -3217,10 +3285,14 @@ while True:
         # The real production Host consumes these controlled input-port replies.
         # This is not native focus, IME or acceptance evidence.
         self.assertTrue((await self.ask("saveSettingsDraft", self.draft()))["saved"])
-        self.assertTrue(await self.ask("traySettings", {"source": "en", "target": "en"}))
+        self.assertTrue(
+            commit_saved(await self.ask("traySettings", {"source": "en", "target": "en"}))
+        )
         if on_demand:
             self.assertTrue(
-                await self.ask("settings", {**self.latest("settings"), "mode": "OnDemand"})
+                commit_saved(
+                    await self.ask("settings", {**self.latest("settings"), "mode": "OnDemand"})
+                )
             )
         target = {
             "backend": backend,
@@ -3339,7 +3411,9 @@ while True:
         self.assertEqual(opening["token"]["commandGeneration"], cached_shortcuts["generation"])
         self.language_capture_active = False
         self.assertTrue(
-            await self.ask("settings", {**self.latest("settings"), "mode": "Automatic"})
+            commit_saved(
+                await self.ask("settings", {**self.latest("settings"), "mode": "Automatic"})
+            )
         )
         automatic_generation = self.latest("shortcuts")["generation"]
         self.assertNotEqual(automatic_generation, cached_shortcuts["generation"])

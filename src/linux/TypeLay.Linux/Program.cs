@@ -65,7 +65,7 @@ internal static class Program
     {
         result.Saved,
         result.Code,
-        message = GlossaryEntryPresentation.Message(result.Code)
+        message = result.Message ?? GlossaryEntryPresentation.Message(result.Code)
     };
     private static bool SessionGlossaryRequestValid(JsonElement value)
     {
@@ -285,6 +285,8 @@ internal static class Program
                         : result.Reason is "canceled" or "settings-changed" or "practice-retirement-unconfirmed"
                             ? "configuration-retired" : "save-unconfirmed",
                     revision = result.Revision,
+                    state = result.State.ToString(),
+                    startup = result.Startup.ToString(),
                     message = SettingsCommitPresentation.Message(result)
                 };
             }
@@ -405,8 +407,8 @@ internal static class Program
 
         Task<SettingsCommitResult> CommitSettings(UserSettings next) =>
             settings.CommitAsync(settings.Revision, next, controller.PrepareSettingsChangeAsync);
-        async Task<bool> ApplySettings(UserSettings next) => (await CommitSettings(next)).Saved;
-        object CommitResponse(SettingsCommitResult result) => new
+        async Task<object> ApplySettings(UserSettings next) => CommitResponse(await CommitSettings(next));
+        object CommitResponse(SettingsCommitResult result, bool? retrySave = null, string? code = null) => new
         {
             saved = result.Saved,
             state = result.State.ToString(),
@@ -414,7 +416,10 @@ internal static class Program
             startup = result.Startup.ToString(),
             requestedStartup = result.RequestedStartup,
             reason = result.Reason,
-            message = SettingsCommitPresentation.Message(result)
+            message = SettingsCommitPresentation.Message(result),
+            retrySave,
+            code,
+            settingsRevision = result.Saved ? (long?)result.Revision : null
         };
         void Status() => link.Send("status", new
         {
@@ -739,17 +744,8 @@ internal static class Program
                             saved = false,
                             retrySave = false
                         };
-                    bool automaticSaved = false;
-                    try
-                    {
-                        automaticSaved = await controller.FinishAutomaticPracticeAsync(automaticFinish);
-                    }
-                    catch (SettingsPersistenceException) { }
-                    return new
-                    {
-                        saved = automaticSaved,
-                        retrySave = controller.CanRetryAutomaticPracticeSave(automaticFinish)
-                    };
+                    var automaticResult = await controller.FinishAutomaticPracticeAsync(automaticFinish);
+                    return CommitResponse(automaticResult, controller.CanRetryAutomaticPracticeSave(automaticFinish));
                 case "onDemandPractice":
                     var practiceProgress = controller.PracticeProgress;
                     return OnDemandPracticePresentation.Create(settings.Value,
@@ -874,8 +870,8 @@ internal static class Program
                         ExcludedApplications = value.GetProperty("enabled").GetBoolean()
                             ? remainingApplications : [.. remainingApplications, policyApplication]
                     });
-                    return ApplicationPolicyResult(policyResult.Saved, policyResult.Saved ? "application-saved"
-                        : policyResult.Reason == "persistence-failed" ? "application-save-failed" : "settings-changed", policyResult.Revision);
+                    return CommitResponse(policyResult, code: policyResult.Saved ? "application-saved"
+                        : policyResult.Reason == "persistence-failed" ? "application-save-failed" : "settings-changed");
                 case "getApplicationList":
                     if (!ExactObject(value, "knownApplications")
                         || !ApplicationIdentities(value.GetProperty("knownApplications"), out var knownApplications))
@@ -922,8 +918,8 @@ internal static class Program
                         ManagedApplications = nextMembers,
                         ApplicationListCustomized = true
                     });
-                    return ApplicationListResult(membershipResult.Saved, membershipResult.Saved ? "application-list-saved"
-                        : membershipResult.Reason == "persistence-failed" ? "application-save-failed" : "settings-changed", membershipResult.Revision);
+                    return CommitResponse(membershipResult, code: membershipResult.Saved ? "application-list-saved"
+                        : membershipResult.Reason == "persistence-failed" ? "application-save-failed" : "settings-changed");
                 case "manageApplication":
                     if (value.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(value.GetString())
                         || value.GetString()!.Length > 128 || value.GetString()!.Any(char.IsControl))
@@ -953,7 +949,7 @@ internal static class Program
                         return operation == "settingsPatch"
                             ? CommitResponse(new(SettingsCommitState.NotCommitted, settings.Revision, Reason: "invalid-settings")) : false;
                     var trayResult = await CommitSettings(traySettings);
-                    return operation == "settingsPatch" ? CommitResponse(trayResult) : trayResult.Saved;
+                    return CommitResponse(trayResult);
                 case "settings":
                     // The ordinary DTO cannot write or clear dedicated preferences,
                     // even when an old form was opened before a dedicated save.
@@ -975,10 +971,7 @@ internal static class Program
                         || next.Excluded.Length > 256 || next.Excluded.Any(app => string.IsNullOrWhiteSpace(app) || app.Length > 128))
                         return false;
                     var settingsResult = await CommitSettings(next);
-                    // The legacy full DTO has no outcome payload. Unknown or
-                    // partial system effects retain its unconfirmed response.
-                    return settingsResult.Startup != SettingsStartupEffect.NotRequested && !settingsResult.Saved
-                        ? null : settingsResult.Saved;
+                    return CommitResponse(settingsResult);
                 case "translateEditorSnapshot":
                     if (editorSnapshot is not null || value.ValueKind != JsonValueKind.Object
                         || value.EnumerateObject().Count() != 2

@@ -104,9 +104,10 @@ public sealed partial class SettingsStore
 
 public static class SettingsCommitPresentation
 {
+    public const string NotificationFailedMessage = "已保存，请重新打开设置确认当前状态。";
     public static string Message(SettingsCommitResult result) => result.State switch
     {
-        SettingsCommitState.CommittedNotificationFailed => "已保存，请重新打开设置确认当前状态。",
+        SettingsCommitState.CommittedNotificationFailed => NotificationFailedMessage,
         SettingsCommitState.ExternalEffectUnknown => "设置未保存。登录启动的系统状态未能确认，请检查系统登录启动设置。",
         _ when !result.Saved && result.Startup == SettingsStartupEffect.Applied =>
             "设置文件未保存，登录启动的系统设置已更改。请检查当前设置与系统登录启动状态。",

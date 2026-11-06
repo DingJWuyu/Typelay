@@ -179,19 +179,10 @@ internal sealed partial class PracticeHost
         }
         var request = new FinishRequest(completion, _sequence);
         _finishRequest = request;
-        bool saved = false;
-        try
-        {
-            TraceFinish("save-start", message.Sequence);
-            saved = await _session.FinishAutomaticPracticeAsync(message.Run);
-            TraceFinish("save-returned", message.Sequence, value: saved);
-        }
-        catch (SettingsPersistenceException)
-        {
-            TraceFinish("save-persistence-error", message.Sequence);
-            // Runtime keeps the body-free completion, with all write authority
-            // already retired. Do not End the run or ask the user to repeat it.
-        }
+        TraceFinish("save-start", message.Sequence);
+        var result = await _session.FinishAutomaticPracticeAsync(message.Run);
+        bool saved = result.Saved;
+        TraceFinish("save-returned", message.Sequence, value: saved);
         if (!ReferenceEquals(_finishRequest, request) || _disposed || _disconnecting
             || !ReferenceEquals(completion.Child, _child) || message.Connection != _connection
             || message.Run != _runId || request.Sequence != _sequence)
@@ -203,6 +194,8 @@ internal sealed partial class PracticeHost
             _completion = null;
         Enqueue(new(saved ? "finish-saved" : retry ? "finish-retry" : "finish-denied",
             _connection, _runId, _sequence, Completion: completion.Marker));
+        if (result.State == SettingsCommitState.CommittedNotificationFailed)
+            SettingsSaveReported?.Invoke(result);
         return true;
     }
 }

@@ -7,6 +7,7 @@ import os
 import sys
 import uuid
 
+from settings_feedback import notice as commit_notice
 from wire import now_ms
 
 
@@ -805,12 +806,12 @@ class Overlay:
                 )
             except (OSError, ValueError, EOFError, TimeoutError):
                 saved = None
-            if saved is not True and self.settings is before and self.value is view and view:
+            if isinstance(saved, dict) and saved.get("state") == "CommittedNotificationFailed":
+                self.input.settings_commit_reported(saved)
+            if commit_notice(saved) and self.settings is before and self.value is view and view:
                 self.value = {
                     **view,
-                    "status": "语言设置未保存，请在设置中检查语言方向或保存权限。"
-                    if saved is False
-                    else "语言设置结果未确认，请打开设置检查。",
+                    "status": commit_notice(saved),
                 }
                 self.schedule(retain_revision=True)
 

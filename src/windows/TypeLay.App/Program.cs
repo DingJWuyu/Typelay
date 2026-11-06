@@ -148,6 +148,11 @@ internal static class Program
                     tray.ShowBalloonTip(5000, OnDemandPracticePresentation.Create(settings.Value).Title,
                         OnDemandPracticePresentation.Create(settings.Value).LaunchFailedMessage, Forms.ToolTipIcon.Info);
             };
+            practiceHost.SettingsSaveReported += result =>
+            {
+                if (!disposed)
+                    tray.ShowBalloonTip(5000, "TypeLay", SettingsCommitPresentation.Message(result), Forms.ToolTipIcon.Warning);
+            };
             session.OperationFeedback += feedback =>
             {
                 if (!disposed)
