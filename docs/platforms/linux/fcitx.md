@@ -1,40 +1,95 @@
-# Fcitx 合作组件预览
+# 手动启用 Fcitx 合作组件
 
-本页命令描述高级手动会话，会沿用原输入法配置。主包设置里的受管接入用于自有练习与受限的已注册应用启动，采用独立配置、监督进程和安全移除；操作及原输入法恢复顺序见 [Linux 客户端](README.md#连接目标应用)。两种方式不要混用，均不自动切换或恢复用户原输入法。
+合作组件让 TypeLay 读取实际输入法事务状态，为标准 GTK 输入框提供预览和受限写回。Qt 使用同一私有 Fcitx 服务，但需要额外的同版插件，见[可选 Qt 构建与启动](#可选-qt-6112-构建与启动)。普通 TypeLay 安装不会启用这套手动会话。
 
-这套可选组件让 TypeLay 与实际 Fcitx 输入事务协作。已验证范围包括 GTK3、GTK4 的标准 GtkEntry 和原生 GtkEntryBuffer；标准纯文本 TextView 使用原生 TextBuffer，两代已有多行选区、真实模型、Tab 和 IME 实证；GTK3 验证宿主 user-action 分组，GTK4 另验原生 undo/redo。GTK4 须单独以 --gtk4 启动。Qt 的可选同版构建与启动入口见末节；非纯文本/自定义控件、通用 Electron 尚未开放。普通 TypeLay 安装不会安装或启用这些组件。
+推荐先用主包设置中的[受管接入](README.md#连接目标应用)。受管接入使用独立配置和监督进程，适合练习窗口及已注册应用。本页面向需要沿用日常输入法配置的手动使用者；两种会话不要混用，原输入法的切换与恢复都由你明确操作。
 
-可选 Ctrl+功能键源操作已通过[实际主机与本地模型检查](https://github.com/DingJWuyu/Typelay/actions/runs/39020060713)：GTK3 标准 GtkEntry，以及 GTK4 标准 Entry/delegate 和纯文本 TextView，均验证一次写入、重复及释放归属、不写退出、目标变化拒写；GTK4 还通过多行选区外原文保留、原生 Undo 和默认键恢复。GTK3 纯文本 TextView 也已验证多行选区接受、原 user-action 分组、不写退出、目标变化拒写和默认键恢复。组合操作仅使用原次 Ctrl 前的源资格和截止，真实输入法处理完成后裁决，输入法输出、原文、目标或配置变化仍撤销。双方须确认新能力，旧组件不启用组合接受。设置的“快捷键”页已提供 Ctrl+F1–F24，显式保存后生效；该公开选择/保存接线仍待本次桌面核验。软件输入不代表物理键或实际输入法验收。
+## 启用前确认范围与会话
 
-GTK3、GTK4 自有译文编辑器的组合键流程已通过[实际主机与本地模型检查](https://github.com/DingJWuyu/Typelay/actions/runs/39023641365)：首次组合接受只回到原输入框并保留人工稿，原按次的重复和释放不写入；整组释放后的新组合按次须经新捕获与新许可才可接受。编辑命令绑定原显示 token、编辑器身份和原期限，草稿、组合输入、焦点或配置变化即撤销，退出沿原回源后关闭流程。两代均验证人工稿精确写回、不写退出与默认键恢复；Qt 与浏览器的已验证组合编辑分别见对应平台说明。
+GTK3、GTK4 的标准 Entry 和纯文本 TextView 已有合作实现。GTK4 需要单独的 `--gtk4` 入口。自定义控件、非纯文本结构和通用 Electron 不在当前范围。普通 GTK 模块连接未修改的系统 Fcitx 服务时，输入法状态仍为 Unknown，不授予正文读取或接受能力。
 
-固定生产输入以 `eng/linux/cooperative/inputs.py` 为准，当前为 Core 5.1.22、Chinese Addons 5.1.14、GTK IM 5.1.7、完整私有 LibIME 1.1.16。对应组件已在隔离环境完整构建，实际库、模型路径与同版官方包均有校验。搬迁后的私有包已通过默认组件会话、配置/前台重启、原 session bus，以及嵌套 niri 的实际 CPU 模型、自动预览、一次 Tab 写回、编辑后两阶段 Tab 与拼音组合保护。同窗后台直接替换也已验证实际类型恰为标准 GTK3/GTK4 Entry 的原字段：一次真实 F10/模型任务写 A 时保持 B 的焦点、正文与选择，原文变化时拒绝；不外推到 TextView 或跨窗口/应用后台。实际按键由隔离桌面自动化送入，不能代替用户 CachyOS 桌面的物理输入验收。
+手动私有会话使用原 session bus。同一个总线上只能有一个 `org.fcitx.Fcitx5` 服务，启动器会拒绝与现有服务并行运行。它不会终止其他进程，也不会修改系统库、桌面自动启动或全局输入法设置。若桌面监督程序会自动重启原 daemon，需要先由你暂停原启动方式。
 
-后台检查以同步正文变更回调记录另一输入框的实际焦点与 caret/选区，再与终态核对；不在写入后追加全选来伪造写入时的选择基线。晚快照中的原文已替换，不足以推断写入发生在失焦之前。实际 caret 保持不能代替非空选区覆盖，既有非空选区证据也不能自动外推到本轮未完成的场景。人工改文负控仍须证明修改发生在写入前，并取得明确拒写和零额外正文变更；未建立前置或未观察到终态均不能记为通过。
+私有会话沿用原 HOME、XDG 和 FCITX 配置，因此保留输入法顺序、快捷键、皮肤和个人词库。学习结果按原 Fcitx 行为保存，恢复原服务不会回滚新学习。先结束组合输入并退出原 daemon，再备份自己的配置和数据。自定义 `FCITX_CONFIG_HOME` / `FCITX_DATA_HOME` 优先于默认的 `~/.config/fcitx5` / `~/.local/share/fcitx5`；两份 daemon 不得并发访问同一 profile。
 
-## 会话与用户数据
+## 预检
 
-合作需要服务端和 GTK 客户端都具备对应能力。仅加载 GTK 模块而连接未修改的系统服务端不能获得安全写入许可。
+在匹配的 Arch/CachyOS x86_64 环境中使用此包。当前包固定 Core 5.1.22、Chinese Addons 5.1.14、GTK IM 5.1.7 和私有 LibIME 1.1.16。系统仍须提供 Chinese Addons 5.1.14、LibIME 1.1.16 及匹配的官方 pinyinhelper 数据，发行修订号可以不同。主包的独立受管会话也要求这些系统前置。
 
-私有组件使用原 session bus。一个总线上只能有一个 `org.fcitx.Fcitx5` 服务。当前方案要求用户先完成组合输入并明确退出原输入法进程，然后手动运行私有版本。启动器发现已有服务时拒绝，不终止或替换其它进程，不改系统文件、桌面自动启动、shell 配置或全局 GTK 配置。
+完整主包中的压缩包位于 `support/desktop/TypeLay-Fcitx-cooperative.tar.gz`。进入压缩包所在目录，解压到独立用户目录，然后预检：
 
-私有版本沿用原 HOME、XDG 与 FCITX 配置路径，因此保留输入法顺序、快捷键、皮肤和个人词库，并按原 Fcitx 行为保存学习结果。它不复制出另一份日常词库，不同步双 daemon，也不会在恢复时回滚用户的新输入学习。使用前应退出原 daemon 后备份自己的 Fcitx 配置与数据目录。自定义 FCITX_CONFIG_HOME / FCITX_DATA_HOME 优先于默认 `~/.config/fcitx5` / `~/.local/share/fcitx5`。
+```sh
+tar -xzf TypeLay-Fcitx-cooperative.tar.gz
+cd TypeLay-Fcitx-cooperative
+python fcitx-cooperative.py preflight
+```
 
-如果桌面监督程序自动重启原 daemon，先由用户明确暂停该启动方式；启动器不会替用户修改它。两份 daemon 不得并发访问同一 profile。已有应用可能在服务切换时重新连接，应先结束所有组合输入，按需重新启动目标应用。
+成功时会显示 `Private Fcitx 5.1.22 runtime verified; no session or profile changed`。预检核对包文件、字体、实际 ELF 依赖、私有库解析路径和 daemon 版本，不启动输入法会话。缺失、版本不匹配或校验失败时，先解决具体错误，不忽略检查继续启动，也不为此盲目升级或降级系统。
 
-官方候选窗与 X11/Wayland/原生 Fcitx 前端保留。为避免上游 IBus 兼容前端接管或终止另一套 IBus 服务，私有启动命令明确排除 ibusfrontend；仅使用 IBus 协议的应用不在这个私有会话范围内。该排除只属于私有进程命令行，不改用户配置，恢复原 daemon 后即恢复原行为。其它用户插件不被关闭。TypeLay 仅为已审计的实际加载组件与明确完成的输入事务授予能力；未知插件仍可按原输入法行为运行，但 TypeLay 保持 Unknown。不能用配置中的输入法名称或看起来为空的候选窗代替实际状态。
+私有词典和语言模型来自 LibIME 固定源码指定的归档及 SHA256，模型搜索不会回退系统模型。Chinese 的 `py_table.mb` 与 `py_stroke.mb` 从系统官方安装读取；包没有分发这两份数据及原始归档，因为其单独许可尚未核实。启动器按固定摘要核对 `/usr/share/fcitx5/pinyinhelper/` 中的文件。可先只读检查：
+
+```sh
+printf '%s  %s\n' \
+  9b526eab3ef2679d63155c8304fc4b11f701c2bf5db7946e7d3e940f54f3aaa9 /usr/share/fcitx5/pinyinhelper/py_stroke.mb \
+  19b3e593e5a211fe548f39c894d9a2e2e07a08e3edee0083087b1471e5ba026b /usr/share/fcitx5/pinyinhelper/py_table.mb | sha256sum -c -
+```
+
+## 明确切换与逐应用启用
+
+先在所有应用中完成或取消组合输入，再从原 Fcitx 托盘退出输入法。已有应用可能在服务切换后重新连接，需要时重新启动目标应用。
+
+在合作包目录启动私有 daemon：
+
+```sh
+python fcitx-cooperative.py daemon
+```
+
+终端应显示它正在使用原 session bus 和原 profile。保留这个前台终端，退出时使用 Ctrl+C。启动器会检查 Fcitx 与 IBus 冲突；活动 IBus 或无法确认其状态都会导致拒绝。私有命令排除 `ibusfrontend`，防止上游兼容前端接管 IBus 服务；仅使用 IBus 协议的应用不属于此会话范围。
+
+另开终端，先正常退出旧 TypeLay，再通过同一包启动客户端：
+
+```sh
+python /完整路径/TypeLay-Fcitx-cooperative/fcitx-cooperative.py launch ~/.local/bin/typelay
+```
+
+GTK3 目标应用通过主包的 GTK 模块入口启动：
+
+```sh
+python /完整路径/TypeLay-Fcitx-cooperative/fcitx-cooperative.py launch ~/.local/bin/typelay launch 应用命令
+```
+
+GTK4 目标应用使用独立入口：
+
+```sh
+python /完整路径/TypeLay-Fcitx-cooperative/fcitx-cooperative.py launch --gtk4 应用命令
+```
+
+启动器会确认当前 Fcitx 服务确实来自同一私有包，只为请求的子进程设置模块路径和合作开关。GTK3 每次按当前解压位置生成 IM 缓存，并放在用户 `XDG_RUNTIME_DIR`，不修改系统缓存。GTK4 只在本入口检查 GTK4 依赖，普通 GTK3 会话不要求系统安装 GTK4。
+
+先用非敏感合成文本检查普通输入、拼音候选、取消、Backspace 和切换输入法，再检查 TypeLay 预览及接受。普通合作应用的自动接受受默认关闭的“原生输入框替换”实验开关控制；自有受管练习另有独立授权。输入法未知或字段不支持时，应用应保持普通输入行为，TypeLay 不读取或写回正文。
+
+默认 Tab 接受、Esc 退出。设置也可保存无修饰功能键，或双方已确认能力的 Ctrl+F1-F24。组合键固定原次 Ctrl 前的资格和期限，输入法输出、正文、目标或配置变化都会撤销。编辑译文后的第一次接受只回源；整组按键释放、重新捕获并取得新许可后，下一次独立按下才接受人工稿。旧组件不能凭同名接口继承组合键能力。
+
+## 恢复原输入法
+
+1. 在目标应用完成或取消组合输入，正常退出 TypeLay 和通过私有包启动的应用。
+2. 在私有 daemon 终端按 Ctrl+C，等待进程退出并释放总线名称。
+3. 通过原桌面启动方式或 `/usr/bin/fcitx5` 恢复原服务。若此前暂停了自动启动，按原方式恢复。
+4. 正常启动应用，不再经过合作包启动器。配置与词库仍在原位置。
+
+确认不再使用后，可以删除私有解压目录。保留自己的 Fcitx 配置和数据；无需还原系统库或更改全局输入法变量。
 
 ## 构建与打包
 
-打包会准备与主客户端相同的离线字体。先按[Linux 构建](development.md#构建)创建私有构建环境并安装 `eng/requirements.txt`；以下打包命令使用该环境的 Python（或已安装同一固定依赖的开发环境），不向系统 Python 安装依赖。
+维护合作包时，先从 [README 的开发与验收导航](README.md#开发与验收)打开 Linux 开发指南，准备私有 Python 环境和 `eng/requirements.txt`。只在匹配的 Arch/CachyOS x86_64 开发环境构建。固定来源与哈希由 `eng/linux/cooperative/inputs.py`维护，生产配方和补丁位于同目录。
 
-仅在匹配的 Arch/CachyOS x86_64 开发环境构建。官方系统依赖仍由包管理器提供；本包不替换它们。生产配方与补丁在 `eng/linux/cooperative/`，单独构建不编译 fixture、不运行桌面测试：
+仅生成生产组件时运行：
 
 ```sh
 python eng/linux/cooperative/fcitx.py --output artifacts/linux/fcitx-build
 ```
 
-发布验收使用原测试入口调用同一生产构建，然后执行真实输入事务断言，再打包对应产物：
+准备发行验收时，由既有回归调用同一生产构建，再封装对应产物：
 
 ```sh
 python tests/linux/fcitx_cooperative/run.py --core-version 5.1.22
@@ -43,108 +98,44 @@ artifacts/build-tools/bin/python packaging/linux/fcitx-cooperative/pack.py \
   --output artifacts/TypeLay-Fcitx-cooperative.tar.gz
 ```
 
-生产构建与测试分别记录输入/产物哈希，测试记录不冒充生产构建来源。各构建应使用新的输出目录，不能把已修改或旧构建的源码静默复用；默认测试产物目录保持不变。固定来源只在 `inputs.py` 维护，不另复制一套版本或补丁清单。
+每次使用新的输出目录。构建记录与测试记录分别绑定输入和二进制；源码变化后不能拿旧产物冒充新构建。打包成功也不等于发行验收通过，搬迁后的实际包还须完成对应桌面检查，命令从 [README 开发导航](README.md#开发与验收)中的 Linux 开发指南查阅。普通配置中的已加载组件、真实模型与目标应用行为不能由隔离白名单测试替代。
 
-包内包含私有运行库、原始许可证、修改后的对应源码、补丁、固定来源校验和与重建脚本。保留整个源码与许可证目录后再分发；不要只抽取修改后的二进制。LGPL 组件的原 SPDX 声明及修改说明保留在源码中。系统库版本、构建记录与文件校验和见包内 manifest.json。
+分发时保留完整包。包内包含修改后的对应源码、固定来源、补丁、重建脚本及原许可证，不得只抽取修改后的二进制。LibIME 的原始数据归档、固定 KenLM 子模块及对应许可随源码保留；Chinese pinyinhelper 的两份未核实许可数据只保留重建 recipe/hash，不随包分发。实际清单及校验规则见 `packaging/linux/fcitx-cooperative/pack.py`。
 
-组件包的 `fonts/` 包含锁定的Inter、Source Serif 4.004R派生的16个TypeLay Serif静态角色，以及SC/JP/KR的Noto Sans/Serif字体，共32面，保留 OFL 许可与来源说明；构建时准备完整离线资源，缺失或篡改时拒绝预检与受管准备。逐应用启动器只在请求的 UI 子进程中设置绝对 `TYPELAY_UI_FONT_ROOT`，指向当前搬迁后的组件字体目录，不改变父进程环境、`HOME`、完整主包的 `TYPELAY_HOME` 或宿主 fontconfig。GTK/Qt 合作浮层优先读取该显式字体根，未设置时仍使用 `TYPELAY_HOME/fonts`。GTK 使用 PangoFc 1.38 起支持的私有 Fontconfig 配置和私有字体映射，在连接宿主前一次准备，只附到 TypeLay 浮层；不修改应用的默认映射。选择系统字体时不附加该映射，恢复宿主字体继承。Qt 在应用进程注册受控字体文件，系统选项沿用应用默认字体。原生字体验收须分别检查GTK活控件Pango上下文shaping的字体身份与Qt实际文档glyph runs的字体表；前者不是GtkTextView内部字形或像素采集，不能用CSS请求族名代替任一验证。有限衬线角色按逻辑字号选固定光学切片，系统字体行为保持独立；TC/HK专用面未捆绑，完整逐像素一致仍须实际目标界面证据。
-
-### 预检
-
-解压到独立用户目录即可，不需要安装或 sudo。完整 TypeLay 主包中的合作压缩包位于 `TypeLay-Linux-preview/support/desktop/TypeLay-Fcitx-cooperative.tar.gz`；使用主包时，先进入解压后的 `TypeLay-Linux-preview/support/desktop/` 目录。单独取得合作压缩包时，先进入该压缩包所在目录。两种来源均可从上述目录执行下列命令。以下只是用户审阅后明确执行的操作，不会由 TypeLay 自动执行。
-
-```sh
-tar -xzf TypeLay-Fcitx-cooperative.tar.gz
-cd TypeLay-Fcitx-cooperative
-python fcitx-cooperative.py preflight
-```
-
-preflight 校验包文件、实际 ELF 依赖、私有 Core/Config/Utils 和三个 LibIME 库的解析路径，以及 5.1.22 daemon 版本。用户系统 Chinese Addons 必须为 5.1.14、LibIME 必须为 1.1.16；启动器核对上游版本，发行修订号可不同。此要求也适用于主包设置启动的独立受管练习与应用会话，不能以独立配置或随包私有组件代替系统前置。构建机器可有较新的系统组件，但本包完整构建并链接固定私有组件，记录源码、安装库、构建机器和用户现装四类版本。GTK3/glibc 仍须满足实际动态依赖。缺失或不匹配时拒绝启动，不得忽略错误继续。
-
-词典与语言模型由 LibIME 1.1.16 源码指定的官方归档与 SHA256 生成，安装到私有目录。私有模型搜索不回退系统模型；XDG 数据路径优先私有词典，个人数据路径仍保留。三个 LibIME 数据归档的 LGPL-2.1-or-later 与权利人依据 [Debian 官方逐文件版权声明](https://metadata.ftp-master.debian.org/changelogs/main/libi/libime/unstable_copyright)，原档、完整许可、固定 KenLM 子模块及对应源码一起保留。生成的官方码表配置改用包内相对路径，用户码表配置不修改。
-
-Chinese 的 py_table.mb / py_stroke.mb 及两份原始归档不随本包分发，因为尚未核实两份数据的单独许可声明。它们来自用户已安装的官方 Chinese 5.1.14：preflight 核验 /usr/share/fcitx5/pinyinhelper 下两文件的固定 SHA256，原模块通过原 StandardPaths::PkgData 读取。私有启动环境保留个人数据优先级，并在末尾确保系统官方数据目录存在。缺失或被改动时拒绝启动，不静默缺少查询功能。包内保留官方下载 recipe/hash 供自行重建。
-
-可先只读核对系统数据；摘要与发行启动器的 `HELPER_FILES` 一致：
-
-```sh
-printf '%s  %s\n' \
-  9b526eab3ef2679d63155c8304fc4b11f701c2bf5db7946e7d3e940f54f3aaa9 /usr/share/fcitx5/pinyinhelper/py_stroke.mb \
-  19b3e593e5a211fe548f39c894d9a2e2e07a08e3edee0083087b1471e5ba026b /usr/share/fcitx5/pinyinhelper/py_table.mb | sha256sum -c -
-```
-
-GTK IM 缓存包含安装路径，不能直接搬运 CI 缓存。每次逐应用启动都使用官方 gtk-query-immodules-3.0 为当前解压目录生成缓存，写入当前用户 XDG_RUNTIME_DIR；不修改系统 GTK 模块缓存。
-
-## 明确切换与逐应用启用
-
-先在原 Fcitx 托盘中明确选择退出，确认没有正在组合的文字。然后在终端运行：
-
-```sh
-python fcitx-cooperative.py daemon
-```
-
-该命令以前台方式运行私有 daemon，沿用原桌面会话和配置。保留这个终端，以便 Ctrl+C 正常退出。
-
-另一个终端通过同一包启动 TypeLay，确保此前的 TypeLay 已正常退出，避免复用旧环境的后台服务：
-
-```sh
-python /完整路径/TypeLay-Fcitx-cooperative/fcitx-cooperative.py launch ~/.local/bin/typelay
-```
-
-目标 GTK3 应用也需要明确逐应用启动：
-
-```sh
-python /完整路径/TypeLay-Fcitx-cooperative/fcitx-cooperative.py launch ~/.local/bin/typelay launch 应用命令
-```
-
-GTK4 应用使用 `python fcitx-cooperative.py launch --gtk4 应用命令`。只有该入口校验系统 GTK4 动态依赖并设置私有 GTK_PATH；普通 GTK3/daemon 路径不因系统未安装 GTK4 而失败。GTK4 原 Fcitx 模块显式链接包内 libtypelay-gtk4.so，经实际 set_client_widget 绑定后才提供能力；库加载本身没有字段权限。隔离 niri 已验证真实模型与两阶段 Tab、拼音及 Unicode 组合保护，以及隐藏 Entry/GtkPasswordEntry 的拒绝和普通 Tab 导航。实际应用、物理输入法与缩放仍需目标机器验证。
-
-启动器只为这些子进程设置私有 GTK IM 模块和合作开关，不替换 session bus。它检查当前服务端确实来自同一私有包。先用非敏感合成文本验证普通输入、拼音候选、取消、Backspace、切换输入法与 TypeLay Tab；未知能力时仍按普通应用行为输入，不应出现读取或写回。
-
-## 恢复原输入法
-
-1. 在目标应用完成或取消组合，正常退出 TypeLay 和逐应用启用的测试窗口。
-2. 在私有 daemon 的终端按 Ctrl+C，等待进程退出和总线名称释放。
-3. 通过原桌面启动方式或系统 `/usr/bin/fcitx5` 恢复原服务。若此前明确暂停过自动启动，按原方式恢复。
-4. 正常启动应用，不经过私有包启动器。用户词库与配置仍在原位置。
-
-不需要还原系统库、删除词库或更改全局输入法变量。确认不再使用后可删除私有解压目录；不要删除自己的 Fcitx 数据目录。
+打包同时准备完整离线字体，保留 OFL 许可与来源。字体和静态光学角色以 `eng/fonts/fonts.lock.json`为准，缺失或篡改会使预检失败。启动器只为请求的 UI 子进程设置 `TYPELAY_UI_FONT_ROOT`，不会改父环境或主包 `TYPELAY_HOME`。GTK 使用私有 Fontconfig/Pango 映射，仅附到 TypeLay 浮层；选择系统字体时继承宿主映射。Qt 在应用进程注册受控字体，系统选项沿用应用默认字体。GTK 活控件 shaping 身份与 Qt 实际 glyph runs 需要分别验证，CSS 请求族名不能替代实际字体证据。TC/HK 专用面未捆绑，像素表现仍需实图验收。
 
 ## 当前能力边界与维护依据
 
-守卫检查实际 `loadedAddonNames()`，不是配置中列出的可用插件。每个已加载模块必须同时满足已审计的名称、官方 type/library/version，以及 loader 成功加载的真实库路径。私有启动器明确传入私有库目录；缺少来源声明、系统同名回退库或不匹配模块都会使 TypeLay 返回 Unknown。路径查询只读取 loader 已有成功结果，不改变插件加载、回退或普通输入。
+合作能力来自真实加载模块和输入事务，不能由输入法名称或空候选窗推断。Core 守卫核对 `loadedAddonNames()`、官方 type/library/version 和 loader 实际成功加载的路径。未知插件可以按原 Fcitx 行为运行，但 TypeLay 保持 Unknown。当前审计组件清单以 `eng/linux/cooperative/patches/fcitx5.patch`中的 `audited` 为准；同名系统库回退或来源不符都不会继承权限。
 
-当前审计版本固定为 Core 5.1.22、Chinese Addons 5.1.14。已审计组件：dbus、dbusfrontend、keyboard、pinyin、punctuation、pinyinhelper、spell、quickphrase、classicui、wayland、waylandim、xcb、xim、notifications、notificationitem、clipboard、unicode、imselector、chttrans、fullwidth、cloudpinyin、emoji、fcitx4frontend、kimpanel、virtualkeyboard。其他插件不因“属于官方包”或同名而自动继承结论。
+修改上游版本、替换模块或增加输入输出插件时，重新检查以下实际行为。上游文件位于构建目录的 `sources/`，分发后的对应源码位于 `source/upstream/`。
 
-维护时必须核对对应上游实际路径：
+| 维护对象 | 必须保留的判断 |
+| --- | --- |
+| `fcitx5/src/lib/fcitx/tempmodemanager.cpp` | 按真实 per-context 活动状态识别 QuickPhrase、剪贴板、Unicode 和输入法选择模式，空候选不等于完成。 |
+| keyboard、pinyin 和 Core compose | 检查真实 pending；切换输入法后，原 pinyin 的延后标点提交仍可能存活。 |
+| classicui 与 notificationitem | 候选点击重新读取当前列表，延迟菜单按实际动作审计，不能仅凭 timer 推断迟到正文提交。 |
+| `clipboard/xcbclipboard.cpp`、`waylandclipboard.cpp` | 异步接收更新历史，实际提交来自新按键或当前候选选择；活动剪贴板模式仍拒绝。 |
+| waylandim 与 xim | 输入按各自 context 路由，前端存在本身不授予 TypeLay 字段能力。 |
+| Chinese chttrans、fullwidth、cloudpinyin | 保留同步过滤偏好，核对云结果的生命周期及真实选词提交。加载 cloudpinyin 不代表用户启用了网络查询，私有包不替用户改变云服务开关。 |
 
-- `src/lib/fcitx/tempmodemanager.cpp` 的活动模式分派使用真实 per-context `isActive`。合作只读查询遍历同一状态，覆盖 QuickPhrase、剪贴板、Unicode、输入法选择模式；不能把空候选或空提示当完成。
-- pinyin 的延后标点提交在原输入法切换后仍可能存活，因此同一 IC 查询已加载 pinyin 的真实 pending 状态，同时保留当前 keyboard/pinyin 与 Core compose 检查。
-- `src/ui/classicui/inputwindow.cpp` 点击时重新读取当前 candidateList。classicui/notificationitem 的延迟菜单 action 只按已审计组件的实际动作处理，不缓存旧正文提交，不能仅因有 timer 就拒绝。
-- `src/modules/clipboard/xcbclipboard.cpp` 与 `waylandclipboard.cpp` 的异步接收只更新剪贴板历史；真正提交发生在新按键或当前候选选择中。剪贴板活动模式仍必须拒绝。
-- `src/frontend/waylandim/` 和 `src/frontend/xim/xim.cpp` 向各自 IC 路由输入，不赋予这些前端本身 TypeLay 字段权限。本包仅开放已绑定的 GTK3/GTK4 标准 Entry 或纯文本 TextView DBus context。
-- Chinese `modules/chttrans` 与 `modules/fullwidth` 为同步输出过滤，保留用户繁简/全角偏好；chttrans 构建保留 OpenCC。
-- Chinese `modules/cloudpinyin/cloudpinyin_public.h` 的网络结果只回填受 `watch()` 生命周期保护的候选，并刷新当前候选 UI；未完成候选的 select 直接返回，不登记迟到提交。实际提交只发生在已有结果后的真实选词中。私有包同源重编 cloudpinyin 并核实际来源，保留原云拼音开关，不启用或关闭云服务。该模块可在读取拼音配置时加载，加载本身不代表用户开启了网络查询。
+GTK3/GTK4 Entry 的同窗口后台直接替换有独立实现：原字段在输入输出退休后取得证明，写回不抢新字段焦点。它不外推到 TextView 或跨窗口、跨应用后台。后台回归应在同步正文变更回调中观察另一字段的焦点与选区，不能以写后全选或晚快照推断写入时状态。人工改文负控须证明修改发生在写入前，并观察到拒写与零额外改文。
 
-源码更新、模块替换或增加新的输入/输出插件都需要重新核对这些行为。部署测试必须使用搬迁后的实际包和未被清空的正常配置；白名单隔离测试不能代替日常默认组件组合验证。
+源端同时维护写入结算。只有原许可已失去全部执行资格，且没有在途认领时，才报告 `writeRetired`。连接断开、撤权请求或显示退休都不能证明写入未发生。GTK 共用实现位于 `src/linux/native/common/write-settlement.h`，正文替换位于 `src/linux/native/common/gtk-textbuffer-write.inc`。
 
-完整上游 Fcitx 的 IBus 兼容前端会尝试接管 IBus 服务。因此私有进程明确排除该兼容前端，并在启动前检查 session bus 的 IBus owner 和当前用户的 ibus-daemon 进程；检测到活动 IBus 或无法确认时拒绝。原 daemon 的关闭、桌面启动方式与任何冲突输入法的调整仍由用户明确操作。
-
-私有会话的托盘重启沿实际可执行文件 exec，并保留原参数和 IBus 排除项，仍由原前台终端管理。配置菜单运行同目录打包的原 fcitx5-configtool 脚本，由它寻找系统官方配置 GUI；未安装配置 GUI 时按原脚本提示处理，不更改系统安装。
+私有 daemon 的托盘重启沿实际可执行文件 exec，保留原参数和 IBus 排除项。配置菜单使用包内原 `fcitx5-configtool` 脚本寻找系统配置 GUI；缺少 GUI 时沿原脚本提示处理，不修改系统安装。
 
 ## GTK 浮层展开过渡
 
-GTK3 已映射的普通正文在展开/收起回显时，复用原 popover、滚动区和编辑器，以 GTK 原生 CSS `min-height` 过渡到现有测量高度。只有原目标、代次、视图、控件实例及锚/布局匹配的一次展开回显可启动过渡；其它内容或几何变化直接落位。正文、选区与资格仍即时更新，安全隐藏立即清空并销毁原浮层，没有延迟退出或完成回调。胶囊首显不属于此动效范围。GTK4 仅在当前译文可编辑时以预留细边框响应悬停，进入编辑或失去编辑资格后清除该提示；浅色预览悬停已实际验图。GTK3 保持原有点击编辑及焦点边框交互。
+GTK3 的展开和收起复用原 popover、滚动区和编辑器，工具包只过渡几何。正文与资格立即更新，关闭系统动画时直接布局。新目标、布局变化或安全隐藏会结束过渡；隐藏立即清正文，不允许完成回调恢复旧浮层。
 
-GTK3 读取系统动画偏好，关闭动画时直接布局。普通映射浮层已通过展开/收起连续高度帧、关闭动画时直接布局、中途退出清空且不复活，以及同编辑器全文、选区和焦点保持；三张实图确认正文自然增高而非缩放。实际过渡由工具包负责，不能承诺各桌面逐像素一致，此结果也不关闭后续重入展开的既有边界。
-
-GTK4 保持即时高度布局，以当前编辑稿测量高度。CSS 过渡与后续帧时钟候选均在真实展开过程中出现同编辑器失焦、人工稿被重译，尚未确定最初焦点变化的原生分支；两种候选均未采用，不据此断言动画机制就是根因。即时布局的普通展开/收起已实际达到测量高度，并保持同编辑器全文、选区和焦点；系统禁用动画、减少动态效果及退出清空的检查也已通过。GTK4 平滑展开尚未完成，后续展开重入的既有失败仍未闭环。现有 fixture 通过公开 AT-SPI 按钮动作检查普通展开/收起与安全隐藏，不代表物理鼠标验收。
+GTK4 当前使用即时高度布局，按当前人工稿测量。平滑展开尚未完成，既有展开重入和编辑焦点问题仍需定位。GTK4 只在译文可编辑时显示悬停细边框，进入编辑或失去资格后清除。两代视觉差距见原型对照，当前提交的 GUI 证据见开发状态；两者从 [README 开发与验收导航](README.md#开发与验收)进入。构建成功、公开无障碍动作或合成输入不代表物理鼠标、输入法和缩放已验收。
 
 ## 可选 Qt 6.11.2 构建与启动
 
-Qt 组件是显式可选内容，只有使用 `pack.py --qt-output <本轮Qt构建目录>` 才进入包。固定 Fcitx5-Qt 5.1.15 和 Qt 6.11.2；包内不带 Qt 系统库，也不安装、升级或替换系统输入法插件。构建记录、每个输入文件与 ELF 的 SHA256、完整修改后的上游源码、BSD/LGPL 许可和重建脚本随包提供。原 GTK3/GTK4 入口不要求系统安装 Qt。
+Qt 合作插件固定为 Fcitx5-Qt 5.1.15 与 Qt 6.11.2，包不带 Qt 系统库。普通 GTK 入口不要求安装 Qt。启用 Qt 前，系统运行库、插件和私有头文件对应的 ABI 必须匹配；发行修订号可以不同，但不能据此宣称 Arch 与 CachyOS 二进制相同。
 
-Qt 的生产构建和原生实现见 [Qt 路径](qt.md#构建与验证)。可选发行包还要求同一构建的真实异步输入回归记录，使用新输出目录执行：
+Qt 的生产构建见 [Qt 构建与验证](qt.md#构建与验证)。将 Qt 加入合作包前，运行同一构建的真实异步回归，再用 `--qt-output` 封装：
 
 ```sh
 python tests/linux/qt_cooperative/run.py \
@@ -155,8 +146,13 @@ artifacts/build-tools/bin/python packaging/linux/fcitx-cooperative/pack.py \
   --output artifacts/TypeLay-Fcitx-cooperative-qt6.tar.gz
 ```
 
-有 Qt 组件的包可执行 `python fcitx-cooperative.py preflight --qt6`，再以 `python fcitx-cooperative.py launch --qt6 应用命令` 逐应用启动。仍须先按前述步骤手动启动同包私有 Fcitx daemon。启动器仅在这个子进程设置 Qt 插件路径、TypeLay generic 插件、原 Fcitx 输入模块与合作开关。无 GUI 的版本探针核实实际 `qVersion()`、编译版本和两个插件的元数据；另独立检查 ELF 动态依赖，未知或混合 Qt ABI 时拒绝。强制同步 Fcitx Qt 模式不支持，不能靠它绕过原异步输入事务。
+解压含 Qt 的包后，先检查运行库，再按前述流程启动同包 daemon，最后逐应用启动：
 
-Qt 系统包的发行修订可与 CI 的 Arch 构建不同；校验明确针对 Qt 6.11.2 上游 ABI，不声称与 CachyOS 包逐字节相同。Qt 6.10 起客户端 Wayland 库及平台插件已在 qt6-base 内，无需安装仅提供 compositor 的 qt6-wayland。应用自带另一套 Qt、Qt5、QtQuick、自绘或富文本不属于本入口的支持范围。已用真实搬迁包的 launcher 在 Qt 6.11.2/Wayland 验证标准 QLineEdit 与纯文本 QPlainTextEdit：本地模型、选区/Unicode、Tab、人工编辑回源、原生撤销、按需快捷键和组合拒写。同窗标准 QLineEdit 后台直接替换和原文冲突拒绝也已通过该搬迁包入口，QPlainTextEdit 后台及跨窗口/应用后台未覆盖。物理输入与实际应用需用户机器验证。
+```sh
+python fcitx-cooperative.py preflight --qt6
+python fcitx-cooperative.py launch --qt6 应用命令
+```
 
-撤回此逐应用选项只需退出该应用，随后正常启动原应用；不修改 shell 或全局配置。私有 daemon 的整体退出和原输入法恢复沿用前述流程。
+预检核对实际 `qVersion()`、编译版本、插件元数据和 ELF 依赖，混版或未知 ABI 会被拒绝。强制 `FCITX_QT_USE_SYNC=1` 不受支持。启动器只为本次子进程设置 Qt 插件路径、TypeLay generic 插件和 Fcitx 输入模块。
+
+应用自带另一套 Qt、Qt5、QtQuick、自绘及富文本不在此入口范围；标准控件与后台路径的具体边界见 [Qt 实现范围](qt.md#实现范围)。撤回时退出该应用，再正常启动；整个私有会话的退出沿用[恢复原输入法](#恢复原输入法)。

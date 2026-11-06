@@ -19,13 +19,13 @@ Windows/Linux 同步推进共同产品功能与体验，各平台问题和验收
 
 ## 从源码开发
 
-三条线的当前进度、待办、负责人和先后关系统一见[当前开发状态与安排](docs/engineering/development-state.md)。
+当前任务、负责人、依赖和验证缺口统一见[当前开发状态与安排](docs/engineering/development-state.md)。
 
 长期集成入口是 trunk，main 保留为稳定发布分支。分支权限见 [AGENTS.md](AGENTS.md)；依赖、共享检查与 CI 见[工程开发流程](docs/engineering/development.md)，实际平台命令分别见 [Windows 开发](docs/platforms/windows/development.md)与 [Linux 开发](docs/platforms/linux/development.md)。验收证据分层见[测试协议](docs/engineering/testing.md)。
 
 ## 源码与文档导航
 
-先看[三张架构图](docs/engineering/architecture.md#先看整体怎么工作)，了解共享代码、运行进程与翻译写回的区别。
+先看[项目整体架构](docs/engineering/architecture.md#先看整体怎么工作)，了解各模块的职责，以及一次翻译如何完成。
 
 ```text
 src/shared/                 Core、Runtime、Protocol、Python worker

@@ -1,78 +1,62 @@
-# Linux 浏览器输入适配器
+# 在 Linux 浏览器中接入 TypeLay
 
-此适配器通过浏览器扩展连接当前 Wayland 会话中的 TypeLay。代码实现不等于浏览器、真实桌面或物理输入法已经通过验收。本地 native messaging host 不启动模型、不监听网络端口、不保存正文；源文和译文只经过浏览器私有消息管道与 TypeLay 同用户 socket。普通安装不会自动注册 host、安装扩展或授予网页权限。
+浏览器扩展让 TypeLay 在网页输入框旁显示译文，并在当前字段允许时接受译文。它连接同一桌面会话中的本机 TypeLay，翻译仍由本地模型完成。先完成 [Linux 客户端安装](README.md)，再按本页接入浏览器。
+
+本地主机不启动模型、不监听网络端口，也不保存正文。源文和译文只经过浏览器私有消息管道及同用户 socket。普通安装不会注册本地主机、加载扩展或批准网页访问。推荐使用设置中的“应用支持”，由你在浏览器中完成扩展安装和权限确认。
 
 ## 范围与限制
 
-现有实现覆盖顶层 HTTP(S) 网页里的标准 `input[type=text/search]` 和 `textarea`。字段仍须通过共享敏感元数据、应用排除及编辑能力检查。密码、信用卡/一次性验证码元数据字段不读取正文；隐藏、禁用、只读或已经移除的控件被拒绝。
+当前实现处理顶层 HTTP(S) 网页中的标准 `input[type=text/search]` 和 `textarea`。密码、信用卡、一次性验证码等敏感字段会在读取正文前被拒绝。隐藏、禁用、只读或已移除的字段也不可用。
 
-另有 Tiptap 的单段富文本路径：仅支持实际编辑器公开实例绑定的一个 paragraph，段内允许普通文字及 marks；多段、列表、代码、mention、atom 和 hardBreak 不猜测映射。替换经编辑器原生事务完成，保留范围外结构和宿主默认撤销分组。MAIN-world 小桥只操作该页面编辑器，不提供模型或 native host 命令；隔离脚本仍负责可信 IME、许可与元数据校验。公开 beforeTransaction 阶段前后复核原状态及 DOM，遇回调重入变化拒绝继续，进入页面 dispatcher 后无法确认结果则隔离。Tiptap 2.11.5 是当前真实回归版本，自定义 dispatcher 和其他版本仍需实际验证。
+Tiptap 另有单段富文本实现。源字段必须绑定实际编辑器的公开实例，文档只含一个 paragraph，段内只含文字及受支持的 marks。多段、列表、代码、mention、atom 和 hardBreak 不在此范围。回归使用 Tiptap 2.11.5；其他版本与自定义 dispatcher 需要分别验证。
 
-iframe、Shadow DOM 源字段、其他 contenteditable / 富文本、自绘编辑器、浏览器地址栏和内部页面没有输入实现。浏览器扩展不会自动为 Electron 或 VS Code 提供支持。普通网页上的标准控件不是应用白名单；网页可能使用自定义事件处理、受控组件、CSS 根变换或私有编辑状态，这些情况必须分别验证，不能凭最终 DOM 字符串宣称兼容。
+iframe、Shadow DOM 内的源字段、其他 contenteditable、自绘编辑器、地址栏和浏览器内部页面尚无输入实现。Chrome 新标签页中央搜索框可能把焦点转到地址栏，普通 google.com 搜索框的结果不能代表它。此扩展也不自动接入 Electron 或 VS Code。
 
-Chrome 新标签页中央的 Google / Ask Google 搜索框与 google.com 普通网页搜索框不是同一验收目标。前者尚未验证，输入焦点可能转到浏览器地址栏；普通网页扩展通过不证明新标签页或其他受保护内部页面可用。应用支持页的浏览器状态只表示最近检查到的具体网页字段能力。
-
-输入法状态初始为 Unknown。只有可信的非组合键盘/输入事件或 compositionend 才建立明确状态；普通窗口/标签页失焦保留持续监听的已知状态并撤销许可；页面冻结/恢复或丢失连接后重新确认。组合期和未知状态不读取正文、不发布可接受候选，不通过“未看到候选窗”推断 Clear。因此刚获焦、尚无可靠输入观察的字段可能暂时没有胶囊。
-
-标准输入框写回使用浏览器原生 `setRangeText`，在同一 JavaScript 事件循环中核对精确 DOM 对象、生命周期、元数据、内容/输入/焦点版本、选区、原文和短期许可，然后同步替换。不会写剪贴板、模拟粘贴、补发 Tab、自动发送或提交表单。替换后发送标准 input 通知；网页处理器若再次改变值、选区、身份或编辑能力，则回报 OutcomeUnknown 并隔离该字段，绝不重试或覆盖网页的新结果。此机制不保证所有框架的内部状态或撤销栈语义；需要目标网页的实际验收。
-
-浮层使用文档视口坐标，在当前页面的封闭 Shadow Root 中呈现，不推算 Wayland 全局坐标、不推动页面布局。浏览器窗口/标签页失焦、字段隐藏、租约到期或 host 断开时撤下。根元素经过变换而无法可靠映射固定定位时拒绝使用。
-
-展开/收起和更多操作的形变使用当前封闭 Shadow Root 的同一壳体与 textarea，约 280ms。正文、提示和编辑状态在新视图到达时立即更新；不保留旧正文副本。原生布局逐帧保留 header/footer 可见，文字不缩放；同侧锚和右侧锚无法保持、动画 API 不可用或浏览器报告 `prefers-reduced-motion: reduce` 时直接最终落位。新视图、源/视口几何改变或隐藏取消旧动画，续租不重播，动画不更新接受资格或显示期限。隐藏同步清空原编辑器，没有退出残影或延迟恢复。
-
-DOM 回归复用同一 fixture 与固定动态视口，有限 RAF 几何和 Chromium screencast 帧进入 `artifacts/linux/browser-native/overlay/motion`。[0bdc97a 的实际 CI](https://github.com/DingJWuyu/Typelay/actions/runs/38697895389)的 38 项 DOM 检查中 37 项通过，包括中间帧/锚与源焦点、新视图即时替换、Esc/安全隐藏后不复活、中文草稿选区与原生撤销及两阶段返回、浏览器减少动态效果。快速展开/收起与同内容续期用例的收起终态失败；浏览器原生消息和生产桌面步骤通过不覆盖该失败。
-
-已核验独立展开用例的 23 个 RAF 样本与 10 张实绘帧：壳体从 480×254 连续变化至 520×454，原 textarea 高度从 160 变化至 360；右侧和底侧锚偏差不超过 1/64 像素，源焦点始终保留，header/footer 留在壳体内，文字只重排、不缩放。静态与中间态图像均已查看，未发现旧正文副本或控件裁切。失败的快速反转用例结束时 x 仍为展开位置 128，而非原收起位置 168；它未保存该段帧，也未确认第二次可信点击实际落在移动中的“缩小”按钮，不能区分输入未送达与产品处理问题。展开实绘和此前一次通过不能证明此反转已可靠，亦不能用等待展开结束后再点击替代截止前反转。其它行为通过也不等于 Firefox、物理输入法或任意网页已经取得同样的逐帧视觉证据。
-
-## 接受时效与诊断
-
-可见译文不保证当前 Tab 仍有有效许可。真实 Firefox 链路仍出现稳定候选续期空窗；许可过期时保留原文并透传 Tab，不自动重放。61f51ca 的普通与单段富文本接受通过，同轮较早稳定候选仍有 54ms 空窗，故当前不能承诺连续可接受。页面主线程停顿也可能让提示的实际绘制晚于逻辑失效。
-
-现有 trace 在同一 capture 回复附带页面执行耗时、native host 收件和 desktop 分派时间，不增加 RPC。页面值是局部 duration；后两项是同机 BOOTTIME。Tab 诊断关联实际 publication round，并保留同 peer 最近两个在途 round 的后续结果；这些数字不授予权限，也不含正文或目标身份。所分析的 Firefox 捕获样本中，页面执行为 1–5ms，host 收件到 desktop 分派为 0–2ms；仍有 capture 请求等待 213ms 的长尾。长尾在 host 收到 capture 回复之前，尚不能细分发送、浏览器路由与调度，不能归因于正文扫描或 desktop 收件后的队列。`snapshotAtMs` 是校准下界，不能与 host 时间相减后冒称精确回程延迟。
-
-自动模式不再发布禁用的 F9/F10 观察；模式变更仍立即撤销旧观察并发送新配置，按需模式继续使用新 generation。这只减少无效消息，不保证消除浏览器调度长尾。不能让页面自行延长旧许可来代替宿主的新鲜观察与策略批准。
+标准控件是能力范围，不是应用白名单。网页的受控组件、自定义事件和私有编辑状态可能影响结果；根元素变换导致坐标无法可靠映射时，扩展拒绝显示。实际网页仍需检查状态同步和撤销行为。
 
 ## 显式安装
 
-先安装 Linux 发行包并启动 TypeLay。扩展源码随包放在 `browser/firefox` 与 `browser/chromium`，两者均包含对应 `manifest.json`。保持这个发行目录可用；浏览器加载解压扩展后会引用其文件。
+保留解压后的发行目录。Firefox 文件位于 `browser/firefox`，Chromium 文件位于 `browser/chromium`；浏览器会继续引用这些文件。
 
-优先使用设置中的“应用支持”：选择浏览器，按接入说明打开浏览器，并复制管理页地址和组件目录。Chromium 不允许外部启动命令直接打开扩展管理内部页，需要用户把 `chrome://extensions/` 粘贴到地址栏后打开；TypeLay 不添加安全绕过参数。两个“复制”按钮只在明确点击时写入相应固定内容，不代表扩展已经安装。
+1. 在 TypeLay 的“应用支持”中选择浏览器，打开接入说明。
+2. 在浏览器中加载扩展，并批准网页访问。Chromium/Chrome 使用 `chrome://extensions/` 的“加载已解压的扩展程序”，选择发行包的 `browser/chromium`。管理页地址需要你粘贴到地址栏，TypeLay 不添加绕过浏览器限制的启动参数。
+3. Firefox 使用 `about:debugging#/runtime/this-firefox` 的“临时载入附加组件”，选择 `browser/typelay-firefox-unsigned.xpi`，也可选择 `browser/firefox/manifest.json`。这个未签名临时扩展会在退出 Firefox 后失效；发行包未提供可永久安装的签名商店版本，也不修改签名校验设置。
+4. 回到 TypeLay，点击“连接”。Chromium/Chrome 会查找标准配置中唯一且与当前组件目录匹配的扩展记录。记录缺失或不唯一时，连接保持未确认。
+5. 保存网页中的工作，刷新目标网页。在允许的输入框中键入非敏感文本，等待真实连接和字段检查。注册成功只表示本地消息通道已登记；“应用支持”显示的是最近观察到的字段能力。
 
-在浏览器加载扩展并批准网页访问后，回到 TypeLay 选择“连接”。Chromium/Chrome 只采用标准浏览器配置中与当前包目录完全匹配的唯一扩展记录，不需要用户手填扩展 ID；找不到或存在多个记录时保持未连接，并说明下一步。登记成功也不等于已经连接，需保存工作并刷新目标网页，等待真实握手和字段检查。
+浏览器须与 TypeLay 处于同一 Wayland/niri 会话。容器、Flatpak 或其他进程命名空间可能无法访问本地主机，或无法确认同用户进程祖先；这种情况保持不可用，不绕过身份校验。
 
-下面的命令是手动管理方式，与设置入口二选一，不需要两套都执行。
+### 用命令行管理本地主机
 
-Firefox：
+若使用上述设置入口，无需再执行这些命令。手动方式在发行包目录运行 `install.py`，扩展加载和网页权限仍由你在浏览器中确认。
+
+Firefox 的扩展 ID 固定为 `typelay@typelay.local`：
 
 ```sh
 python install.py browser-install --browser firefox
 ```
 
-在 Firefox 的 `about:debugging#/runtime/this-firefox` 选择“临时载入附加组件”，打开发行包 `browser/typelay-firefox-unsigned.xpi`，也可选择 `browser/firefox/manifest.json`。开发模式临时扩展在浏览器退出后失效；XPI 是包含实际发行脚本的可复现未签名包，可用于临时加载或交给 Mozilla 签名流程；这里没有提供已签名的商店扩展，不能承诺稳定 Firefox 中的永久安装，也不会修改浏览器签名校验设置。扩展 ID 固定为 `typelay@typelay.local`。
-
-Chromium：先在 `chrome://extensions` 打开开发者模式，加载发行包 `browser/chromium` 文件夹。复制浏览器显示的 32 字母扩展 ID，再执行：
+Chromium 先加载扩展，再将管理页显示的 32 字母 ID 填入命令：
 
 ```sh
 python install.py browser-install --browser chromium --extension-id 这里替换为浏览器显示的ID
 ```
 
-Google Chrome 使用 `--browser google-chrome`。不会猜测扩展 ID，也不注册通配来源。加载扩展和网页访问权限必须由用户在浏览器中明确批准。安装后重新载入目标网页；浏览器应继承与 TypeLay 相同的 Wayland/niri 会话环境，否则不能连接另一个会话的服务。
-
-扩展连接 host 的名称为 `org.typelay.browser`。host 程序从自身文件位置定位发行根，不依赖浏览器传入 TYPELAY_HOME。若浏览器通过容器、Flatpak 或另外的进程命名空间启动，系统 host 或同用户父进程链可能不可达；这类情况保持不可用，不绕开认证。
+Google Chrome 使用 `--browser google-chrome`。安装器只登记这个明确来源，不使用通配来源。扩展连接的本地主机名是 `org.typelay.browser`；主机从自身位置定位发行目录。
 
 ## 使用与卸载
 
-当前源码为明确接入的 Chrome/Chromium 标准 input/textarea 增加默认自动接受能力，无需开启实验写回。登记本身不等于字段可接受：仍须当前真实连接、浏览器拥有的文档身份、字段与配置确认及原许可。Firefox、富文本和旧组件不因此开放；此前这些路径的真实自动接受检查使用实验开关，不能当作默认配置证据。[修正隔离 profile 与字段能力消费者后的实际检查](https://github.com/DingJWuyu/Typelay/actions/runs/39232325140)已通过 native messaging 接线，以及真实桌面、发行包与模型的标准字段版本 1 确认、实验写回关闭时的一次 Tab 接受、精确回执、单次 input 通知及原框焦点保持。随后标准和富文本组合源操作、编辑回源与人工稿接受也已通过，但富文本仍使用版本 0 与原实验前提；后续 Firefox 首次 Tab 未接受，整套 Linux 检查未全绿。软件输入不等于物理键盘或真实 IME 验收。
+自动模式跟随当前源字段；按需模式使用设置中的唤醒和直接替换快捷键。首次获焦时，输入法状态可能仍是 Unknown。扩展须观察到可信的非组合输入或 compositionend，才能确认状态；未知或组合期间不读取正文，也不授予接受许可。
 
-翻译模式、语言方向、排除项及原生写回开关沿用 Linux 设置。已确认输入法状态后，自动模式跟随源字段；按需模式使用设置中的快捷键。接受/退出默认 Tab/Esc，也可分别配置无修饰 F1-F24。只有当前有效许可才拦截真实接受键；按需 wake/direct 的启用不关闭自动模式的会话键。点击候选先请求编辑授权；编辑后第一次接受键只返回原输入框，得到新源观察并释放旧键后，下一次独立按下才接受。Alt/Shift/Meta、重复键、组合输入和不可信合成按键不发起新的接受。
+明确接入的 Chrome/Chromium 标准字段，在当前文档确认版本 1 能力后，可以默认接受译文。Firefox、Tiptap 富文本和旧组件的自动接受仍受默认关闭的“原生输入框替换”实验开关控制。连接登记、其他标签页的确认或旧候选，都不能替当前字段授权。
 
-当前源码另支持标准 input/textarea 的 Ctrl+F1-F24 源接受与退出，须由当前文档回显源能力；[实际主机与本地模型链](https://github.com/DingJWuyu/Typelay/actions/runs/39021697182)已验证源接受、不写退出、目标变化拒写和默认键恢复，同轮 DOM 组合回归也已通过。原 Ctrl 按下只保留此前已有的同字段候选和原截止，后继功能键仍核对原文、选区、输入法及焦点，续报不换票或续命；失败按浏览器原路交还，已开始写入后遇回调变化仍隔离且不重试。标准字段的组合编辑另复用独立无写 UI 票：原 Ctrl 固定当前编辑视图、草稿、原双时钟显示截止及按次，首次 Fn 只返回原源框或退出；整组释放后，必须用新 Ctrl+Fn 和新源许可才能接受人工稿。源许可的例行撤销不撤这个编辑票，草稿、输入法、焦点、视图或配置变化仍永久撤票，续租不延长原票。[组合编辑的 DOM 与真实主机模型链](https://github.com/DingJWuyu/Typelay/actions/runs/39026363773)已验证首次回源零写、第二次独立组合精确接受人工稿及不写退出；同一组合流程已接入现有 Tiptap 单段文字/marks 路径；[最新实际检查](https://github.com/DingJWuyu/Typelay/actions/runs/39044549646)通过 24 项 DOM 回归，以及真实本地模型的源接受、marks 保留与 Undo、不写退出、实际点击改稿、第一组零写入回源和第二独立组合精确接受人工稿。回源使用已验证同一 EditorView 的同步 focus API 恢复模型选区，仍核对原模型版本、文档、选区与输入法；框架焦点 class 仅从策略描述中剔除，原始 mutation 撤票保持。设置中的接受和退出选项现可选择 Ctrl+F1-F24；本批公开设置交互仍待实际检查，软件输入检查不替代物理键盘或实际输入法验收，整套 Linux 检查仍有失败。富文本组合能力必须由当前 bridge 与 MAIN probe 同版确认，旧组件保留普通键；原 Ctrl 同时固定原模型版本；页面桥在构造事务及注册回调前只允许本次请求的一次按键 claim，之后仍保留原 beforeTransaction 与 updateState 最终校验。claim 后即使页面回报未修改、无回复或发生异常，也只按已消费的 OutcomeUnknown 隔离，不重试。页面可观察桥事件不提供跨页面回调的原子性。默认 Tab/Esc 和无修饰功能键路径不变。
+接受和退出默认是 Tab/Esc。设置也提供无修饰 F1-F24，以及能力已确认的 Ctrl+F1-F24。浏览器和操作系统可能保留部分功能键；配置成功不保证按键能到达网页。
 
-配置先撤销旧许可；每个文档的 describe/capture 各自回显 Applied generation、规范键对和 source/editor readiness，不将 native host 或其他标签页的确认转用为当前文档能力。缺少或非法配置保持只读，不能默认授予 Tab/Esc。普通展示、编辑、返回与写入核对配置代次，页面回调重入后仍需写前复核；已经完成的写入回执继续按原 plan 返回。物理按下以 `event.code` 保留到释放，配置、失焦或隐藏不清除所有权，因此已按住的未绑定功能键不能在新配置下因自动重复而接受，旧释放也不会变成新动作。配置确认不保证浏览器或操作系统会把每个功能键交给页面，不通过全局抢键绕过浏览器保留行为。
+点击译文后，扩展先申请编辑授权。编辑后的第一次接受只返回原输入框，不写回。释放原按键后，宿主须重新观察原字段并授予新许可，下一次独立按下才接受人工稿。Ctrl+功能键要求整组释放后再按；重复键、合成按键和旧按次的释放不会生成新接受。配置、草稿、焦点或输入法变化会撤销原资格，显示续租不会延长按键票据的原期限。
 
-设置中的“移除”撤销本安装拥有的本地通信注册，不操作浏览器扩展权限，也不结束浏览器进程。对于已经取得版本 1 能力的 Chrome/Chromium 连接，移除后停止该连接未来的命令和自动接受，不降为旧版实验通路；已发操作仍按原回执结账。Firefox 等旧连接仍须保存工作并完整退出浏览器，删除注册本身不会立即断开它们，关闭单个标签页也不保证会话结束。无需继续使用时，再到浏览器移除扩展。
+移除接入时，在“应用支持”点击“移除”，再到浏览器移除扩展。版本 1 的 Chrome/Chromium 连接会停止未来命令和自动接受，已派发操作仍按原回执结算。Firefox 等旧连接需要保存工作并完整退出浏览器，删除注册或关闭单个标签页不保证立即断开。
 
-也可以手动注销指定 host：
+手动注销使用对应命令：
 
 ```sh
 python install.py browser-uninstall --browser firefox
@@ -80,33 +64,48 @@ python install.py browser-uninstall --browser chromium
 python install.py browser-uninstall --browser google-chrome
 ```
 
-完整 TypeLay 卸载会清理本安装拥有的 host 注册和 wrapper，不改其他扩展。浏览器中的扩展本身仍需用户移除。连接断开会撤下页面浮层并撤销许可。
+完整卸载 TypeLay 也会清理本安装拥有的注册和 wrapper。浏览器扩展仍由你移除，其他安装拥有的注册不会被覆盖。
+
+## 接受时效与诊断
+
+可见译文不保证按下 Tab 时仍有有效许可。许可失效会保留原文，并让原键继续按浏览器规则处理。Firefox 的稳定候选曾出现续期空窗；浏览器主线程停顿也可能延迟提示重画。扩展不会自行延长旧许可、补发 Tab 或重试写入。
+
+标准字段在同一文档事件循环中检查目标对象、配置、版本、选区、原文、输入法和期限，然后用原生 `setRangeText` 替换并发送一次 input 通知。网页回调若再次改变结果，扩展返回 `OutcomeUnknown` 并隔离原字段。这不能保证每个框架的内部状态或原生撤销栈都与 DOM 一致。
+
+Tiptap 通过编辑器事务替换，保留范围外结构及宿主默认撤销分组。隔离脚本持有输入法与许可检查，MAIN-world 桥只操作当前编辑器。桥在 beforeTransaction 前后复核状态；一旦本次写入已被认领，页面无回复、异常或声称未修改都不能证明未写入，结果未知时隔离且不重试。页面回调之间没有额外的原子事务保证。
+
+许可到期、断连和撤权请求本身都不是“未用许可退休”的证明。源端须确认原许可已失去全部执行资格，且没有被认领，才向宿主报告 `writeRetired`；已经开始的写入继续交付原计划回执。呈现更新和浮层隐藏不能替代写入结算。
+
+浮层在顶层文档的封闭 Shadow Root 中显示，使用 `browser-viewport` 坐标。失焦、隐藏、租约到期或断连时撤下并清空正文。展开和收起复用同一编辑器；新视图立即更新正文，几何变化或安全隐藏取消旧动画，减少动态效果时直接落位。快速反转的既有失败仍需对应实绘与真实点击证据，不能用单次展开通过代替。当前提交的已测与未测范围见“当前开发状态”，可从 [README 的开发与验收导航](README.md#开发与验收)打开。
+
+诊断 trace 的页面耗时是局部 duration，主机时间使用同机 BOOTTIME。`snapshotAtMs` 是校准下界，不能相减后当成精确回程延迟。现有长尾证据不足以区分浏览器发送、路由和调度，不应据此放宽许可期限。
 
 ## 开发验证
 
-生产内容脚本的真实 DOM 回归只替换扩展消息管道，DOM、选区、事件循环、键盘事件及组合事件由 Chromium 执行。测试使用独立临时 HOME 和浏览器 profile，不安装扩展、不接触用户网页、不下载模型：
+先从 [README 的开发与验收导航](README.md#开发与验收)打开 Linux 开发指南，准备私有开发环境。以下测试使用独立 HOME/profile 和合成字段；它们不接触用户网页，也不下载翻译模型。
+
+检查生产内容脚本的 DOM 行为时运行：
 
 ```sh
-python -m pip install playwright
 xvfb-run -a python tests/linux/browser_e2e.py --chromium /usr/bin/chromium -v
 ```
 
-真实扩展和发行包 host 的最小链路另行运行：
+检查真实扩展、本地主机注册与发行包消息路由时，按浏览器选择一个入口：
 
 ```sh
 xvfb-run -a python tests/linux/browser_native_e2e.py --package artifacts/linux/package --chromium /usr/bin/chromium -v
-```
-
-Firefox 的真实临时扩展与本地主机检查使用官方 Firefox/geckodriver，不依赖 Playwright 的 Firefox 扩展支持：
-
-```sh
 xvfb-run -a python tests/linux/firefox_native_e2e.py --package artifacts/linux/package --firefox /usr/bin/firefox --geckodriver /usr/bin/geckodriver -v
 ```
 
-它使用独立临时 HOME/profile，通过 WebDriver 安装本次测试的临时附加组件，并连接发行包原生 host。该范围是实际加载、协议、字段读写与身份校验，不等于 Firefox+niri+真实模型完整链路或物理输入法验收。
+DOM 测试替换扩展消息管道，由 Chromium 执行实际 DOM、选区和事件。native messaging 测试加载实际发行扩展与 host，但 socket 对端只提供测试元数据批准。两者都不证明 niri 前台身份、本地模型和完整桌面链路通过；完整链路从 Linux 开发指南的桌面验收入口执行，入口见 [README 导航](README.md#开发与验收)。浏览器不能启动属于失败，不能跳过后记为通过。
 
-该检查在临时 HOME 安装发行包，显式加载测试扩展，再通过生产连接操作读取唯一的实际扩展记录并注册，使用真实后台脚本、native messaging、host wrapper 与 socket，验证首次握手、重连、跨标签页路由及控件销毁身份；完成后关闭整个测试浏览器并删除临时目录。socket 对端只提供测试用元数据批准，不是假翻译器，也不代表 niri 前台身份或模型链路验收。
+维护时按职责查源码：
 
-DOM 检查包括默认键与 F1/F12/F24 的配置回显、缺失/旧代拒绝、预先按住未绑定键后切配置、旧 keyup 归属和编辑返回后第二次独立按下；4a499d0 的 DOM 32 项均通过，包括 CDP 投递的可信 F24 down/repeat/up/down/up 序列；同轮 Chromium/Firefox 本地主机链也通过。既有检查覆盖未知 IME、可信输入后的接受、旧原文、DOM 重建、组合撤销、UTF-16 选区、网页重入改写、密码字段和合成 Tab 拒绝。单独的 DOM 检查不验证 Firefox、native messaging 安装路由、niri 前台身份、物理中文 IME、真实键盘、任意网页源框撤销栈或跨环境视觉一致性。Chromium 进程无法启动时检查失败，不跳过成成功。上述未覆盖项仍需对应真实环境验证。
+| 需要检查的行为 | 源码入口 |
+| --- | --- |
+| 字段、输入法、按键所有权、写回与浮层 | `src/shared/browser/content.js` |
+| Tiptap 事务与隔离脚本通信 | `src/shared/browser/editor-adapter.js`、`src/shared/browser/editor-bridge.js` |
+| 文档路由与本地主机 | `src/shared/browser/background.js`、`src/linux/desktop/browser_host.py` |
+| 注册、当前字段能力与移除 | `packaging/linux/install.py`、`src/linux/desktop/application_support.py`、`src/linux/desktop/input.py` |
 
-底层依据：[Chromium 启动地址校验](https://github.com/chromium/chromium/blob/154.0.8037.97/chrome/browser/ui/startup/url_util.cc)、[native messaging](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Native_messaging)、[Chrome native messaging](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging)、[标准字段 setRangeText](https://developer.mozilla.org/en-US/docs/Web/API/HTMLInputElement/setRangeText)、[compositionstart](https://developer.mozilla.org/en-US/docs/Web/API/Element/compositionstart_event)。
+物理键盘、完整中文输入法、任意网页撤销语义及跨环境视觉仍需真实目标验收。测试覆盖与当前结果分开记录，旧运行通过不代表当前提交已通过。

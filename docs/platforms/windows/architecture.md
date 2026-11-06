@@ -1,185 +1,188 @@
 # Windows 宿主与输入边界
 
-共享规则与宿主端口见[工程架构](../../engineering/architecture.md)。以下内容仅属于 src/windows/ 下的 Windows 实现，不作为其它平台必须实现的协议或通用约束。
+Windows 宿主把外部输入框、系统按键和 WPF 浮层接入共享翻译会话。平台层负责证明目标身份与实际执行结果；共享 Runtime 决定会话、候选和写入结算。译文可见、候选可用与允许写入是三个不同状态。
+
+本页解释当前源码。推荐下载包的行为与验证范围见[Windows 使用说明](README.md#当前可验证候选)。本轮 Windows App 已构建，受影响的 WPF 交互与原生关闭流程仍未实测，具体状态见[当前开发状态](../../engineering/development-state.md)。共享概念以[术语表](../../../GLOSSARY.md)和[工程架构](../../engineering/architecture.md)为准。
 
 ## 生产模块与平台内共享
 
-TypeLay.Windows.Contracts 引用 Core，拥有 App 与 Broker 共用的 DTO、协议版本、WindowsTarget 编解码，以及 Windows 浏览器原生桥的私有握手合同。它可在普通 .NET 下测试，但其职责仍属于 Windows。
+| 模块 | 当前职责 |
+| --- | --- |
+| [WindowsRuntime](../../../src/windows/TypeLay.App/Windows/WindowsRuntime.cs) | 组装共享控制器、系统输入、浏览器输入和 WPF 视图，提供 Windows 副作用。 |
+| [WindowsInputRouter](../../../src/windows/TypeLay.App/Windows/WindowsInputRouter.cs) | 在原生输入与浏览器输入之间路由观察和命令，并保留连接及输入版本。 |
+| [WindowsInputService](../../../src/windows/TypeLay.App/Windows/WindowsInputService.cs) | 将输入操作转换为 Broker 请求，处理原生目标、焦点恢复与请求期限。 |
+| [TypeLay.Broker](../../../src/windows/TypeLay.Broker/Program.cs) | 在单一 MTA 线程持有 UI Automation（UIA）对象，通过标准输入输出提供生产协议。 |
+| [TypeLay.NativeInput](../../../src/windows/TypeLay.NativeInput/transaction.c) | 在合格的 x64 系统 Edit 线程中读取或执行受限事务。 |
+| [Windows.Contracts](../../../src/windows/TypeLay.Windows.Contracts/BrokerMessages.cs) | 保存 Windows DTO、协议版本和不透明目标的编码合同。它引用 Core，但不是跨平台输入协议。 |
+| [WindowsSessionView](../../../src/windows/TypeLay.App/UI/WindowsSessionView.cs) | 将共享呈现交给 WPF 或浏览器视图。显示刷新不重新决定交互寿命，视图不直接写源字段。 |
+| [TypeLay.Practice](../../../src/windows/TypeLay.Practice/Program.cs) | 提供独立自有 stock Edit 与练习说明。翻译与授权仍由正式 App/Broker 处理。 |
+| [TypeLay.Launcher](../../../src/windows/TypeLay.Launcher/launcher.c) | 调用发行目录的启动脚本，不下载 SDK 或编译源码。 |
 
-`TypeLay.App` 是 Windows 宿主。Windows/WindowsRuntime 组装共享运行时与 WPF 视图；WindowsInputService 把类型化输入操作转换为 Broker 请求，持有 HWND、焦点恢复和 IPC 期限。KeyboardHook/OnDemandHotkeys、Job Object、注册表启动项属于 Windows。UI 保持 WPF 展示与编辑，不直接写源字段。Infrastructure 的 AppPaths、ModelInstaller、SingleInstance 仍属于当前 Windows 分发/安装，不把 Windows Python wheel 选择冒充共享安装器。
+设置保存由共享 [SettingsStore](../../../src/shared/TypeLay.Runtime/Settings/SettingsCommit.cs)返回提交结果。WPF、托盘和浏览器消费者保留“已保存但通知失败”等事实，不能因原窗口退休或普通成功标志而丢弃警告。平台只实现注册表启动项等副作用。
 
-`TypeLay.Broker` 引用 Core/Protocol/Windows.Contracts，在单一 MTA 线程上拥有 UIA COM 对象。Input 的 UiaInputProvider 不按应用白名单定义普通输入支持；Interop 只封装平台调用。生产入口是 Program 和标准输入输出管道，而不是 fixtures。TypeLay.NativeInput 的系统 Edit 协调写入仍是独立、受限的 Windows x64 路径。
-
-`TypeLay.Launcher` 是 Windows 原生入口。发布时从 C 源码编译，调用发行目录 bootstrap/start.ps1；它不包含 SDK 下载和源码编译功能。
+模型安装仍由 Windows 的 `ModelInstaller`、`ModelInstallationStore` 与 `AppPaths` 承担。Windows wheel 选择、Job Object 和数据目录规则不冒充共享安装器。
 
 ## 输入后端的安全准入
 
-**未发布候选边界**：本分支将正式 factory 和 Broker/Main 固定为 ordered source-message，不提供旧 sent 的 CLI/环境/设置选择；现有推荐发行包与验收结论不随源码候选改变。Broker v5 在最终 ordinary capture 上给出可选五字段 eligibility（Version、Target、ObservedAtMs、InputEpoch、FocusEpoch）。只有精确匹配本次有效、Source、新鲜且配置仍当前的 capture 才投影 cap1；Direct、Wake、owned 不借用该证明，缺/错证明不回落旧实验开关。cap1 不表示 Installed/Ready，原 install ACK、Arm、有序来源、IME、焦点、版本、100ms、撤权与Undo仍独立约束。实际 Windows/物理/部署验证未完成，不能据此发布或声称接受可用。
+每条输入路径独立证明能力。普通 UIA 能读到文字，不代表可编辑；直接替换能力也不授予自动接受权限。
 
-普通 `capture` 在 UIA/跨线程 IMM 为 Unknown 时，可对通过原有资格检查的系统 Edit 复用目标 GUI 线程原生只读捕获；[IMM 的线程身份检查](https://learn.microsoft.com/windows/win32/intl/developing-ime-aware-multiple-thread-applications)使 Broker 取不到 HIMC 不能证明源线程没有输入上下文。该观察独立于按需 `CaptureDirect`，该读取本身不授写权限，`DirectWriteSupported` 保持 false；暂停、ComboBox、已有明确 UIA 组合态不增加此读取，失败保持原拒绝边界。只读绑定由原 Broker 所有者退休，已获直接任务资格的绑定不因普通观察清理而提前撤销。[已核对的 Windows 检查](https://github.com/DingJWuyu/Typelay/actions/runs/39791124676)已在真实安装版系统记事本取得原生 Clear 与中文只读预览；接受提示仍因普通发行路径没有写入能力而未出现，不再归因为该样本的 IME Unknown。此证据只覆盖严格 x64、未被子类化的系统 `Edit`，不代表各种普通输入框都已具备相同能力，首接受及默认接受资格未因此通过或开放。
+| 路径 | 能提供的能力与限制 |
+| --- | --- |
+| 普通 UIA | 按字段策略读取。IME 状态未知时只提供只读预览；缺失接口不能补成 Clear。 |
+| 原生系统 Edit | 严格核对 x64、类名、线程、寿命、字段资格与输入上下文。普通捕获可补充源线程只读观察；读取本身不授写权。 |
+| 有序源接受 | 当前正式 factory 与 Broker/Main 固定选择此路线。逐次捕获证明只允许提出计划，源端安装和实际按键仍须独立通过检查。 |
+| 浏览器合作输入 | 对明确接入的顶层 HTTP(S) 原生 input/textarea，使用精确文档与 DOM 字段合同。失败不回退 UIA 写入。 |
+| 自有自动练习 | 仅对本次受管 stock Edit 授权，自有消息泵参与原键消费与事务裁决。 |
 
-隔离 Windows 测试保留默认关闭的旧 sent-route 系统 Edit 受理原型：原字段完成只读重验后，与快捷键超时撤回竞争同一个一次性共享状态。撤回先完成则不得修改正文或选区，原键旁路；原字段先受理后，原型依赖低级 Hook 返回值消费原键。此关联已被源写成功而原键泄漏的实际反例否定，见 [B-01](#b-01非原子写回与按键所有权)。已受理后的未知结果不重放按键，退休仅在确证静默或目标进程退出后擦除正文，保留受理事实。此路径目前只由测试接线，已发布版本的普通 `SourceLocalAcceptanceVersion` 仍为 0；跨队列按次归属与真实中文组合输入仍未闭合，不能据隔离原型宣布普通输入框安全接受完成。
+当前 [Broker v5](../../../src/windows/TypeLay.Windows.Contracts/BrokerMessages.cs)可在 ordinary capture 中返回 `SourceAcceptanceEligibility`。该证明绑定版本、完整目标、观察时间、输入版本和焦点版本。App 只在响应有效、焦点为 Source、快照新鲜且配置仍当前时，报告 `SourceLocalAcceptanceVersion=1`。缺失或错误证明保留版本 0，并关闭该快照的写能力；旧实验开关不能替代证明。
 
-旧 sent 与非 ordered retrieved-MSG 两条受控路线保留现有认证 Broker 通道和完整控制器：旧实验设置仅在这些回归中允许提出计划，实际安装确认前不发布按键许可或可接受提示。单个在途安装配合一个最新候选，不延长原100ms许可；失效立即撤回未受理状态，受理后的整组按键仍由原操作收束。完成回执来自源端实际核验的正文、选区、输入法与完成时间，不从替换计划猜测，也不再发第二次写入。私有 source wire 为 v7，明确拒绝旧 v4/v5/v6；普通原生事务 v2 保持不变。正式 Broker 入口不选择这两种旧构造；测试宿主仍使用同一路由显式启用，不新增用户开关。
+这一能力版本不表示源计划已安装或接受已就绪。源端仍须完成安装确认、Prepared/Arm、输入来源、原 100ms 许可、IME、焦点、正文、选区与尾键检查。Direct、Wake 和自有练习不借 ordinary capture 的证明。正式入口不通过 CLI、环境或 `--automation-test` 切回旧 sent 路线。
 
-retrieved-MSG 路线支持本次配置的无修饰 Tab 或 F1-F24：源线程在实际 `PM_REMOVE` 的同一 MSG 上 claim 并置 `WM_NULL`，再执行原生事务，不依赖 LL Activate 的返回。安装先 Prepared，App 发布本地撤权 control 与 capture fence 后才 Arm；准备期实际输入单调撤权，Arm 不续签原许可。精确 `source-poll`/`source-retire` 回执只结算一次，正文完成与尾键/资源 Quiet 分开，后续捕获不能越过尚未结算的回执。[已核 Windows 检查](https://github.com/DingJWuyu/Typelay/actions/runs/40079876227)通过自有源的真实派发正反、App 回执/fence、late ACK 与 Undo；[CI504](https://github.com/DingJWuyu/Typelay/actions/runs/40083637614) 已在真实 Notepad 接受/撤回两例验证该路线的恰一次 Verified 正文回执/零正文回执旁路、Undo、零 LL Activate/二次 Write、Quiet 与清理；这是隔离构造实跑，不是正式发行接受。已发布 Main/capability0、来源与 IME 门不变；[UIAccess 兼容范围已确认](../../product/README.md#windows-接受译文的辅助输入兼容范围)，来源机制与第三方部署资格仍未补齐。
+旧 sent、非有序 retrieved-MSG 和严格拒绝构造只服务现役隔离回归。旧包的普通能力版本 0，以及旧路线的局部通过，均不能替当前有序实现背书。构造、现有证据和正向验收入口见[开发文档](development.md#真实-runtime-的受控组装)。
 
-隔离 `orderedSourceMessageWitness` 候选复用现有 `TypeLay.Input` LL 线程，不在外部 GUI 安装 LL hook。按源 `Target.Lifetime` 维持256条有界 FIFO：先在 LL 线程发布休眠 mapping-ready，再由源安装 Prepared owner 并确认精确寿命/nonce/generation/grant，最后回到同一 LL 线程首次发布初始时界与 recording-active，再按 grant 的时间/序号界限 release-CAS Arm。初始休眠及同tick双方均不入队/不读队首，避免普通初始化输入遗留孤儿；激活后即使 Arm 失败也不断观察、不重设初始时界，初始化不跳跃 consumed。接受主键在候选发布时冻结，沿 Broker v5 请求进入 v7 source owner；LL 资格、原消息来源检查与 native 首键均匹配这一键，不读最新设置重绑。认领后另保留实际主键、scan/extended/context；配置变化只撤新写权，旧键旁路与尾债直到 Quiet，不能被新键代替。隔离候选另以显式非写前缀观察接通 Ctrl+F1–F24，见下段；Shift/Alt 不开放。源端在实际 MSG 同步消费队首，只由该 MSG 的 GCIMS 授 Keyboard/HARDWARE 类别；LL 不吞键、不激活、不写正文，普通注入与未知仍拒绝。刷新 grant 不清队列，旧键、同tick、未来或不可比较时间拒绝；原焦点、正文、IME、100ms、尾债与 Quiet 规则不变。有限假设为正常 Windows 时序的硬件及获准辅助输入，不承诺抵御辅助工具刻意填写未来时间碰撞或任意外部 hook 操控历史；时间不认证来源或唯一事件。详情与未实跑范围见[有序候选](development.md#隔离有序ll见证与严格源接受候选)。
+### 有序源接受怎样保留原按次
 
-隔离 ordered 的 Ctrl 候选复用同一 owner 与 FIFO，不新增 hook、源泵或 RPC。v7 的显式 `ObserveControlPrefix` 只建立首次 Ctrl 之前的历史，不执行计划、不呈现接受就绪；缺 mode 不等于观察。原 Ctrl 正常派发，源端独立核本次 GCIMS 与 FIFO 队首，并在下游链返回且原 MSG/序号未变后保存一次前缀。此前 grant 随 Ctrl 撤销。新 `Accept/Control` 必须绑定原 Ctrl 序号/观察时刻/前输入版本，App 与 Broker 核 Ctrl 后完整新捕获，源端核同寿命/配置/输入上下文；Fn 自己仍需独立来源、Arm 后记录与原100ms许可。前缀只跨旧 owner 的 Quiet，不跨其它输入、配置、源变化或释放恢复；Fn 首次尝试消耗该组，Ctrl 自身不被吞，已经认领的 Fn 尾债独立结算。人工稿沿原 `ManualAcceptanceModifier` 保留，只允许旧在途读暂保文字，新读核相同正文/选区/IME/目标后才产生新计划。既有受控 C 与 Windows ordered Ctrl 回归范围见开发文档；本分支正式组合尚未运行 managed/Windows，物理 Ctrl、真实 UIAccess 与 IME 仍待验证。
+[SourceInputWitness](../../../src/windows/TypeLay.App/Windows/SourceInputWitness.cs)复用现有低级键盘线程。每个源寿命只有一个有界 FIFO，记录按键和身份元数据，不保存正文。源 GUI 是唯一消费者，App 的原键盘线程是唯一写入者。
 
-旧 sent-route 接线按当前配置接受默认 Tab、无修饰功能键或 Ctrl+功能键。Ctrl 按下先撤销旧许可；后续接受必须使用 Ctrl 后新捕获、新安装的计划，同一按次的修饰键来源、配置、焦点和输入版本仍须匹配。人工译稿不是写许可：仅能明确归因于该次 Ctrl、且新观察确认原目标、正文、选区和状态未变时，保留人工文字，同时更新会话版本并重建许可。缺失观察、已观察到的原文编辑及未知输入法状态不走这条例外。普通退休清除该归因；只有控制器核对过的同一归因可在撤销全部许可时短暂保留。此实现不开放正式默认构造，也不是完整原生输入历史或物理按键的证明。
+初始化按顺序完成三个动作：App 发布休眠映射，源端确认本次 Prepared owner，原键盘线程再发布初始时间下界与 recording-active，并尝试 Arm。休眠时不记录或消费队首；首次激活之后，即使 Arm 失败也保留历史，不能清队列或重设下界。
 
-当前生产路径没有 TSF 后端。候选后端必须分别证明精确字段身份与寿命、完整正文与 UTF-16 选区、真实输入法组合态与共存、连续编辑变化，以及独立的写入资格；静态输入 profile、模块路径匹配、回调进入或进程清理成功均不能代替这些能力证明。未取得有效读取快照时，初始零值不能解释为无组合或空正文，未知状态继续拒绝授权。
+源端在实际 `PM_REMOVE` 的同一个 MSG 上检查来源和 FIFO 队首。匹配包括目标寿命、序号、主键、scan、方向、重复与时间。缺失、乱序、复用、溢出、旧键、同 tick 或不可比较时间均拒绝。队列不能按键值搜索，也不能借新 grant 丢弃旧记录。
 
-同一 view HWND 与 COM 身份仅是绑定条件，不能证明该 context 提供原生控件的完整正文。既有 top context 的空正文与原生非空快照不一致时，完整正文 equality 必须拒绝，不能归一化或改读其它 context 求通过；当前全文 RW 实验已退役，证据与保留的只读入口见[TSF 正文来源约束](development.md#tsf-正文来源约束)。该观察不证明所有 stock Edit 不支持 TSF，普通生产接受继续关闭。
+认领成功后，native 立即把原 MSG 改成 `WM_NULL`，再进入正文事务。认领与置空之间没有可重入调用。低级 Hook 不负责此路线的吞键、激活或正文写入。认领前失败完整旁路；认领后拒绝或结果未知都不能恢复、重放原键。
 
-新的 TSF 接入实验须先明确范围和授权；元数据完整不等于正文完整，不能因当前观察不足而擅自扩展到 base、parent 或修改输入法。隔离合成文档结果不外推普通输入框支持，单条有界路径停止也不代表 TSF 所有方案不可行。读取证据不自动授权写入、系统配置变更或运行中卸载。
+无修饰主键为 Tab 或 F1-F24。F10 另接受符合原 context 条件的系统键消息，不开放 Alt。Ctrl+功能键先通过显式 `ObserveControlPrefix` 记录原 Ctrl；Ctrl 正常派发并撤旧许可。后继功能键必须绑定该前缀、Ctrl 后完整新捕获与新计划，Ctrl 自身不被吞。前缀不能跨配置、其它输入、字段或 IME 变化恢复。人工草稿沿原稿基线保留，不因此获得写许可。
+
+同按次的 repeat/up 独立验证来源与身份。首写期限到期不消除尚欠的尾键责任，配置变化也不能把旧尾键交给新键。源应用内继续按原按次收束；用户主动切到另一应用后，后续键交给新应用，旧按次不恢复消费资格。此范围来自[已接受的产品边界](../../product/README.md#接受后主动切换应用时的-tab)。
 
 ## 输入来源资格
 
-产品已允许 UIAccess 辅助输入触发接受，机制尚未就绪。拟用于源接受的 [GetCurrentInputMessageSource](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getcurrentinputmessagesource) 只在本次实际消费的键盘 MSG 上取得成功且为 `IMDT_KEYBOARD / IMO_HARDWARE` 时提供来源类别资格；[IMO_HARDWARE](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ne-winuser-input_message_origin_id) 包含硬件和 UIAccess 注入，不是纯物理来源证明。`IMO_INJECTED`、`IMO_SYSTEM`、`IMO_UNAVAILABLE`、其它设备/未知枚举或查询失败均不给资格。来源类别只是必要条件，不能授予旧排队键、错误字段、过期许可或未知 IME 写权。
+产品允许物理键盘及 UIAccess 辅助输入触发接受。源端只在本次实际 MSG 上取得成功的 `GetCurrentInputMessageSource` 结果，并确认 `IMDT_KEYBOARD / IMO_HARDWARE`，才获得来源类别资格。[微软定义](https://learn.microsoft.com/windows/win32/api/winuser/ne-winuser-input_message_origin_id)中的 `IMO_HARDWARE` 包含 UIAccess 注入，不能解释成纯物理来源。
 
-当前 native retrieved-MSG 路线尚无此正式来源门；既有低级 Hook 的注入标记拒绝不直接改为放行。`LLKHF_INJECTED` 与 `IMO_INJECTED` 含义不同，不能通过打开 `allowInjectedInput` 实现该产品选择。新资格只绑定源端同一实际回调的原 MSG，不能跨回调缓存或从稍后轮询追认；安装、Prepared/Arm、重入失效、claim 与尾键仍沿各自原合同。原严格边界和 Main/capability0 保持到机制验证完成；物理键盘、用户真实输入法与第三方部署证据仍单列。[下一来源门切片](development.md#正向接受的剩余条件)不改变其它快捷键的信任范围。
+普通注入、System、Unavailable、未知枚举或查询失败都不授资格。低级 Hook 的 injected 标记与 MSG 的 origin 含义不同，不能以全局 `allowInjectedInput` 放行。来源结果只属于当前回调，不能缓存后追认另一条消息。
+
+有序见证采用正常 Windows 消息时序的有限假设。消息时间是拒绝依据，不是不可伪造的事件 ID；同 tick 可能拒绝一次合法按键。实现不承诺抵御获准工具刻意填写未来时间、任意外部 Hook 篡改历史或所有同用户恶意进程。可观察的旧键与未知来源仍须拒绝，不能靠等待、重发或续期隐藏代价。
 
 ## 首次按需唤醒的只读捕获
 
-仅当配置的 Wake 首次到达且尚无快捷键租约时，已装配 `WindowsInputRouter` 的 Hook 可采样精确原点；裸 Hook、直接替换以及已有但过期/未来版本的租约仍走原拒绝路径。回调只用非阻塞 Win32 元数据取得 raw foreground 所属 root、`GetGUIThreadInfo` 的确切 field HWND、同一 PID/TID、进程开始时间与原 t0，持有该进程的查询/同步句柄，不做 UIA、IPC、正文读取或移焦。在原回调 `finally` 固定命令自身之后的 user/source-user/content/foreground/window 五个版本、配置代与全局命令序号。单个私有 pending 由 Router 领取，不恢复旧 TargetId 或正文。
+首次 Wake 可能先于普通观察租约到达。已装配 Router 的 Hook 可在原按键回调中固定原生原点和版本，再请求一次新的只读捕获。裸 Hook、Direct 及已有但过期的租约不借这条路径。
 
 ```mermaid
 sequenceDiagram
-    participant K as Hook 原按键
+    participant K as 原按键 Hook
     participant R as WindowsInputRouter
-    participant B as Broker 单一 MTA
+    participant B as 生产 Broker
     participant C as 共享 Runtime
-    K->>K: 原生原点 + t0，finally 固定 post-key 版本
-    K-->>R: 单 pending，只含身份和版本
-    R->>B: capture-wake，当前排除列表副本，原 t0+150ms
-    B->>B: 正文前核 FieldPolicy，读取前后复核精确原点与字段身份
-    B-->>R: 新真实 Source，无写入能力
-    R->>R: TryRead 交付前重核全部版本、配置、最新命令、浏览器归属和原期限
-    R-->>C: 有效 Source + CommandCaptureEvidence
-    Note over R,C: 任一门失效只拒绝，不重试、不续期、不授接受或 F10
+    K->>K: 固定原点、原时刻与按键后的版本
+    K-->>R: 交付唯一待处理请求
+    R->>B: capture-wake，保留原 150ms 截止
+    B->>B: 核字段策略与精确身份，再读取正文
+    B-->>R: 返回新的只读快照
+    R->>R: 在实际交付时重核上下文与原截止
+    R-->>C: 交付快照和本次命令证据
 ```
 
-`capture-wake` 固定 `CaptureDirect=false`、无 `BoundTarget`、`OwnedCapture` 或写入计划；混搭请求和旧 Broker 的不支持响应均拒绝。Broker 的实际 UIA 元素 HWND 必须就是按键时的 field，而非同 root 的另一个字段或虚拟子元素；元数据与正文读取前后都核原 PID/开始时间、TID、root、GUI 焦点与原截止时间。FieldPolicy 与排除列表在正文前按原链检查一次，读取前后复核原点与字段身份，不宣称重新执行全部字段策略；真实 IME 与原源身份门保持不变。自动 owned practice 仍仅用 `capture-owned`，浏览器合作输入不转入本路径；无精确 HWND 的控件不据此宣称支持。已有直接任务的 native 绑定不能被本只读读取退休，真实 source grant 尚在途时保守拒绝。
+Hook 只用非阻塞 Win32 元数据取得 root、精确字段 HWND、PID/TID、进程开始时间，并持有原进程查询句柄。它不调用 UIA、IPC、正文读取或移焦。回调结束前固定输入、源输入、内容、前台、窗口版本，以及配置与命令序号。
 
-WindowsRuntime 在发请求时从当前 `settings.Value.Excluded` 复制排除列表，而不是复用某次旧 `InputContext`。先前普通 capture 即使在按键后返回，也保留自己的旧上下文，不能重标成这次命令；新读成功仍须在 Router 实际 `TryRead` 交付时校验五个版本、配置、最新命令、原焦点与浏览器归属。离开后返回、同根换字段、新输入、新命令或配置改变不会恢复旧请求。进程句柄在拒绝、替换、配置取消、结束或 Dispose 时释放。
+[Router Wake](../../../src/windows/TypeLay.App/Windows/WindowsInputRouter.Wake.cs)使用发请求时的当前排除列表。Broker 在正文前检查 FieldPolicy，并在读取前后核原 PID、寿命、TID、root、焦点、精确字段与截止。虚拟 UIA 子元素不能借同一 root 获得字段身份。返回值不含接受或直接写入能力。
 
-原 150ms 是命令准入/交付截止，不是新的 wire 超时。等待 Broker 串行槽及真正发送前超时，或排队期间配置/输入/命令/浏览器归属已撤销时，由专用本地 current 门拒发，且不停止另一个调用的进程；已经发出的只读帧沿原 1500ms wire 保护排空，超过原命令期限仍拒绝交付，不能把冷 UIA 的响应截断来伪造命令成功。此路径不解决 B-01、不承诺所有同用户恶意进程隔离，也不把极端 HWND 回收无法原子证明的问题新增为不可能的发布门；现实进程/字段身份、权限和 IME 拒绝边界不放松。
+原 150ms 约束命令准入和实际交付。等待串行槽或发送前失效时，客户端拒发且不停止别的调用；已经发出的只读帧沿原 1500ms wire 保护排空。迟到结果仍拒绝，不能延长原命令或借旧普通 capture 的正文。拒绝、替换、取消和结束均释放原进程句柄。
 
 ## 浏览器合作输入
 
-Windows 浏览器适配通过 `WindowsInputRouter` 接入同一个 SessionController，页面实现来自 `src/shared/browser/`；平台只拥有 native-messaging 注册、传输、Hook 和视图路由。`TypeLay.BrowserHost` 由 Chrome 启动，双方按命名管道的实际进程核同用户、会话、发行路径和寿命，再核登记的精确扩展 origin。浏览器进程身份只筛选连接，字段授权仍由同一文档端口、目标、元数据、输入法与内容版本证明，不能由 PID 或最终前台窗口推导。标准 HTTP(S) 顶层 input/textarea 以外不开放此适配，失败不转 UIA 写入。
+[BrowserInput](../../../src/windows/TypeLay.App/Windows/BrowserInput.cs)通过同一个 SessionController 工作。[BrowserHost](../../../src/windows/TypeLay.BrowserHost/Program.cs)由 Chrome 启动，只连接已经运行的同用户、同会话、同发行目录 App。双方核实际管道进程与精确扩展 origin；PID 和 `--parent-window=0` 均不能证明网页字段身份。
 
-Windows 浏览器按需命令由精确连接、文档、前台根窗口与配置代绑定的单一消费者处理。进入页面消费前须确认两个全局热键均注销且旧按键组已释放，页面按有序事件回执启用；退出时须收到精确退役回执，或等所有已发出归属租约到期及旧按键组释放，才恢复 native 热键。800ms 归属租约及 200ms 准备预算不延长字段读取权限。字段策略批准仍只有原 150ms，正文输入只撤旧快照；敏感属性、字段、文档或配置变化撤批准。页面在原 trusted keydown 同步冻结当前正文、选区和原 t0，宿主与 Runtime 分别核精确目标、时钟边界和原 150ms，不能用后来的捕获追认旧按键。已受理的直接替换仍绑定原 DOM 和原范围，允许后台完成，不激活窗口或提交表单；自动接受由页面同步裁决，已执行回执进入共享完成路径，不再派第二次写。送写后的断连、超时或不完整回执按未知结果处理，不重试。原生连接和页面转发各自绑定请求归属，旧连接回包不能进入新请求。该按需交接已在真实发行 App、Host、扩展和模型下，通过标准网页的一次软件 F10 选区精确替换，以及受理后切至另一字段、仅后台原框写入且不抢焦点的检查；主动移除后的无写负控亦已通过，异常断连仍按各自证据评估。
+字段授权绑定同一连接、文档端口、目标、元数据、IME 和内容版本。页面在原 trusted keydown 同步冻结正文、选区和时刻，宿主与 Runtime 分别核原 150ms 边界。直接替换可在用户离开后完成，但始终只写原 DOM 与原范围，不抢焦点或提交表单。自动接受由页面同步裁决，实际回执只结算原计划，不再发第二次写入。
 
-字段策略续证与正文捕获分离：同一有效页面消费者通过既有 Poll 维护元数据；上一批准等待回执时，最多预取一个下一描述，批准仍须等前一回执终态后串行提交。35ms 最小轮次间隔不变；空响应、异常、取消或失效也不能绕过旧回执屏障。描述会发行独立短期 authority 并处理实际 DOM 失效，不是无状态读取；预取不更新 Ready、不改旧策略期限，也不形成完成轮次缓存。正文捕获每轮只领取一次原描述，在该轮批准提交后开始，不等待其回执，也不阻塞后续元数据维护。原字段身份、配置、焦点失效代次及 150ms 期限在批准提交前后继续校验，迟到预取不得提交或追认旧按键。此协调只去掉描述必须等待上一回执的依赖，不保证任意传输或主线程停顿下策略仍新鲜；过期继续拒绝，实际按键与写回仍须真实浏览器验证。
+浏览器与 native 热键只能有一个命令消费者。进入页面前，两个全局热键均须注销且旧按键组已释放；退出时，须收到精确退休回执，或等待所有已发归属租约到期并确认整组释放，再恢复 native 热键。800ms 归属租约与 200ms 准备预算不延长字段读取权限。
 
-浏览器连接的单一收帧循环现不再等待 UI 事件执行：事件通过有界 FIFO 在 UI 线程有序处理，RPC 回包仍须等待它之前的事件完成，观察与授权请求沿用原总期限。关闭或队列溢出即停止新授权；原期限内已经收到的直接写入终态按原请求结算，未收到终态的已派发写入仍按未知结果处理，不重试。此改动解决 UI 处理阻塞后续收帧的确定调用关系，不保证字段策略永不过期；[本轮真实 Windows 检查](https://github.com/DingJWuyu/Typelay/actions/runs/39232325140)已通过新增回执契约及 Chrome 接入、默认自动接受、前台与后台原字段 F10、主动移除后零写的完整软件链；整套 Windows 检查仍有失败。
+元数据续证与正文捕获分开。Poll 最多预取一个下一描述，批准仍在前一回执终态后串行提交；35ms 最小轮次间隔保持。描述本身会产生短期 authority，预取不更新 Ready 或旧期限。每轮正文只领取一次原描述，迟到结果不能追认旧键。
 
-自动接受可使用精确源端的 `SourceLocalAcceptanceVersion=1`：仅 Windows 显式请求，标准 input/textarea 的同步执行端以实际字段身份回复；App 核已注册 origin 的真实连接、文档路由、字段、配置代与按键绑定后，绑定连接寿命传给 Runtime。该能力只允许发布仍受原焦点、输入法、版本和期限约束的许可，执行后以原计划回执终结，不允许无回执的接受命令转入异步 `WriteAsync`。默认关闭的实验写回门不变，普通 UIA 与旧版、未知版本、未请求、page dispatch、富文本路径不因此开放；按需 F10 仍沿既有用户原次直接替换授权。接入同意由应用支持页的当前用户注册确认承载，正式商店身份仍待发布。真实发行 App、Host、扩展及模型现已在实验门关闭时通过自动预览、一次软件 Tab 精确接受、原框焦点保持和零提交；这是受控软件输入证据，物理输入仍待验证。新单消费者组合已通过公开设置状态就绪、正常输入后一次原 F10 的前台选区及后台原框检查，均为精确一次替换、零提交。真实 UI 主动移除后、App 仍存活时的一次 F10 已通过两秒零变更、零提交检查；这不覆盖所有异常断连或在途 RPC。CfT 加载开发扩展不等于品牌 Chrome 的最终安装流程已经验证。
+连接收帧与 UI 处理通过有界 FIFO 分开，RPC 结果仍等待之前的事件处理。关闭或溢出停止新授权。已经收到的精确终态继续结算；送写后断连、超时或回执不完整则按未知结果隔离原目标，不重试。[既有软件链检查](https://github.com/DingJWuyu/Typelay/actions/runs/39232325140)覆盖了标准字段自动接受、前台与后台原框 F10，以及主动移除后的零写，不能替代当前源码、物理 IME 或异常断连的全部验收。
 
 ### Chrome 接入管理
 
-`Windows/BrowserConnection` 只管理本发行的 Chrome 注册和状态。它从 App 实际目录的父目录读取 `browser/chromium/connection.json`，严格校验 version 1、32 位扩展 ID，以及可选的唯一 HTTPS Chrome Web Store 详情链接与同一 ID。空 ID 不提供新接入；有 ID、空链接明确表示开发加载。环境变量、页面声明和用户输入不能替换发行身份。打包原样复制 `src/windows/browser/connection.chromium.json`，当前默认身份为空。
+[BrowserConnection](../../../src/windows/TypeLay.App/Windows/BrowserConnection.cs)读取发行根的 `browser/chromium/connection.json`。固定身份优先，ID 和可选商店链接必须一致；当前源码配置为空。此时 [BrowserExtensionInstallation](../../../src/windows/TypeLay.App/Windows/BrowserExtensionInstallation.cs)只读标准 Chrome 的 Default 与 Profile 安装记录，寻找本包绝对目录唯一对应的 ID。单文件上限为 16 MiB，损坏或多身份时不注册，不修改浏览器配置。
 
-应用支持的 Chrome 行优先读取此事实，不走通用 UIA、模型就绪或暂停门。注册、经过身份核验的存活 peer、原批准字段的短效能力分开呈现；能力只来自 BrowserInput 原批准快照，不读取额外正文，不凭注册推导 ready。原有合法 CLI 注册即使不在当前空配置中仍如实显示并允许精确移除。普通已注册但尚未连接时保留刷新和移除，不重复注册；新接入和撤权后恢复须用户确认当前固定 ID；跨安装或 ID 冲突由 Host 拒绝。
+安装记录只证明浏览器分配过身份，不证明实时权限或连接。应用支持页分别显示注册、已认证 peer 和当前批准字段能力；模型未就绪或暂停不阻止连接管理。
 
-UI 经固定同目录 Host 的参数列表串行执行注册维护，输出和等待有界。超时先终止并等待该自有子进程退出，再释放串行边界；无法确认退出则锁住后续变更并显示未知，不能把超时当作未注册。操作后再查询真实注册。设置关闭只停止呈现，普通退出等待本次操作，迟到结果不 Show/Focus 或重建正在使用的应用支持页。
+维护命令串行调用同目录 Host，输出和等待有界。超时先终止并确认自有子进程退出；退出未知时锁住后续变更。操作结束后重新查询真实注册。关闭设置只停止呈现，迟到结果不重新打开窗口。
 
-移除先封该 origin 的新准入，推进握手代次，退休原页面命令归属并撤销未来许可，丢弃尚未执行的通知，然后关闭精确 peer。已执行 CompletedReceipt 和原 issued plan 的终结账保留；直接 RPC 失联仍按 Unknown，已收到 Verified 不降级、不重写。页面 owner 的最大已发期限不因 Dispose 清零；仍须原精确退役 ACK 或最大期限到期，并等待整组按键释放，才能恢复 native 热键。Host 在现注册锁内检查 UI 确认的 expected ID 和本安装路径后才删除。失败在本次 App 运行中保持封锁，刷新和关闭设置不恢复；仅用户重新确认同一固定 ID 且注册对账成功可恢复。未成功移除的系统注册跨 App 重启可能重新连接，不新增持久拒绝标记。
+注册只写当前用户 HKCU 和 `%LOCALAPPDATA%\TypeLay\browser\org.typelay.browser.json`。Host 核两个注册视图、系统级同名项及安装路径，冲突时拒绝。高级维护命令仍为 `status`、`register --extension-id <ID>` 和 `unregister --extension-id <ID>`，界面移除始终带确认的精确 ID。
 
-真实发行验收在明确隔离 gate 下读取实际加载扩展 ID，暂写测试发行配置后启动正式 App，通过真实设置 UI 确认接入与移除。配置在 App 确认退出后按精确原字节恢复，发布 ZIP 保持空身份。移除负控保持 App 存活，确认注册已移除后按一次 F10，核原有 2 秒零替换、零提交及焦点选区不变；它不是所有异常断连或在途 RPC 的实证。[实际 Windows 组合验收](https://github.com/DingJWuyu/Typelay/actions/runs/39091644525)已通过取消不注册、确认接入、自动接受、按需选区与后台原框写入、主动移除后的无写负控及提交计数器正控，清理无错误。均为 CfT 开发扩展与软件输入，正式商店安装和物理输入仍待验证；整套 Windows 检查尚未全绿。
+移除先封 origin 的新准入、退休页面消费者并关闭原 peer，再删除精确匹配注册。已执行回执继续结算；失败在本次 App 中保持封锁。只有用户重新确认并完成注册对账才恢复。残留系统注册在 App 重启后可能重新连接，不另设持久拒绝标记。
 
 ## 身份、时序与进程
 
-WindowsTarget 保留 PID/进程启动时间、根/控件 HWND、provider、元素令牌与生命周期。Broker 协议 v5 绑定本次 capture eligibility，并保留显式源 chord/mode 与跨进程授权时钟，旧客户端或服务端不能混用；worker 帧与消息不变。
+[WindowsTarget](../../../src/windows/TypeLay.Windows.Contracts/WindowsTarget.cs)包含 PID、进程开始时间、root/字段 HWND、provider、元素令牌与寿命。普通 stock Edit 使用 `GA_ROOT`，不把 child 当新根，也不以 `GA_ROOTOWNER` 合并 owned dialog。App 的 HWND 分类只供观察筛选，不能替代 Broker/native 的 cookie、线程、IME 和最终执行检查。
 
-普通 stock Edit 的 RootHwnd 使用 raw foreground 的 `GA_ROOT`，不把字段 child 造为新根，也不以 `GA_ROOTOWNER` 合并 owned dialog。raw foreground 不等于原 root 时，只有精确原字段、匹配的源 PID、root/field 同 GUI 线程、同一 `GA_ROOT` 和精确 native keyboard focus 才可能通过 App 前置筛选；Broker/native 仍持原 binding/descriptor 核原 PID/TID、cookie、生命周期、IME 与原期限。Capture 复用本次原 native 读取的 Clear；普通回源 ACK 只确认身份/焦点，不新增全文或 IME 读取，后继完整 fresh capture 才核实际 Clear 与 Core 原稿基线、决定新许可，不能把 ACK 当作新的末态 IME 样本。真实 Unknown、另一字段或另一根不能靠祖先关系补证。App 分类器没有原 native cookie，只用于观察、preview/候选筛选，不能代替安装 descriptor 或最终执行授权；非 prototype Core 接受、源 Esc 和普通源 Ctrl 退出等直接认领门仍要求原 raw root，自有练习与术语另守各自原门。这不新增 wire、ABI、焦点操作或重试，不代表所有 rawchild 控制已支持，已发布普通源接受仍关闭。
+普通显式回源可在原 800ms 请求仍有效时，短暂容忍前台采样为 0。期间不采正文，也不授予 Source、IME 或写许可。明确外窗事件、输入或配置变化永久取消本次返回；成功 ACK 只确认身份与焦点，仍须完整 fresh capture 和 Core 原稿基线确认。
 
-普通编辑的显式回源由本次 `ReturningToSource` 操作保留原稿。Windows 仅在同一次前台采样为 0、私有返回调用仍绑定原目标、配置与输入代次且处于原 800ms 期限内时暂缓退休；期间不捕获，不授予 Source、IME 或接受资格。已收到的外部前台事件、同步明确外窗或上下文失效会单调取消本次返回，回到原窗及迟到 ACK 也不恢复原稿；普通拒绝或超时本身不算外部离开，仍按原规则恢复编辑。调用结束释放该状态，成功后仍须完整 fresh capture 与 Core `ConfirmSourceReturn` 验证原基线；浏览器和其它平台默认保留原焦点规则，不借此恢复已回源后失效的人工候选。
+App、Hook 和 Broker 共用 [WindowsInterruptClock](../../../src/windows/shared/WindowsInterruptClock.cs)，以 `QueryInterruptTimePrecise` 的毫秒值计算跨进程观察与授权期限。该时钟包括睡眠时间，最低平台为 Windows 10 / Server 2016。私有 GUI 事务另有 `GetTickCount64` 的 500ms 派发预算；前台写入还须满足原授权期限，两个时间域不相减，也不互相续期。
 
-App、Hook 与 Broker 的观测、触发、许可和执行期限统一使用 `src/windows/shared/WindowsInterruptClock.cs`。App/Broker 链接同一份平台内部源，Contracts 仍只含协议 DTO。时间值是 `QueryInterruptTimePrecise` 的自启动以来中断时间向下取整为毫秒，包含睡眠时间，不随 .NET 的 `Environment.TickCount64` 行为变化。整数取整误差小于 1ms；这不是浏览器端校准、睡眠恢复或物理按键已经验收的证明。所有 Core 期限保持不变。P/Invoke 使用 Windows SDK 的 `api-ms-win-core-realtime-l1-1-1.dll` 导入合同，要求 Windows 10 / Server 2016 或更新系统，不降级到粗粒度时钟。
+进程族由精确 Job Object 和原进程句柄管理。模型退出须同时取得根进程退出和 Job active=0，才能释放使用锁或删除相关安装代。管道 token 不承诺隔离所有同用户恶意进程。
 
-系统 Edit 的共享内存事务保留仅覆盖 GUI 线程派发的私有 500ms 预算，C# 生产端与 C 执行端均显式调用 `GetTickCount64`。前台写入另将原 Broker 请求的授权截止时间原样传给目标线程，按同一 `QueryInterruptTimePrecise` 毫秒域校验；两项期限必须同时有效，私有预算不能续签原许可，两个时间域不相减。后台 F10 的 op2 路径仍沿其既有独立事务预算。模型下载进度限频不参与授权，保留普通运行时时钟。
+### 已派发写入怎样收尾
 
-Windows 轮询、debounce、许可与执行期限不因分层改变。Hook 回调不解析不透明 ID，在发布租约时解码并保存本地 HWND。进程族继续由 Job Object 管理，不以共享 Process 类型替代；私有管道 token 不构成同用户恶意进程隔离。
+共享 [WriteSettlement](../../../src/shared/TypeLay.Runtime/Sessions/WriteSettlement.cs)持有原计划的唯一终态。窗口、视图或会话退休不等于写入撤回，源端同步接受只交回执，不触发补写。
+
+未使用许可只有在执行者证明从未认领且已失去执行资格后才能退休。过期、断连、撤权请求和没有回执均不足以证明未执行。终态释放正文；未知结果保留原目标隔离。正常关闭沿 [ShutdownAsync](../../../src/shared/TypeLay.Runtime/Sessions/SessionController.WriteSettlement.cs)停止新授权，继续接收已派发结果，再释放输入接收者。当前 Windows 对这一收尾路径仍需真实桌面验证。
 
 ## 分发契约
 
-Windows 部署根包含 TypeLay.exe、app/、worker/、browser/chromium/、bootstrap/、README 与第三方声明。AppPaths.Home 由启动脚本指向整个发行根；Broker、App 与独立原生练习宿主 TypeLay.Practice 放在同一个 app/。练习宿主只提供普通 stock Edit 与共同操作说明；翻译和写入仍由正式 App/Broker 处理，不设置输入法状态或绕过权限。开机启动指向发行根 TypeLay.exe。App 的安装流程在用户同意后准备运行时与模型，Windows wheel 选择不进入共享安装器。
+发行根包含 `TypeLay.exe`、`app/`、`worker/`、`browser/chromium/`、`bootstrap/`、字体和第三方声明。`AppPaths.Home` 指向整个根目录；App、Broker、Practice 与 BrowserHost 共用 `app/`。开机启动也指向根 `TypeLay.exe`。生产清单由[打包脚本](../../../eng/windows/dev.ps1)明确复制。
 
-Argos 归档身份来自同一包目录的可选 `archivePin`，只允许单方向 Argos 包携带精确的 `sha256`、`bytes`、`unpackedBytes` 三项；哈希为小写 64 位十六进制，正整数上限分别为 1 GiB 下载、2 GiB 解压，损坏字段拒绝而非退回未固定模式。catalog 一律拒绝重复对象键，方向内错放的 pin 也不能静默视为缺失。legacy 方向与 schema3 包准备共用这份身份，新下载和缓存命中都核精确大小与 SHA；下载写出前检查上限，ZIP 先核声明总量，再限制每项及累计实际写出。原路径、必需文件及 metadata 来源、目标、版本检查继续执行。缺少 pin 的目录仍使用原保守限额。
+当前 pack/run 默认包含 Index ABI1/b11913 CPU 载荷。传入 `-HyRuntime` 才附带独立 Hy ABI5/b11717 载荷。模型权重经用户确认后另行安装；运行库存在不等于模型已就绪。
 
-这些 pin 是项目审核的归档观测，不是上游签名、发布者证书或仅凭 URL 得出的认证。它们不追认旧安装：旧库存复用仍核自身文件清单、实际 SHA 与实际复制字节，包事务的旧 runtime/模型复制总量不能超过本次磁盘准入时测得的旧文件量。安装界面的压缩下载大小不等于峰值磁盘空间；Windows 包事务仍使用独立保守磁盘门：每个有 pin 的 Argos 包至少留 3 GiB，且不少于归档加两份解包量；无 pin 留 5 GiB，以覆盖同盘并存的缓存、解包目录及已校验暂存副本。运行时和旧库存复制另计，未采用 Linux 的精确归档预算。既有安装启动、worker Ready 和回滚条件不因新增归档 pin 改变；受控小 ZIP 回归也不证明真实模型推理。
+组件准备使用独立安装代。请求方向自检和真实候选握手成功后，才发布活动指针并接管同一连接。失败保留可用旧安装，但不能恢复已失效连接的健康状态。启动只尝试指针指定的活动代和明确上一代；没有指针时兼容旧固定目录，不扫描猜版本。
 
-组件准备在数据根内建立独立代，完成请求方向的模型自检后，由长期持有的 ModelClient 对候选进程进行一次真实握手；原子发布活动指针与接管同一连接后才报告成功。准备失败不覆盖仍可用的旧运行时，候选失败不恢复旧连接已失效的健康状态；旧请求的迟到结果不能修改新连接。启动只尝试指针指定的活动代和明确上一代，回退也须实际加载并确认指针恢复；没有指针时兼容原固定目录，不扫描目录猜版本。提交结果未确认时保留可能被引用的文件。默认仍准备完整中英双向；设置中的可选单向使用 schema2 非空方向集合，旧 schema1 仍代表完整双向。补装以已提交安装记录与本次请求的并集为准，自检、候选握手和发布集合必须相同；坏记录不能猜测方向，只能完整修复。[真实 Windows 检查](https://github.com/DingJWuyu/Typelay/actions/runs/39040582082)已通过单向准备、缺向准确拒绝、补齐并集与双向模型验证，以及相关界面回归、封装和搬迁检查；模型接口检查不等于实际 F10 缺向验收，整套桌面验收仍未全绿。
+Argos 的可选 `archivePin` 固定 SHA-256、下载大小和解包大小。重复键、坏 pin 或错放字段会拒绝；新下载和缓存都校验。pin 是项目审核的归档身份，不是上游签名，也不追认旧安装。Windows 保留独立保守磁盘准入：有 pin 的每包至少 3 GiB，且不少于归档加两份解包量；无 pin 为 5 GiB，运行时与旧库存复制另计。
+
+schema1/2 的旧方向集合和 schema3 包库存继续按实际记录处理。修复、选择和补方向各自保留用户意图；坏库存不能猜方向。代使用锁阻止删除仍被使用的模型，清理失败保留副本并报告空间未回收。
 
 ## 暂停时的最小观测
 
-暂停使用独立的 `observe-pause` Broker 操作；返回 `PauseAnchor`，不构造 `InputSnapshot`，不读取值、正文、选区或光标，也不调用原生 Edit 采集和 IME 组合正文接口。元数据须确认真实前台元素、进程/字段寿命、可编辑属性、可见边界及非敏感/非排除状态；ComboBox 与正常预览一致，需要 ValuePattern 和明确可编辑的 TextPattern。未知状态没有弱入口。
+`observe-pause` 只返回 `PauseAnchor`。它不构造 `InputSnapshot`，不读取值、正文、选区、光标或组合正文，也不调用原生 Edit 正文采集。元数据须确认真实前台字段、寿命、可编辑性、可见边界及非敏感、非排除状态。
 
-WPF 暂停视图清除文本及撤销状态，只显示共享呈现定义中的恢复按钮，不抢焦点。按钮回传显示代次；共享控制器复读专用元数据，验证目标、前台/窗口版本及观察时效后，才将最新设置的 `Enabled` 改为 `true`。模式等其他偏好保持；失败、离焦、断开或旧观察到达均不能让退役入口复活。保存失败仍保持暂停并通过现有反馈说明原因。
+暂停视图清除文字和撤销状态，只显示恢复按钮。点击携带显示代次；共享控制器重新读取专用元数据，确认目标、版本与时效后才保存 `Enabled=true`。失败或旧观察不能恢复入口，其它偏好保持。
 
 ## B-01：非原子写回与按键所有权
 
-**B-01：非原子写回与按键所有权，发布阻塞。** UIA 读原文、比较与 SetValue 不是原子事务，写后核验不能恢复被并发覆盖的新文本。Hook 同步消费 Tab 后，异步 Broker 仍可能拒写。`ExperimentalWriteback` 默认关闭；测试开启时只使用已备份非敏感内容。关闭此项需要与目标文本变化可靠协调的写入机制及物理按键所有权证据，增加重读、缩短期限或盲目补发 Tab 均不足以解决。
+B-01 仍阻塞通用安全写回发布。UIA 读取、比较与 `SetValue` 不是原子事务，写后核验不能恢复并发覆盖的新文字。低级 Hook 先吞键再异步写入，也可能留下“键已消费但写入被拒”的结果。
 
-B-01 的一个具体交错是：源线程已经确认 Claim 并完成写入，但低级键盘回调尚未返回消费结果，Windows 已因回调超时放行原键。[系统文档](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelkeyboardproc)明确说明超时可放行输入并静默移除 hook；写后回执不能倒推出原键已被吞掉。显式诊断 `NativeSourceTimeoutProbe.RecordClaimThenLowLevelCallbackTimeout` 仅在测试自有进程、自有 LL hook 上复用真实 `StockEditActivation`，比较正常组与 Claim 后受控暂停组，不修改生产 hook、原生 DLL、默认开关或系统配置。输出记录原始激活结果、退休回执、原 Tab 队列计数、文本及清理结果；`observed_leak` 是风险实证，`not_observed` 不构成安全证明，前置或清理失败为 `precondition_failed`。调用见[Windows 开发](development.md#源接受低级回调超时诊断)。这不是完整生产输入链验收，也不覆盖物理按键或真实输入法，不能用探针运行成功关闭 B-01。
+另一个具体反例已被观察到：源端 Claim 后已写入，但低级回调超时，原 Tab 在回调返回前到达源队列。[LowLevelKeyboardProc 合同](https://learn.microsoft.com/windows/win32/winmsg/lowlevelkeyboardproc)允许这种超时放行。写入成功或回调耗时检查不能证明原键已消费；该反例否定旧“写后靠 LL 返回值吞首键”的路线。
 
-**该交错已经实际观察到，不再只是待测风险。** 自有源诊断中，Claim 后暂停低级回调时，源已写入译文，原 Tab down 却在回调返回前到达源队列；退休回执与清理均完成。因此，源写成功或回调返回前的耗时检查都不能证明原键已被吞掉。这否定现有“源写完成后由 LL 返回值吞首键”的安全性，不证明系统已经移除 Hook，也不是完整生产链或物理输入法验收。
+当前有序源路线改在实际 MSG 上认领并置空，再执行事务。它仍须证明完整 callback 寿命、尾键责任、来源、IME 和最终正文条件。写完、外层检索返回或 Unhook 返回都不等于可退休的 Quiet；未知 owner 继续保留资源，直至精确退休或原进程退出。
 
-[自有源线程键盘边界](development.md#自有源线程键盘边界诊断)已取得 [Windows 软件输入观察](https://github.com/DingJWuyu/Typelay/actions/runs/39856028233)：PM_NOREMOVE 不消费、伪消息阴性对照及 IsDialogMessage 前消费。受控跨线程 sent 重入还曾让 posted handler 在原 Hook 与外层 native 检索尚未返回时执行；这是机制约束，不是生产正文事务证明。`PostMessage` 仅唤醒，posted handler、回调末尾和队列提示都不是消费完成凭据。依赖 `WH_KEYBOARD` 返回值、再于返回后执行动作的候选，必须观察包含认领回调的最外层 `GetMessage`/`PeekMessage` 实际返回；该约束不能写成所有同步源事务都须等外层返回才可写入的禁令。
-
-当前[普通 source 同一 MSG 事务](development.md#普通-source-事务与同一-msg-的受控接线)采用不同边界：在同一 `PM_REMOVE` 回调中重验原资格，claim 后立即将原 MSG 置为 `WM_NULL`，再执行同步事务；claim 与置空之间没有可重入调用。完整 callback 寿命门及尾键义务仍须保持，写完、回调返回或外层检索返回均不等于可退休的 Quiet。原期限不因返回、repeat 或 up 续期；认领前失败原样旁路，认领后拒绝或未知不恢复、重放原键。
-
-旧双线程观察只运行独立合成 admission 和无正文动作，没有生产消费者，其专属运行入口已退役；保留上述机制约束，而不继续为合成状态机设自动门。其 F7 down/up 只进入一个队列，另一线程仅做 sent 重入，没有 repeat 或跨队列尾键证据。现役 native 回归及 mode11/12 的真实 Windows 入口并未替代该独特跨线程交错：前者是生产算法的受控 API 边界，后者仅为自有受控 hook 链、同字段软件输入。真实 native 任意跨线程重入、同应用跨字段尾键、严格输入来源及真实 IME 组合态仍未闭合，不能据局部结果开放生产接受。
-
-[接受后主动切换应用的产品边界](../../product/README.md#接受后主动切换应用时的-tab)规定：新应用正常接收后续 repeat/up，不继续跨应用抑制。Windows Hook 将已认领按次的尾键消费限定于认领时的原源应用；观察到另一应用接收输入后，该按次不再恢复消费资格。原按次仍不能产生第二张许可或第二次写入。源应用内的撤销、配置改变或执行期限耗尽只禁止后续动作，不重放已消费的原键；认领前失败仍完整旁路。
-
-**当前阻塞仍是原输入事件的消费裁决与文本事务协调。** 自有 Practice 提供[局部事件与事务边界](#自有练习与首-tab-接受)，不代表外部 Hook/UIA 已解决首键超时或并发写覆盖。跨应用全局认领直到松键不再是产品要求，相应双队列增强合同诊断已移除；不能把这项范围澄清当作 B-01 修复。普通输入框仍是产品目标，源端接入、全局 Hook 或 TSF 等新范围须独立方案与授权。**普通生产接受继续关闭，所有诊断固定 `productionReadiness=false`。**
-
-按下时的短效接受许可与已消费按键的远程执行期限是两个边界，具体值以 Core 的 Limits 为准。派发前核验 Hook 输入/焦点版本，Broker 写前重读、期限检查与写后核验不能省略。浮层编辑按键与源字段输入版本必须区分，避免把译文编辑误判成原文变化。
-
-共享配置可保留 Ctrl+功能键的阶段性表达。Windows 实现仅在自有 stock Edit 练习支持源接受/退出与编辑回源/退出：原 Ctrl 消息沿自有 GUI 正常分发，以原票、精确修饰键及同次输入上下文裁决功能键，不重建原观察或延长期限。仅当前 GUI 线程的被动消息观察安装成功才报告 `ControlPrefixObserved`；观察只推进失效版本，不授写权。私有见证协议 v4 关联原前缀序号与真实修饰键，旧版本拒绝；owned native v3 现场核对 HIMC/HKL，通用事务与 owned capture 版本不变。四个操作的精确键冲突统一拒绝。该组合链已通过真实 Windows 软件输入的首接受、编辑退出、键与鼠标回源、人工稿接受及完成保存；物理按键和实际输入法仍待验证。设置现提供 Ctrl+F1–F24；普通输入框另以原退出观察和编辑器原 token 支持零写组合退出、编辑回源，源 Ctrl 立即推进输入版本并撤销写许可，后继功能键不能换绑新字段。WPF 仅消费本次实际消息与 Hook 原按次匹配的命令，整组释放后才开始新按次。普通回源仍经原目标、配置与新鲜焦点核验。已注册的普通 stock Edit 在全局 UIA 焦点尚未确认时，可由原 native 生命周期的精确线程焦点前后夹一次新的 UIA 身份与 FieldPolicy 元数据检查来确认零写回源；不创建或更新绑定，后续仍须完整 fresh capture 与 Core 原稿基线确认。该替代分支已在真实模型链执行，后续新捕获保稿、编辑退出和源退出均通过；正式普通源内组合接受仍关闭；隔离 ordered 候选见前文，不扩大 B-01 或通用 UIA 写回。公开设置选择、保存与重开已通过实际检查，普通系统 Edit 无写路径已通过本轮软件输入检查，默认键和既有按需组合不变。
+关闭 B-01 需要同一真实输入事件的消费裁决、与源文本变化协调的写入机制，以及物理和实际输入法证据。增加重读、缩短期限、盲目补发 Tab 或局部自有练习通过都不足以关闭它。当前诊断继续标记 `productionReadiness=false`，正向剩余条件见[开发文档](development.md#正向接受的剩余条件)。
 
 ## 系统 Edit 前台事务
 
-原生私有协议 v2 使用独立版本导出、注册消息和字段寿命属性；Broker 只接纳同版 DLL，缺少或旧版本不能提供原生能力。Broker DTO 为 v5。前台 op5 在源控件 GUI 线程核对准确焦点、前台根窗口、完整原文、当前 `Expected.Selection`、控件资格、寿命 cookie 和明确的 IME Clear；设置替换范围后，再核对这些安全条件与原授权期限。当前选区与替换 `Scope` 分开传递，允许人工编辑返回后的折叠光标与原替换范围不同。
+原生 Transaction v2 使用独立导出、消息与字段寿命属性，Broker 只接纳同版 DLL。前台 op5 在源 GUI 线程核焦点、root、完整原文、当前选区、控件资格、cookie 和明确 IME Clear。设置替换范围后，再核安全条件与原授权期限。
 
-选中的原生请求失败不回退 UIA。后台 F10 op2 以及既有通用 UIA 实验路径不因此扩大或取消。派发后不能确认的结果继续为未知，隔离目标且不自动重试。这项底层约束没有授予练习 scope、打开自动接受开关或证明物理按键所有权。
+当前选区与替换 Scope 分开传递，因此回源后的折叠光标可以不同于原替换范围。选中的原生请求失败不回退 UIA；后台 F10 op2 保留自己的原目标合同。派发后无法确认的结果仍按未知处理，不自动重试。
 
 ## 自有练习与首 Tab 接受
 
-按需练习沿用当前配置的 F9/F10、正式模型和 Broker。完整自动练习使用独立受管进程内自有 stock Edit 的本次授权；默认无修饰 Tab 已验证，已保存的 Ctrl+功能键已通过[自有练习完整软件输入链](https://github.com/DingJWuyu/Typelay/actions/runs/39046030080)，物理输入仍待验证。当前合法会话键均可进入自有自动练习，不再以无修饰功能键触发按需模式确认；当前按需模式仍直接进入按需练习。全局 `ExperimentalWriteback` 和第三方 B-01 门保持原状。首接受保留精确回执、焦点、光标和 Undo；编辑回源与完成保存沿下述自有练习合同。练习进度只记录已生成预览；浮层接受提示另核本次精确计划的安装 ACK 与原有效期，撤权、尝试接受或会话变化立即取消提示，呈现查询本身不授予权限。
+自动练习的授权绑定本次受管 stock Edit。`capture-owned` 固定 PID/开始时间、root/字段、线程、cookie、run 和 native FocusRevision。每轮从精确 HWND 重取 UIA 元数据与 runtime ID，保留 FieldPolicy 与排除检查。源焦点变化单调推进版本，返回相同 HWND 不恢复旧授权。
 
-**精确捕获：**`capture-owned` 绑定 PID/启动时间、根/控件 HWND、线程、cookie、run 代次和 native FocusRevision，在读取正文及安装 hook 前核验。宿主每轮从精确控件 HWND 重新取得 UIA 元数据和 runtime-id，保留字段策略、应用排除和原目标隔离；不再以全局 UIA 焦点查询发现此自有字段。独立 `TypeLay.NativeInput.OwnedCapture.v2` 消息使用 owned 专属 op6，旧 owned 组件与通用 Transaction.v2 hook 不接收；op6 的专属焦点版本字段不是写入截止时间。原生在正文读取前后核对资格、IME、焦点版本及直接子控件的当前可见几何；UIA 边界仅用于显示，不替代身份。这一专路不改变第三方捕获或许可期限，该专路已通过受控 Windows 的真实模型首 Tab，物理设备与长期稳定性仍待验证。精确 Edit 的 EN_SETFOCUS/EN_KILLFOCUS 与顶层 WM_ACTIVATE 在其它操作前推进单调 native FocusRevision 并撤权；Begin/Retire 不重置计数。捕获、安装、键见证和执行固定同一版本，最终回到相同 HWND 不能恢复旧授权。
+自有低级 Hook 只发布 FIFO 见证，原消息仍到 GUI 队列。GUI 在 `IsDialogMessage` 前匹配真实 MSG 和一次许可。native 无副作用前置通过后才标记 accepted，再调用 SETSEL；GUI 只消费 accepted 的原键。失败前旁路，受理后拒绝或未知不补发。
 
-**键与执行：**该自有自动接受路径的 LL Hook 不吞原 Tab，只发布有界 FIFO 事件见证；真实消息仍到自有 GUI 队列，在 IsDialogMessage 前与一次许可共同裁决。安装前事件不追认，丢序、歧义和 overflow 撤权。native TryExecute 的无副作用前置门全部通过后才标记 accepted 并调用 SETSEL；GUI 只消费 accepted 的原键。前置失败沿原消息路径放行；接受后失败按实际拒绝或 Unknown 回执处理，不补发 Tab。正文、选区、IME、身份和原期限仍在 SETSEL 后再次核验。这提供自有 GUI 对当前真实 MSG 的消费决定与源事务边界，移焦到其他应用后的尾键交给新应用，不把本地见证序号变成跨队列按次身份。
+源 Esc 使用独立无写权退出租约。进入编辑先退休源授权并取得精确 ACK，再核本次视图、点击和焦点家族。编辑期间没有源写许可；任何家族外窗口事件会取消旧意图，最终又回原窗不能追认。
 
-**源框退出：**默认 Esc 使用独立、无写权的退出租约，绑定当前练习、配置、焦点版本与原期限；独立退出序号关联原次 FIFO 见证，旧协议版本明确拒绝。即使当前没有写许可，源 GUI 仍可在精确身份、焦点和 IME 校验后结束会话；此路径不读正文、不调用 SETSEL，也不创建写许可。配置变化、退休或过期撤销退出资格。真实 Windows 软件输入已验证默认源 Esc 结束会话且保持练习窗口、原文、选区与焦点，无写许可及按住跨退休的配对也已通过；生产注入、旧绑定、过期与配置变更负控均拒绝。物理键仍待验证。
+键或鼠标回源都先封旧通道并取得 ACK，再以新焦点、完整捕获和 Core 原稿确认建立新许可。第一次回源不写入。编辑器 Esc 复用回源，在确认原源后、发布新许可前结束会话。500ms 编辑交接与原按次不因重试或刷新续期。
 
-**自有练习编辑交接：**完整编辑能力仅面向当前可信自有自动练习；生产仍拒绝注入输入，软件输入测试使用显式测试会话。真实单击固定原视图与同步进入编辑后的两枚 token，先封住旧代次并取得源 GUI 的精确 ACK；原点击仅豁免其配对 release。真实 Windows 已观察到源端 root 失活先于 Edit 失焦，但两侧 `WM_ACTIVATE` 对端均为 NULL，旧精确 HWND 对端合同因此拒绝。当前实现以 `WM_ACTIVATEAPP` 的精确对端 GUI 线程、源端局部 root→Edit 失焦及本次 TextBox 实际焦点共同确认进入编辑；500ms 内缺证或意图取消即结束。现前台事件流观察到任何家族外窗口（包括迟到事件）均永久取消，不能用最终 HWND 追认，也不宣称跨队列原子连续性。编辑期间没有源写许可；回源仍须基于固定原目标与原稿重新取证并创建新许可。真实 Windows 软件输入已验证一次单击进入编辑、修改译文及保持原框正文与选区，且没有新增源写入；物理输入仍待验证。
+完成页先等待实际完成与退休确认，再保存教程偏好。保存失败只重试保存。控制 stdio 有界且不载正文；每 run 的见证、plan/result 映射独立拥有，关闭、重启和配置变化先阻止新授权，再等待源端退休。自动 owned 标记保留到寿命结束，撤销计划不会重新开放旧通用写入口。
 
-**回源与完成：**沿共享回源合同固定原目标与原稿：键回源及自然鼠标回源均先封旧通道并取得 GUI ACK，再以新焦点证据、完整捕获与 Core 确认建立新代许可；首次回源不写入，第二次 Tab 才能接受。无写权返回期间，仅精确的当前 pending 请求可在原截止内保持短暂焦点空隙；这不构成新鲜焦点证据，明确离开或请求失效仍结束。鼠标路径已实测源端 APP 激活不提供对端线程；仅将其记为本地激活边，仍须同次点击意图、浮层精确出边、源框焦点边与独立 ACK 合取，不凭缺失对端授予身份或写权。完成与 Finish 复用共享只读完成水位及退休 ACK，保存失败只重试保存。真实 Windows 软件输入已验证 Tab 与鼠标回源、人工稿与原框保留、回源零写入及完整新绑定，并验证第二次 Tab 精确写入人工稿、保留光标和源焦点；完成状态已退休确认，Finish 保存、退出和重新读盘也已在同次软件输入流程验证。物理输入与实际输入法仍待验证。
-
-编辑器默认 Esc 另以当前视图同步预备的退出意图复用原回源流程：原按次、500ms 截止、执行端 ACK 与完整新源确认成立后，在发布新许可前结束会话。其它后端默认不启用该延续能力；关闭、配置或输入变化取消旧意图。首次预览尚未获得教程接受学分时，也记录真实入编辑的 Core revision 供新鲜回源绑定，教程计步条件不变。真实 Windows 软件链已验证首次预览改稿、Esc 回源退出、按住跨回源的释放配对及真实新输入恢复，物理按键仍待验证。
-
-**私有传输与退休：**继承 stdio 控制仍限 4 KiB 且不载正文。每 run 的匿名见证映射只向该子进程复制只读句柄；独立有界 plan/result 映射通过安装、撤权与资源释放 ACK 分清所有权，不复用旧 run 的许可。关闭、重启、真实设置变化先阻止新授权，再等待精确执行端退休；活动自动练习的设置保存不得在 ACK 前宣称成功。断管或超时不重新授权，已执行事务依真实回执收束。自动 owned 标记随新 cookie 原子建立并保留到该寿命结束，撤销 plan 不恢复旧 v2 op2/op5 写入口；普通第三方及新按需寿命的 v2 合同不变。
-
-真实 `EM_SETSEL` 同步回调内 owned 退休已证明可拒绝正文替换并保留实际选区副作用，见[事务回归](testing.md#系统-edit-前台事务回归)；其它重入情形不能据此推定通过。测试沿既有显式 automationTest 构造执行软件输入，见证保留 Injected 标记，生产默认拒绝；没有用户设置或发行 CLI 豁免。物理 Tab、用户输入法、完整编辑返回和完整教程仍须分别验收，同用户恶意进程隔离不在此私有通道的承诺内。
+[既有自有练习软件链](https://github.com/DingJWuyu/Typelay/actions/runs/39046030080)覆盖默认键、Ctrl+功能键、编辑回源、人工稿接受及完成保存。真实 SETSEL 栈内退休另有[单一反例回归](testing.md#系统-edit-前台事务回归)。这些证据不替代物理输入、实际 IME、其它重入情形或当前重构后的 GUI 验收。
 
 ## 通用 UIA 后端缺口
 
-缺少可靠 IME 状态的普通字段只能提供只读预览，不能进入人工编辑或接受；值可能含未提交字符，不能当成已提交原文。缺少 ValuePattern 的富文本不能降级为整框 SetValue；未暴露可编辑文本接口的自绘控件仍缺后端。
+Unknown IME 的字段只能预览，不能进入人工编辑或接受；读到的文字可能包含未提交组合。富文本缺 ValuePattern 时不能降级整框 SetValue，自绘控件缺可编辑接口时仍缺后端。即使范围外文字相同，整框 SetValue 仍须验证受控组件状态、撤销栈与事件语义。
 
-SetValue 写的是计算后的整个字段，即使选区外文字保持相同，也须验证受控组件状态、撤销栈及事件语义。当前实现问题与修复顺序见 [Windows 待办](open-issues.md)，真实操作与受控证据见[测试说明](testing.md)。
+当前没有生产 TSF 后端。候选必须分别证明精确字段和寿命、完整正文与 UTF-16 选区、真实组合态、连续变化及写资格。相同 view HWND 或 COM 身份不证明正文来源完整。既有 top context 曾返回空正文，与原生非空 Edit 不符，全文写入实验因此停止；保留的只读入口见[TSF 正文来源约束](development.md#tsf-正文来源约束)。不能换 context、伪造组合态或修改输入法来补成通过。
 
 ## 修改底层接口时的依据
 
-- UIA 组合态：[IUIAutomationTextEditPattern](https://learn.microsoft.com/windows/win32/api/uiautomationclient/nn-uiautomationclient-iuiautomationtexteditpattern) 与 [GetActiveComposition](https://learn.microsoft.com/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationtexteditpattern-getactivecomposition)。接口不可用时保留 Unknown，不推断已提交。
-- 写回与按键：[ValuePattern.SetValue](https://learn.microsoft.com/dotnet/api/system.windows.automation.valuepattern.setvalue) 与 [LowLevelKeyboardProc](https://learn.microsoft.com/windows/win32/winmsg/lowlevelkeyboardproc)。Hook 不等待 UIA 或推理，许可的原子消费不代表目标写入原子性。
-- IME 后备观测：[ImmGetContext](https://learn.microsoft.com/windows/win32/api/imm/nf-imm-immgetcontext) 与 [ImmGetCompositionStringW](https://learn.microsoft.com/windows/win32/api/imm/nf-imm-immgetcompositionstringw)。上下文取不到不能变成 Clear。
-- 授权时间域：[QueryInterruptTimePrecise](https://learn.microsoft.com/windows/win32/api/realtimeapiset/nf-realtimeapiset-queryinterrupttimeprecise) 、[Windows SDK 导入映射](https://github.com/microsoft/win32metadata/blob/main/generation/WinSDK/libMappings.rsp) 与 [.NET TickCount 行为变更](https://learn.microsoft.com/dotnet/core/compatibility/core-libraries/11/environment-tickcount-windows-behavior)。跨进程时钟合同不能依赖运行时版本，也不能用墙钟恢复过期许可。
-- 评估编辑锁协调：[TSF 架构](https://learn.microsoft.com/windows/win32/tsf/architecture) 与 [编辑上下文](https://learn.microsoft.com/windows/win32/tsf/edit-contexts)。这是待评估的后端方向，不是当前跨进程 UIA 已具有编辑锁或通用支持的证明。
+修改组合态读取时，以 [TextEditPattern](https://learn.microsoft.com/windows/win32/api/uiautomationclient/nn-uiautomationclient-iuiautomationtexteditpattern)和 [GetActiveComposition](https://learn.microsoft.com/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationtexteditpattern-getactivecomposition)核接口合同。接口不可用保留 Unknown；跨线程 [IMM 上下文](https://learn.microsoft.com/windows/win32/intl/developing-ime-aware-multiple-thread-applications)取不到不能推为 Clear。
+
+修改写入或退休时，以 [SetValue](https://learn.microsoft.com/dotnet/api/system.windows.automation.valuepattern.setvalue)、[GetMsgProc](https://learn.microsoft.com/windows/win32/winmsg/getmsgproc)和 [UnhookWindowsHookEx](https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-unhookwindowshookex)区分字段操作、消息消费与回调寿命。TSF 的[编辑上下文](https://learn.microsoft.com/windows/win32/tsf/edit-contexts)只提供候选机制依据，不证明当前跨进程 UIA 已有编辑锁。

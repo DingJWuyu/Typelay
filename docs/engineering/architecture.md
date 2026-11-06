@@ -1,300 +1,269 @@
 # 共享架构与平台边界
 
-改模块边界、进程启动、会话或目录时读取。TypeLay.slnx 是工作区入口；[ADR-0001](../adr/0001-workspace-and-delivery.md)规定工作区与交付，[ADR-0003](../adr/0003-cross-platform-runtime.md)规定共享运行时与宿主契约。产品要求从[产品验收基线](../product/README.md)读取，平台现状不降低要求。
+TypeLay 在用户当前的输入框旁显示本地译文。用户可以继续输入、编辑译文，再明确接受。TypeLay 只替换原输入框中的文本，不替用户发送消息或提交表单。
+
+本文解释一次交互如何经过共享代码、平台输入后端和本地模型，以及各模块负责哪些事实。修改模块边界、进程启动或会话时从这里开始。产品行为以[产品基线](../product/README.md)为准，当前验证和待办以[开发状态](development-state.md)为准。架构维护约束见 [architecture-target.md](architecture-target.md)。
 
 ## 先看整体怎么工作
 
-TypeLay 不是把模型输出直接粘回输入框。它先确认“这是哪个输入框、现在能读什么”，再翻译和展示；只有用户接受且原目标仍满足写入条件，才尝试写回。**模型只生成文本，不拥有焦点、按键或写入权限。**
+### 1. 一次翻译先取得观察，再等待用户接受
 
-下面三张图分别回答：代码由谁负责、运行时有哪些进程、一次翻译怎样安全结束。它们描述当前实现，不表示所有输入框或模型能力都已通过验收。
+自动模式下，平台后端先检查字段元数据。字段允许读取时，后端才取得正文、选区、输入法状态和目标身份。Runtime 把有效观察交给 Core，再冻结本次模型请求。本地 worker 返回译文后，Runtime 核对结果是否仍属于当前会话，随后更新浮层。
 
-### 1. 源码职责：共享规则，分别接入系统
+译文可见不代表可以写入。Core 根据当前源文和会话状态判断候选资格。用户接受时，平台还要核对原目标、原按次、输入法和期限，才能执行写入计划。
+
+```mermaid
+flowchart TD
+    U[用户在原输入框输入] --> I[平台检查字段并取得快照]
+    I --> S[Runtime 调用 Core 更新会话]
+    S --> M[ModelClient 请求本地 worker]
+    M --> R[Runtime 核对返回结果的身份]
+    R --> V[浮层显示译文或保留人工稿]
+    V --> A[用户接受当前候选]
+    A --> G{平台最终检查是否通过}
+    G -->|通过| W[原执行者执行一次写入]
+    G -->|未通过| N[拒绝本次写入]
+    W --> C{原写入回执}
+    C -->|Verified| D[确认替换完成]
+    C -->|RejectedBeforeMutation| N
+    C -->|OutcomeUnknown| Q[隔离原目标，禁止自动重试]
+```
+
+按需唤醒复用同一会话路径。Windows 首次尚无快捷键观察时，会从该次按键的精确原点发起只读捕获。后到的旧观察不能追认这次按键，详见 [Windows 首次唤醒](../platforms/windows/architecture.md#首次按需唤醒的只读捕获)。一次性直接替换有独立寿命，始终绑定触发时的源字段，详见 [ADR-0002](../adr/0002-on-demand-and-direct-write.md)。
+
+这条流程区分四种事实。快照记录一次输入观察，候选记录仍匹配会话的译文，许可提供短期且只能消费一次的接受资格，回执说明一次写入的结果。写入计划本身不授予权限。完整定义见 [GLOSSARY](../../GLOSSARY.md)。
+
+### 2. 共享代码决定产品规则，平台代码提供真实系统事实
+
+Windows 和 Linux 在本机使用同一份 Core、Runtime、Protocol、worker 和浏览器脚本。共享代码不读取本机窗口句柄，也不猜测输入法状态。平台后端提供可核验的观察，并在执行前再次检查原生条件。
 
 ```mermaid
 flowchart TB
-    subgraph platforms[平台源码：各自装配宿主与适配器]
-        W["src/windows<br/>WPF、UIA Broker、Hook、浏览器接入"]
-        L["src/linux<br/>.NET 宿主、GTK 桌面、GTK/Qt 合作输入、浏览器接入"]
-    end
-    subgraph shared[共享源码：两端使用同一份实现]
-        R["Runtime<br/>SessionController 编排、SettingsStore、ModelClient"]
-        C["Core<br/>会话规则、候选状态、接受与写入检查"]
-        P["Protocol<br/>长度前缀帧与 worker 消息"]
-        B["browser<br/>浏览器扩展脚本与源字段交互"]
-        M["Python worker<br/>结构保护、本地模型校验与推理"]
-    end
-    W -->|装配| R
-    L -->|装配| R
-    R -->|调用纯规则| C
-    R -->|使用帧契约| P
-    M -.->|实现同一帧契约| P
-    W -->|打包并接入| B
-    L -->|打包并接入| B
+    W[Windows 宿主与输入后端] --> R[Runtime 编排会话、保存设置、管理模型连接]
+    L[Linux 宿主与输入后端] --> R
+    R --> C[Core 保存产品状态并执行纯规则]
+    R --> P[Protocol 定义 worker 消息与帧]
+    R --> V[共享呈现生成显示值]
+    P -.-> M[Python worker 实现同一通信合同]
+    W --> B[共享浏览器脚本]
+    L --> B
 ```
 
-- **Core 回答“能不能做”，Runtime 决定“何时做”，平台负责“怎样在当前系统里做”。** 输入、视图、串行事件循环与子进程所有权由宿主注入；共享控制器不直接操作窗口或输入法。
-- `shared` 指共享源码，**不是一台两端共同访问的服务器**。Windows 与 Linux 各自在本机创建 Runtime、Core 会话和模型客户端。worker 是另一个本地进程，不在 .NET 进程里执行。
-- 浏览器脚本共用，但扩展清单、注册、native host 与宿主连接仍有平台差异。Linux 内部共用的 GTK/Qt 代码不因此成为跨平台共享代码。
+Core 回答当前事实下能做什么。Runtime 安排请求、处理迟到结果，并把结果交给正确的会话或操作。平台负责真实窗口、焦点、输入法、按键和控件操作。模型只生成文本，不拥有源字段权限。
 
-### 2. 运行时协作：同一产品，不是同一个进程
+### 3. 同一产品通过本地进程协作
 
-每条分支表示一台机器上的运行实例；图中连线表示通信或本机调用，不表示依赖下载。为突出主路径，省略安装器、教程和子进程监督细节。
+下面每个平台分支表示一台机器上的实例。连线表示本机调用或通信，图中省略安装器、练习和进程监督细节。
 
 ```mermaid
 flowchart TB
     subgraph win[Windows 实例]
-        WA["App 进程<br/>WPF + Runtime/Core + ModelClient"]
-        WB["UIA Broker 进程<br/>Windows 输入观察与操作"]
-        WE["外部原生应用<br/>目标输入控件"]
-        WX["浏览器进程<br/>共享扩展脚本 + 网页输入控件"]
-        WH["BrowserHost 进程"]
-        WM["本地 Python worker 进程<br/>加载 Index、Argos 或 Hy"]
+        WA[App：WPF、Runtime、Core、ModelClient]
+        WB[UIA Broker]
+        WE[外部原生应用]
+        WX[浏览器与共享扩展脚本]
+        WH[BrowserHost]
+        WM[本地 Python worker]
         WA <-->|私有标准输入输出协议| WB
         WB <-->|UIA 或原生输入路径| WE
         WX <-->|native messaging| WH
         WH <-->|命名管道| WA
-        WA <-->|标准输入输出：worker 帧| WM
+        WA <-->|worker 帧| WM
     end
     subgraph linux[Linux 实例]
-        LD["GTK 桌面进程<br/>设置、托盘、输入与视图路由"]
-        LA[".NET 宿主进程<br/>Runtime/Core + ModelClient"]
-        LE["外部 GTK/Qt 应用进程<br/>合作模块 + 源控件与浮层"]
-        LX["浏览器进程<br/>共享扩展脚本 + 网页输入控件"]
-        LH["native-messaging 进程"]
-        LM["本地 Python worker 进程<br/>加载 Index、Argos 或 Hy"]
+        LD[GTK 桌面进程：设置、托盘、输入与视图路由]
+        LA[.NET 宿主：Runtime、Core、ModelClient]
+        LE[外部 GTK/Qt 应用与合作模块]
+        LX[浏览器与共享扩展脚本]
+        LH[native-messaging 进程]
+        LM[本地 Python worker]
         LE <-->|同用户 socket| LD
         LX <-->|native messaging| LH
         LH <-->|同用户 socket| LD
         LD <-->|私有继承管道| LA
-        LA <-->|标准输入输出：worker 帧| LM
+        LA <-->|worker 帧| LM
     end
 ```
 
-Windows 的原生浮层由 WPF 呈现，浏览器浮层在页面内；Linux GTK/Qt 浮层在对应源应用中，浏览器浮层也在页面内。因此“浮层”不是所有平台都共用的一个窗口。Linux 当前还依赖 niri 前台观察与可选 Fcitx 合作组件；上图省略它们，不表示已实现合成器或输入法无关支持。
+Windows 原生浮层由 WPF 呈现。Linux GTK/Qt 浮层位于源应用中，浏览器浮层位于页面内。各自的控件、焦点和几何事实由原生实现负责。Linux 当前还依赖 niri 前台观察与可选 Fcitx 合作组件。
 
-翻译 worker 只做本地推理，不监听网络端口；**用户确认后的模型准备可以下载运行时或模型**，那是安装流程，不是把输入文字发给在线翻译服务。当前默认后端是 Index，兼容已有 Argos 与 Hy；更换模型仍涉及协议能力、模型包与后端适配，不能把这张图理解成任意模型即插即用。
-
-### 3. 一次自动翻译：显示结果不等于允许写入
-
-以下以自动模式、源输入框中的一次接受为例。按需唤醒复用会话路径；Windows 首次尚无快捷键观察时，另从按键原点请求一次专用只读捕获，不能借后到的旧观察追认该键；一次性直接替换不经过预览或 Tab，始终绑定触发时的原目标，详见 [ADR-0002](../adr/0002-on-demand-and-direct-write.md)。
-
-```mermaid
-flowchart TD
-    A["用户在源输入框输入"] --> B["平台先检查字段元数据<br/>允许后读取正文与选区快照"]
-    W["Windows 首次按需 Wake<br/>按键时只取精确原点，回调后发起新读"] --> R["Broker 原点与字段策略校验<br/>Router 交付前再核版本和原 150ms"]
-    R -->|只读捕获有效| C
-    R -->|失效或不可确认| N
-    B --> C{观察与会话条件满足？}
-    C -->|否| N["拒绝本次操作或保持不可接受的预览<br/>不授予写入权限"]
-    C -->|是| D["Runtime 冻结源文本与请求身份<br/>通过 ModelClient 请求本地 worker"]
-    D --> E["worker 校验、保护结构、推理<br/>返回结果或明确错误"]
-    E --> F{结果仍属于当前会话与请求？}
-    F -->|否| X["按会话规则丢弃或仅作预览<br/>不能凭旧结果取得新许可"]
-    F -->|是| G["更新浮层<br/>Core 判断候选及接受条件"]
-    G --> H{用户接受且短效许可仍有效？}
-    H -->|否| N
-    H -->|是| I["平台重新校验原目标、文本版本、IME 等<br/>只执行原写入计划"]
-    I --> J{写入回执}
-    J -->|Verified| K["确认本次写回完成<br/>不发送或提交源应用表单"]
-    J -->|RejectedBeforeMutation| N
-    J -->|OutcomeUnknown| U["隔离原目标<br/>不换目标、不自动重试"]
-```
-
-这里有四个容易混淆的东西：**快照**是一次输入观察；**候选**是仍匹配会话的译文；**许可**是短期、可撤销、只能消费一次的接受资格；**回执**是本次写入的结果。候选不是许可，写入计划也不是平台授权。完整术语见 [GLOSSARY](../../GLOSSARY.md)。
-
-图里的“平台执行”有两条实际路径：源端同步接受路径在源控件线程完成操作，再向控制器报告 `CompletedReceipt`，**控制器只结算，不再补写一次**；异步路径由控制器调用 `IInputService.WriteAsync` 并等待回执。两者都不能把未知结果当成功或安全重试；Windows 通用 UIA 的非原子风险仍未解决，见下文 [开放风险](#开放风险与安全边界)。编辑译文时人工稿另有保护，不能被新模型结果覆盖；编辑回源也不自动代表已经写入。
+worker 在独立进程内执行本地推理，不监听网络端口，也不自动下载模型。用户确认后的准备流程由平台安装器下载运行时或模型。当前默认包是 Index，已有 Argos 和 Hy 安装继续按各自协议处理。
 
 ### 从图找到实现
 
-链接指向当前源码，按职责阅读，不必先通读整个仓库。修改职责或通信边界时，同步更新对应图；具体通过、失败与未测状态仍以平台说明为准，不在图里复制每轮 CI 结果。
+下面的入口按用户动作和模块职责组织。平台支持范围见 [Windows 架构](../platforms/windows/architecture.md)与 [Linux 架构](../platforms/linux/architecture.md)。
 
-| 想看什么 | 从哪里开始 |
+| 需要理解的行为 | 实现入口 |
 | --- | --- |
-| 两端怎样创建同一控制器 | [WindowsRuntime](../../src/windows/TypeLay.App/Windows/WindowsRuntime.cs)、[Linux Program](../../src/linux/TypeLay.Linux/Program.cs) |
-| 输入、翻译、编辑与接受怎样衔接 | [SessionController](../../src/shared/TypeLay.Runtime/Sessions/SessionController.cs)、[输入端口](../../src/shared/TypeLay.Runtime/Sessions/InputContracts.cs)、[视图与事件循环端口](../../src/shared/TypeLay.Runtime/Sessions/SessionHost.cs) |
-| 回源、重译和术语表单由谁继续或退休 | [具体交互](../../src/shared/TypeLay.Runtime/Sessions/SessionController.Interaction.cs)、[浏览器重译](../../src/shared/TypeLay.Runtime/Sessions/SessionController.EditorRegenerate.cs)、[术语交接](../../src/shared/TypeLay.Runtime/Sessions/SessionController.GlossaryEntry.cs) |
-| 显示刷新为何不取消用户操作 | [共享呈现与身份](../../src/shared/TypeLay.Runtime/Presentation/SessionPresentation.cs)、[Linux 显示桥](../../src/linux/desktop/overlay.py)、[原生共同身份解码](../../src/linux/native/common/presentation-identity.h) |
-| 保存成功后通知失败怎样反馈 | [设置提交结果](../../src/shared/TypeLay.Runtime/Settings/SettingsCommit.cs)、[实际持久化](../../src/shared/TypeLay.Runtime/Settings/SettingsStore.cs) |
-| 教程步骤与真实输入许可怎样分开 | [教程进度](../../src/shared/TypeLay.Runtime/Practice/PracticeProgressCoordinator.cs)、[自有源会话](../../src/shared/TypeLay.Runtime/Sessions/SessionController.AutomaticPractice.cs)、[本地稿操作](../../src/shared/TypeLay.Runtime/Sessions/SessionController.OwnedLocalDraft.cs) |
-| 已派发写入和正常退出如何结束 | [写入结算](../../src/shared/TypeLay.Runtime/Sessions/WriteSettlement.cs)、[会话关闭](../../src/shared/TypeLay.Runtime/Sessions/SessionController.WriteSettlement.cs) |
-| 候选与写入为何被允许或拒绝 | [Session](../../src/shared/TypeLay.Core/Session.cs)、[AcceptanceGate](../../src/shared/TypeLay.Core/AcceptanceGate.cs)、[WriteSafety](../../src/shared/TypeLay.Core/WriteSafety.cs) |
-| 模型请求怎样跨进程并执行 | [ModelClient](../../src/shared/TypeLay.Runtime/Models/ModelClient.cs)、[worker 入口](../../src/shared/TypeLay.Worker/run_worker.py)、[LocalEngine](../../src/shared/TypeLay.Worker/typelay_worker/engine.py) |
-| Linux 两个宿主进程怎样连接 | [desktop main](../../src/linux/desktop/main.py)、[DesktopLink](../../src/linux/TypeLay.Linux/DesktopLink.cs) |
-| 为什么两端输入能力不同 | [Windows 架构](../platforms/windows/architecture.md)、[Linux 架构](../platforms/linux/architecture.md) |
-
-下面保留实现与维护所需的精确合同。风格与另述质量门仍关闭；术语仅对已登记固定 Index profile 的中英方向开放，不泛化到其它模型或方向。图中的普通翻译链不代表全部质量要求已交付。
+| 两端怎样装配同一会话控制器。 | [WindowsRuntime](../../src/windows/TypeLay.App/Windows/WindowsRuntime.cs)和 [Linux Program](../../src/linux/TypeLay.Linux/Program.cs)创建实际宿主。 |
+| 输入、模型结果和接受怎样衔接。 | [SessionController](../../src/shared/TypeLay.Runtime/Sessions/SessionController.cs)使用[输入端口](../../src/shared/TypeLay.Runtime/Sessions/InputContracts.cs)和[宿主端口](../../src/shared/TypeLay.Runtime/Sessions/SessionHost.cs)。 |
+| 当前译文为何能成为候选或被拒绝。 | [Session](../../src/shared/TypeLay.Core/Session.cs)、[AcceptanceGate](../../src/shared/TypeLay.Core/AcceptanceGate.cs)和 [WriteSafety](../../src/shared/TypeLay.Core/WriteSafety.cs)拥有相应产品规则。 |
+| 回源、重译和术语表单由谁继续或退休。 | [具体交互](../../src/shared/TypeLay.Runtime/Sessions/SessionController.Interaction.cs)、[浏览器重译](../../src/shared/TypeLay.Runtime/Sessions/SessionController.EditorRegenerate.cs)和[术语交接](../../src/shared/TypeLay.Runtime/Sessions/SessionController.GlossaryEntry.cs)拥有各自操作。 |
+| 显示刷新为何不取消用户操作。 | [SessionPresentation](../../src/shared/TypeLay.Runtime/Presentation/SessionPresentation.cs)区分显示和交互身份，平台视图消费这些值。 |
+| 保存成功后通知失败怎样反馈。 | [SettingsCommit](../../src/shared/TypeLay.Runtime/Settings/SettingsCommit.cs)和 [SettingsStore](../../src/shared/TypeLay.Runtime/Settings/SettingsStore.cs)返回实际提交结果。 |
+| 练习进度怎样区别于输入权限。 | [PracticeProgressCoordinator](../../src/shared/TypeLay.Runtime/Practice/PracticeProgressCoordinator.cs)记录里程碑，[自有源会话](../../src/shared/TypeLay.Runtime/Sessions/SessionController.AutomaticPractice.cs)处理真实绑定。 |
+| 已派发写入和正常退出怎样结束。 | [WriteSettlement](../../src/shared/TypeLay.Runtime/Sessions/WriteSettlement.cs)记录终态，[ShutdownAsync](../../src/shared/TypeLay.Runtime/Sessions/SessionController.WriteSettlement.cs)交还结算摘要。 |
+| 模型请求怎样跨进程执行。 | [ModelClient](../../src/shared/TypeLay.Runtime/Models/ModelClient.cs)、[worker 入口](../../src/shared/TypeLay.Worker/run_worker.py)和 [LocalEngine](../../src/shared/TypeLay.Worker/typelay_worker/engine.py)依次处理连接、协议和推理。 |
 
 ## 生产边界
 
-Windows/Linux 在 trunk 共用 src/shared/ 下的一份 Core、Runtime、Protocol、Python worker 与浏览器脚本。src/windows/ 和 src/linux/ 只拥有各自宿主及本机适配；eng/ 拥有构建，packaging/ 拥有运行时包装与安装，tests/ 拥有受控工具和断言。
+源码按下表分工。`TypeLay.slnx` 是工作区入口，[ADR-0001](../adr/0001-workspace-and-delivery.md)规定工作区与交付边界，[ADR-0003](../adr/0003-cross-platform-runtime.md)规定共享运行时和宿主合同。
 
-`TypeLay.Core` 拥有 Session、AcceptanceGate、WriteSafety、字段安全策略、UTF-16 选区映射和展示状态的纯逻辑。只接收显式快照、时间与结果；不读取操作系统、环境变量、网络或磁盘。回归通过这些公开边界观察，不断言私有字段。
+| 模块 | 模块拥有的事实 | 模块对外提供的结果 |
+| --- | --- | --- |
+| `TypeLay.Core` | Core 保存源快照、候选、人工稿和会话状态，并处理字段策略、选区映射、接受及写入判定。 | 调用者传入显式观察、时间和结果，取得纯规则的判定。Core 不访问操作系统、磁盘或网络。 |
+| `Runtime/Sessions` | 会话控制器拥有异步请求、结果代次和副作用安排。具体交互拥有本次回源或重译的继续条件，写入记录拥有唯一终态。 | 宿主提交观察、用户意图和回执，取得呈现及待执行操作。直接任务保留独立目标和寿命。 |
+| `Runtime/Presentation` | 呈现模块从产品状态生成文案、菜单和动作可用性，并维护呈现身份。 | 视图取得只读显示值；显示值不授予输入权限。 |
+| `Runtime/Settings` | 设置模块拥有已提交值、版本、准备与保存过程，以及通知和外部副作用的结果。 | 所有保存入口取得明确的提交结果，不自行推断提交点。 |
+| `Runtime/Practice` | 练习协调器记录用户已完成的步骤和确认结果。 | 教程取得进度；自有源的绑定、reader 退休与写入仍由会话及平台输入负责。 |
+| `Runtime/Models` | 模型客户端拥有冻结加载计划、实际连接、请求和发布结果。 | 调用者取得译文、明确失败和当前连接能力。 |
+| `TypeLay.Protocol` | Protocol 定义长度前缀帧和 worker 消息，不引用 Core。 | .NET 客户端与 Python worker 使用同一通信合同。Windows Broker 私有消息另属 `Windows.Contracts`。 |
+| `TypeLay.Worker` | worker 校验模型载荷，保护文本结构并执行本地推理。 | worker 返回符合严格 schema 的结果或固定错误码，不输出用户正文诊断。 |
+| `src/windows` 与 `src/linux` | 平台拥有宿主、原生输入、视图、连接、进程和系统副作用。 | 平台通过真实适配器提供观察和执行证明。只有同一平台内使用的代码留在该平台。 |
+| `src/shared/browser` | 浏览器脚本拥有页面内控件接入和浮层交互。 | 两端共享脚本，扩展清单、注册及 native host 仍由平台负责。 |
 
-`TypeLay.Runtime` 引用 Core/Protocol，拥有 SessionController 的时序编排、设置持久化及 ModelClient 的本地模型协议。宿主注入输入服务/输入观察、串行事件循环、视图、数据路径和进程所有权。这里没有 WPF、Win32、UIA、Registry、Windows Broker DTO 或 provider 名称判定。模型、设置、平台事件通过公开端口进入同一会话所有者，不另建线程、服务容器或消息总线。
+Runtime 只引用 Core 和 Protocol。宿主注入输入服务、输入观察器、串行事件循环、视图、数据路径和进程所有者。Runtime 不依赖 WPF、Win32、UIA、Registry 或 Windows Broker DTO，也不按 provider 名称决定产品规则。
 
-Runtime 的目录对应实际责任。`Sessions` 拥有会话编排、具体回源操作和写入结算，`Presentation` 产生只读显示值，`Settings` 拥有保存的准备、提交和结果，`Practice` 只记录已确认里程碑，`Models` 拥有冻结加载身份和模型连接。目录不新增项目、进程或依赖容器。模型服务合同独立于视图合同；`ISessionView` 只接显示、编辑和用户意图，原生窗口与回源证明通过单独注入的 `ISourceInteraction` 提供。
-
-具体操作在重入回调或异步等待之前登记自身。普通回源、浏览器 Replace、源端重译确认、自有源 Keep/Replace 和术语交接各自解释继续条件；主捕获路径只分派观察，不枚举它们的内部阶段。视图退休会撤掉继续资格，已经发出的回源或写入仍交原操作收束。教程进度不参与读写授权，自有源绑定及 reader 退休仍由实际输入路径确认。
-
-呈现协议分别携带交互身份、显示序号、真实草稿版本和动作版本。显示序号丢弃旧画面，文案、标签、菜单反馈和颜色不成为操作寿命。真实编辑包含 ABA，必须推进草稿版本；原生按次、目标、焦点、IME 和期限仍由各 adapter 独立核实。术语表单有独立 FormId 和单向有效状态，临时辅助焦点、组合输入与保存等待不导致永久退休。GTK/Qt hello 与浏览器配置明确协商 `presentationVersion=1`，未知身份字段或版本不按旧语义降级。
-
-Linux Input 独占 peer、绑定观察、回源、术语和语言配置的原生记录。Overlay 只持冻结的连接/呈现事实和表单显示状态，向 Input 提交具体意图；它不能读取 peer 或修改输入操作字典。GUI 仍在原有 GTK/Qt、WPF 与浏览器中呈现，本轮职责调整不改变产品交互或采用另一套 UI 框架。
-
-所有现役设置保存入口调用同一提交方法。结果区分未提交、无变化但保存成功、已提交、已提交但通知失败和外部副作用未知，并携带实际提交版本。平台注册表或 XDG 启动项仍是独立副作用，不能与文件保存冒充一个原子事务；晚到取消或观察者失败不抹去已经提交的事实。风格菜单只向本次提交的精确后继显示通知失败警告；两端既有设置或托盘反馈仍消费原结果，避免源窗口退休后丢掉已保存事实，也不把共享投影当成原生窗口已经显示的确认。
-
-Windows 自有练习源的人工稿进入 More 时，旧编辑 attempt 永久退休、旧 reader 立即停用，独立 ACK 证明其已关闭后才允许新的返回；同一 TextBox 的文字、选区与 Undo 转入本地-only 呈现，不再是源字段、`FocusMember.Overlay`、输入镜像或接受许可。[Core 的单会话 opaque dormant edit](../../src/shared/TypeLay.Core/Session.DormantEdit.cs) 仅保存原编辑基准，空稿仍锁定风格，配置/会话退休后不能复用。Keep 保留本地稿，再由真实 Tab keyup 一次发起返回；Replace 则只由本次真实 click、Enter 或 Space 生成专用一次意图，不伪装 Tab。两者均在实际 down 冻结稿件/输入身份，原 down 起算的 500ms 不续期，持键或排队过期拒绝；旧普通源与正常 owned 编辑返回的 held 路径不变。Keep 后真实 Tab 的原始按键期限绑定[独立返回 receipt](../../src/shared/TypeLay.Runtime/Sessions/SessionController.OwnedLocalDraft.cs)；Windows Host/Practice 分别核对新 reader、真实源焦点到达与新鲜捕获，Core 共用原回源基准校验通过后才建立新 binding。绑定前不发布许可或模型任务。Replace 的专用 Core 回源确认只保原源基准，不把待弃人工稿变成可接受候选；空稿可被明确丢弃重译，但 Keep 原可写稿条件不变。Host 核新 reader 安装后，还须同一次操作期限内 fresh 原源观察才完整重译，接受/写回资格始终独立。未受理的同合法 prompt 失败保稿可重试；明确失权沿原 Keep 退休，不新建通用恢复界面，旧回执不能作用于新会话。该身份不是持久草稿恢复或通用辅助焦点授权，完整交互与未完成子项见[原型对照](../design/prototype-parity.md)。
-
-Browser 的 `EditingTranslation` 重译确认使用独立于 owned 练习源的[一次操作关联](../../src/shared/TypeLay.Runtime/Sessions/SessionController.EditorRegenerate.cs)。Host 配置 `editorRegenerateVersion=1`，只在当前 DOM 的实际 `sessionBindings` 与 fresh describe 同样回显版本 1 时消费专用对象；缺省或未知版本不算支持。旧版未协商 Editing 与原非 Editing 的 plain 操作保持兼容，已协商的 plain 或任何状态的畸形对象不能降级为旧重译入口。非浏览器消费者不接入这个协议。
-
-Browser 的确认框在用户实际点击或按键选择 Replace 前只是显示，不创建返回意图或许可。同一合法 field/view/token 下，Host 对当前人工稿的精确回显可以保留原确认：共享交互和动作身份不变，原本地编辑序列未变，当前/原确认/回显三稿一致。共享草稿版本可以追上这份已发送的本地稿，但不能倒退；文案与菜单反馈不参与身份比较。后来编辑含 ABA、撤权、新 owner 或失效 lease 仍关闭。显示沿既有 owner 的合法续租，不增加人类确认超时；回显不重开提示、不授新票或延长操作期限。真实 Replace 才按下面的单次操作规则受理。
-
-真实 Replace 发出后，在 Host 关联实际 Returning 操作之前，DOM 只保留原 pending 的精确当前稿回显：本次动作冻结的 field、配置、token、transport revision、交互和动作身份、本地编辑序列与三份稿件均未变，共享草稿版本只允许追上而不倒退；实际编辑器仍聚焦、Clear 且合法，原 500ms 仍有效。该回显不重发、续期或创建关联。真实编辑含 ABA、组合输入及离焦永久撤销这项回显例外；既有 receipt 仍可结算，不代表旧重译意图继续有效。新 view、撤权、超期、已退休或已返源的动作不能由后来回显复活，原 Return/fresh/Core 门保持。
-
-Host 在真实受理点冻结本次 Action、原 view/peer/document/route/target 与操作时间；Runtime 产生实际 Returning Operation 后，通过既有 Return 请求传递关联，不从 token 加一或最新全局状态猜身份。原操作起 500ms 不续期，关联不是读取、编辑、接受或写回许可。UI 受理到异步调用、Returning Render 到 Return RPC 的间隙内，后来稿仅作为该 exact owner 的本地观察暂存；实际请求匹配后才送入同一 Runtime 操作，失权则丢弃旧关联。真实 DraftChanged（含 ABA 及协议允许范围内的超长稿）永久废弃旧 Replace 意图，成功回源后走当前稿的普通路径；非法稿仍沿既有 Core 规则，不新增接受承诺。没有后来编辑时，ACK 也只说明这次返回，必须再 fresh Capture 当前合法原源并经 Core 判定才重译；合法正文改变可翻译完整当前源，已退休旧会话不得复活或重复调度。全局焦点/源 epoch 如实推进，后继观察 receipt 仅能关联本次实际返回，不能代替 fresh 身份或 IME 校验。
-
-只有已证明尚未派发且原 editor 仍合法，或 exact 回执明确返回失败且未失权时，才保留最新稿并一次迁移后继 Editing token；sent unknown、坏回执和明确失权沿既有退休。早期 null-id 终结仅清该未受理的 exact pending，不能撤销另一个已派发动作。标准 input/textarea 是本切片的完整当前源路径；未变化 rich editor 沿原 provider 的合法 bookmark/focus，正文改变使旧 bookmark 失效时仍安全拒绝，不绕过富文本结构保护。两端消费者见 [Windows](../../src/windows/TypeLay.App/Windows/BrowserInput.EditorRegenerate.cs) 与 [Linux](../../src/linux/desktop/input.py)，实际平台证据与未验边界见[当前状态](development-state.md#当前验证环境与交付范围)和[原型对照](../design/prototype-parity.md)。
-
-GTK、Qt 和共享浏览器沿用现有视图状态，在 `Translating`、正文非空且 `editorOwnsText=false` 时以现有弱化文字色显示旧译文，与 Windows 更新态对齐；新结果恢复正常色，编辑与回源人工稿保持原色，不增加协议字段或接受资格。
-
-[本轮呈现检查](https://github.com/DingJWuyu/Typelay/actions/runs/39097718674)已通过 GTK3、GTK4 和 Qt 的实际控件颜色状态断言，以及浏览器浅深色、320/520 像素四个场景的状态序列；Qt 真实模型编辑与回源链也通过。浏览器测试已明确传入当前视图代次，并在实际进入编辑后才输入人工稿，保留原源文字不变断言。双端搬迁后发行包也已验证扩展图标；整套平台检查仍有其它失败，不能将这些检查作为完整输入验收。
-
-TypeLay.Protocol 不引用 Core，拥有长度前缀帧和 worker 消息。Windows Broker 私有协议另属 Windows.Contracts，不是全平台共享协议。
-
-TypeLay.Worker 是独立 Python 进程，拥有本地模型校验、文本结构保护与推理。源码及 worker 协议共享，原生 Python 依赖的目标平台发行与真实推理分别验证；worker 不自动下载、不监听端口，不向协议输出原始异常或用户文本诊断。模型安装与用户同意流程由各平台宿主负责。
-
-worker 入口在加载模型依赖前保存不可继承的专用二进制输出，帧和 `--self-check` JSON 只写该流。Python stdout、原生 fd1 与 Windows 标准输出句柄均改指向宿主持续排空的 stderr；正常关闭及解释器退出期间不恢复 stdout，避免原生清理日志污染最后一帧。隔离失败不加载模型并以固定失败退出；不增加原始异常或用户文本日志，也不跳过污染前缀或放宽帧解析。固定语料诊断入口在自身提前导入 CT2 前使用同一隔离。
-
-内部另述操作 `translate-alternative` 沿用长度帧的 `id/text/source/target`，另需非空 `previousCandidate`，不接受 `preserved`；只处理 Argos 中英单段、无受保护结构的原文。普通翻译与另述维持 beam_size=2；扩大搜索束的固定语料实测仍有数字约束失真，不作为默认改进。另述固定 CPU/int8、beam_size=2、patience=1、num_hypotheses=2、max_input_length=0、max_decoding_length=512、repetition_penalty=1.05，源分词超过384拒绝，不采样、不重试。按模型顺序筛掉空、截断、非法、含受保护结构及与旧候选仅大小写/空白/标点不同的结果，不改写候选来制造差异。响应仍为 `id/status/text/code/elapsedMs`：`translated` 为筛选后的另述；`no-alternative` 的 text/code 均为空，只表示没有可用不同候选；拒绝为 `error` 加固定 code。Hy 在 Runtime 发 RPC 前拒绝，旧 worker 的 `unknown-operation` 直接失败，均不退回普通翻译。发起时撤销接受许可；返回必须属于完全相同的会话、输入、焦点、命令与模型代次，迟到另述不能降为预览；同代失败或无另述保留旧译文，但不恢复旧许可。浮层入口已接入同一共享状态，但产品发布门保持关闭，真实语言质量尚未通过；固定合成语料采集入口见[测试协议](testing.md#argos-另述真实质量采集)。
-
-模型包目录由 worker 随包的单份 `model-catalog.json` 定义，Runtime 嵌入同一文件。目录 schema2 以包描述 backend、版本、下载地址和直接方向；正式目录包含原 Argos 中英双向与固定 revision 的 Hy-MT2 Q4_K_M 中文与日语、韩语、法语、西班牙语、德语、葡萄牙语互译的新装十二方向预览包，目录另列可手动补充的中英双向。LegacyDirections、默认安装集合和原语言选项继续保留中英方向；设置接受目录已知的直接方向、Auto 与同语，不随安装或离线状态重置。Runtime 接受显式 schema3 加载计划。Linux 准备卡消费精确库存、当前选择与实际 hello 的包/版本/方向子集，提供明确确认的下载并使用、切换、修复及非当前包移除；Windows 亦接入 schema3 包事务和共享包操作呈现，原 schema1/2 安装与启动保持兼容；Windows 开发候选仅在包内 ABI5 生产组件齐备时提供 Hy 下载与使用入口，实际加载仍须通过 worker 的完整校验；两端实际验证状态见 [Windows 当前候选](../platforms/windows/README.md#当前可验证候选)和 [Linux 验证边界](../platforms/linux/README.md#当前可用范围与验收边界)。
-
-模型包呈现复用 `TranslationPreparationView` 的 `PackageRows` 与 `CurrentModelText`。`CurrentModelText` 说明安装记录中的当前选择，不代表该模型已经加载；Windows 翻译页沿用这项选择说明，运行状态仍单独显示。输入长度限制随模型而异，超限拒绝而不截断原文生成可接受候选。目录覆盖不是已安装或已加载方向；缺少当前方向时只提示，不更改语言或暗中切包。Linux 的可选语言取实际安装且平台可用的包方向，同时保留默认中英和已保存值；Windows 设置与快捷面板按实际已加载方向更新语言选择，同一列表刷新保留搜索和焦点；离线或已保存值不在当前模型能力内时如实回显，不自动改值。
-
-浮层语言呈现复用准备状态中的 `languageChoices`，GTK3、GTK4 和 Qt 按 code 映射现有菜单，浏览器与 Windows 显示真实语言名称；未知值不再回退显示为英语或自动识别。原生浮层缺失或不合法的选项数据时关闭语言修改。浮层保存复用现有 `traySettings` 的 source/target 局部更新，失败保留最后确认值，结果未知不声称保存成功；不再提交旧的全量设置。原生模块须由目标应用重启后加载同期版本。
-
-GTK3 的目标搜索属于既有语言 child 的未应用配置，不建立新会话协议：真实 Entry 始终位于已标记的 overlay 子树，排除源发现；过滤消费当前目录的 code 与既有多语显示名，选择按 model code 校验当前目录，而非筛选后的行号。源选择与显式 Apply 保留，隐藏的目标草案可保留，普通取消选中仍禁用 Apply。搜索按次 ownership 与是否消费分离：只有原次实际 IME Clear、同 opening/view/控件及原期限才执行选择/关闭；Unknown/Composing 或重入退休的原事件仍交 GTK/Fcitx，且不再作为通用 auxiliary Escape 补执行。普通源 Enter 不加入会话接受链，显示本地化不重建输入控件或续许可。
-
-GTK4 语言配置使用同 root 的非模态 child，避免 autohide 原生 keyboard grab 的合成焦点出入与现失权门冲突。配置 opening 内的捕获观察只对真实外部点击/触摸取消并透传原事件，内部点击与滚动保留；退出移除该观察。Tab/ShiftTab 正常移动，越出配置由既有焦点门取消；Escape 只关闭配置，不主动恢复旧源焦点或接受票。新源点击之后仍不能用旧票，合法捕获须独立重建。原 top inactive、opening、IME 与操作期限不变；此行为与 modal 的自动回焦不同，真实平台验收见[当前状态](development-state.md#当前验证环境与交付范围)。
-
-GTK4 搜索 Return 在自身 popup 的 SAME_NATIVE capture 阶段处理，避免 GtkText 默认 activate 先消费后才到 bubble。仅当前搜索的真实原次按下进入既有 held 表，保存前核实际 IME Clear 与原 keycode/sequence，再一次 claim；拒绝的原次仍交 GTK/Fcitx，不在 activate 后重新探测。已有该 search Return 的同硬件未释放记录不能在配置行按钮上以 repeat 升级为新动作，release 仍清原槽；不增加普通源 Return 的全局观察。Unknown、Composing 和退休 opening 不借后来的 Clear 执行旧操作；普通源先持键再跨焦点进入搜索的未登记按次不在本切片覆盖范围。真实键路由和输入法验收独立于静态审查。
-
-Qt 目标搜索复用同一 config-only Begin、退休 ACK、Save/Cancel 合同，保留原 source/target/交换 child。本阶段只在启用按需快捷键的源状态提供入口；自动、禁快捷键和编辑态显示禁用原因。native 设置只决定可用提示，Host 仍在 StopSession 前核对当前 generation/owner；旧设置请求不能退休新建的自动练习。隐藏旧浮层前后的原源焦点、焦点代次和 opening 均需相同，返回配置壳不恢复旧源或接受许可。搜索框不参与源发现；只按当前 UI label、nativeLabel 和 code 搜索，并以当前目录的 code 选择，不承诺所有跨语言别名。实际搜索焦点上的原次 IME Clear 才允许 Up/Down 本地选择、Enter 保存和 Escape 取消，重复/释放不能借后来的 Clear 升级。搜索框是当前唯一 Tab 停靠点，Tab/ShiftTab 自然越界取消，完整按钮遍历仍未完成。关闭先退休原 opening，仅仍持有该搜索焦点时 clearFocus，不主动回焦旧源；600ms 只限制首次呈现，不作为用户输入超时。实际 Qt 编译、IME、键鼠及图像证据见[当前状态](development-state.md#当前验证环境与交付范围)。
-
-既有安装、修复、选择与移除动作携带完整、冻结的 format1 请求与 `expectedCurrent`，确认后仍校验视图是否过期，再由同一准备任务传给安装器；暂停、继续及重试不会读取最新控件重建请求。已有包库存不再使用旧方向修复入口；损坏库存不提供任何修改动作。Hy 准备入口根据各平台的只读 native 组件检查呈现；真正准备和模型加载仍独立完整验证，不能把组件存在当作模型就绪。下载大小取嵌入的同一 `model.lock.json`，不将下载大小误作安装峰值空间。
-
-手动中英预览复用同一个 Hy 包、weight revision 与 SHA，不建立第二份下载包。正式目录列出十四方向，format1 新装默认仍为十二方向，默认方向来自不变的 `model.lock.json`；format1 安装仍拒绝已安装 ID，Repair 保留原方向子集，Select 不补方向。只有目录同时列出双向中英且已知库存满足条件时，既有设置行才提供“补充中英方向…”的明确确认动作，并告知高级能力、质量和降级限制。安装器仅接受 format2 的 Install 与唯一新增字段 `addDirections: ["zh_en", "en_zh"]`：恰一个已安装的固定 Hy 包、两方向均尚未安装、`expectedCurrent` 精确且非空、`activePackages` 与旧列表原样相同。它复用现有事务和已验证权重，以普通复制形成不可变新代，不下载、不修复 runtime、不自动切换；损坏或过期即失败。当前 active 选择和语言设置保持不变，取消不提交；Windows 连同 `addDirections` 复制冻结数组。模型行分别说明目录可用范围与实际已装范围，新装确认仍说明默认十二方向、中英另行确认。不改变原型布局或 Argos 默认。允许同时安装 Argos/Hy，不允许混合激活。
-
-目录版本与 `installed.json` 版本独立。`ReadInstallationSelection` 只读库存意图；schema3 的 packages 每项含精确 id/version、非空方向子集和包根相对 files 清单，允许库存备选覆盖同一方向。`ReadActiveSelection` 单独要求非空、无重复的 activePackages ID 列表，只接受原 Argos 包的非空子集或恰一个 Hy 包，拒绝混合家族、多 Hy 与方向冲突。schema3 包根是 `models/packages/<id>/<version>/`；原 schema1/2 的默认选择、文件位置与校验要求保持兼容。读取意图不校验磁盘，也不授予 Ready。
-
-worker 先规范校验全部库存元数据，只扫描及完整 SHA 校验 active 包的精确文件集合，全部验证后才导入并加载相应模型；inactive 包不读取模型文件、不导入后端。schema3 Argos 还核对 metadata 的来源/目标/版本及安装器五项必需文件。普通 hello 不做推理，只在全部 active 加载成功后返回方向；schema3 另返回已加载包 identity；schema1/2 仅在同样严格的文件集合、SHA、五项必需文件及 metadata 来源/目标/版本校验后追加 packages，否则保持原普通 hello。身份校验只读，不迁移库存；原完整性失败仍拒绝启动。停止或启动失败释放已加载资源，不以安装标记存在代替验证。Auto、同语和人工追加判断继续先于缺方向反馈，无静默中转。
-
-Hy 的 Linux x86_64 与 Windows x64 路径使用 ABI5 的固定十二方向，实际选择的方向共享一个模型 handle；Windows 开发候选已接通生产 DLL 闭包、加载器与包操作；实际发行链的通过、失败及未运行边界见 [Windows 当前候选](../platforms/windows/README.md#当前可验证候选)。打开模型前必须解析唯一版本化导出 `hy_open_v5`，旧 ABI2/3/4 adapter 不得进入加载或 hello。新安装登记完整十二方向；已有合法方向子集在选择和修复时保持原意图，hello 只报告实际加载子集。可信 native 与 CPU 闭包随 worker 发布，GGUF 和模型许可证属于安装包。生产门只消费随包固定锁和 production-adapter 清单，不依赖源码、header、原下载 ZIP 或测试报告；CPU 选择使用官方 score，并检查实际已映射库的精确路径与字节身份，拒绝异源预加载库。共享 native 源码在 `src/shared/TypeLay.Worker/native/hy/`，构建测试与生产共用，audit 仅 fixture 宏启用。构建入口和 runtime-only 交付见 [Linux 开发](../platforms/linux/development.md#hy-worker-可选构建)及 [Windows 开发](../platforms/windows/development.md#hy-生产载荷候选构建)。
-
-中英预览 native 能力通过独立 `hy_translate_english_v1` 增量能力接入，不冒充研究 ABI：既有 ABI5 布局、1-12 编号、普通/高级导出及 greedy 不变；新增 13/14 只允许新导出，旧导出仍拒绝它们。随包清单必须同时具有严格 `english_translation_version=1`、精确导出集合与实际 adapter 字节身份，loader 还须解析真实 symbol，且方向必须来自选中的已安装库存。`model.lock.json` 的十二方向身份校验不放松。英语每请求固定 penalties1.05（完整 prompt 与生成 token、window1024）→temperature0.7→top_k20→top_p0.6→dist(seed20261020)，其余 literal、EOG、身份及资源限制共用原路径；这仅迁入已冻结研究配方，不是新的质量采用结论。
-
-hello 的 styled/glossary/combined 三项版本共同接受可选 `advancedTranslationDirections` 方向 ID 子集，不引入通用能力矩阵。只选择原十二方向时 wire 不增加该字段、原版本表达不变；库存包含中英且仍选中原方向时，仅声明已选原十二方向的交集，纯中英不声明高级版本或空 scope。Runtime 拒绝无版本、空、重复、未知、未选或超出原 ABI5 十二方向的 scope；含中英的全包高级声明仍被拒绝。实际连接按已核加载计划冻结完整选中集合与高级子集，显式方向须在子集中；Auto 对该目标的所有可能已选来源非空且全部受支持才放行，不依据文本猜测。控件与实际 RPC 发送均核该方向及对应版本，英语高级请求明确拒绝、不退回普通翻译；原十二方向高级接口保持，不增加英语高级 native 导出，质量发布门独立且仍关闭。旧正式目录读取十四方向库存会拒绝而不静默裁剪；当前事务失败保留旧 current/active 与完整旧代，但这不保证旧二进制能解析新代并自动回退。现有激活入口不是通用降级恢复命令，未提供跨版本整代恢复入口。手动预览确认明确告知启用后不支持直接降级旧版本，可在当前版本切回已就绪的 Argos，缺失时需另行确认下载安装；选择、移除或普通卸载都不是通用旧版本恢复证明，不能手改方向字段代替整代恢复。
-
-Hy 保留通用 8192 UTF-16 文本上限，并在结构分段前对整请求加 8 KiB UTF-8 上限；每次 native segment 固定 context 1024、最多192新 token，所有片段共用一个60秒 deadline。超限明确拒绝，无截断、无部分输出；只有真实 EOG 才返回结果。可信模板/控制 token 与原文 literal tokenization 分离，ABI仅对模型输入应用 CRLF→LF，孤立 CR 拒绝；外层保留原文与原换行结构。Hy --self-check 最多运行一个实际样句并独立报告全部已加载方向，不把语言质量矩阵放入启动；原 Argos 自检逐方向行为保持。
-
-风格指令后端（产品发布门关闭、质量未验）：不可变 TranslationJob 的可空 Style 仅接受可信枚举 Natural/Formal；null 保持普通翻译原帧和原提示。显式风格使用独立 `translate-styled-v1`，旧 worker 明确拒绝，不回退普通翻译；非 Hy 在 Runtime 与 worker 双层拒绝。worker 把风格与同一请求 deadline 冻结给各段，ABI5 的 `hy_translate_styled_v5` 仅从固定枚举选择可信指令，Natural 与 Formal 均有独立可信指令，源文仍独立 literal 编码，不接受任意提示词。
-
-共享风格状态与持久化已接通，新增风格入口仍受产品发布门控制：旧设置 Styles=null 保持普通行为，首次明确选择建立 Natural 全局默认及应用覆盖；删除覆盖重新继承全局，无法确认应用身份时只用全局，不借用上一应用。保存须经控制器验证产品发布策略、真实 Hy 活连接的 styledTranslationVersion=1、设置版本及当前源 token/观察代次；没有当前会话也可保存全局，但不能绕过能力与发布验证。原 settings 原子落盘成功后先同步应用配置、撤销旧资格并从原源重译，再发独立 StyleChanged；不广播普通 Configure/settings，也不让旧全量表单反向覆盖。人工编辑、回源中、待接受人工稿及续写种子均拒绝保存风格；明确重新生成后才解除。活动教程/写回/直接任务期间暂拒绝变更，已有退休 ACK 等待结束后重验原保存上下文。每个会话和 Direct 任务冻结风格、原源、方向及配置代次；Direct 应用身份仅沿原成功命令 lease/capture 传递。换到非 Hy 时已保存偏好休眠，普通 Argos 保持原请求，新风格保存拒绝且不换模型；技术能力不代表已通过质量或已开放 Windows/Linux UI。入口开放前，须以实际 Q4_K_M、greedy、1024 context 和192输出 token 配置完成自然/正式成对验证，检查风格效果、原义、否定、状态、时态与 CPU 响应，按已验证方向开放；提示词存在和软件合同通过不构成质量证据。术语表独立接口见下段。
-
-共享产品发布策略是编译期的操作与精确包 ID/版本/方向表；术语的管理与保存是用户设置功能，不等同模型应用资格；实际术语翻译仅对已登记的固定 Index 模型/行为 profile 中英双向开放。风格、换种说法及风格加术语组合尚未取得对应资格，保持关闭。技术 hello 不授予质量放行。管理入口发布与实际模型采用分别判断，状态查询和命令共用资格，普通/Direct/Append 的专用分发再次核验。只有真实 hello 精确核对 packages/version/directions 后才生成本连接身份；发送在 ModelClient 同一 owner 锁内绑定该身份，旧身份不能借模型切换派发。Auto 必须覆盖该已验证 active 身份内通往目标的全部可能方向，不新增检测请求。schema1/2 保留原普通 Ready/翻译；完整安装可经 worker 只读校验得到精确身份，缺少身份的旧安装仍不授予新操作，不从目录意图猜包版本。显式包修复仍沿既有 schema3 事务，启动不触发修复、迁移或下载。双端设置与浮层风格/另述会话入口已接线，主动加词使用独立辅助输入合同；受控注入策略测试不构成真实模型质量验收。
-
-恢复操作独立于新增能力发布：用户明确确认“重置翻译风格”才原子清除全局及所有应用覆盖到 Styles=null；Natural 不表示重置。离线或非 Hy 可移除休眠偏好，有活动会话仍保留人工稿、IME、教程、写回、退休及原 token/源观察门，无变化不写盘或重算。重置保留术语并继续其采用门，不静默清规则。术语恢复只允许删除已提交规则的严格原样子集或清空，删除豁免保存发布门，不豁免残余规则的模型采用门。
-
-Windows 与 Linux 设置使用同一控制器状态和专用风格/术语命令；普通全量设置不能夹带这些字段。管理控件与实际模型采用分别按共享资格判断，已保存偏好仍可显式恢复：无源会话时按已提交的应用键删除单个风格覆盖，或确认清除全局与全部覆盖；旧术语可删除。打开设置沿既有流程结束源会话，不能借用旧 token 或上一应用创建覆盖。术语草稿在保存失败、取消关闭和外部更新时保留；若基线规则未变，仅其他设置推进版本，可使用最新版本保存；规则确已改变则展示最新完整列表，明确确认替换并绑定该次版本，再次变化仍拒绝。退休等待期间关闭或放弃会取消精确请求，已经提交的结果不回滚。两端接线的编译与协议回归不等于实际 GTK/WPF 桌面或模型质量验收。
-
-浮层更多菜单复用共享只读资格与短反馈：风格仅操作当前可靠应用的覆盖，继承独立于自然/正式，客户端不传应用名。菜单展开时冻结原 view token 与设置版本，点击仍由控制器重验；另述失败保留原候选，不恢复旧接受资格。发布门关闭时新增入口隐藏。反馈只属于原动作代次，不能覆盖既有输入法、写回或错误状态。浏览器与 Linux 桥使用共享交互、草稿和动作身份决定继续关系，显示正文、文案和菜单反馈不再通过完整视图相等参与判断；原生事实和具体操作的期限仍独立校验。WPF/GTK/Qt/浏览器实际桌面交互及模型质量仍须分别验收，主动加词不得借用译文编辑身份。
-
-Qt 的语言 child 与 More child 保留各自的原生控件和 opening。合法显示刷新按共享交互身份、原 generation 和 transport revision 保留菜单；交互变化先撤回旧回调再关闭，原生失焦与非法目标仍立即退休。动作点击继续校验原 token、设置及动作版本，显示身份不授予操作权限。完整视图比较只用于一次渲染的重入检查和视觉动画连续性，不再承担菜单交互身份。
-
-Browser 术语 handoff 的新鲜只读捕获有独立可选 `InputCapture.SourceReadStartedAtMs` 因果证据。仅 Browser Host 在该次 target-bound Overlay capture 实际派发前取本 Host 时钟，完整响应、身份、IME 与 ACK 合格后附于本次结果外壳；不是页面自报字段，不写入 snapshot、remember、lease 或 permit。仅 Glossary recheck 在原观测下界早于请求时可用 request ≤ read-start ≤ completion 证明读取先后；原观测 age/future 与所有源身份门不变。缺字段或坏界限沿原拒绝，其他消费者忽略；不能把因果下界当新的观测时间或续期。
-
-Linux `Input.state()` 的一次同步状态构造只取一次局部时间，供该状态的前台新鲜度、焦点、暂停、练习与显示能力判断共同使用，避免跨过原 150ms 边界时发布互相矛盾的字段。时间不跨调用缓存、不作为观测或授权发送；后继状态和异步 capture 仍按各自真实时刻重新校验，原观测、期限、身份和退休规则不变。
-
-Linux owned 练习的 `allowField` 诊断仅在 TRACE 开启且当前合法 run 的首个等待态 Source 读取采一次，复用原请求 ID。发送、Host 处理入口、回复入队前与调用恢复四点属于同机 `CLOCK_BOOTTIME`，只定位前向传输/排队、服务及后向派发区间，不冒物理接收。外层可选时刻不改变原 boolean、超时、输入顺序或连续性资格；失败时并入已有有界捕获记录，无正文、额外 RPC 或逐请求 flush。
-
-浮层主动加词保留普通 `EditingTranslation` 会话，并在双端标准浏览器 `input`/`textarea`、Windows 非自有标准原生 `Edit` 及 Linux GTK3 标准 `GtkEntry`、GTK4 标准 `GtkEntry`（同一标准 `GtkEntryBuffer` 与其直属 `GtkText` delegate）、Qt6 标准 `QLineEdit`/`QPlainTextEdit` 接入 `ValidTranslation` 与 `EditedTranslationPending` 来源；新增入口仍受共享发布策略及来源资格限制，自有教程、GTK4 `TextView` 及其它非上述标准控件、通用 UIA/WPF 虚拟控件、其它 Qt 控件及富文本的源侧入口不开放。GTK4 源侧加词已在隔离 niri、真实 GTK4/Fcitx 组件与受控公开浮层协议下通过 14 项交互检查：上述两个源状态各覆盖保存、取消、源文变化、buffer 替换、输入法 reset、外部失焦及无点击重放拒绝。该证据不包含真实模型术语质量；用户机器上的 niri 实测与产品整体验收仍未完成。用户明确填写源词、译词与全局或有向范围，不从人工改稿自动学习。表单拥有独立 form ID、原 view token、设置版本与取消请求，单规则追加复用原完整保存资格，不全表覆盖；精确重复规则确认无额外落盘，冲突或失败保留表单，结果未知不自动重试。原译文控件、稿件、选区及撤销历史保留，辅助焦点不是译文快捷键资格；仅精确表单控件及实际 IME Clear 可保存，Tab 在表单内导航，Esc 先遵守输入法再取消表单。关闭仅在仍属原会话的实际辅助焦点时恢复原编辑器或原源字段，外部失焦不抢回；离开原状态或原 token 失效由控制器主动退休表单，迟到提交不复活。源侧表单由控制器标记，平台默认拒绝；打开不借用编辑态，撤销旧接受许可并保持原状态、候选和人工稿。保存仅从当前辅助控件的实际 IME Clear 发起零写入回源，再用新捕获核验原目标生命周期、窗口、输入版本、文本、选区、语言、风格、术语与模型身份。
-
-Windows 原生路线只支持已绑定的 `win32-edit-transaction-v2` 字段：保留原进程、窗口、控件及 native lifetime cookie，只认可该表单的两次精确前台转移，不修改全局输入代次。回源前由 Broker 复核原绑定、正文、选区与真实 IME；独立的有界取消凭证在外部失焦、配置变化或关闭后永久失效。回源不把焦点强制改到原窗口内的另一个字段，不授予任何写入资格。Windows 只有当前表单及实际回源 receipt 匹配才允许双 false ACK 的只读捕获，普通双 false 仍拒绝。
-
-Linux 保留既有普通预览语义，只对该回源路径增加精确 receipt 检查。Linux 仅把当前表单 Opening/Returning 阶段内、浏览器同步自有焦点调用所证明的精确 source/auxiliary 转移保留为同一窗口；可信双焦点事件、实际目的控件、原 peer/route/lifetime/window/foreground 及一次消费缺一则沿用普通失效，外部字段或窗口往返不豁免。GTK3 独立绑定原表单的 context/input/content 与实际窗口、标准源控件和精确辅助控件；仅自有同步焦点调用内的完整 `set-focus` 序列可证明一次转移，最多八条原焦点事件按原顺序带连续计数发送，第三控件、重放、缺失及非焦点事件均不豁免。回源沿原 450ms provider 等待取得源侧明确 Clear，旧编辑票和辅助 Clear 不能代替新源捕获；自然转移若使 context 代次改变仍拒绝，须经真实 GTK 检查原因，不扩宽此门。
-
-Qt 源侧入口仅限标准 `QLineEdit`/`QPlainTextEdit`，绑定 provider/context/field/input/storage/selection 与稿件身份，多行还绑定并重核原文档代次；Returning 阶段不赋予编辑或源写权，必须取得新源侧 Clear 及精确回源 receipt。宿主协议回归不替代 Qt 原生编译或 GUI 验收，具体通过、失败及未运行边界见 [Linux 当前验证状态](../platforms/linux/README.md#当前可用范围与验收边界)。GTK3 编译和真实 GUI/IME 的证据分别按 [Linux 当前验证边界](../platforms/linux/README.md#当前可用范围与验收边界)记录，编译通过不授予交互验收。
-
-被表单生命周期取代的旧捕获成功与异常均丢弃，不影响当前有效读取的失败收束。机器稿保存后按原选区重译，待接受人工稿只为下次机器任务保存规则；失败保留结果且仍无接受票；Linux 回源后的明确失败需关闭并重新打开表单重试，普通用户辅助回访不豁免窗口失效，未知结果不自动重试。外部失焦退休且不抢回焦点。原子保存成功先固化结果再应用设置与退休表单，原 Add 请求仍收到精确结果，不另发完成通知或复活表单。共享控制器、真实文件和平台桥回归覆盖基本保存、取消/失效、幂等、回源重验及通知失败；各平台实际桌面交互和模型质量仍待验收。
-
-显式本地术语后端与共享状态（新增管理入口未开放、未作真实模型质量验收）：`ChangeGlossaryAsync` 只接收用户主动确认的完整规则集，不从人工修改自动学习。`GlossarySnapshot` 冻结版本和深不可变规则；规则只含源词、译词及可空的精确有向语言对，无应用作用域、隐式反向或语言中转。最多64条，每个源词/译词最多128 UTF-8字节，总量8192字节，拒控制字符、首尾空白和无效Unicode。相同scope/source的相同译法去重、不同译法拒绝。损坏的新Glossary字段只被丢弃，保留原隐私排除；旧全量设置不能覆盖规则。沿现Settings原子替换文件，使用独立GlossarySaved通知，不广播普通settings/Configure；失败不改内存或会话，通知失败明确返回已保存。
-
-术语管理发布后，无会话或人工态持久化不依赖当前模型；保存版本与会话已应用版本独立。人工编辑、回源、待接受稿和续写种子期间可保存，但仅更换下一机器任务的规则快照，不更改当前稿、选区、候选、接受许可或配置代次；保存上下文仍校验目标、源文/输入代次及取消/设置版本，人工编辑不要求陈旧源快照仍满足写入新鲜度。新Append只约束新增源文，旧人工prefix原样冻结，不用旧稿中的译词满足本次检查。机器稿保存前须以拟保存规则验证当前精确模型/方向的采用资格及风格组合；保存后撤销旧资格并从原源/选区重译，旧结果不能降为预览；待提交Direct取消，已提交写回期间拒绝保存并按原receipt收束。
-
-ModelClient只筛明显无关方向：显式方向无global及该精确方向规则、或Auto无global及该target规则时保持普通原帧；其余使用独立`translate-glossary-v1`，要求当前Hy活连接的精确数值`glossaryTranslationVersion=1`，旧worker及非Hy明确拒绝，不回退。宿主不检测语言或匹配词。worker沿原检测顺序得到actual后，方向专属规则覆盖同source全局规则。所有匹配大小写精确、不规范化Unicode；包含Han/Kana/Hangul的源词（包括混合词）按子串，其余词的两侧不得紧邻Unicode字母、数字、组合附加符或下划线。重叠按Unicode scalar长度降序、起点升序、源词/译词scalar ordinal确定排序选互不重叠命中。只把完整落入本次实际可翻译segment的命中交给后端，跨保护边界或要求修改protected内容明确拒绝；protected中的恒等规则不需模型应用。各段真实输出须先包含本段指定译法（同边界规则），再拼回结构、合并人工prefix；不硬替换输出，不承诺命中次数，此检查仅为必要条件，不是质量通过。
-
-新op严格白名单字段；旧translate、styled、alternative显式拒绝glossary/terms字段，包括null。Style与潜在适用glossary仅在独立组合技术能力及精确包/版本/方向的组合质量门均通过时采用；组合质量门当前仍关闭。ABI5的`hy_translate_glossary_v5`接收有界结构化词对；可信固定模板取[官方Hy-MT2术语示例](https://huggingface.co/tencent/Hy-MT2-1.8B)，源词、译词与原文分别沿同一literal编码，不进入可信指令，所有片段literal审计累计。完整prompt仍须满足context1024及192输出token预留，各段共用原60秒deadline，超限拒绝且不发布部分结果。无词命中的段保持原普通prompt字节。ABI5的软件合同、真实CPU ELF加载与无模型参数验证均不能作为GGUF推理、术语语言质量或UI开放证据。
-
-风格与术语组合复用同一 `ModelRequest.Style/Glossary`，使用独立 `translate-styled-glossary-v1`；hello 的可空严格整数 `styledGlossaryTranslationVersion=1` 只在验证并实际绑定可选 `hy_translate_styled_glossary_v5` 后发布。既有 ABI5 布局、单项签名和五导出闭包不变；新 native 闭包仅多此导出，两种闭包均要求精确 manifest、完整文件哈希、固定 ABI 与真实加载路径。旧闭包可继续普通及单项翻译，但拒绝组合；未知或缺失闭包、哈希/ABI错误、声明扩展但实际符号缺失都拒绝 native 身份，不降级猜测。用户安装模型目录仍只有原 GGUF 和许可证，native 随发行 worker 分发，不改库存或重下模型。app/worker 按同一发行包配套，旧客户端的严格响应 schema 会拒绝带新能力字段的 hello，不承诺跨发行版本混用。组合将风格、每段命中术语和同一原文交给同一 native decode，沿原结构保护、共享截止时间和原资源上限，不串行改写或替换模型输出；另述组合仍拒绝。组合能力与模型连接身份在设置保存及源侧加词回源时重新核验。
-
-Hy 的 ABI5 实际模型、安装生命周期与固定质量采集结果分别见 [Windows 当前候选](../platforms/windows/README.md#当前可验证候选)、[Linux 模型验证边界](../platforms/linux/README.md#可选多语言预览模型)及[共同产品缺口](../product/README.md#当前共同开发缺口)。握手、单句推理、采集完成与完整产品质量验收是不同证据，不能互相替代。
-
-[Windows 架构](../platforms/windows/architecture.md)描述 WPF、UIA Broker、Hook、原生 Edit、Windows.Contracts 与安装；[Linux 架构](../platforms/linux/architecture.md)描述 GTK/Qt、浏览器、niri、合作输入和 XDG。平台内共用的实现留在本平台，不因多个本机模块使用就进入 src/shared/。
+`ISessionView` 接收显示、编辑和用户意图。原生窗口与回源证明通过独立的 `ISourceInteraction` 进入。Linux 的 [Input](../../src/linux/desktop/input.py)独占 peer、绑定观察、回源、术语和语言配置记录；[Overlay](../../src/linux/desktop/overlay.py)消费冻结的连接及呈现事实，并提交具体意图。
 
 ## 平台边界不变量
 
-Core 的 TargetId 只比较 backend、opaque value 和 lifetime；各后端解释自己的身份与寿命。共享逻辑不解包本机句柄。
+### 观察、许可和执行各自保留证据
 
-观察就绪不等于拥有 Tab，也不等于能写回。InputSnapshot 的两种写能力默认 false，生产后端校验通过后显式声明；共享控制器还要求 CanInterceptAcceptance 才发布 Tab 许可。未知 IME、敏感元数据、焦点/输入版本、时效、字段寿命及未知写入结果继续独立否决，不能用单一“支持平台”开关覆盖它们。
+`TargetId` 只携带后端、不透明值和生命周期。Core 比较身份，各后端解释本机句柄及寿命。敏感、密码、终端和代码字段先于正文读取被排除；字段元数据缺失或错误仍可能限制识别能力。
 
-IInputService 的实现负责操作前重新确认目标与权限，不能把 WritePlan 当授权。无法安全写入返回明确拒绝；可能已经变更返回 OutcomeUnknown，不换目标、不模拟粘贴、不自动重试。直接写回保持绑定触发源，不通过前台 return/write 组合实现。缺失输入权限、可靠目标或几何信息时安全不可用，不伪造快照。
+读取可用、按键拦截和写回能力是不同事实。`InputSnapshot` 的写能力默认关闭，生产后端验证后才显式声明。Runtime 还要求 `CanInterceptAcceptance` 才发布接受许可。未知 IME、失效焦点、输入版本变化、期限届满和未知写入结果均可独立否决操作。
 
-所有会话回调在宿主串行事件循环执行；平台回调先排队，不直接并发调用 Session。时间映射到 ISessionLoop 的单调毫秒域，输入/源输入/焦点版本分开保留。
+`IInputService` 在操作前重新确认原目标和权限。它无法安全执行时返回明确拒绝，可能已经改动正文时返回 `OutcomeUnknown`。后端不改写新目标、不模拟粘贴，也不自动重试。直接任务始终使用触发源，不通过前台回源再写入拼出替代路径。
 
-模型加载使用不可变 ModelLoadPlan 冻结精确路径、库存 schema 与 active 包期望，实际 hello 必须逐项吻合后才授予 Ready。旧路径 API 仅接受显式合法 schema1/2。schema3 请求语法按目录已知语言校验，Auto、同语和人工追加仍交 worker 按原顺序判断。
+缺少输入权限、可靠目标或几何信息时，后端保持不可用，不伪造快照或降级绕过检查。
 
-旧或新计划含 Hy 时，宿主先校验候选，再由 PrepareModelChangeAsync 等待练习退役 ACK、隔离尚未派发的请求和完成回调、撤销许可；已派发写入按原 receipt 收束一次。随后客户端撤回 Ready，取消旧交换并等待自有进程退出证明，才启动唯一候选。发布结果分 Confirmed、Unchanged、Unconfirmed；仅候选已回收且持有原安装 lease 确认指针仍为精确旧代时，允许重新启动旧代并验证 hello。未知发布一律不可用；Hy 串行切换未确认退出时保持不可用。Argos 热替换失败可续用已确认旧连接，但下一次加载须先获同一进程所有者的退出证明。锁序保持安装 lease、lifecycle、serial。
+所有会话回调在宿主的串行事件循环执行。平台事件先排队，再进入 Session。时间映射到 `ISessionLoop` 的单调毫秒域，输入、源输入和焦点版本各自保留。
 
-正常退出先等待 `ShutdownAsync`：停止新操作并撤新许可，同时保留原事件循环、输入通知和已派发继续体。源端许可只有原执行者确认未使用，或原写入回执到达，才能结束；TTL、容量淘汰、断连和撤权本身不证明没有写入。既有预算内仍缺结论的原操作按未知结果隔离原目标，不重放。同步源端回执只结算，不补写；异步路径只由原调用交结果。终态记录释放正文，只保留必要的关联及结果事实。交还摘要后，控制器才停止循环并释放输入服务/观察器；`Dispose` 保持异常兜底，模型客户端、设置和视图由宿主拥有。进程创建后清理未获证明时，工厂必须返回携带所有者的专用异常，客户端保留退出障碍；Dispose 本身不是退出证明。Linux 模型专用 supervisor 仅在无待收子进程且自有组不存在时确认退出；Windows 模型专用 owner 挂起创建根进程，确认 Job 限制、精确归属和三条私有管道后才恢复执行；Argos 保持原 kill-on-close 限制，Hy 使用单进程与 2.5 GiB 上限。原生根句柄已退出且 Job active=0 才确认回收，同步管道也受原交换期限约束。新 schema3 代的 model-use.lock 从启动前共享持有至该退出证明；安装 lease 下只有精确已知退休代的独占使用锁成功后才清理，旧无标记或退出未确认的代保留并报告空间未回收。最终 Dispose 未获证明时保留使用句柄至 App 结束，不将关闭 Job 当成删除许可；外部强杀时序不作绝对保证。Broker/Practice 进程工厂不变。Windows Hy 计划要求包内生产组件齐备；正式 ABI5 包、原生生命周期及安装切换的实际证据见 [Windows 当前候选](../platforms/windows/README.md#当前可验证候选)。stderr 持续排空且不保存正文。
+### 已派发写入由原记录结算
 
-## 分发与测试依赖
+Runtime 在发布许可或派发调用前登记原目标、计划、执行路径和代次。登记本身不授予权限。执行有两条路径：源端同步接受已经在源控件线程完成操作，`CompletedReceipt` 只用于结算；异步写回由原 `WriteAsync` 或 `WriteDirectAsync` 调用交回结果。
 
-源码目录与部署目录不同。客户端打包从明确的运行时清单复制，不带 .git、skills、源码、测试、归档资料、用户设置或模型缓存。可选合作包保留许可证要求的对应源码、修改与生产重建输入，详见 [Fcitx 分发](../platforms/linux/fcitx.md)。改变部署路径须验证搬迁后的实际发行包，不能只检查编译。
+视图退休、暂停、设置变化和断连会撤销新资格，已经派发的操作仍由原记录接收唯一终态。重复回执不能再次写入或更新新会话。确定终态或未知结果后，共享记录释放正文；未知结果继续隔离原目标寿命。
 
-共享测试准备仅留在 tests 内，不向生产代码导出额外的“方便测试”接口。平台端口有 Windows/Linux 生产使用者；不为未开发平台保留空项目或假实现。证据边界统一见[测试协议](testing.md)。
+只有实际执行者能证明许可没有被认领且已失去执行资格。过期、容量淘汰、撤权请求或没有回执都不能单独证明未执行。Windows 特定路径的 Quiet 只证明相应资源可退休，不能代替成功回执。
 
-## 开放风险与安全边界
+正常退出先等待 `ShutdownAsync`。Runtime 停止新操作并撤销许可，同时保留事件循环、输入通知和已派发继续体。预算内仍无结论的原操作按未知结果结算。宿主收到无正文摘要后才释放输入、连接和循环，`Dispose` 保留异常兜底职责。具体平台释放顺序见[维护约束](architecture-target.md#正常关闭先交还责任再释放接收者)。
 
-- B-01：Windows 通用 UIA 非原子写回与物理按键所有权仍是发布阻塞，定义及关闭条件见 [Windows 写回风险](../platforms/windows/architecture.md#b-01非原子写回与按键所有权)。Linux 合作路径通过不关闭此项。
-- B-02：真实桌面验收不完整。独立网站、物理 Tab、完整中文 IME、多显示器/DPI 与视觉一致性需要对应用户路径的证据；构建、fixture、软件注入和模型自检不能替代。具体流程见[测试协议](testing.md)。
-- B-03：通用输入后端不完整。未知 IME 不授予编辑/接受资格，不能当成 Clear；已知组合态只使用可靠的已提交前缀，状态恢复不自动把旧预览升级为候选。Windows 只读预览与 Linux 未合作路径的正文读取边界各见平台架构；未暴露安全编辑能力的自绘/富文本仍缺后端，补齐的是控件能力，不是应用名单。
+## 编辑、呈现与设置
 
-字段元数据可能错误或缺失。敏感、密码、终端、代码等排除须先于正文读取，不能宣称对伪装字段零误判。控件事件、撤销栈及受控状态必须按实际写入路径验证，不能仅比对最终文字。
+### 人工稿与回源操作分别拥有状态
 
-文本和模型输入/输出限制以 Core 与 worker 的实现为准，超过限制拒绝而非静默截断。结构保护分段保留 URL、邮箱、mention、编号、emoji 和换行，可能影响上下文质量；人工追加保留人工前缀，不保证全文语义重新融合。
+Core 保留人工稿，模型刷新不能覆盖它。第一次 Tab 只请求回源；平台确认返回后，Runtime 取得新观察，Core 再判断原编辑基准是否仍匹配。下一次接受仍需新的许可。鼠标回源通过实际观察确认，不伪造 Return 请求或套用按键期限。
 
-worker 没有网络调用路径不等于 OS 网络沙箱；无正文日志不代表能控制系统崩溃转储或内存分页。发布仍须审查实际组件/模型许可、供应链及签名，见根目录 THIRD_PARTY_NOTICES.md。
+具体操作在调用视图或开始异步等待前登记身份。普通回源、浏览器 Replace、自有源 Keep/Replace、源端重译和术语交接各自处理继续、拒绝和退休。主捕获路径只把观察交给当前操作。旧操作退休后，只能处理自己已派发的结果，不能清理后继操作。
+
+浏览器 Replace 区分丢弃旧稿的意图和实际回源。真实再编辑包含改回原值的 ABA，会永久撤销旧 Replace 意图。回源在途时，同一编辑器的新稿暂存于原操作；精确 ACK 到达后才按串行顺序更新 Core。没有后来编辑时，也须通过新的源捕获才能重译。原 500ms 动作期限不续期，未知结果不重发。
+
+Windows 自有练习源进入本地稿确认时，旧 reader 必须先撤权并确认退休。原 TextBox 保留文字、选区和 Undo，Core 的 [DormantEdit](../../src/shared/TypeLay.Core/Session.DormantEdit.cs)只保留本次编辑基准。Keep 经真实 Tab 返回、精确回执和新捕获后恢复人工稿。Replace 由真实确认事件创建一次意图；新 reader 安装后还须再次捕获，才对完整当前源重译。绑定成功本身不发布许可或模型任务。
+
+回源各分支的结果与失败条件见[回源操作合同](architecture-target.md#回源操作如何交还结果)，协议实现见[浏览器重译](../../src/shared/TypeLay.Runtime/Sessions/SessionController.EditorRegenerate.cs)和[自有源本地稿](../../src/shared/TypeLay.Runtime/Sessions/SessionController.OwnedLocalDraft.cs)。
+
+### 显示刷新不改变操作寿命
+
+`PresentationIdentity` 分别携带交互身份、显示序号、草稿版本和动作版本。显示序号用于丢弃旧画面。文案、颜色和菜单反馈只改变显示，真实编辑才推进草稿版本。回显不能覆盖控件中的更新稿件，也不能复活已退休动作。
+
+GTK/Qt 和浏览器明确协商 `presentationVersion=1`。未知版本或行为字段按严格 schema 拒绝，不猜测兼容语义。各视图仍独立检查原控件、连接、焦点、IME、按次和期限。共享身份不授予读取、编辑、按键消费或写入能力。
+
+术语表单有独立 `FormId` 和单向有效状态。表单引起的合法辅助焦点、组合输入或保存等待不等同于永久退休。真实源变化或外部失焦仍使原操作失效，关闭表单只在原辅助焦点仍有效时恢复原编辑器或原字段。
+
+### 设置返回实际提交结果
+
+所有现役保存入口使用 SettingsStore 的提交方法。方法先冻结用户确认值，必要时等待会话或自有源退休，再核对版本、取消和窗口寿命。文件原子替换是持久化提交点。
+
+结果区分未提交、无变化但保存成功、已提交、已提交但通知失败，以及外部副作用未知。结果携带实际提交版本。晚到取消、窗口关闭和通知失败不能把已经提交的事实改成未提交。
+
+登录启动由平台注册表或 XDG 适配器处理，与设置文件不是同一事务。文件失败且启动项已改变时，结果同时报告两件事实；平台不能确认副作用时，结果保持未知。界面显示真实结果，不自动补偿或重试。完整结果分支见 [SettingsCommit](../../src/shared/TypeLay.Runtime/Settings/SettingsCommit.cs)。
+
+### 风格和术语保存保持当前人工稿
+
+风格、术语和普通设置使用各自提交入口。旧的全量设置不能覆盖风格或术语。人工稿锁定期间，风格修改被拒绝。术语保存版本与当前会话采用的版本分别记录；当前源身份仍有效时，人工编辑、回源和待接受稿期间保存的术语只影响后续机器任务。
+
+术语由用户主动填写，不从人工改稿自动学习。规则包含源词、译词及可选的有向语言对，没有应用作用域、隐式反向或语言中转。规则最多 64 条，每个词最多 128 UTF-8 字节，总量最多 8192 字节。无效 Unicode、控制字符、首尾空白和冲突规则被拒绝。损坏的术语字段不覆盖已有隐私排除设置。
+
+机器稿采用新规则前，Runtime 重新检查当前模型、方向和组合资格。有效规则快照改变时，Runtime 撤销旧接受资格，再按原源文或选区重译。保存成功但当前模型不能采用时，结果明确报告规则未生效。人工追加只约束新增部分，人工前缀原样保留。已提交写回期间不保存新规则，原写入继续按回执结算。
+
+源侧加词先撤销旧许可，保持当前候选和人工稿。保存从真实辅助控件的 IME Clear 状态发起零写入回源，再取得新捕获。新捕获须匹配原目标寿命、窗口、正文、选区、输入及配置版本和模型身份。辅助焦点或回源回执本身不授予写入权限。具体准入控件和原生证据见平台架构。
+
+风格重置和旧术语删除是显式恢复操作。恢复操作不替剩余偏好取得模型采用资格。术语管理可以离线保存用户规则，实际翻译仍受[产品采用表](../../src/shared/TypeLay.Runtime/Models/TranslationService.cs)约束。
 
 ## 人工稿的短暂观察中断
 
-编辑获准后、平台确认编辑器焦点前可能已有同代源读取起飞。该次读取返回空时，只有当前仍处于同一完整目标身份的编辑会话、实时焦点已为 Overlay，且原窗口、前台、内容、连接及配置代次仍匹配、输入服务仍可用，控制器才按现有编辑焦点规则丢弃这份过时空结果并继续撤销接受资格。不把空结果当作新观察，不确认 provider 或 IME 正常，不更新源快照、快捷键确认或许可，也不修改编辑交接期限。未确认编辑焦点、明确前台过期、不同证据，以及不满足下述待定交接边界的成功快照，仍走原处理；实际 provider 丢失的原生撤路由与回源重新验证不变。这只保留已获编辑焦点的现有草稿，不恢复已回源后因来源失效而撤销的人工候选。
+编辑获准后，较早发起的源读取可能在编辑器获焦后返回空。只有原目标、窗口、前台、内容、连接和配置身份均未改变，且实时焦点已确认属于 Overlay 时，Runtime 才丢弃该次过时空结果。Runtime 继续撤销接受资格，不更新源快照或输入法证据，也不延长编辑交接期限。
 
-源到编辑器的术语入口交接仍待其独立新鲜复核时，较早起飞的普通读取也可能成功返回 Overlay 快照。仅同一未过期交接、源事件恰好跨过编辑焦点一次，且原目标、正文、输入代次、选区、翻译范围、多行属性、应用与现有连接/窗口/配置/内容身份全部保持时，丢弃这份等价普通结果，不替换交接的冻结基准。该结果不更新快捷键 ACK、不授予许可或术语入口；仍由原期限内唯一的新鲜复核决定入口，变化、组合态或超时沿原拒绝路径。
+源侧术语入口等待独立新鲜复核时，较早普通读取也可能返回等价的 Overlay 快照。只有同一未过期交接恰好跨过一次编辑焦点，且完整源基准不变，Runtime 才忽略它。原交接仍由唯一的新鲜复核决定，普通读取不能授予术语入口或许可。
 
-已经编辑并成功回源的人工稿遇到一次无法读取原输入框时，Runtime 会立即撤销许可、失效旧计划和视图、隐藏浮层；Session 仍是唯一正文持有者。私有保留最多使用现有150ms观察窗口，重复失败不续期。只有取得中断之后的新鲜观察，且原目标寿命、正文、选区、输入与配置代次均未改变，才能恢复；明确离开、前台过期、不同证据或超时直接结束该会话。恢复不复活旧许可，未知输入期间仍不能准备写回。
+人工稿已成功回源后，一次读取失败会立即撤销许可、旧计划和视图。Session 在原有 150ms 观察窗口内私下保留稿件，重复失败不续期。只有中断后的新观察与原目标寿命、正文、选区、输入和配置代次完全一致，才能恢复。明确离开、不同证据或超时结束会话，恢复也不会复活旧许可。
 
+## 模型连接与本地推理
+
+### 安装意图、加载成功和产品采用分别确认
+
+[模型目录](../../src/shared/TypeLay.Worker/model-catalog.json)是 Runtime 与 worker 共用的包定义。目录可用方向、实际安装方向和当前加载方向是不同集合。设置保留用户语言选择，缺方向时明确提示，不暗中切包、改值或经第三种语言中转。
+
+`ModelLoadPlan` 冻结精确路径、库存 schema 和 active 包。worker 先校验库存元数据，再完整核对 active 包的文件与哈希，随后加载模型。inactive 包不加载。实际 hello 与加载计划逐项吻合后，ModelClient 才发布 Ready 和本次连接身份。目录存在、下载完成或安装标记存在都不是加载证明。
+
+高级操作同时需要技术能力和产品采用资格。当前[采用表](../../src/shared/TypeLay.Runtime/Models/TranslationService.cs)只开放固定 Index profile 的中英双向术语。风格、另述和风格术语组合仍未开放。Auto 必须覆盖该目标下全部可能的已选来源，不能借用一个方向的资格，也不在宿主猜测语言。
+
+worker 严格区分普通、风格、术语、组合和另述请求。未知操作、未知字段或缺少对应能力时明确失败，不回退普通翻译。模型原生能力、单句推理、质量采集和产品质量验收各有不同证据范围。
+
+### 切换和退出由原进程所有者证明
+
+原生模型切换先验证候选，等待练习退休并隔离未派发请求，再撤回 Ready。ModelClient 取消旧交换，确认旧进程族退出后才启动候选。旧或新计划涉及 Hy 或 Index 时，不能并载候选来绕过退出障碍。
+
+模型发布结果区分 `Confirmed`、`Unchanged` 和 `Unconfirmed`。恢复旧代须先确认候选已回收，并在原安装 lease 下确认指针仍是精确旧代，随后重新验证 hello。未知发布保持不可用。Argos 热替换可以保留已确认旧连接，但后续加载仍须解决同一进程所有者的退出障碍。
+
+进程创建后的清理若未获证明，工厂返回携带所有者的 `ChildProcessCleanupUnconfirmedException`。`Dispose` 不是退出证明。Linux supervisor 通过待收子进程和自有进程组确认退出；Windows owner 通过原生根句柄与 Job 活动进程数确认退出。完整平台机制见各平台架构。
+
+schema3 安装代的 `model-use.lock` 从启动前持有到退出证明。安装器只在安装 lease 下成功取得精确退休代的独占使用锁后清理。缺少标记或退出未确认时保留该代，并报告空间未回收。锁序保持安装 lease、lifecycle、serial。
+
+### worker 保留结构并拒绝不完整输出
+
+worker 在加载模型依赖前保存私有二进制输出流。协议帧和自检 JSON 只写该流，Python stdout 与原生标准输出转向宿主持续排空的 stderr。隔离失败时不加载模型。正常关闭也不恢复 stdout，避免原生清理日志污染协议。
+
+普通文本上限为 8192 UTF-16 单元。原生后端另有 UTF-8、上下文和输出 token 限制，超限明确失败，不截断原文，也不发布部分结果。原文以 literal 内容进入模型，不能成为可信控制指令。精确请求字段及限制分别见 [worker 协议](../../src/shared/TypeLay.Worker/run_worker.py)、[Hy](../../src/shared/TypeLay.Worker/typelay_worker/hy.py)和 [Index](../../src/shared/TypeLay.Worker/typelay_worker/index.py)。
+
+worker 保护 URL、邮箱、mention、编号、emoji 和换行。Argos 与 Hy 按受保护结构分段，Index 整篇推理后校验结构。术语匹配遵循精确有向范围、大小写和 Unicode 边界；worker 拒绝跨保护边界的修改要求。输出必须包含本次适用译法，但不会硬替换模型输出，也不承诺命中次数。匹配与结构规则见 [glossary.py](../../src/shared/TypeLay.Worker/typelay_worker/glossary.py)和 [engine.py](../../src/shared/TypeLay.Worker/typelay_worker/engine.py)。这些校验是必要条件，不能代替语义质量验收。
+
+Hy 使用 ABI5，原十二方向与手动中英预览共用已验证权重。中英增量只通过独立 native 导出提供普通翻译，不借用原十二方向的高级能力。高级方向范围须为当前已选方向的合法子集。Hy 每段使用 1024 context、最多 192 新 token，全请求共用 60 秒期限。既有方向子集在选择或修复时保留，中英扩展需明确确认；旧二进制不能被假定能读取新库存。
+
+Argos 另述使用独立操作，固定搜索后筛除无效输出与无实质差异的候选，不采样或重试。失败和无另述可保留旧译文，但不会恢复旧许可。真实质量要求见[测试协议](translation-quality.md#argos-另述真实质量采集)。
 
 ## Index 默认与兼容边界
 
-Index 高级质量身份在既有受信发行包与不可变安装代边界内分两层验证。平台 loader 继续完整验证实际 adapter、CPU 库及模型字节，并核实际加载闭包；Host 在每次启动/恢复前独立核实际 worker 小源码集合、模型锁、平台 CPU 锁全部约束，以及与产物同清单的 native 构建来源和实际编译选项。来源指纹覆盖 cpp/header/template、固定头文件锁、参与编译的实际头文件，以及 Linux 导出 map 与 Windows 两个实际 import-library `.def` 输入，编译前取值、成功后复核，变化则不发布 manifest。固定支持材料由 `eng/index_profile.py` 显式生成并经独立评审登记，不在普通构建或运行时自动增加资格；发布行须固定已受审的 profile ID，不能动态引用最新生成值。质量键不含 UI、发布表、构建路径/时间或每次重编的二进制 SHA。小源码目录出现额外导入模块、bytecode 或链接时不授高级身份。
+可信空库存经用户确认后准备 Index。未知库存不能当成空库存。已有安装代、active 选择、语言偏好和方向子集不自动迁移；schema1/2 保留旧 Argos 中英默认。Repair 不补方向或删除旧包，Index 与 Hy 不能同时 active。
 
-同代既有安装 metadata 还须明确记录 CPython 3.13.16 和 lingua 2.1.1，Linux 核实际 requirements.lock 与库存摘要及规范化条目，Windows 核实际 dependency-lock 条目。复制 runtime 保留来源记录，不能把旧字节标为当前版本；缺失或未知保持普通 Ready、高级关闭。这依赖受信安装器的版本/下载校验和未在使用中改写的安装代，不声称逐字独立测量整个解释器或抵抗任意同用户篡改。只有该实际 owned child 严格 hello 成功后才把支持 profile 绑定到本连接 `VerifiedModelIdentity`；不接受 hello 自报 profile、不缓存路径资格，取消原样传播。对应发布行必须同时匹配操作、包、版本、方向与 profile；旧包、旧 manifest 或不匹配只能保留普通能力。Linux 语义评审不冒称 Windows 输出逐字复核，两端仍须各自实际安装执行与完整性验证。
+Index 使用独立的 `index-translate-2b-q4-k-m` 包与 ABI1 后端。平台 loader 校验实际 adapter、CPU 库、模型、词表、模板和导出。高级资格还要求 Host 在启动前核对 worker 源码、模型锁、平台 CPU 锁及 native 构建来源。固定 profile 由 [eng/index_profile.py](../../eng/index_profile.py)生成并经评审登记，普通构建不能自动扩大采用范围。
 
-空且可信的库存只在用户确认准备后创建 Index 包事务；未知库存不当作空库存，schema1/2 的缺省方向仍固定为旧 Argos 中英。现有安装代、active 选择、语言偏好和方向子集不自动迁移，Repair 不补方向、不删除旧包。Index 与 Hy 不能同时 active；切换原生模型先确认旧 worker 退出，失败不并载。平台输入事务不因模型变化获得额外权限。
+同代安装元数据必须记录受支持的 CPython 和 lingua 版本，平台独立核对锁文件。来源缺失或未知时，高级资格关闭。Host 在该自有子进程的严格 hello 成功后，才把 profile 绑定到 `VerifiedModelIdentity`。worker 自报字符串、旧连接和相同路径不能提供资格。
 
-Index 的 `index-translate-2b-q4-k-m` / `index-translate-llama-cpu` 独立于 Hy，ABI1 与 llama.cpp b11913 的官方 CPU 闭包由 `native/index` 固定锁验证；Hy ABI5/b11717 不变。仅真实载荷、模型文件、词表/模板和导出校验成功才发布 Index hello 及实际高级能力，不能用 Hy 的存在授权 Index。已知目录或下载完成都不是 Ready。
+这组检查依赖受信安装器和未被改写的安装代。它不宣称逐字测量整个解释器，也不抵抗任意同用户篡改。Linux 语义评审不能代替 Windows 实际执行与完整性验证。
 
-一次 Index 请求把完整原文交给 native 一次，无真实要求时使用官方 plain 模板，有风格、术语或结构要求时使用 canonical instTrans；无 system、thinking=false、greedy，不切段推理、增加背景或自动重试。保留控制 token 字面内容须经安全分词、保留 ID 拒绝和字节往返验证。4096 context / 1024 最大新 token、8192 UTF-8 bytes，超限或非允许 EOG 失败，不把截断当译文。
+Index 每次请求只进行一次完整原文推理。普通请求使用 plain 模板，有风格、术语或结构要求时使用 canonical instTrans。请求不带 system，关闭 thinking 并使用 greedy；不切段推理、不增加背景、不自动重试。输入上限为 8192 UTF-8 字节，context 为 4096，最多生成 1024 token。超限或缺少允许的结束标记均失败。
 
-结构处理先验证 protected token 的拓扑、顺序、重数与字面值、相对逻辑换行位置、不可翻译片段、内部空白与逐槽术语。精确匹配按原路径处理。唯一 token 边界例外是：输出最大匹配恰为源 URL/mention 加一个 ASCII 句点，右侧为请求末尾、SP/TAB 或已有换行，且源 token 本体不以句点结尾；源紧随槽还须已有 SP/TAB 后的逗号/句号及非空正文，或行末/请求末的独立单句号。只将多出的句点归回该既有槽；独立句号仅允许 `.` 与 `。` 一对一并序列化原字节，不从空输出补标点。仅这个重归属槽的边缘 SP/TAB 可恢复源字节，其余 URL 邻接空格、内部缩进、NBSP、数字、算式与逐槽术语仍须满足原校验。扩展 token、本体变更、顺序/次数变化、空正文或歧义均拒绝，不作一般文本清洗。验证通过后，另用源文序列化全请求两端 SP/TAB 及对应 CRLF/CR/LF；重建后再核 protected token/槽拓扑、字面值与输出字节/文本上限。这是源拥有标点边界的产品布局规范，不证明模型意图，也不声称原始模型输出与研究结果逐字等同；语义质量另行评估。
+输出先通过受保护 token 的拓扑、顺序、数量、字面值、换行位置及逐槽术语检查，再恢复源拥有的空白和换行。唯一 token 边界例外允许将 URL 或 mention 后的一个 ASCII 句点归回已有标点槽。它要求源槽已满足精确标点和空白条件，不补造标点或清洗任意输出。完整条件集中在 [engine.py 的 `_serialize_index_result`](../../src/shared/TypeLay.Worker/typelay_worker/engine.py)。重建后仍需复核拓扑与文本上限，布局规范不能证明模型语义正确。
 
-Index worker 在 Linux 实际设置并核验两核 affinity 与 2.5 GiB 硬 RLIMIT_AS；Windows 实际设置两核 affinity，宿主另施加既有 2.5 GiB/单进程 Job 门。Windows Job 内存与 Linux 地址空间不是相同计量。载入/hello 和单请求保持 60 秒；失败由既有进程所有者确认退出，不放宽门限或回退其它模型。旧 Hy 不从这次实现推导出此前未有的 Linux 资源保证。
+Index 在 Linux 核验两核 affinity 和 2.5 GiB 硬 `RLIMIT_AS`。Windows 核验两核 affinity，宿主另施加单进程、2.5 GiB Job 限制。Job 内存与地址空间不是同一计量。加载及单请求均保留 60 秒期限，失败后由原进程所有者证明退出，不提高限额或回退其它模型。
+
+## 分发与测试依赖
+
+`eng/` 负责构建，`packaging/` 负责运行时包装和安装，`tests/` 负责验证。源码目录与部署目录不同，发行包按明确运行时清单取文件。客户端不携带 Git、skills、测试、用户设置或模型缓存。可选合作包按许可证保留对应源码和生产重建输入，见 [Fcitx 分发](../platforms/linux/fcitx.md)。
+
+共享测试准备留在 tests 内，生产代码不为测试导出额外接口。平台端口服务真实生产适配器，不为未知平台建立空项目。目录或部署路径变化须验证相应发行包，编译不证明搬迁后的包能运行。验证方法和证据边界统一见[测试协议](testing.md)。
+
+## 开放风险与安全边界
+
+以下缺口仍限制产品验收。当前架构评分和局部路径通过都不能关闭它们。
+
+- B-01 涉及 Windows 通用 UIA 的非原子写回与按键所有权。定义和关闭条件见 [Windows 写回风险](../platforms/windows/architecture.md#b-01非原子写回与按键所有权)，Linux 合作路径通过不关闭此项。
+- B-02 涉及未完成的真实桌面验收。独立网站、物理输入、完整中文 IME、多显示器/DPI、Undo 和视觉一致性需要对应用户路径证据。构建、fixture、软件注入和模型自检各自只证明其观察范围。
+- B-03 涉及未完成的通用输入后端。普通输入框是产品目标，代表性应用不是支持名单。未知 IME 保持未知，已知组合态只使用可靠的已提交前缀。状态恢复不把旧预览自动升级为候选。
+
+结构保护可能影响句子上下文质量，人工追加保留前缀也不保证全文语义重新融合。控件事件、Undo 和受控状态须按真实写入路径验证，最终文字相同不足以证明交互正确。
+
+worker 没有网络调用路径，不等于操作系统网络沙箱。无正文日志也不能控制系统崩溃转储或内存分页。实际发行组件、模型许可、供应链和签名仍需单独核验，入口见 [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md)。

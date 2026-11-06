@@ -1,92 +1,126 @@
 # Qt6 原生输入路径
 
-Qt 路径已在隔离 CI 中构建、验证，普通 Linux 安装不会自动启用；可选合作包已通过实际构建、中文空格目录搬迁与 `launch --qt6` 验证，启用和回退步骤见 [Fcitx 合作组件](fcitx.md)。用户已确认 Qt 6.11.2-3.1、Fcitx Qt 5.1.15、GTK4 4.22.5-1.1；Arch 隔离环境已验证同上游版本的 Qt 6.11.2 与 GTK4 4.22.5。CI 的 Arch 构建与用户的 CachyOS 发行修订仍须区分，须通过合作包的运行时版本与依赖检查，不能据此声明用户机器通过。该路径复用同一个 Linux 宿主、Core/Runtime 会话与本地模型，不另建翻译或接受控制器。
+Qt 合作路径让标准单行和纯文本多行控件使用 TypeLay 的浮层、编辑与受限写回。它复用 Linux 宿主、共享会话和本地模型，输入法状态由固定版本的 Fcitx Qt provider 提供。普通安装不会启用此路径；实际接入与回退按 [Fcitx 合作包说明](fcitx.md#可选-qt-6112-构建与启动)操作。
+
+本页说明后端的支持边界和维护方法。当前固定组合是 Qt 6.11.2 与 Fcitx5-Qt 5.1.15。运行库必须通过合作包的版本及依赖检查；Arch 同上游版本的结果不代表 CachyOS 的发行修订或用户机器已验收。当前提交的编译、受控回归和 GUI 结果由开发状态分别记录，入口见 [README 开发与验收导航](README.md#开发与验收)。
 
 ## 实现范围
 
-Qt 6.11.2 与固定 Fcitx Qt 5.1.15 的隔离 Wayland/niri 链路已有实际模型与控件行为证据。标准 QLineEdit 已验证：实际英文键入、真实本地模型、浮层、单次 Tab、原生撤销、点击编辑后的两阶段 Tab、UTF-16 选区替换与中文/emoji 周边保留；真实设置切换按需模式后，默认 Ctrl+Shift+F9 唤醒及 Ctrl+Shift+F10 一次直接替换通过。显式命令待捕获时已观察到的正文/焦点变化会取消，捕获后的原文变化也会阻止直接写回。实际拼音组合、敏感标签、密码、validator、input mask、仅 buddy 标签敏感及聚焦但被裁剪的字段均有拒绝证据。
+模块通过公开 `QGenericPlugin` 加载，保留 Qt 原输入法插件。源字段只接纳实际类型恰为 `QLineEdit` 或 `QPlainTextEdit` 的标准控件。自定义派生类、QTextEdit、QtQuick、其他富文本和自绘编辑器尚未实现。
 
-标准 QPlainTextEdit 已验证真实模型的跨行 UTF-16 选区替换，保留 emoji/NBSP 周边及其他字段，一次 Tab 产生一个文档编辑，原生 undo/redo 精确恢复。实际拼音组合不触发 TypeLay 写回；只读、有限 block 数及自定义对象格式在正文读取前拒绝。应用在写入通知中移动光标时保留应用位置，返回一次 `OutcomeUnknown`、隔离该目标且不重试。
+| 字段 | 正文和写回边界 |
+| --- | --- |
+| `QLineEdit` | 支持普通单行文字。密码、隐藏、只读、禁用、validator、input mask 和限定输入提示会被拒绝。 |
+| `QPlainTextEdit` | 支持标准 `QTextDocument` 与 `QPlainTextDocumentLayout` 的纯文本内容。有限 block 数、列表、子 frame、表格、嵌入对象、链接及自定义语义标记会被拒绝。普通字体、颜色和对齐样式不因此被排除。 |
 
-- 加载器是公开 `QGenericPlugin`，通过 `QT_QPA_GENERIC_PLUGINS` 追加 `typelay`，保留 Qt 原输入法插件。
-- 当前源字段支持实际类型恰为 `QLineEdit` 的普通单行输入框，以及恰为 `QPlainTextEdit` 的普通纯文本多行框。自定义派生类、密码/隐藏/敏感输入提示、只读/禁用字段、validator、input mask 及数字/日期/邮箱/URL 等限定输入提示均不授予正文捕获或写入能力。共享字段策略先检查标签（含实际 QLabel buddy）、帮助与标识等元数据，再批准正文读取；完全位于父窗口裁剪范围外的字段同样在正文读取前拒绝。
-- 目标身份绑定实际控件的 `QPointer`、生命周期和合作 provider 的 `fieldGeneration`。多行另绑定实际 `QTextDocument` 的弱引用与代次；文档替换、销毁和已观察到的正文及选区/光标变化均撤销旧许可。同一窗口内其他输入框或替换后的文档不能继承许可。
-- 多行只接纳标准 `QTextDocument`/`QPlainTextDocumentLayout`，正文读取前拒绝 `maximumBlockCount > 0`、超过既有 8192 UTF-16 单元上限、列表、子 frame/表格、嵌入对象、链接/自定义语义标记等不支持结构；普通字体、颜色与对齐样式不因此被排除。授权后用 `toRawText()`，仅将段落分隔符 U+2029 一对一映射为 LF，保留 NBSP 和 U+2028，选区仍使用原生 UTF-16 位置。
-- 原生模块使用既有 v2 同用户 socket 协议；hello 的 backend 为 `qt6`，共享目标 backend 为 `linux-qt6`。`qt-toplevel` 几何只表示父窗口内部的逻辑坐标，不是 Wayland 全局坐标。
-- 浮层是源窗口拥有的 Qt 子控件，不创建独立顶层窗口、不移动应用布局。正文预览、开始编辑、草稿、返回、接受、重译、复制、展开和隐藏沿用宿主消息。编辑器取得文本所有权后，异步展示回声不得重设正文、光标或撤销历史。第一 Tab 只请求返回源框；宿主得到新的源观察后才可发布下一次 Tab 许可。
-- 自动模式与按需模式使用相同协议。已配置的 wake/direct 快捷键按 Linux keyval/modifier 规则匹配；niri 触发同样必须携带当前目标的短期授权，不能读取后来聚焦的字段。
+共享策略先检查标签、实际 QLabel buddy、帮助及标识，再批准正文读取。完全被父窗口裁剪的字段也在读取前拒绝。正文沿用 8192 UTF-16 单元上限；多行捕获使用 `toRawText()`，仅把 U+2029 一对一映射为 LF，保留 NBSP 和 U+2028，选区继续使用原生 UTF-16 位置。
 
-浮层主题沿用设置的 `system` / `light` / `dark` 小写合同。显式浅色或深色只作用于 `typelay-overlay` 子树及其自有 More/语言 child 菜单；跟随系统时读取 Qt 当前有效颜色方案，平台返回 Unknown 时以应用的 Window/WindowText 调色板回退，不修改宿主应用的全局主题。当前可见浮层随颜色方案或应用调色板变化重画，保留正文、光标、焦点、几何与原有效期。译文编辑器的可访问名称为“译文”，预览与卡片使用一致底色，编辑焦点边框与文字选区仍可辨认；按钮保留原动作与点击区域。
+字段身份绑定控件的 `QPointer`、生命周期与 provider 的 `fieldGeneration`。多行字段另绑定实际文档对象和代次。文档替换、销毁及已观察到的正文、选区或光标变化都会撤销旧许可，同窗口另一字段不能继承。
 
-More 与语言入口各自打开源窗口拥有的独立 child 菜单，互斥显示且不创建 popup 顶层、抓取源键或取得焦点。语言入口保留源/目标/交换，More 保留现役继承与设置以及横排四段风格，未开放项仍可见但禁用。菜单动作绑定完整 view/revision；取消、新视图及同 revision 的 `translationActions` 更新均先退休旧菜单，不能让旧按钮继承新状态。编辑器的正文、选区、Undo 与 provider 票沿原路径保持。新 fixture 已覆盖这些公开操作，但本次本地没有 Qt SDK/GUI，编译、真实菜单布局/clip、按键与视觉仍须下一目标平台检查；搜索与完整 O03/O04 差距见[原型对照](../../design/prototype-parity.md)。
-
-展开/收起只在当前原生 `QPlainTextEdit` 上改变高度，约 280ms，宽度不变；右侧与上方底侧（或下方顶侧）锚保持不变。父窗口边缘需要换侧或裁限时直接落位。现有展开通知与显示续期保持；宿主仅对该次展开排队的下一份视图附一次性 `visualExpansionFrom` 标记，后续排队覆盖、发送前消费。客户端只在完整目标、代次、源/编辑器实例、父窗口、几何、全文视图与主题都未变时沿原结束时刻继续几何，标记不提供接受或编辑资格。其它新视图直接取消旧动效；续租不会重播。所有隐藏先取消动画并清正文，没有退出残影或完成后恢复/聚焦。
-
-减少动态效果通过当前 Qt 样式的公开 `QStyle::SH_Widget_Animation_Duration` 读取，零值直接最终布局。Qt 6.11 的公开 `QAccessibilityHints` 仅提供对比度偏好，没有通用减少动态效果属性；此实现不能保证每个 Linux 桌面/样式都转发系统偏好。依据：[QStyle](https://doc.qt.io/qt-6.11/qstyle.html)、[QAccessibilityHints](https://doc.qt.io/qt-6.11/qaccessibilityhints.html)。桌面 fixture 的有限控件实绘帧与几何进入现有输出目录 `qt-motion-*`，用于检查真实样式零值、展开/反转、续期、新编辑视图、隐藏取消、中文选区与后续原生撤销/两阶段返回。
-
-当前动效已有[0bdc97a 的实际 CI 证据](https://github.com/DingJWuyu/Typelay/actions/runs/38697895389)：五段有限记录及后续完整桌面流程通过，展开与中文草稿各五张实绘帧已查看。展开保持同一原控件、右侧/下方顶侧锚、源焦点及页脚；反转实际记录到高度 280→114→159→280，未到收起端点即改变方向。真实样式零值直接落至 100；敏感元数据隐藏时清正文，至 465ms 未复活。中文草稿动效中全文、选区与编辑焦点保持，后续原生撤销和两阶段返回通过。展开与草稿首个终态样本分别在 335/339ms，有限采样并非精确的动画完成时钟。
-
-空捕获导致的显示中断仍未定位：同一 Linux 生产/测试代码在此前执行中，首次展开收到空原生捕获结果，宿主撤下并销毁原控件，后续截图已是新浮层。该次捕获整段耗时 507ms，开始时间早于点击及首帧截图约 469ms；现日志不能细分 describe、策略批准和 capture，也未测量同步截图/PNG 写盘负载，不能归因为截图、既有超时或动画。上述通过不解释这次中断，保持原安全撤下与原期限，不跨已隐藏的控件续播。
+源端通过 v2 同用户 socket 与宿主通信，backend 是 `qt6`，共享目标使用 `linux-qt6`。`qt-toplevel` 表示父窗口内逻辑坐标，并附带缩放比例；它不表示 Wayland 全局位置，完整定位约束由 ADR-0004 记录，可从 [README 开发导航](README.md#开发与验收)中的 Linux 架构打开。
 
 ## 输入法与写回边界
 
-Ctrl+功能键使用独立有序控制能力：在 Ctrl 提交输入法前固定已有资格和原截止，等待真实前序处理退休后才裁决原功能键；后读仅核对原源，不能建立替代许可。真实输入法输出、目标或配置变化撤销资格；已开始选区变更的失败不补发原键。有限队列取消后恢复 Qt 原生事件语义，不承诺跨应用回调的原子顺序。设置的“快捷键”页提供 Ctrl+F1–F24 并沿四键草稿显式保存，仍可选择普通功能键或恢复 Tab/Esc；公开下拉的真实选择/保存接线仍待本次桌面核验。Qt 源输入路径须通过原生确认，组合编辑另须实际 provider 声明独立 `TypeLayFcitxQtEditorOrderedProviderV1` 能力；旧 provider 的组合编辑保持关闭，未确认相应能力的后端不启用此绑定。接受和退出暂须使用不同主键，属于当前实现限制。
+provider 在实际焦点 QObject 上发布版本化接口，consumer 通过 `qobject_cast` 和弱引用确认身份。`inspect` 检查真实输入上下文、在途请求、输出和字段代次；`validateLocal` 只能复核原观察，不能自行建立 Clear。`prepareCaret` 可能触发回调，完成后仍须重验原目标。
 
-组合编辑复用原有 provider 的有序 Ctrl 前缀和 Fn claim，consumer 只冻结当前显示 token、revision、配置、源/编辑器/文档身份及草稿版本，形成无写入计划的返回/退出命令。该票在原 Ctrl 入场时固定截止为原显示截止与 150ms 上限中的较早值；显示续租、Fn 到达和新源 publication 均不续票。宿主每次编辑 tick 的 source-only revoke 只撤源写资格，真正的配置、草稿、输入法、焦点、provider 或生命周期变化仍撤命令。第一组合只请求 Runtime 回源；原 Ctrl/Fn scan 配对跨回源与 ticket retirement 保留，整组实际释放后才允许新组合建立资格。新源 capture 和新 permit 才能接受精确人工稿，仍遵守原 100ms 接受与 150ms 退出期限。拒绝继续走普通 Qt/Fcitx 处理，已 claim 的 Fn 不重放。
+Fcitx 按键继续异步处理。provider 按请求顺序处理已完成的 watcher，后一个回复不能越过前一个未完成请求。watcher 销毁前仍计为 pending，转发事件也须等 Qt 实际分发完成才确认。队列空闲或 `isFinished()` 本身都不能证明 Clear。强制 `FCITX_QT_USE_SYNC=1` 会使 TypeLay 保持 Unknown，不提供捕获、编辑或接受能力。
 
-组合编辑回归位于 `qt_cooperative/run.py` 和 `qt_desktop.py`：受控 host 检查 source-only revoke 不误撤、首次零写回源、原 held 配对、新源新按接受及一次真实草稿变更撤销，并保留原截止、资格变化撤销、同候选续发的原计划回执与默认 Tab 回归。[实际 Qt 6.11.2 检查](https://github.com/DingJWuyu/Typelay/actions/runs/39030105898)已通过生产宿主与真实本地模型的完整桌面流程：源框 Ctrl+F7 精确一次接受、重复与先释放 Ctrl、原生 undo、Ctrl+F8 零写退出；实际点击编辑并键入人工稿，首次组合仅回源且零写，原 held Fn 仍归旧按次，整组释放后新组合与新许可精确接受人工稿一次，原生 undo 恢复原文。真实设置回显已保存组合并恢复 Tab/Esc，默认 Tab 与 undo 同样通过。该证据使用嵌套 niri 与 XTest，组合键的物理键盘和真实中文输入法验收仍未完成。
+### 每次按键只使用本次资格
 
-合作 Fcitx Qt provider 使用 QtCore-only、版本化 IID，在实际焦点 QObject 上发布自身。消费者经 `qobject_cast` 验证接口并使用弱生命周期引用。`inspect` 读取真实 context、在途请求、输出与字段代次；`validateLocal` 只能验证同一次观察，不能自行建立 Clear；`prepareCaret` 后仍须重新观察与核对原目标。
+接受和退出默认 Tab/Esc，也可配置无修饰 F1-F24。Ctrl+F1-F24 另需有序控制能力，源操作和译文编辑分别确认。仅能转换旧 `TypeLayFcitxQtV1` 接口的 provider 保持只读；动态键集和组合编辑必须由各自的新增接口确认。接受与退出暂须使用不同主键，这是当前实现限制。
 
-Fcitx 按键请求继续异步发出；完成处理增加 provider 内部 FIFO，按真实请求顺序处理已收到 `finished` 的 watcher，运行原有结果、fallback 与转发逻辑。后一个回复先到不能越过尚未完成的前一个请求。请求在 watcher 实际销毁前仍计为 pending，转发事件也必须等 Qt 的真实事件分发结束才 ACK；不以队列空闲猜测或提前读取 `isFinished()` 建立 Clear。
+配置变更先撤销旧许可。describe/capture 回显当前字段的配置代次、键对及 source/editor readiness，不能把另一字段或旧 provider 的确认转用于当前字段。进入译文编辑器后，仍须确认编辑器使用同一个 provider；丢失后重新挂回属性不会恢复旧资格。
 
-合作 provider 在原始输入请求之前，只对无修饰 Tab/Escape 或已配置的控制键调用消费者。接受/退出默认 Tab/Esc，也可分别配置无修饰 F1-F24；按需 wake/direct 的启用与会话键启用独立。配置先撤销旧许可，额外 XKB 键仍经既有 `control-keys.v1` 属性安装。新增独立 `TypeLayFcitxQtControlKeysV1` 能力接口验证实际字段的 provider 与已安装键集，不改变旧 `TypeLayFcitxQtV1` ABI；只有旧接口的 provider 保持只读，不能仅凭可转换旧 IID 推断动态按键能力。describe/capture 回显当次目标的 Applied generation、规范键对及 source/editor readiness；编辑器使用同一个已安装消费者和 provider 路由；移入编辑器后只保留该目标、该代次的源按键路由确认，并核验实际编辑器绑定的是同一个 provider。编辑器 provider 丢失或更换会撤销这项确认，恢复属性本身不使其复活；该确认从不代替源 IME 或写入许可。接受/退出仍须当下同步完成全部字段、许可和 IME 检查才可消费，拒绝时原异步处理恰好执行一次。在普通控件的 Tab 回调中，该事件自身仍处于 pending，不能在那里忽略 pending 或延后接受。重复按键与对应释放按实际 native scan code 沿原按下动作配对，不生成第二次接受。未绑定键的按下同样保留，因此配置、隐藏或焦点切换不能把已按住的功能键变成新的接受。publish、直接写入、普通展示、编辑和返回都绑定配置 generation；provider/选区回调重入后写前再次核对，已经完成的写入回执仍按原 plan 返回。
+物理按下及释放按 native scan code 配对。原按次的重复或释放不会形成新接受，未绑定键被按住后也不能因配置变化成为新按次。拒绝发生在认领前时，原异步输入恰好继续一次；已经认领的功能键不重放。配置确认不保证桌面或应用会把功能键交给该字段。
 
-F9/F10 是显式命令：有效的当前目标/元数据授权可登记最多一个待捕获请求，此时不读取正文。请求固定继承原授权的 150ms 截止，不因新发布或轮询续期；已有 25ms tick 只检查真实 pending 是否退休并重新取得 Clear，随后才捕获同一原字段。正文、选区、焦点、非 modifier 新输入、配置变更、显式撤销授权及超期都会取消，并给出短提示，不在取消后重试。纯 modifier 事件仍撤销即时 IME 证明，但不伪装成源正文变化；实际组合、提交或输入法变化继续使请求失效。
+Ctrl 前缀在进入输入法前固定已有资格和原截止。consumer 等真实前序输入退休后裁决功能键，后读只用于核对原源。正文、输入法输出、目标或配置变化都撤销原资格，后续发布和显示续租不续票。
 
-`FCITX_QT_USE_SYNC=1` 不为 TypeLay 建立能力。强制同步模式保持原普通输入处理，但 TypeLay 按 Unknown 拒绝捕获、编辑与接受。不能使用“同步 API 看起来更简单”绕过上游实际按键投递行为。
+译文编辑的组合票只允许回源或退出，不含写入计划。第一组接受只回源；整组实际释放后，宿主须捕获新源并发布新许可，下一组独立按下才接受人工稿。源许可的例行撤销不误撤编辑票，真正的草稿、输入法、焦点、provider 或生命周期变化仍会撤销它。
 
-写入在源 GUI 线程执行：验证原文与 UTF-16 选区，准备并重验 provider，设置原生选区，在所有同步选区回调后再次检查身份、字段元数据、输入/焦点/正文版本、期限与本地 IME 证明。单行沿用 `setSelection`/`insert`；多行用 `QTextCursor` 的 `beginEditBlock`/`insertText`/`endEditBlock`，核对完整正文与当前光标后再设置 cursor，最终核对文档变更范围。禁止通过 `setText`/`setPlainText` 清空撤销记录，也不强制开启应用关闭的 undo。写后核对完整结果、光标、字段、文档身份与 IME；不匹配返回 `OutcomeUnknown` 并隔离该字段，不盲目重试或回滚覆盖应用的新内容。该范围包含普通应用事件过滤器与重入回调；不宣称对恶意应用提供原子事务保证。
+### 显式命令不会转读新焦点
 
-直接替换分别核验冻结的原源版本和写前新批准的完整 Clear 证明，不能把纯 modifier 之后的旧证明继续当作可写许可。标准 QLineEdit 另有同窗口后台直接替换路径：离开原字段时，只有原输入与输出全部退休、真实输入法 Clear、原上下文及字段版本仍一致，provider 才建立独立的 detached 证明。写入原字段时不聚焦它，也不 reset 当前字段的输入法；原正文、选区、元数据或绑定变化仍拒绝。真实模型回归已验证 A→B 后写 A、保持 B 焦点/正文和 A 原生撤销；独立输入法回归验证 B 处于真实拼音组合时证明不清理 B，以及未退休输入时拒绝。同一路径已纳入可选包，并通过搬迁目录的实际 `launch --qt6` 与真实模型回归。当前另已实现标准 QPlainTextEdit→同窗标准 QLineEdit 的后台路径，交接前后绑定 QTextDocument 身份和修订，写入沿用文档代次、正文及内容增量检查；官方固定源码的补丁实际应用检查，以及[当前候选](https://github.com/DingJWuyu/Typelay/actions/runs/39761872812)的 C++ 构建和真实 provider/consumer 回归均通过；这不是物理输入法或所有应用验收。该回归覆盖 B 非空选区、组合态与 A 同步变更时的 B 状态，以及文档替换、在途输入和写后隔离。跨窗口/应用后台仍未覆盖；结果不会转写新焦点。QTextEdit、其他富文本结构和自绘源字段仍未完成。
+唤醒和直接替换默认使用 Ctrl+Shift+F9/F10。命令可以为已批准的原目标登记一个待捕获请求，此时不读取正文。请求继承原授权的 150ms 截止；25ms tick 只检查真实 pending 是否退休，重新确认 Clear 后才捕获同一字段。
+
+正文、选区、焦点、非 modifier 新输入、配置变更、显式撤权和超期都会取消请求。纯 modifier 撤销即时输入法证明，但不冒充正文变化。取消后不转读新字段、不重试，也不因轮询获得新期限。
+
+### 写回保留原生编辑语义
+
+源 GUI 线程先验证完整原文和选区，再准备输入法状态、设置原生选区。所有同步回调结束后，线程重新核对字段、文档、元数据、版本、期限和输入法证明，才执行替换。
+
+单行使用 `setSelection` / `insert`；多行使用 `QTextCursor` 编辑块。模块保留宿主撤销策略，不用 `setText` / `setPlainText` 清空历史，也不强制开启应用关闭的 undo。写后检查完整结果、光标、文档身份和输入法。应用回调改变结果时返回 `OutcomeUnknown`，隔离原目标，不重试或回滚覆盖应用的新内容；这不是对任意应用回调的原子事务保证。
+
+未用许可退休和写入结果分别结算。consumer 只有在原许可已无执行资格且未被认领时，才报告 `writeRetired`。显示退休、到期或断连本身不能代替该证明；已经派发的操作仍按原计划接收实际回执。
+
+### 后台直接替换有独立证明
+
+标准 QLineEdit 的同窗口后台路径要求原输入与输出全部退休、输入法 Clear、原 context 和字段版本一致。provider 才能建立 detached 证明。写入不聚焦原字段，也不 reset 当前字段的输入法。
+
+源码另有标准 QPlainTextEdit 切到同窗 QLineEdit 后的后台路径，交接绑定原 QTextDocument 身份与修订，写入继续检查文档代次、全文和内容增量。两条路径都不能转写新焦点，也不覆盖跨窗口或跨应用后台。测试应在原字段同步变更时检查另一字段的焦点、非空选区和组合状态；终态截图不能替代写入时观察。
+
+## 浮层保持源窗口与编辑器身份
+
+浮层是源窗口拥有的子控件，不创建独立平铺窗口，也不改变应用布局。共享 Runtime 决定候选、草稿、返回与接受；原生模块只消费对应呈现和交互身份。译文编辑器取得文本所有权后，展示回声不能重设正文、光标或撤销历史。
+
+主题沿用 `system` / `light` / `dark`。显式主题只作用于 TypeLay 浮层及自有菜单；系统模式读取有效颜色方案，Unknown 时使用应用 Window/WindowText 调色板。重画保留正文、焦点、几何与原有效期，不改变宿主全局主题。实际 Light/Dark 系统分支与调色板回退需要分别验收。
+
+More 与语言入口使用源窗口拥有的 child 菜单，互斥显示，不抢源焦点。菜单动作绑定当前交互身份；新菜单或动作状态退休旧按钮。功能开放仍受共享能力和质量门约束，可见禁用项不代表功能可用。具体视觉差距由原型对照记录，入口见 [README 开发与验收导航](README.md#开发与验收)。
+
+展开和收起只改变原编辑器高度，保持同侧锚点。需要换侧或裁限时直接落位；新目标、几何、主题或编辑视图会取消旧动画。显示续租不重播，也不延长接受资格。隐藏先取消动画并清正文，不允许旧回调恢复浮层。减少动态效果读取 `QStyle::SH_Widget_Animation_Duration`，值为零时直接布局；这不保证每个桌面样式都传递系统偏好。
 
 ## 构建与验证
 
-合作 provider 的生产构建由 `eng/linux/cooperative/qt.py` 管理，固定来源和构建输入在同目录 `inputs.py`，补丁在 `patches/`，运行时探针是同目录 `qt-runtime-probe.cpp`。它依赖与实际 Qt 版本匹配的 Qt private headers；通用 consumer 自身只使用公开 Qt Core/Gui/Widgets API。单独生产构建使用新输出目录：
+先从 [README 开发与验收导航](README.md#开发与验收)打开 Linux 开发指南，准备依赖。生产 provider 构建需要匹配 Qt 版本的 private headers；consumer 只使用公开 Qt Core/Gui/Widgets API。使用新输出目录构建：
 
 ```sh
 python eng/linux/cooperative/qt.py --out artifacts/linux/qt-build
 ```
 
-`tests/linux/qt_cooperative/run.py` 调用同一生产构建，再编译 fixture 并执行隔离回归，命令和可选包打包流程见 [Fcitx 合作组件](fcitx.md#可选-qt-6112-构建与启动)。生产构建元数据与测试输入/结果分别记录；单独构建不是发布验收。consumer 与受控控件也可单独编译：
+只检查 consumer 和真实控件 fixture 的编译时，可运行：
 
 ```sh
 cmake -S src/linux/native/qt6 -B artifacts/linux/qt-native -G Ninja -DTYPELAY_QT_NATIVE_TESTS=ON
 cmake --build artifacts/linux/qt-native
 ```
 
-输出 `qt6/generic/libtypelay-qt6.so` 与 `qt-native-fixture`。仅在已验证的隔离合作环境中，为该测试进程追加插件目录和 `typelay` generic plugin，并设置 `TYPELAY_FCITX_COOPERATIVE=1`。普通安装器不会修改系统 Qt 插件目录、系统输入法或用户会话。
+输出为 `qt6/generic/libtypelay-qt6.so` 和 `qt-native-fixture`。这些构建不安装系统插件，也不证明 socket、输入法或桌面交互通过。完整 provider 回归及可选包封装命令见 [Fcitx Qt 构建](fcitx.md#可选-qt-6112-构建与启动)。
 
-`tests/linux/fixtures/qt_native_fixture.cpp` 提供两个真实 QLineEdit 和按场景启用的标准 QPlainTextEdit、原生 undo/redo 与文档变更状态、输入事件计数、字段保护配置及一次性应用回调干扰。它只使用合成正文。生产模块不输出字段正文或任意元数据日志。`tests/linux/qt_desktop.py` 使用正式宿主、真实本地模型与嵌套 niri 路径进行集成验收，覆盖上述前台单行/多行、同窗 QLineEdit 后台写回和原文冲突拒绝；发行回归另外从搬迁后的可选包执行启动器，不用源码构建目录代替。执行结果以当前提交 CI 为准。测试记录实际 fixture PID 的库和 Wayland 插件映射，并核对构建、请求与运行版本均为 6.11.2，拒绝混版或 XCB 替代；`qt_cooperative` 另用真实完成顺序扰动检查异步 FIFO 和实际字段内容，不能用正文长度代替内容完整性。
+验证时按证据边界选择入口：
 
-会话键新增回归复用 `qt_cooperative` 的实际 provider 键集能力查询，以及 `qt_desktop.py` 的真实设置 UI、F1/F12/F24、编辑返回后释放与第二次按下、按需切换和默认键恢复。4a499d0 的 Qt 6.11.2 合作构建与搬迁包已通过这些场景及后续完整桌面链；provider 失效撤销旧编辑会话后，测试使用明确的新源重新建立候选，不要求旧草稿资格复活。旧 provider 完整二进制的兼容性仍未验证，不能以源码检查代替。配置确认也不保证桌面或应用会把每个功能键交给该字段；客户端不通过全局抢键绕过已有处理。
+| 要判断的结果 | 现有入口与观察要求 |
+| --- | --- |
+| 真实 provider/consumer 合作 | `tests/linux/qt_cooperative/run.py`检查默认异步模式、完成顺序、按键所有权及实际字段内容。 |
+| 宿主、模型和浮层交互 | `tests/linux/qt_desktop.py`由 `native_e2e.py --desktop --desktop-scope qt` 调用，观察真实源控件、回执、编辑返回及拒写。 |
+| 可搬迁发行包 | 从搬迁后的合作包执行 `launch --qt6`，检查实际 PID 的库和 Wayland 插件。源码目录运行不能替代。 |
+| 字体、主题、动效和菜单 | 检查实际 glyph runs、控件状态和实绘帧；调色板或样式字符串不能证明悬停、裁剪和像素结果。 |
 
-主题回归复用同一桌面 fixture，检查实际设置三态与宿主浅/深外观的组合、实绘背景及文字调色板对比度、长中文草稿切色时的光标/撤销/焦点和暂停状态，并把明暗截图写入测试输出目录。Qt 公共调色板不表示悬停样式，暂停按钮的真实悬停另由截图验收。它不以样式字符串证明视觉结果；新增主题与视觉场景仍须按实际 CI 运行和截图判定，既有桌面通过记录不能代替本次验证。
+测试记录应核对编译、请求和实际 Qt 运行版本。桌面 Wayland 验收不能由 XCB 或 offscreen 加载替代；合作协议的隔离 XCB 回归也不能冒充 Wayland 桌面结果。旧 provider 的完整二进制兼容性、物理中文输入法、多屏缩放和当前提交的完整 GUI 仍需各自证据。
 
-[c129def 的实际 CI 证据](https://github.com/DingJWuyu/Typelay/actions/runs/38632590992)已覆盖三种设置与两种应用调色板的六组候选态实绘；六组观测中的 Qt 颜色方案均为 Unknown，跟随系统验证的是应用调色板回退分支。两组编辑态明暗实绘及断言验证合成长中文草稿切色时保持正文、光标、选区与焦点，真实 Ctrl+Z 精确撤销键入后缀；随后手工草稿第一 Tab 仅返回源框，第二 Tab 获得 Verified 写回回执。长中文由 fixture 的控件 API 注入，不代表中文 IME 输入验证。暂停态另有两张明暗实绘与恢复按钮真实悬停证据；暂停期间无编辑器、正文捕获、模型任务或写回，点击恢复保留按需模式。上述十张主题截图已核验，Qt 明确返回 Light/Dark 时的系统主题分支仍未完成验证；本轮桌面链通过不消除下述短期许可风险。
+### 部分 Qt 检查不构成发行验收
 
-编译与 offscreen 加载只证明构建/加载，不证明 socket、Fcitx 输入、物理 Tab、真实中文 IME、多屏缩放或完整产品 UI 通过。QTextEdit、其他 Qt 富文本结构和应用自绘编辑器仍未实现；本路径不能代表通用 Qt 输入框全部完成。
+Qt-only CI 仅用于已有的临时迭代入口。选择器先比较相对 `trunk` 的整支历史，再核对被执行的非 Qt 生产源码，与 `eng/shared/ci_scope.py` 中 `QT_BASELINE` 指定的提交逐字节相同。缺少提交对象或比较失败时回到完整 Linux 检查。复用的发行 artifact 必须匹配固定来源及校验；失效或不符就失败，不换未知版本。结果只覆盖本次 Qt 场景。
+
+完整 Qt probe 明确失败后，若正式 module/fixture 已生成，仍可收集独立交互证据。既有 `tests/linux/qt_cooperative/desktop_admission.py`先核对同源码输入、实际二进制和已完成的默认异步证据，再允许明确选择未封装的构建输入：
+
+```sh
+python tests/linux/qt_cooperative/desktop_admission.py \
+  --probe-outcome failure \
+  --fcitx-root artifacts/linux/fcitx-cooperative-5.1.22 \
+  --qt-output artifacts/linux/qt-cooperative \
+  --output artifacts/linux/qt-desktop/qt-desktop-admission.json
+```
+
+只有 `admitted-build-input` 才能继续对应桌面观察，报告始终标记 `distributionAcceptance: false`。缺失或不匹配时停止；显式合作包不能回退到这条路径。probe 成功仍走搬迁包入口。该观察不改变 probe、打包或整体 CI 的失败，不回填发行 manifest，不放宽完整包依赖和原预算。默认异步证据在每次测试入口清旧，只有本次真实 client 完成后才能绑定本次输入发布。
 
 ## 当前时序限制
 
-短期许可的到达确认不保证用户按键到达或同步选区回调结束时仍未过期。实际验证曾在 Tab 入口仅余 9ms、设置选区后截止的情况下拒绝正文写入，并交还原 Tab；字段身份、版本和 IME 当时均匹配。该行为保护原文，但会造成候选可见时偶发不可接受，属于仍待解决的许可刷新/提示一致性风险。不得通过重发 Tab、放宽期限或降低身份/IME 校验隐藏它；路径迁移与发行验证通过也不代表此可用性问题已解决。
+短期许可可能在按键到达或同步选区回调结束前失效，造成译文可见但本次接受被拒绝。唤醒也可能在入队前因 `StaleObservation` 拒绝，直接替换可能在等待真实转发事件退休时超期。这些情况保护原文，但仍影响可用性；不得通过补发按键、放宽 100ms 接受或 150ms 命令期限来隐藏。
 
-F10 的待捕获请求目前继承原观察的截止时间，而不是按下后重新获得 150ms。61f51ca 的实际请求入队时只余 60ms，在真实转发事件尚未全部退休时超期取消；字段版本仍匹配，模型和写回没有执行。provider 在 pending 时直接拒绝 inspect，不发同步 Probe；现日志不足以把这段等待细分为 DBus、QPA 或线程调度。保持原截止与可见拒绝反馈，不给旧证明续期。
-
-F9 唤醒也存在入队前安全拒绝的可用性风险。[实际 CI 证据](https://github.com/DingJWuyu/Typelay/actions/runs/38571156327)中，真实 provider 将 Ctrl+Shift+F9 交给 consumer，但命令以 `StaleObservation` 拒绝，尚未进入待捕获或 dispatch；配置的 F12 接受键尚未按下，后续场景未到达。现有记录缺少该次命令 authority 的 basis，不能区分观察时间戳缺失、未来或已过期，也不能据此归因于配置代次或键对 ACK。`hook-enter` 的负 `remainingMs` 来自空接受 publication 的 `until=0`，不是 wake 授权年龄。新增一次 supported capture 不等于按键当下的原生命令授权已安装且有效；此前两次完整桌面链通过不能消除此风险。该问题须与 100ms 接受许可分别判断，保持命令原有 150ms 截止，不自动重发用户按键。
+既有展开过程还出现过空捕获导致宿主撤下浮层的中断，原因尚未确定。当前证据不能把它归因于截图、动画或某段队列。安全撤下仍需生效，不能跨已隐藏的控件续播。现役失败和目标平台验证安排由当前开发状态统一维护，入口见 [README 开发与验收导航](README.md#开发与验收)。
 
 ### 程序性改文的观察假设
 
-当前 consumer 的正文/选区版本依赖 Qt 控件信号与实际输入事件。标准类型检查不能证明应用不会临时屏蔽通知；例如数据绑定用 `QSignalBlocker` 包住 `setText` 或选区回填时，Qt 不会在解除阻塞后补发信号，见 [QObject::blockSignals](https://doc.qt.io/qt-6/qobject.html#blockSignals)。因此不能把当前范围表述为所有普通 Qt 应用都具备不可遗漏的变更版本。
+正文与选区版本依赖控件信号和实际输入事件。应用若用 `QSignalBlocker` 包住 `setText` 或选区回填，解除阻塞后不会补发这些信号，见 [QObject::blockSignals](https://doc.qt.io/qt-6.11/qobject.html#blockSignals)。因此标准类型检查不能证明应用的变更通知完整。
 
-这一假设尤其影响 F10 的触发到捕获阶段：排队期间原文被静默回填后，后续捕获可能取到后来值。写前完整原文比较仍能阻止捕获之后的异值覆盖，却不能恢复未观察到的触发时正文。仅检查当时 `signalsBlocked()` 或增加末值比较不能证明中途没有发生这种更新。现阶段不扩大待捕获窗口，不以忽略 pending 的读取来补快照；目标应用若使用此类更新，需明确合作的变更通知契约后再宣称该语义通过。已观察到的输入/选区/配置变化继续不可逆取消，最终元数据、完整原文、选区、IME 和寿命检查保持必要。
+这会影响显式命令从触发到捕获的语义：排队期间发生静默回填，后续捕获可能取到后来值。写前全文比较仍能阻止捕获后的异值覆盖，却不能恢复未观察到的触发时正文。此类应用需要明确的变更通知契约；仅检查 `signalsBlocked()`、末值或忽略 pending 都不足以补齐证明。
+
+维护接口时从 `src/linux/native/fcitx5/typelay-fcitx-qt-v1.h`核对能力边界，从 `eng/linux/cooperative/patches/fcitx5-qt.patch`核对真实输入事务，再到 `src/linux/native/qt6/qt-module.cpp`检查字段、写回、呈现与结算。固定输入由 `eng/linux/cooperative/inputs.py`统一维护。

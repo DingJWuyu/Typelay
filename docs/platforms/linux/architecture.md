@@ -1,79 +1,104 @@
-# Linux 宿主与合作输入边界
+# Linux 如何连接输入框、浮层和本地模型
 
-共享端口与规则见[工程架构](../../engineering/architecture.md)。本页描述 src/linux/ 内的平台职责；构建与验证见[开发说明](development.md)，用户安装与当前能力见[客户端说明](README.md)。
+Linux 客户端把共享翻译会话接到 niri、GTK/Qt 和浏览器。共享 Runtime 决定何时翻译、保护人工稿和结算写入；Linux 负责证明当前字段身份、输入法状态和实际操作结果。模型只生成文字，不能授予输入权限。
 
-Qt6 写回把选区设置也视为应用可观察的变更。普通接受键、有修饰键接受和直接写回共用此边界：尝试设置选区前的拒绝仍是 `RejectedBeforeMutation`；设置选区触发应用回调后若焦点、输入证据或原期限失效，则返回 `OutcomeUnknown` 并隔离原目标，不盲目恢复选区、重放按键或重试。接受键在这种未知结果下消费原按次并报告回执，直接写回仍答复原请求。此边界修正的新增真实 Qt 合作回归尚待运行，不代表 CI453 的低剩余期限接受失败已解决。
+本页解释这些责任如何配合。安装与能力范围见[使用说明](README.md)，构建和验证见[开发指南](development.md)。跨平台边界以[共享架构](../../engineering/architecture.md)和 [ADR-0003](../../adr/0003-cross-platform-runtime.md)为准。
 
-## 宿主与平台内共享
+## 输入、宿主与模型如何协作
 
-`src/linux/TypeLay.Linux/` 是 Linux .NET 组合根，直接装配共享 Runtime，不复制会话控制器。其 .NET 宿主拥有串行事件循环、类型化输入/视图端口及 worker 生命周期；同级 `src/linux/desktop/` 的 GTK 进程负责 niri IPC、同用户 socket、设置界面和 Ayatana 托盘。Linux 子进程监督和 XDG 安装路径不进入共享层。
+用户在外部应用输入时，源应用内的接入组件先报告字段元数据。宿主检查字段策略后才读取正文与选区。共享会话将可用快照交给本地 worker，再把仍属于当前请求的结果交回源应用显示。
 
-设置使用 GTK3 `Stack` 与 `StackSidebar`，常规、语言、快捷键和应用支持各有独立滚动容器；首次使用和教程接入按具名页面路由。页面只重新分组既有控件，回调、即时保存队列与设置锁仍由同一 Settings 实例持有。四键与排除列表共用窗口底部草稿/保存/关闭确认，不因切页提交或丢弃。应用支持继续消费共享状态与动作定义，不改变受管练习身份、接入授权或原输入法的手动恢复责任。
+```mermaid
+flowchart TB
+    subgraph source[用户正在输入的应用]
+        native[GTK 或 Qt 源控件与合作模块]
+        browser[网页字段与共享浏览器脚本]
+    end
+    native <-->|同用户 Unix socket| desktop
+    browser <-->|native messaging| bridge[浏览器本地主机]
+    bridge <-->|同用户 Unix socket| desktop
+    desktop[Python 桌面进程<br/>Input、Overlay、设置、托盘、niri 观察]
+    desktop <-->|私有继承管道| host[.NET 宿主<br/>共享 Runtime、Core、ModelClient]
+    host <-->|长度前缀帧| worker[本地 Python worker<br/>模型加载与推理]
+```
 
-`src/linux/native/` 的 `gtk3/`、`gtk4/`、`qt6/` 分别拥有各 toolkit 的源控件与父窗口内浮层，`common/` 保留实际共用的原生实现，`fcitx5/` 保留输入法合作接口；根目录只负责总构建和子进程监督。普通 GTK API 无法证明异步 IME 空闲，通用路径保持 Unknown。可选 Fcitx 合作组件提供真实 context、在途状态、输出序号与字段绑定，只向经过验证的标准控件授予能力。GTK 两代共用私有 TextBuffer 写入实现，平台对象/元数据检查仍归各自模块；Qt 使用实际 QObject/provider 与源 GUI 线程，不复用 GTK 控件身份。标准控件、前台与后台写回的不同范围见 [Linux 能力表](README.md#与-windows-的功能对齐)及 [Qt 路径](qt.md)。
+Linux 浮层在对应源应用中呈现。GTK/Qt 使用父窗口内的控件，浏览器使用页面内元素。Python 桌面进程负责路由和设置界面，并没有一个覆盖所有应用的全局浮层窗口。
 
-`src/shared/browser/` 的共享扩展脚本与 `src/linux/browser/` 的平台清单在真实文档事件线程处理标准 DOM 输入；单段 Tiptap 富文本通过有界 MAIN-world 桥调用源编辑器事务，隔离脚本持有 IME 与最终写入许可，经浏览器拥有的 native-messaging 子进程进入相同宿主端口。宿主独立验证同用户进程祖先与启动寿命，不接受页面声明的 PID。GTK/Qt 父窗口和浏览器视口坐标明确分开，只有对应的 renderer 使用，不能混为屏幕全局坐标。GTK 锚点契约见 `docs/platforms/linux/adr/0004-native-anchors.md`，浏览器部署/限制见 `docs/platforms/linux/browser.md`。同级 `src/linux/vscode/` 仅提供手动预览确认替换，不代表自动浮层后端。
+[desktop/main.py](../../../src/linux/desktop/main.py)建立桌面会话并启动 .NET 宿主。[Program.cs](../../../src/linux/TypeLay.Linux/Program.cs)装配唯一的 `SessionController`、设置存储、模型客户端和平台端口。[EventLoop](../../../src/linux/TypeLay.Linux/EventLoop.cs)将异步结果交回串行上下文，避免两套会话所有者分别决定下一步。
 
-`eng/linux/cooperative/` 拥有合作组件的固定输入、补丁、生产构建和 Qt 运行时探针；`packaging/linux/fcitx-cooperative/` 负责产物、对应源码/许可及逐应用启动器。测试 runner 调用这些构建入口，不再拥有生产 recipe。当前部署与验收边界见 `docs/platforms/linux/README.md`、`docs/platforms/linux/fcitx.md`。
+## 输入模块持有原生证据，视图只表达交互
 
-## 生产构建与测试归属
+Python 的 [Input](../../../src/linux/desktop/input.py)拥有已认证连接、字段观察、回源、语言配置和术语交接记录。它核对同用户进程、连接寿命与目标身份，再通过 [DesktopInput](../../../src/linux/TypeLay.Linux/DesktopInput.cs)向 Runtime 提供输入端口。
 
-`tests/linux/` 拥有 GTK/Qt 原生 fixture、合作输入回归、浏览器/VS Code 场景和发行包验证。`fcitx_cooperative/run.py`、`qt_cooperative/run.py` 调用 `eng/linux/cooperative/` 构建，再执行隔离输入事务断言；生产构建不导入或调用测试 runner；打包独立核验构建来源，Qt 可选发行仍要求同一构建的真实异步输入回归记录。
+[Overlay](../../../src/linux/desktop/overlay.py)消费冻结的 `SourcePresentation` 和不透明 `SourceConnection`，提交编辑、回源或菜单意图。它不读取 Input 的可变 peer 记录，也不修改原生操作字典。这样，显示刷新不会悄悄改变输入权限，迟到结果也仍能归还原连接。
 
-发行根由 eng/linux/build.py 装配，安装使用用户级 XDG 布局。GTK/Qt 共用的合作输入证据不等于全平台通用能力；GTK 两代真实共用的原生实现留在 Linux native 内，不能上提为与 Windows 共用的规则。
+共享呈现分别标识交互身份、显示序号、草稿版本和动作版本。显示序号用于丢弃旧画面；文字、颜色和菜单反馈不决定操作寿命。真实编辑即使改回原文，也要推进草稿版本。原生组件通过 `presentationVersion=1` 明确协商这份合同，缺失或未知版本不能降级猜测。
 
-模型准备与激活分属两个进程：Python 在独立安装代完成下载、校验和库存准备，.NET 宿主持同一安装锁，以唯一候选 worker 的实际握手和精确包/方向集合校验成功后原子切换 `current`。新包事务不另起模型自检；原 schema 1/2 的方向安装仍保留原自检，迁移到 schema 3 时真实复制文件。schema 3 完整保留库存和当前选择，恢复只跟随 `recoveryPrevious`；Remove 断开该恢复链，不能复活已移除包。记录未知时拒绝包操作，不猜成空库或自动完整覆盖。取消或失败不得发布候选，发布结果不明时保留相关目录。私有 Python 在候选最终路径检查 prefix/import；离线切换与移除不能联网修复 runtime。精确事务与空间边界见[开发说明](development.md#模型包事务)。
+具体操作负责自己的继续与退休条件。普通回源、浏览器重译、自有源人工稿和术语表单不再由主捕获循环枚举阶段。Linux 的显示桥负责把意图交给这些共享操作，原生输入路径仍独立核验按次、焦点、输入法和期限。对应实现可从[共享会话目录](../../../src/shared/TypeLay.Runtime/Sessions/)及[呈现合同](../../../src/shared/TypeLay.Runtime/Presentation/SessionPresentation.cs)进入。
 
-教程和外部编辑器的显式快照复用桌面 serving worker，经同一源绑定校验返回结果。只有无桌面时才持 `desktop.lock` 运行受监督 one-shot。实际 worker supervisor 在 fork 前持精确代的共享使用锁，直到完整进程族退出已证明；移除在安装锁内取得全部待删代的非阻塞独占使用锁后才删除。占用、未知退出或锁异常只延后空间清理，不能改变已确认发布结果。
+## 平台先证明能读，再证明能写
 
-[64364273 的实际发行包回归](https://github.com/DingJWuyu/Typelay/actions/runs/39012096907)已通过正式 CLI 双向准备与启用，以及 GTK 单向首装和补齐并集；宿主方向集合与库存、自检一致，另起真实 worker 验证同语、缺方向及补齐后的双向翻译，模型下载缓存不变。此方向链未操作源字段或 F10；设置尾部仍有旧选择控件失败，不能据此声明完整桌面验收通过。
+一次可接受的模型结果仍只是候选。接受需要当前字段的新鲜观察、匹配的源文本与配置，以及短期、可撤销、只能使用一次的许可。输入法状态、焦点身份或字段连续性未知时，平台会拒绝相应操作。
 
-## 输入与坐标依据
+不同接入方式提供证据的方法不同：
 
-合成器快照在后台读取，以 GLib 默认事件优先级交回主循环，避免持续输入事件饿住低优先级投递；新鲜度仍从请求前计时，投递不刷新时间戳，超过 150ms 继续拒绝依赖该观察的操作。
+| 接入方式 | 证据与执行位置 | 详细合同 |
+| --- | --- | --- |
+| GTK3/GTK4 | 合作模块在源控件线程读取和写入。Fcitx 提供真实 context、在途请求与输出序号，标准控件另行核验元数据和版本。 | [Fcitx 接入](fcitx.md)、[GTK3 源控件](../../../src/linux/native/gtk3/gtk-target.c)、[GTK4 源控件](../../../src/linux/native/gtk4/gtk-target.c) |
+| Qt6 | 实际 QObject/provider 绑定字段、输入、选区和文档寿命，源 GUI 线程执行操作。 | [Qt 输入路径](qt.md)、[Qt module](../../../src/linux/native/qt6/qt-module.cpp) |
+| 浏览器 | 文档事件线程持有目标、组合生命周期和最终写入许可。Tiptap 通过受限桥调用编辑器事务。 | [浏览器接入](browser.md)、[共享浏览器脚本](../../../src/shared/browser/) |
+| VS Code | 用户主动提交文档快照，预览后按原文档版本与选区确认替换。 | [VS Code 手动命令](vscode.md)、[EditorHost](../../../src/linux/TypeLay.Linux/EditorHost.cs) |
 
-启用 `TYPELAY_TRACE` 时，GTK3 拒绝捕获仍返回空结果，另附固定拒绝类别及原检查已读取的年龄、版本和目标匹配布尔值。宿主仅将白名单字段关联到同一次待完成捕获的诊断记录；这些信息不证明字段连续性，也不保留或恢复练习授权。
+普通 GTK API 无法证明异步输入法已经空闲。通用未合作路径因此保持 Unknown，只报告非正文元数据。没有候选窗、强制 Simple 输入法或模拟粘贴都不能代替事务证据。其它引擎、第三方 addon 和更广控件需要自己的可验证实现。
 
-自有 GTK3 自动练习另有独立的无正文连续性证据，仅用于源输入期间 IME stamp 推进导致的拒读。原生必须重新确认字段、元数据、原观察时效及固定焦点/context 基线；宿主先撤销旧授权并等待原连接确认，再只保留练习意图和已验证步骤。源输入阶段明确发生前台观察年龄过期时，也可先同步封闭旧授权并清除捕获缓存、候选和在途结果，再等待原连接的新撤权确认。确认前禁止捕获与重新绑定，确认后仅保留无权意图；失败、未知状态及目标、连接或配置变化仍结束练习。 同一次年龄撤权所废弃的在途读取，只有原请求、暂停绑定与原生完整连续性证据一致时，才可单独标记为旧读取作废而保留无权等待；该结果不是新鲜观察或撤权确认，不更新基线，也不适用于其他空结果。恢复后重新完成新鲜的完整捕获及新代次目标确认，才能建立新的授权实例。编辑、返回和未知拒读不适用此路径，旧许可、正文和异步结果不恢复，诊断信息也不能代替该证据。
+浏览器本地主机的进程身份来自宿主核对，页面不能自行声明可信 PID。Chrome/Chromium 顶层标准字段的默认接受还需要 `SourceLocalAcceptanceVersion=1`，绑定本用户注册、当前安装、浏览器祖先寿命和精确扩展 origin。Firefox、缺少可靠文档身份的连接和富文本继续使用实验写回边界，详情由[浏览器说明](browser.md)维护。
 
-私有练习的编辑回源使用另一条明确交接：原生关联本次返回 token、原字段与确切译文编辑器，并在合法回焦后固定新的焦点版本；第三者、失活或身份变化使证据失效。宿主取得本次独立撤权确认后退休旧绑定，只保留 Core 已确认的人工稿与练习进度。下一次完整新鲜捕获、原编辑基线校验和新代次目标确认全部通过，才能建立新的授权实例；普通返回成功布尔值不能解除发布限制。
+## 写入必须有唯一结算结果
 
-自动练习的最后一次 Verified 回执会立即封闭本次写权限并清除正文会话，随后等待最终绑定的原连接撤权确认。只有确认成功才公开完成状态；完成证据不含正文，也不依赖继续捕获源框。可信宿主通知在配置轮代前标记本次精确绑定与进度版本，避免普通退休回调清除已完成事实。关闭、新练习或真实设置变化使证据失效；保存提示偏好失败可重试，但该证据不能重新绑定或恢复权限。
+Linux 普通接受在源控件线程同步完成，再把 `CompletedReceipt` 交给 Runtime 结算。[DesktopInput.WriteAsync](../../../src/linux/TypeLay.Linux/DesktopInput.cs)不会补做一次写入。一次性直接任务使用 `WriteDirectAsync`，始终带着原字段和原计划，不能转读或转写后来的焦点。
 
-`src/linux/desktop/niri.py` 当前专属 niri，通过其 IPC 获取前台状态。会话身份与 socket 路由仍在 Python 与原生模块之间共同依赖 WAYLAND_DISPLAY/NIRI_SOCKET；目录分层没有解除这项跨语言绑定，也未形成合成器无关实现。浏览器在文档事件线程维护目标身份、组合生命周期和同步写入事务。GTK 原生父窗口浮层的定位机制不解决输入法事务可观察性，因此通用 GTK 路径保持 Unknown。
+回执区分三个结果：写入前拒绝、确认完成、结果未知。未知结果会隔离原目标，不能解释为“没有写入”，也不能据此自动重试。Qt 把设置选区视为应用可观察的变化；选区回调之后才失效的操作可能已经产生影响，因此也必须返回未知结果。
 
-后续原生实现需要输入框与实际输入法框架共同提供可验证的事务状态，包括已发出尚未完成的异步请求，以及最终读取/写入的原子边界。当前 Fcitx 合作实现关联真实输入上下文、已发出与已应用输出序号，以及拼音旧提交、键盘组合和 QuickPhrase 活动状态；仅查询“当前是否有候选”仍不够。写入前完成远端授权，正文修改期间只做同一控件线程的本地状态核验。更广控件、其他引擎和第三方 addon 仍需实现及真实回归，不能只靠最终用户手工确认来消除。
+视图退休、暂停和关闭只撤销后续资格，不能假定已派发操作被撤回。Runtime 保留原计划的接收者，直到实际执行结果结算。未用许可只能由实际执行者确认退休：`writeRetired` 必须证明精确许可从未被认领，并且已失去全部执行资格。过期、断连、撤权请求或没有回执本身都不够。
 
-GTK 的 [输入法菜单](https://github.com/GNOME/gtk/blob/gtk-3-24/gtk/gtkimmulticontext.c) 可直接切换内部上下文，而控件的 im-module 属性只表示请求配置。[Fcitx GTK 实现](https://github.com/fcitx/fcitx5-gtk/blob/master/gtk4/fcitximcontext.cpp) 包含异步按键请求。不能通过强制 Simple、模拟粘贴或放宽 IME 断言隐藏这个缺口。
+共享结算位于 [WriteSettlement](../../../src/shared/TypeLay.Runtime/Sessions/WriteSettlement.cs)，Linux 原生共同记录位于 [write-settlement.h](../../../src/linux/native/common/write-settlement.h)。这份记录只承担 GTK/Qt 实际共用的责任，不上提为跨平台输入实现。
 
-参考：[niri IPC](https://niri-wm.github.io/niri/IPC.html)、[niri 集成](https://niri-wm.github.io/niri/Integrating-niri.html)、[Ayatana AppIndicator](https://github.com/AyatanaIndicators/libayatana-appindicator)、[Waybar tray](https://github.com/Alexays/Waybar/wiki/Module:-Tray)、[GTK3 输入法](https://docs.gtk.org/gtk3/class.IMContext.html)、[uv Python 安装](https://docs.astral.sh/uv/guides/install-python/)。
+## niri 提供前台观察，渲染器解释自己的坐标
 
-Chrome/Chromium 标准字段的默认自动接受接入共享 `SourceLocalAcceptanceVersion=1`：只对本用户明确注册、与当前运行安装一致的 native host、原浏览器祖先寿命及精确扩展 origin 请求该能力。宿主保留浏览器附加的文档路由，描述与捕获须匹配同一连接、文档、目标、配置代次和键对，当前标准字段回显后才传入共享控制器。Linux 按需命令继续使用原 page 派发，不借此切换 Windows 的命令归属协议。Firefox、无可靠文档身份的连接及富文本仍为版本 0，实验写回默认值不变。接入移除、文档失效和注册复核失败撤销新许可，已发操作的精确回执继续结账，缺回执不会补写。在提交 `26db3fd` 的实际隔离桌面检查中，默认关闭实验门的 Chrome 标准网页首 Tab 已通过；浏览器编辑回源、Tiptap 合作链及 Firefox 标准/富文本首 Tab 亦通过。GTK3/4、Qt 语言前置与模型包安装消费者仍有失败，不能据此声称平台全量验收完成。
+[niri.py](../../../src/linux/desktop/niri.py)通过 niri IPC 获取前台状态。观察在后台读取，再按 GLib 默认优先级交回主循环。新鲜度从请求前计时，排队完成不刷新时间戳；超过原期限的观察不能继续授予能力。
 
-## 浏览器短租约风险
+GTK/Qt 使用父窗口内坐标，浏览器使用页面视口坐标。只有对应渲染器解释坐标，宿主不会把它们猜成全局屏幕位置。GTK 的锚点和布局约束见 [ADR-0004](adr/0004-native-anchors.md)。父窗口定位解决的是显示问题，不能补足输入法事务或焦点连续性。
 
-Linux 浏览器链路仍有短租约到期与续期之间的可用性空窗风险；某次模型/Tab 回归通过不能证明所有调度条件稳定。保持到期拒绝，不延长授权或放宽断言掩盖。当前实现缺口统一见[Linux 能力表](README.md#与-windows-的功能对齐)。
+当前会话身份和 socket 路由还依赖 `WAYLAND_DISPLAY` 与 `NIRI_SOCKET`。目录拆分没有消除这项跨语言约定，当前实现仍专属 niri，不能声称已经支持任意 Wayland 合成器。
 
-## 按需唤醒与缺失捕获
+## 暂停和练习保留不同的事实
 
-GTK3 的普通源命令资格与正文捕获分开：本次 `describe` 的字段元数据经 Core `allowField` 批准后，可以为首次或新目标发布命令 authority，不必等待正文读取成功。异步审批期间的撤销、设置、命令配置、窗口、前台、输入和目标变化都会取消这次发布；专用练习及编辑回源不走该初始化路径。此记录不包含正文快照或写入许可。源线程在真实按键到达时仍校验原 150ms 时效、字段身份、元数据、版本与 IME，再独立完成该次捕获。它解决首次命令建立，不解决下述唤醒后空捕获的连续性问题。
+暂停时，Runtime 清除正文会话、候选和草稿，并撤销可执行许可。弱化入口使用 `PauseAnchor` 与 `ObservePauseAsync`，只请求 `describe` 元数据，再检查暂停专用字段策略。平台不会用空正文伪造普通快照。已派发写入保留结算所需事实，不能用于暂停入口或新的授权。
 
-[ADR-0002](../../adr/0002-on-demand-and-direct-write.md) 将唤醒资格绑定到当前目标的焦点家族；原输入框和 TypeLay 编辑器属于同一家族。当前共享控制器仍存在可用性缺口：显式唤醒后，同一控制器代次的 `CaptureAsync` 返回空快照会经过 `StopSession("capture-empty")`，撤销会话及唤醒资格。之后即使成功捕获原字段，也保持按需静默。通过现有 Runtime 宿主端口可确定性区分这一路径：先唤醒、后启动并完成空捕获，随后同目标的新鲜捕获不启动翻译；若空捕获在唤醒前启动，其旧控制器代次被丢弃，随后新鲜捕获可以启动翻译。这是生产控制器时序证据，不是原生桌面验收。
+教程进度由[PracticeProgressCoordinator](../../../src/shared/TypeLay.Runtime/Practice/PracticeProgressCoordinator.cs)记录，输入权限由自有源会话持有。组件已准备、模型已就绪、练习有进度和源字段可写是四件独立的事。只有确认本次目标的实际操作后，进度才推进。
 
-当前诊断缺少空捕获请求/完成代次以及无会话时的终止记录，不能将此机制认定为已观察桌面故障的唯一原因。
+自有 GTK3 自动练习在部分输入观察失效时，可以保留无正文的练习意图。恢复必须先撤销旧绑定，收到原连接确认，再完成新鲜捕获和新代次绑定。目标、连接、配置或输入法证据变化仍会结束练习；旧正文、候选、许可和异步结果不会恢复。编辑回源还须绑定本次返回 token、原字段和精确编辑器，普通返回成功布尔值不足以恢复授权。
 
-`InputCapture(null)` 不携带原字段身份、原生焦点版本或缺失原因，默认 `Focus=Other`。仅在恢复时看到相同 `TargetId` 或 `GetFocus=Source`，不能证明缺失期间没有离开再返回：Linux 的焦点摘要依赖已绑定字段和 peer，Windows monitor 的这一查询只比较顶层窗口。Linux 快照的 `FocusEpoch` 来自原生 `focusRevision`，桌面的 `ForegroundEpoch` 与 `WindowEpoch` 另有观察范围；Windows provider 的 `FocusEpoch` 由捕获和清理推进。它们不能不经平台契约核实就互相替代。GTK 的 `TargetId.Lifetime` 属于模块寿命，socket 重连并不必然改变它，也不能单独证明 peer 连接连续。
+最后一次确认写回会先封闭本次写权限，再等待最终绑定的撤权确认。完成状态和保存提示偏好的重试都不能恢复读写权。具体绑定逻辑见[自动练习会话](../../../src/shared/TypeLay.Runtime/Sessions/SessionController.AutomaticPractice.cs)和[Linux 练习会话](../../../src/linux/desktop/practice_session.py)。
 
-在改变当前拒绝语义前，最小恢复依据必须同时证明：
+## 设置和模型分别拥有提交点
 
-- 原字段身份及寿命一致，承载它的已认证 peer/连接期间未替换或断连。
-- 缺失期间始终属于原焦点家族，版本足以排除离开再返回；新鲜恢复捕获来自该原字段，不能只比较前后两个焦点摘要。
-- 命令配置、控制器请求/完成代次和设置仍对应同一次显式唤醒；模式、设置、暂停、释放、字段切换或 peer 生命周期变化均终止旧资格。
+设置界面、托盘和浮层操作都消费共享设置提交结果。保存完成后发生通知失败，不能改称“没有保存”。平台启动项仍是独立外部副作用，不能与设置文件冒充原子事务。Linux 的[设置反馈](../../../src/linux/desktop/settings_feedback.py)保留共享消息，文案刷新和源窗口退休不会抹去已确认的提交事实。
 
-若以后允许保留唤醒意图，缺失期间也只能保留上述无正文依据；会话正文、预览、草稿、候选、视图命令和接受许可必须撤销，旧异步结果失效。恢复后重新捕获并独立验证字段策略、IME、编辑与写入能力，不重放快捷键、不恢复旧候选、不自动写回。当前端口尚未提供可统一依赖的连续性保证，继续保持空捕获终止唤醒，不以等待、延长 TTL 或重复触发掩盖该缺口。
+模型准备由 [setup.py](../../../src/linux/desktop/setup.py)下载、校验并构建候选安装代。激活由 [LinuxModelInstallationStore](../../../src/linux/TypeLay.Linux/LinuxModelInstallationStore.cs)和 [LinuxModelFactory](../../../src/linux/TypeLay.Linux/LinuxModelFactory.cs)完成：同一安装锁内核对预期当前代，唯一候选 worker 的实际包、方向和身份握手成功后，才切换 `current`。准备期间原代继续服务，失败或取消不能发布候选。
 
-## 暂停的元数据观察
+模型使用寿命由 [typelay-supervise](../../../src/linux/native/supervise.c)保护。监督进程在派生 worker 前取得精确安装代的共享使用锁，直到确认自有进程族退出才释放。移除先取得所有待删代的独占锁，再删除目录；未知退出或锁异常只延后空间回收，不撤销已确认的切换结果。外部强杀监督进程后的脱离后代不在正常退出保证内。
 
-暂停使用独立的 `PauseAnchor` 和 `ObservePauseAsync`，不把空正文伪装成 `InputSnapshot`。Python 只请求现有 `describe`，经宿主暂停专用字段策略检查后返回身份、几何与安全状态；正文 `Capture` 仍受启用状态和配置代次限制。GTK3、GTK4、Qt6 与浏览器分别渲染弱化入口，点击绑定当前目标和视图代次；共享控制器再观察元数据，仅更新最新设置的 `Enabled`。
+本地试译和外部编辑器的显式快照优先复用桌面 serving worker，绑定文档、版本、UTF-16 选区、设置与模型代次。没有桌面时才在 `desktop.lock` 下运行受监督的一次性宿主。桌面锁已被占用而转发失败时，不能另起第二个模型所有者。安装与回归方法见[模型包事务](development.md#模型包事务)。
 
-暂停清除会话、候选、草稿并撤销可执行许可。原来已经接受的事务仍短期保留核验回执所需的事实，不用于暂停锚点、显示或授予新写入。现有定时清理以一秒为目标窗口，调度延迟可能推迟清理；这不是进程内所有正文副本的硬实时销毁上限。到达的真实回执与新的写入授权不能混为一谈，结果未知仍隔离且不自动重试。
+## 构建代码与验证代码各有所有者
+
+[eng/linux/build.py](../../../eng/linux/build.py)装配运行时发行包。[eng/linux/cooperative](../../../eng/linux/cooperative/)拥有固定合作组件来源、补丁、生产构建和 Qt 运行时探针；[packaging/linux](../../../packaging/linux/)拥有安装与逐应用启动器。生产构建不导入测试 runner。
+
+[tests/linux](../../../tests/linux/)负责 fixture、隔离桌面场景和实际发行包回归。测试调用生产构建入口，Qt 可选打包还检查同一构建的真实异步输入证据。构建成功只证明产物可生成，当前执行范围以[开发状态](../../engineering/development-state.md)为准。
+
+## 当前仍有两类可用性限制
+
+浏览器短租约在到期与续期之间仍可能出现空窗。当前实现保留到期拒绝，不能通过延长授权或放宽断言掩盖问题。
+
+按需唤醒后，同一控制器代次的空捕获仍会结束会话和唤醒资格。稍后再次捕获到相同字段，不能证明缺失期间始终属于原焦点家族。恢复这一资格至少需要原字段与连接连续性、可排除离开再返回的焦点证据，以及同次命令和配置身份。当前端口尚不能统一提供这些保证，因此继续拒绝，用户需明确重试。GTK 首次命令的元数据授权解决首次入口建立，不解决这段连续性缺口。

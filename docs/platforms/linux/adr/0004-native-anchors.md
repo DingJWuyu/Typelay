@@ -1,29 +1,42 @@
 # Linux 原生父窗口锚点
 
-状态：已采用，影响 trunk 中 Linux 的 GTK3/GTK4、Qt6 与浏览器输入后端。
+状态：已采用。适用于 Linux 的 GTK3、GTK4、Qt6 与浏览器输入后端。
+
+TypeLay 的浮层由源应用或网页持有，使用对应父窗口或视口内的锚点。客户端不依赖合成器提供输入窗口的桌面绝对位置，也不把不同后端的坐标混用。
 
 ## 问题
 
-原 layer-shell 浮层依赖 niri 提供输入应用的绝对窗口位置。实际嵌套 niri 26.04 的普通平铺窗口返回 `tile_pos_in_workspace_view: null`；GTK 客户端装饰尺寸也不等同于 niri 的窗口几何。此前的原生 E2E 和生产桌面 E2E 均在此失败。不能增加等待、猜测平铺列位置、放宽坐标校验或要求用户改用浮动窗口来掩盖问题。
+独立 layer-shell 浮层需要输入窗口的全局位置，当前可用契约不能稳定提供这一信息。嵌套 niri 的普通平铺窗口曾返回 `tile_pos_in_workspace_view: null`，客户端装饰尺寸也不能替代窗口几何。窗口移动和工作区滚动进一步增加坐标失真的风险，相关限制见 [niri 问题 #2381](https://github.com/niri-wm/niri/issues/2381)。
 
-niri 的 [上游问题 #2381](https://github.com/niri-wm/niri/issues/2381) 记录了平铺窗口位置缺失。窗口移动和工作区滚动期间的准确全局坐标不属于当前可用的客户端契约。
+增加等待、猜测平铺列位置或由装饰边距反推坐标都不能补齐契约。要求用户改用浮动窗口也会改变产品使用条件。
 
 ## 决策
 
-对已有 GTK3 原生输入适配器，直接在目标控件的 GTK 线程中创建非模态 `GtkPopover`。它与真正的原输入框关联，不产生独立平铺窗口，不调用键盘抓取，不要求全局屏幕坐标。GTK 负责跟随、可见区域裁剪和父窗口缩放；点击译文获得共享控制器的编辑授权后，才显式将焦点交给译文控件。返回原框只操作仍处于活动状态的原 GTK 父窗口，不激活其他窗口。
+GTK3 适配器在目标控件的 GTK 线程中创建非模态 `GtkPopover`，关联真实源输入框。GTK4 使用同样的父控件内定位原则。工具包处理跟随、可见区域裁剪和缩放，浮层不产生独立平铺窗口，也不抓取键盘。GTK3 的公开 API 提供[非模态语义](https://docs.gtk.org/gtk3/method.Popover.set_modal.html)、[控件相对锚点](https://docs.gtk.org/gtk3/method.Popover.set_pointing_to.html)和[位置约束](https://docs.gtk.org/gtk3/method.Popover.set_constrain_to.html)。
 
-输入观察中的 `RectPx` 是此目标 GTK 父窗口坐标系中的物理像素，不是桌面绝对坐标。原生协议显式标注 `space: gtk-toplevel`；只有绑定同一目标的原生视图能消费该锚点，不与 niri 输出坐标混合，也不送入独立 layer-shell 窗口的定位函数。客户端装饰不再靠边距反推。
+Qt6 使用源窗口拥有的子控件浮层。浏览器使用顶层文档内的隔离 Shadow Root。浏览器扩展与 native host 仍由用户单独明确注册。
 
-Qt6 标准控件使用源窗口拥有的子控件浮层，锚点标为 `qt-toplevel`，同样只由该目标窗口内的原生视图消费，不推导 Wayland 全局位置。
+各后端在原生协议中声明坐标空间，只有绑定同一源目标的视图可以消费：
 
-浏览器浮层使用顶层文档内的隔离 shadow 内容，坐标标为 `browser-viewport`。每种后端只解释自己的坐标，不能在后端间复用锚点。浏览器扩展和 native host 由用户另行明确注册。
+| 后端 | 协议坐标空间 | 原生几何的含义 |
+| --- | --- | --- |
+| GTK3 | `gtk-toplevel` | GTK 父窗口内的逻辑坐标。 |
+| GTK4 | `gtk4-toplevel` | GTK4 父窗口内的逻辑坐标。 |
+| Qt6 | `qt-toplevel` | Qt 父窗口内的逻辑坐标。 |
+| 浏览器 | `browser-viewport` | 当前顶层文档视口内的 CSS 坐标。 |
 
-`Core`、`Runtime` 和模型 worker 不变。共享控制器仍决定状态、译文、人工草稿、选区及写入许可；Linux 桌面只转发视图模型和交互。原生视图不获得新的写入捷径，Tab 的一次性许可、未知 IME 拒绝、写前版本校验和不明结果隔离保持独立。视图自身的输入控件不被原生适配器再次发现。
+原生消息另带 `scale`。Linux 的 `anchor_geometry` 校验空间、缩放和裁剪范围后，转换为共享 `RectPx` 的物理像素。转换后的值仍属于原父窗口或视口，不是桌面绝对坐标。它不能与 niri 输出坐标混合，也不能送入独立 layer-shell 窗口的定位函数。
 
-本机 IPC 协议提升为 v2；旧模块必须随目标应用重新启动，不误用 v1 的坐标含义。视图有短期续租，连接断开、父窗口失活、源控件销毁或续租失效时撤下，不在宿主失效后留下可编辑的失联浮层。
+共享 Core、Runtime 和模型 worker 的职责保持不变。共享控制器决定状态、译文、人工草稿、选区及写入许可。Linux 桌面把呈现和交互路由到相应的原生视图。点击译文取得编辑授权后，原生视图才把焦点交给译文控件；回源只操作仍处于活动状态的原父窗口，不激活其他窗口。适配器排除浮层自己的输入控件，避免递归发现。
+
+本机协议使用 v2。旧模块须随目标应用重新启动，不能按 v1 坐标含义解释新消息。视图持有短期租约，断连、父窗口失活、源控件销毁或租约失效时撤下，不能留下失联的可编辑浮层。
 
 ## 限制与验证
 
-这是定位机制，不是输入安全能力证明。通用未合作 GTK 路径保持 Unknown；版本匹配的 Fcitx 合作组件为标准 GTK3/GTK4 Entry、纯文本 TextView 以及 CI 中的 Qt6 QLineEdit 提供另行验证的输入状态。浏览器、合作 GTK 与限定 Qt 路径已有各自的模型/Tab 回归，具体分发范围见 Linux、Fcitx 与 Qt 现役文档；不能外推到 Electron、任意自绘字段或物理 CachyOS 已验收。编辑返回、父窗口移动/缩放、滚动裁剪和视觉细节需分别验证，不用构建成功代替。
+此决策只改变定位，不授予新的写入能力。按次身份、输入法未知时拒绝、短期许可、写前版本复核及结果未知隔离继续独立成立。视图退休也不结束已派发写入，结果结算和未用许可退休仍由各自执行者证明。
 
-参考 GTK 官方的 [非模态语义](https://docs.gtk.org/gtk3/method.Popover.set_modal.html)、[控件相对锚点](https://docs.gtk.org/gtk3/method.Popover.set_pointing_to.html) 和 [位置约束](https://docs.gtk.org/gtk3/method.Popover.set_constrain_to.html)。不依赖未合并的 niri 补丁或不公开的 GTK ABI。
+通用未合作 GTK 路径保持 Unknown。合作组件的当前控件范围与版本条件见 [Fcitx](../fcitx.md)、[Qt](../qt.md)和[浏览器说明](../browser.md)，不能外推到任意自绘字段或 Electron。
+
+验收需要分别观察编辑回源、父窗口移动与缩放、滚动裁剪和实际视觉。编译、协议回归或其他提交的桌面证据都不能替代当前目标环境；当前已测与未测范围见[开发状态](../../../engineering/development-state.md)。
+
+维护坐标契约时，核对 [`gtk3/gtk-target.c`](../../../../src/linux/native/gtk3/gtk-target.c)、[`gtk4/gtk-target.c`](../../../../src/linux/native/gtk4/gtk-target.c)、[`qt-module.cpp`](../../../../src/linux/native/qt6/qt-module.cpp)和 [`content.js`](../../../../src/shared/browser/content.js)的几何输出，以及 [`geometry.py`](../../../../src/linux/desktop/geometry.py)的转换。此方案不依赖未合并的 niri 补丁或不公开的 GTK ABI。
