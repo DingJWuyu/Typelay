@@ -647,8 +647,9 @@ internal sealed partial class SettingsWindow
                     }
                 }
             }
-            _draftFeedback = confirmed ? result.Code is "glossary-saved-notification-failed" or "glossary-saved-inactive-notification-failed"
-                ? "已保存，请重新打开设置确认当前状态。" : result.Code == "glossary-saved-inactive" ? UiTheme.L("已保存到术语表，当前模型方向尚未开放术语应用。", "Saved to the glossary. Application is not available for this model and direction.") : _draftMessages.SavedMessage : _draftMessages.InvalidMessage;
+            _draftFeedback = confirmed ? result.Message
+                ?? (result.Code == "glossary-saved-inactive" ? UiTheme.L("已保存到术语表，当前模型方向尚未开放术语应用。", "Saved to the glossary. Application is not available for this model and direction.") : _draftMessages.SavedMessage)
+                : _draftMessages.InvalidMessage;
             _settingsError = confirmed ? null : TranslationSettingsError(result.Code);
             if (result.Code == "glossary-save-failed")
                 SetSaveIssue(false, current: () => _settings.Revision == saveRevision && _glossaryDraft?.SequenceEqual(submitted) == true,

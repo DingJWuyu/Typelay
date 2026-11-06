@@ -1,8 +1,8 @@
 # 保持产品行为的架构改进目标
 
-本页定义目标架构，尚未实施。代码基线为 `work/linux-usability` 的 `48baf7fe59a65a67a7a981470e259f01fdc7b4a4`。当前实现仍以 [architecture.md](architecture.md) 和生产代码为准，独立评估及本轮完成状态见[架构评估](architecture-assessment.md)。
+本页定义已经进入实施的目标架构。评估基线为 `work/linux-usability` 的 `48baf7fe59a65a67a7a981470e259f01fdc7b4a4`。实际实现以 [architecture.md](architecture.md) 和生产代码为准，当前进度与尚未完成的验证见[开发状态](development-state.md)，独立评分见[架构评估](architecture-assessment.md)。
 
-用户授权主代理与每轮全新上下文 advisor 自主选择、质询和修订方案，只由 advisor 按[固定 rubric](architecture-rubric.md)评分。本阶段完成后等待下一步，不开始代码重构。目标是让产品动作对应的知识集中在少量清楚的 module 中，使 interface 隐藏复杂性，增加 locality 与真实跨平台 leverage。
+用户已授权主代理实施本目标，并由每轮全新上下文 advisor 独立质询和按[固定 rubric](architecture-rubric.md)评分。本页的职责、产品约束与迁移条件保持原评估合同；阶段进展不改变评分规则。目标是让产品动作对应的知识集中在少量清楚的 module 中，使 interface 隐藏复杂性，增加 locality 与真实跨平台 leverage。
 
 ## 产品依据保持不变
 

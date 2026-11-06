@@ -316,7 +316,7 @@ internal sealed partial class SettingsWindow
             // pending. Never replace it with the submitted chord after commit.
             if (_shortcutDraft == shortcuts)
                 _shortcutDraft = null;
-            if (_draftFeedback != "已保存，请重新打开设置确认当前状态。")
+            if (_draftFeedback != SettingsCommitPresentation.NotificationFailedMessage)
                 _draftFeedback = null;
         }
         else if (_saveIssue?.Unknown != true)

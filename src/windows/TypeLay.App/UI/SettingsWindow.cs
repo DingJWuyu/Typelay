@@ -844,7 +844,7 @@ internal sealed partial class SettingsWindow : Window
         var expected = _settings.Value;
         long expectedRevision = _settings.Revision;
         _savingSettings = true;
-        if (_draftFeedback is "已保存，请重新打开设置确认当前状态。" or SettingsDraftPresentation.UnknownSaveMessage)
+        if (_draftFeedback is SettingsCommitPresentation.NotificationFailedMessage or SettingsDraftPresentation.UnknownSaveMessage)
             _draftFeedback = null;
         RefreshDraftBar();
         bool IsCurrentSubmission() => callerCurrent?.Invoke() != false && (draftSubmission is null || draftSubmission == _draftSubmissionGeneration);
@@ -1646,8 +1646,7 @@ internal sealed partial class SettingsWindow : Window
             if (request.IsCancellationRequested || !ReferenceEquals(_translationRequest, request))
                 return;
             bool confirmed = result.Saved && result.Code is "style-saved" or "style-unchanged" or "style-saved-notification-failed";
-            _draftFeedback = confirmed ? result.Code == "style-saved-notification-failed"
-                ? "已保存，请重新打开设置确认当前状态。" : result.Code == "glossary-saved-inactive" ? UiTheme.L("已保存到术语表，当前模型方向尚未开放术语应用。", "Saved to the glossary. Application is not available for this model and direction.") : _draftMessages.SavedMessage : _draftMessages.InvalidMessage;
+            _draftFeedback = confirmed ? result.Message ?? _draftMessages.SavedMessage : _draftMessages.InvalidMessage;
             _settingsError = confirmed ? null : TranslationSettingsError(result.Code);
             if (result.Code == "style-save-failed")
                 SetSaveIssue(false, current: () => _settings.Revision == saveRevision, retry: async current => { if (current()) await SaveTranslationChangeAsync(save); }, page: page);
