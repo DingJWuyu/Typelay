@@ -1,7 +1,10 @@
-"""Snapshot observation contracts, not Qt GUI or model-quality evidence."""
+"""Process/snapshot observation contracts, not Qt GUI or model-quality evidence."""
 
 import copy
+import json
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, call, patch
@@ -9,7 +12,75 @@ from unittest.mock import Mock, call, patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 from qt_cooperative.run import prepare_source_glossary_capture_basis  # noqa: E402
-from qt_desktop import displayed_wake_candidate, settled_overlay_motion  # noqa: E402
+from qt_desktop import (  # noqa: E402
+    displayed_wake_candidate,
+    observe_qt_processes,
+    settled_overlay_motion,
+)
+
+
+class QtProcessObservationTests(unittest.TestCase):
+    def start_child(self):
+        # Real owned child processes, with stdin as a deterministic exit trigger.
+        # These exercise the scenario's polling boundary, not a fake Qt model.
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import sys; sys.exit(int(sys.stdin.readline()))"],
+            stdin=subprocess.PIPE,
+            text=True,
+        )
+        self.addCleanup(self.close_child, child)
+        return child
+
+    @staticmethod
+    def close_child(child):
+        if child.poll() is None:
+            child.terminate()
+            try:
+                child.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait(timeout=3)
+        child.stdin.close()
+
+    @staticmethod
+    def exit_child(child, code):
+        child.stdin.write(f"{code}\n")
+        child.stdin.flush()
+        child.wait(timeout=3)
+
+    def test_live_processes_preserve_pending_and_successful_observations(self):
+        fixture, daemon = self.start_child(), self.start_child()
+        for value in (None, False, {}, {"acceptanceReady": True}):
+            with self.subTest(value=value):
+                observe = Mock(return_value=value)
+                self.assertIs(observe_qt_processes(fixture, daemon, observe), value)
+                observe.assert_called_once_with()
+
+    def test_exited_process_rejects_a_stale_success_before_reading_it(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            snapshot = Path(temporary) / "state.json"
+            snapshot.write_text(json.dumps({"acceptanceReady": True}))
+            for index, name in enumerate(("Qt fixture", "private Fcitx")):
+                for code in (0, 9):
+                    with self.subTest(process=name, code=code):
+                        fixture, daemon = self.start_child(), self.start_child()
+                        self.exit_child((fixture, daemon)[index], code)
+                        observe = Mock(side_effect=lambda: json.loads(snapshot.read_text()))
+                        with self.assertRaisesRegex(AssertionError, f"{name} exited.*{code}"):
+                            observe_qt_processes(fixture, daemon, observe)
+                        observe.assert_not_called()
+
+    def test_exit_during_observation_cannot_return_a_successful_candidate(self):
+        for index, name in enumerate(("Qt fixture", "private Fcitx")):
+            with self.subTest(process=name):
+                fixture, daemon = self.start_child(), self.start_child()
+
+                def observe():
+                    self.exit_child((fixture, daemon)[index], 7)
+                    return {"acceptanceReady": True}
+
+                with self.assertRaisesRegex(AssertionError, f"{name} exited.*7"):
+                    observe_qt_processes(fixture, daemon, observe)
 
 
 class OverlayMotionTraceTests(unittest.TestCase):

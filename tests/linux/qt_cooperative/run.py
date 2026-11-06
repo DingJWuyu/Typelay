@@ -868,6 +868,7 @@ def language_configuration(native, generation, state, window, environment, fixtu
     from wire import now_ms
 
     revision = 1000
+    clipboard_sequence = 0
     start_events = len(native.events)
     original = state()
     invariant = ("text", "undoAvailable", "changes", "edits")
@@ -939,15 +940,31 @@ def language_configuration(native, generation, state, window, environment, fixtu
         fixture("observe")
         wait(settled, "configuration key's real provider queue retired")
 
-    def query(value):
+    def query(value, *, paste=False):
+        nonlocal clipboard_sequence
         key("ctrl+a")
         key("BackSpace")
-        if value:
-            run(["xdotool", "type", "--delay", "0", value], env=environment)
-        wait(
-            lambda: configuration().get("searchText") == value and settled(),
-            "actual search text and queue",
-        )
+        if paste:
+            clipboard_sequence += 1
+        try:
+            if paste:
+                fixture(
+                    "configuration-clipboard",
+                    action="prepare",
+                    token=clipboard_sequence,
+                    text=value,
+                )
+                # Clipboard-paste coverage, not physical Unicode-key acceptance.
+                run(["xdotool", "key", "--clearmodifiers", "ctrl+v"], env=environment)
+            elif value:
+                run(["xdotool", "type", "--delay", "0", value], env=environment)
+            wait(
+                lambda: configuration().get("searchText") == value and settled(),
+                "actual search text and queue",
+            )
+        finally:
+            if paste:
+                fixture("configuration-clipboard", action="restore", token=clipboard_sequence)
 
     def configure(enabled, *, next_generation=None):
         nonlocal generation
@@ -1166,13 +1183,13 @@ def language_configuration(native, generation, state, window, environment, fixtu
     close(opening)
 
     opening, _ = begin()
-    query("韩语")
+    query("韩语", paste=True)
     assert state()["overlayControls"]["typelay-language-choice-ko"]["visible"]
     assert not state()["overlayControls"]["typelay-language-choice-ko"]["enabled"]
     assert not state()["overlayControls"]["typelay-language-choice-ja"]["visible"]
     key("Return")
     assert not events("languageConfigurationSave", opening)
-    query("日本語")
+    query("日本語", paste=True)
     control = "typelay-language-choice-ja"
     before_receipt = state().get("configurationReceipts", {}).get(control, {}).get("clicked", 0)
     click(control)
@@ -1361,7 +1378,7 @@ def language_configuration(native, generation, state, window, environment, fixtu
     unchanged()
     return {
         "passed": True,
-        "scope": "actual Qt/Fcitx search, rows, original key ownership and controlled config Host; no model",
+        "scope": "actual Qt/Fcitx search, rows, original key ownership and controlled config Host; Unicode queries use clipboard paste, not physical Unicode keys; no model",
         "unknownScope": "actual search provider property temporarily absent, restored only to the same live search; not every Fcitx Unknown cause",
     }
 

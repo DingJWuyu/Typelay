@@ -18,6 +18,7 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMimeData>
 #include <QMouseEvent>
 #include <QPalette>
 #include <QPlainTextDocumentLayout>
@@ -41,6 +42,7 @@
 #include <QVBoxLayout>
 #include <cstdio>
 #include <fcntl.h>
+#include <memory>
 #include <time.h>
 #include <utility>
 #include <unistd.h>
@@ -511,6 +513,13 @@ int main(int argc, char **argv) {
     };
     QPointer<QObject> savedEditorProvider, savedConfigurationProvider;
     QPointer<QLineEdit> savedConfigurationSearch;
+    std::unique_ptr<QMimeData> savedConfigurationClipboard;
+    QPointer<QMimeData> configurationClipboard;
+    qint64 configurationClipboardToken = 0;
+    quint64 clipboardRevision = 0, configurationClipboardRevision = 0;
+    QObject clipboardObserver;
+    QObject::connect(QApplication::clipboard(), &QClipboard::dataChanged, &clipboardObserver,
+        [&] { ++clipboardRevision; });
     QObject unavailableEditorProvider;
     QString editorProviderAction;
     QJsonArray motionFrames;
@@ -980,6 +989,86 @@ int main(int argc, char **argv) {
                 if (!panel || !panel->grab().save(command.value("path").toString()))
                     qFatal("Current configuration screenshot unavailable");
             }
+            else if (op == "configuration-clipboard") {
+                // MIME reads may run a nested event loop. No stdin command may
+                // reenter preparation or restoration while this one is active.
+                stdinNotifier.setEnabled(false);
+                auto *clipboard = QApplication::clipboard();
+                const auto token = command.value("token").toInteger();
+                const auto action = command.value("action").toString();
+                if (action == "prepare") {
+                    if (token <= 0 || configurationClipboardToken)
+                        qFatal("Configuration clipboard preparation already active or invalid");
+                    const QPointer<QMimeData> original = const_cast<QMimeData *>(clipboard->mimeData());
+                    const auto revision = clipboardRevision;
+                    const auto unchanged = [&] {
+                        return clipboard->mimeData() == original.data() && clipboardRevision == revision;
+                    };
+                    auto saved = std::make_unique<QMimeData>();
+                    if (original) {
+                        if (!unchanged()) qFatal("Clipboard changed before MIME snapshot");
+                        const auto formats = original->formats();
+                        if (!original || !unchanged()) qFatal("Clipboard changed during MIME snapshot");
+                        for (const auto &format : formats) {
+                            if (!original || !unchanged()) qFatal("Clipboard changed during MIME snapshot");
+                            const auto data = original->data(format);
+                            if (!original || !unchanged()) qFatal("Clipboard changed during MIME snapshot");
+                            // Qt's image/color variants are not necessarily
+                            // representable as the byte array returned by data().
+                            if (format == QStringLiteral("application/x-qt-image")) {
+                                const auto image = original->imageData();
+                                if (!original || !unchanged() || !image.isValid())
+                                    qFatal("Clipboard image snapshot unavailable");
+                                saved->setImageData(image);
+                            } else if (format == QStringLiteral("application/x-color")) {
+                                const auto color = original->colorData();
+                                if (!original || !unchanged() || !color.isValid())
+                                    qFatal("Clipboard color snapshot unavailable");
+                                saved->setColorData(color);
+                            } else {
+                                // Unsupported QVariant conversion also yields null
+                                // bytes. Do not mistake that for a complete snapshot.
+                                if (data.isNull()) qFatal("Clipboard MIME payload unavailable");
+                                saved->setData(format, data);
+                            }
+                            // In particular, setData can normalize URI lists.
+                            // Refuse an incomplete snapshot before taking ownership.
+                            if (saved->data(format) != data)
+                                qFatal("Clipboard MIME snapshot does not round-trip");
+                        }
+                        if (!original || !unchanged()) qFatal("Clipboard changed during MIME snapshot");
+                        const auto currentFormats = original->formats();
+                        if (!original || !unchanged() || currentFormats != formats
+                            || saved->formats() != formats)
+                            qFatal("Clipboard MIME formats changed during snapshot");
+                    }
+                    if (!unchanged()) qFatal("Clipboard changed before query preparation");
+                    auto temporary = std::make_unique<QMimeData>();
+                    temporary->setText(command.value("text").toString());
+                    savedConfigurationClipboard = std::move(saved);
+                    configurationClipboardToken = token;
+                    configurationClipboard = temporary.get();
+                    clipboard->setMimeData(temporary.release());
+                    if (!configurationClipboard || !clipboard->ownsClipboard()
+                        || clipboard->mimeData() != configurationClipboard.data())
+                        qFatal("Configuration clipboard ownership lost during preparation");
+                    configurationClipboardRevision = clipboardRevision;
+                } else if (action == "restore" && token > 0) {
+                    if (configurationClipboardToken && token != configurationClipboardToken)
+                        qFatal("Configuration clipboard restore token mismatch");
+                    const bool restore = configurationClipboard && clipboard->ownsClipboard()
+                        && clipboard->mimeData() == configurationClipboard.data()
+                        && clipboardRevision == configurationClipboardRevision;
+                    // Retire before setMimeData can synchronously emit signals.
+                    // A later external owner keeps its new contents, even if its
+                    // text happens to match ours. This is not an X11 atomic CAS.
+                    auto saved = std::move(savedConfigurationClipboard);
+                    configurationClipboardToken = 0;
+                    configurationClipboard.clear();
+                    if (restore) clipboard->setMimeData(saved.release());
+                } else qFatal("Configuration clipboard action or token invalid");
+                stdinNotifier.setEnabled(true);
+            }
             else if (op == "configuration-provider") {
                 QPointer<QLineEdit> search;
                 for (auto *candidate : window.findChildren<QLineEdit *>(QStringLiteral("typelay-language-search")))
@@ -1023,7 +1112,10 @@ int main(int argc, char **argv) {
     QTimer timer;
     QObject::connect(&timer, &QTimer::timeout, publish);
     timer.start(20);
-    QTimer::singleShot(60000, &app, &QCoreApplication::quit);
+    // Only an owning runner with its own deadline and cleanup may opt out.
+    // Standalone and cooperative callers retain the original finite lifetime.
+    if (!app.arguments().contains(QStringLiteral("--no-auto-quit")))
+        QTimer::singleShot(60000, &app, &QCoreApplication::quit);
     return app.exec();
 }
 #include "qt_native_fixture.moc"

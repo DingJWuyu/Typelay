@@ -20,6 +20,20 @@ from support.xtest import prepare_pointer
 from wire import now_ms
 
 
+def observe_qt_processes(fixture, daemon, observe):
+    """Observe one Qt scenario result while its owned processes are alive."""
+
+    def require_alive():
+        for name, child in (("Qt fixture", fixture), ("private Fcitx", daemon)):
+            code = child.poll()
+            assert code is None, f"{name} exited during the Qt desktop scenario: {code}"
+
+    require_alive()
+    value = observe()
+    require_alive()
+    return value
+
+
 def displayed_wake_candidate(value, source, ready):
     """Observe a rendered source candidate; host readiness alone is not a frame."""
     field = value.get("first", {})
@@ -291,6 +305,10 @@ def run_qt(
                     if bundled
                     else [str(executable)]
                 )
+                # This scenario already has the caller's 240s outer deadline
+                # and owned-process cleanup. The fixture's default 60s timer
+                # can cut off later multiline observations mid-input.
+                fixture_command.append("--no-auto-quit")
                 fixture = subprocess.Popen(
                     fixture_command,
                     env=qt_environment,
@@ -299,6 +317,15 @@ def run_qt(
                     stdout=fixture_log,
                     stderr=subprocess.STDOUT,
                 )
+
+                original_wait_for = wait_for
+
+                def wait_for(observe, *args, **kwargs):
+                    # Host-only predicates need the same process liveness check
+                    # as state(), without changing any wait deadline or cadence.
+                    return original_wait_for(
+                        lambda: observe_qt_processes(fixture, daemon, observe), *args, **kwargs
+                    )
 
                 def state():
                     assert daemon.poll() is None and fixture.poll() is None, (

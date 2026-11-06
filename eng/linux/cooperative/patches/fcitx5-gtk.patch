@@ -1286,7 +1286,7 @@
  #ifdef GDK_WINDOWING_X11
      Display *display = NULL;
      if (context->client_widget) {
-@@ -1432,3 +1611,232 @@
+@@ -1432,3 +1611,236 @@
  }
  
  // kate: indent-mode cstyle; replace-tabs on;
@@ -1337,8 +1337,12 @@
 +        return refuse(reason);
 +    }
 +    g_clear_error(&error);
-+    if (focused != !!self->has_focus || focus_flags != typelay_focus_flags(self, widget))
++    if (focused != !!self->has_focus || focus_flags != typelay_focus_flags(self, widget)) {
++        if (g_getenv("TYPELAY_TRACE"))
++            g_printerr("typelay-fcitx-server-focus server=%d local=%d flags=%u\n",
++                focused, self->has_focus, focus_flags);
 +        return refuse("server-focus");
++    }
 +    const guint localCompositionMask = (self->is_inpreedit ? 1u : 0u)
 +        | (self->typelay_slave_composing ? 8u : 0u)
 +        | ((self->preedit_string && *self->preedit_string) ? 2u : 0u)

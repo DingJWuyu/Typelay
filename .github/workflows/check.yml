@@ -1096,6 +1096,8 @@ jobs:
             artifacts/linux/qt-cooperative/ordered-delayed-result.json
             artifacts/linux/qt-cooperative/ordered-delayed-native-state.json
             artifacts/linux/qt-cooperative/ordered-delayed-native.log
+            artifacts/linux/qt-cooperative/language-options-native-state.json
+            artifacts/linux/qt-cooperative/language-options-native.log
           if-no-files-found: error
           retention-days: 14
       - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
