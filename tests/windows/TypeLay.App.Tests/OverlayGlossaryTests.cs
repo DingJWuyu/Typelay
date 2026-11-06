@@ -190,9 +190,10 @@ public sealed class OverlayGlossaryTests(WpfDesktopFixture desktop)
     });
 
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public Task SavedNotificationFailureAndUnknownOutcomeCannotBecomeAnotherSave(bool saved) => desktop.RunAsync(async () =>
+    [InlineData("glossary-saved-notification-failed")]
+    [InlineData("glossary-saved-inactive-notification-failed")]
+    [InlineData(null)]
+    public Task SavedNotificationFailureAndUnknownOutcomeCannotBecomeAnotherSave(string? code) => desktop.RunAsync(async () =>
     {
         var (overlay, _, context, _) = OpenEditor();
         var entry = new SessionGlossaryEntry(Guid.NewGuid(), context.Token, 4, []);
@@ -201,7 +202,7 @@ public sealed class OverlayGlossaryTests(WpfDesktopFixture desktop)
         overlay.AddGlossaryRequested = _ =>
         {
             saves++;
-            return saved ? Task.FromResult(new GlossaryChangeResult(true, "glossary-saved-notification-failed"))
+            return code is not null ? Task.FromResult(new GlossaryChangeResult(true, code))
                 : Task.FromException<GlossaryChangeResult>(new IOException("synthetic transport interruption"));
         };
         await OpenGlossary(overlay);
@@ -215,7 +216,7 @@ public sealed class OverlayGlossaryTests(WpfDesktopFixture desktop)
         Assert.False(save.IsEnabled);
         Assert.Equal("PR", Field(overlay, "术语源词").Text);
         Assert.Contains(Descendants(overlay).OfType<TextBlock>(), item =>
-            saved ? item.Text.Contains("已保存") : item.Text.Contains("结果未确认"));
+            code is not null ? item.Text == SettingsCommitPresentation.NotificationFailedMessage : item.Text.Contains("结果未确认"));
     });
 
     [Fact]

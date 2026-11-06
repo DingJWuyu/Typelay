@@ -140,7 +140,7 @@ Runtime 的目录对应实际责任。`Sessions` 拥有会话编排、具体回�
 
 Linux Input 独占 peer、绑定观察、回源、术语和语言配置的原生记录。Overlay 只持冻结的连接/呈现事实和表单显示状态，向 Input 提交具体意图；它不能读取 peer 或修改输入操作字典。GUI 仍在原有 GTK/Qt、WPF 与浏览器中呈现，本轮职责调整不改变产品交互或采用另一套 UI 框架。
 
-所有现役设置保存入口调用同一提交方法。结果区分未提交、无变化但保存成功、已提交、已提交但通知失败和外部副作用未知，并携带实际提交版本。平台注册表或 XDG 启动项仍是独立副作用，不能与文件保存冒充一个原子事务；晚到取消或观察者失败不抹去已经提交的事实。
+所有现役设置保存入口调用同一提交方法。结果区分未提交、无变化但保存成功、已提交、已提交但通知失败和外部副作用未知，并携带实际提交版本。平台注册表或 XDG 启动项仍是独立副作用，不能与文件保存冒充一个原子事务；晚到取消或观察者失败不抹去已经提交的事实。风格菜单只向本次提交的精确后继显示通知失败警告；两端既有设置或托盘反馈仍消费原结果，避免源窗口退休后丢掉已保存事实，也不把共享投影当成原生窗口已经显示的确认。
 
 Windows 自有练习源的人工稿进入 More 时，旧编辑 attempt 永久退休、旧 reader 立即停用，独立 ACK 证明其已关闭后才允许新的返回；同一 TextBox 的文字、选区与 Undo 转入本地-only 呈现，不再是源字段、`FocusMember.Overlay`、输入镜像或接受许可。[Core 的单会话 opaque dormant edit](../../src/shared/TypeLay.Core/Session.DormantEdit.cs) 仅保存原编辑基准，空稿仍锁定风格，配置/会话退休后不能复用。Keep 保留本地稿，再由真实 Tab keyup 一次发起返回；Replace 则只由本次真实 click、Enter 或 Space 生成专用一次意图，不伪装 Tab。两者均在实际 down 冻结稿件/输入身份，原 down 起算的 500ms 不续期，持键或排队过期拒绝；旧普通源与正常 owned 编辑返回的 held 路径不变。Keep 后真实 Tab 的原始按键期限绑定[独立返回 receipt](../../src/shared/TypeLay.Runtime/Sessions/SessionController.OwnedLocalDraft.cs)；Windows Host/Practice 分别核对新 reader、真实源焦点到达与新鲜捕获，Core 共用原回源基准校验通过后才建立新 binding。绑定前不发布许可或模型任务。Replace 的专用 Core 回源确认只保原源基准，不把待弃人工稿变成可接受候选；空稿可被明确丢弃重译，但 Keep 原可写稿条件不变。Host 核新 reader 安装后，还须同一次操作期限内 fresh 原源观察才完整重译，接受/写回资格始终独立。未受理的同合法 prompt 失败保稿可重试；明确失权沿原 Keep 退休，不新建通用恢复界面，旧回执不能作用于新会话。该身份不是持久草稿恢复或通用辅助焦点授权，完整交互与未完成子项见[原型对照](../design/prototype-parity.md)。
 

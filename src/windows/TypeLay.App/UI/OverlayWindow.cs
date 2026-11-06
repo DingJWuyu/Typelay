@@ -1723,8 +1723,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView, ISourceInter
                 return;
             form.Saved = result.Saved;
             form.OutcomeUnknown = result.Code == "glossary-unconfirmed";
-            form.Feedback.Text = result.Saved && result.Code == "glossary-saved-notification-failed"
-                ? UiTheme.L("已保存，状态通知未完成。", "Saved, but the status notification did not complete.") : LocalizedStatus(GlossaryEntryPresentation.Message(result.Code) ?? "");
+            form.Feedback.Text = LocalizedStatus(result.Message ?? GlossaryEntryPresentation.Message(result.Code) ?? "");
             if (result.Saved)
             {
                 form.Source.IsReadOnly = form.Target.IsReadOnly = true;

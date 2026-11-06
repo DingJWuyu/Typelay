@@ -432,7 +432,7 @@ internal sealed partial class BrowserSessionView : ISessionView, ISourceInteract
             {
                 result.Saved,
                 result.Code,
-                message = GlossaryEntryPresentation.Message(result.Code)
+                message = result.Message ?? GlossaryEntryPresentation.Message(result.Code)
             }
         });
     }

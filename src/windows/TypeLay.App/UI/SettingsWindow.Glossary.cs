@@ -227,7 +227,7 @@ internal sealed partial class SettingsWindow
                 if (!IsVisible || _glossaryDraft is not null || _glossaryEdit is not null || _settings.Revision != revision || !after.SequenceEqual(_settings.Value.Glossary?.Rules ?? []))
                     return;
                 var result = await _controller!.ChangeGlossaryAsync(before, revision);
-                Toast(result.Saved ? UiTheme.L("已恢复术语", "Term restored") : UiTheme.L("恢复未确认，请检查术语表。", "Restore was not confirmed. Review the glossary."));
+                Toast(UiStrings.Translate(result.Message ?? (result.Saved ? UiTheme.L("已恢复术语", "Term restored") : UiTheme.L("恢复未确认，请检查术语表。", "Restore was not confirmed. Review the glossary."))));
             }, () => _glossaryDraft is null && _glossaryEdit is null && _settings.Revision == revision && after.SequenceEqual(_settings.Value.Glossary?.Rules ?? []));
         }
         void RenderToolbar()

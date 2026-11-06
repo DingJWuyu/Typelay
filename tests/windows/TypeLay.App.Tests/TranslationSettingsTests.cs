@@ -70,8 +70,10 @@ public sealed partial class TranslationSettingsTests(WpfDesktopFixture desktop)
         Assert.Null(scene.Reload().Styles);
     });
 
-    [Fact]
-    public Task DeletionSavesImmediatelyAndUndoDoesNotOpenTheQualityGate() => desktop.RunAsync(() =>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task DeletionSavesImmediatelyAndUndoDoesNotOpenTheQualityGate(bool notificationFails) => desktop.RunAsync(() =>
     {
         var first = new GlossaryRule("PR", "pull request");
         var second = new GlossaryRule("项目方", "client team", "zh", "en");
@@ -81,8 +83,13 @@ public sealed partial class TranslationSettingsTests(WpfDesktopFixture desktop)
         Assert.True(GlossaryButton(scene.Window, "GlossaryRemove").IsEnabled);
         GlossaryButton(scene.Window, "GlossaryRemove").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Assert.Equal(second, Assert.Single(scene.Reload().Glossary!.Rules));
+        if (notificationFails)
+            scene.Settings.GlossarySaved += () => throw new IOException("controlled notification failure");
         Click(scene.Window, "撤销");
         Assert.Equal(new[] { first, second }, scene.Reload().Glossary!.Rules);
+        if (notificationFails)
+            Assert.Contains(Descendants(scene.Window).OfType<TextBlock>(), item =>
+                item.IsVisible && item.Text == SettingsCommitPresentation.NotificationFailedMessage);
         Assert.False(scene.Controller.GetGlossarySettingsState().IsReleased);
         Assert.False(scene.Controller.GetGlossarySettingsState().CanApply);
     });

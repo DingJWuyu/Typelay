@@ -1,67 +1,60 @@
 # 当前开发状态与安排
 
-本页只维护现役任务。要求以[产品基线](../product/README.md)、[原型](../design/README.md)和[原型对照](../design/prototype-parity.md)为准；历史执行记录查 Git。
+本页只维护现役任务。产品要求以[产品基线](../product/README.md)、[原型](../design/README.md)和[原型对照](../design/prototype-parity.md)为准；历史执行记录查 Git。
 
 ## 当前身份与最近 CI
 
-用户已明确授权开始实施[目标架构](architecture-target.md)。当前分支为 `work/architecture-deepening`，从已评估的 `work/linux-usability` 基线 `48baf7f` 创建；产品规格、已确认原型和有效 ADR 保持。本轮在本地完成迁移和必要验证，不操作用户桌面，不启动 GitHub 流程或此前平台诊断。
+用户已授权实施[目标架构](architecture-target.md)，当前分支是 `work/architecture-deepening`，基线为 `48baf7fe59a65a67a7a981470e259f01fdc7b4a4`。**对 `46b66294c2b984bf6c9d9ba26ae351a1540f3ba5` 的复评又确认 Windows 三处术语保存反馈遗漏，局部修正与构建已完成，尚需同一新提交上的两次独立确认。** 本轮仅本地开发，未推送、合并、运行 CI 或发布，也没有操作用户桌面。
 
-**用户已要求恢复，菜单反馈遗漏已修复，当前准备最终整合验证和独立复评。** 已核对暂停提交 `9dd5ada` 与在盘验证原件，补齐正式 Linux 搬迁包检查，并收完文档前言和 Windows 文案重复。完整平台验收仍未完成，本轮未运行 CI。
+产品规格、已确认原型和有效 ADR 保持。评分只由 advisor 按[固定 rubric](architecture-rubric.md)给出，结论维护在[独立评估](architecture-assessment.md)。架构实施与完整桌面产品验收分别判断，以下未测能力不会因目录迁移或构建通过而关闭。
 
-[固定 rubric](architecture-rubric.md)保持不变，**90.3/100** 和 **90.5/100** 仍只是设计分数。当前独立实现复评针对 `9dd5ada` 给出 **85.3/100**，认可本轮架构收敛，未发现必须修改的代码缺陷，但明确不能宣称完整桌面产品交付。原件为 `artifacts/architecture/implementation-advisor-r2.json`。收尾后的代码还需新的独立确认，最终结论写入[独立评估](architecture-assessment.md)。目标文档只同步过时前言，职责、产品约束、迁移条件和 rubric 未变。
+## 当前 DAG 与责任
 
-| DAG 切片 | 负责人 | 当前状态与下一动作 | 完成条件 |
+完整依赖图及退出条件保留在[目标架构的迁移顺序](architecture-target.md#迁移顺序与退出条件)。
+
+| 切片 | 负责人 | 当前状态 | 完成条件 |
 | --- | --- | --- | --- |
-| M0 基线与环境 | 主代理 | 已完成，固定 SDK 10.0.401 与基线 Runtime 1565 项通过；GTK3/4、Qt6 可编译 | 区分既有失败、可保持路径与未测平台能力 |
-| M1 设置提交 | `/root/implement_settings` | 已补齐简化保存、教程与浮层风格提交结果。通知失败警告进入精确后继菜单和两端既有设置/托盘反馈；QuickPanel 也消费共享消息，保留原质量门。68 项共享及 5 项 Python 反馈回归通过 | 视图不再推断提交点，所有保存入口交付明确结果，受影响行为验证完成 |
-| M2 Linux 输入所有权 | `/root/implement_linux_input` | 实现完成；受控输入 221、setup 117、desktop 20、practice 14 项通过；完整原生交互未验收 | Overlay 的 Input 私有记录读写退出，回源与断连语义保持 |
-| M3 交互身份与呈现 | 主代理、`/root/implement_presentation_consumers` | 实现完成；暂停呈现和表单单向身份已整合，浏览器三组共 34 项真实 DOM 回归、三端原生编译通过；GTK3 拒绝路径已在隔离桌面验证 | 显示与行为身份分离，各消费者旧比较退出 |
-| M4 会话与结算 | `/root/implement_session_operations`、`/root/implement_write_settlement`、`/root/implement_windows_write_retirement` | 实现完成；真实 Linux host 关闭交接和 GTK3 精确未用许可退休通过；其它原生写入与退出路径仍缺平台证据 | 具体操作拥有寿命，主 Capture/Stop 退出专用分支，关闭先交还结果 |
-| M5 教程职责 | `/root/implement_session_operations` | 已补齐按需练习命令的登记、观察和退休，主控制器不再写其私有字段；65 项受影响回归与最终全套 Runtime 通过 | 进度不参与权限，真实自有源证据保留 |
-| M6 清理与复评 | 主代理 | r3 对 `8c8e4a9` 给出 85.3 分但未收敛，原件为 `implementation-advisor-r3.json`。其菜单遗漏已修复，接下来完成一次完整 Runtime 整合验证，并对同一最终提交取得两位全新 advisor 的独立确认 | 旧路径退出，受影响构建/验证完成，实际实现独立复评 |
+| M0 基线与环境 | 主代理 | 已完成，基线 Runtime 1565 项通过，固定 SDK 与隔离验证环境可用 | 已区分保留路径、既有失败与未测平台能力 |
+| M1 设置提交 | 主代理、`/root/implement_settings` | 普通设置、教程、浮层风格及 QuickPanel 已迁移；Windows 术语浮层、浏览器与删除撤销入口也已优先消费共享消息。新增 WPF 断言仅编译，未运行 | 两端不再推断提交点，已保存警告不随源窗口退休而丢失 |
+| M2 Linux 输入所有权 | `/root/implement_linux_input` | 实现完成，Input 独占原生记录，受控 Input 221 项通过 | Overlay 退出 Input 私有记录读写，异步结果仍关联原连接 |
+| M3 交互身份与呈现 | 主代理、`/root/implement_presentation_consumers` | 实现完成，共享投影与实际消费者已迁移，真实 DOM 34 项及三端原生编译通过 | 文案与显示刷新不再决定交互寿命，真实编辑与原生授权保持独立 |
+| M4 会话与结算 | `/root/implement_session_operations`、`/root/implement_write_settlement`、`/root/implement_windows_write_retirement` | 实现完成，具体操作持有继续与退休责任；原生 GUI 验证范围见下文 | 主捕获退出专用阶段分支，原结果结算后才释放接收者 |
+| M5 教程职责 | `/root/implement_session_operations` | 实现完成，进度与真实源权限分开，按需命令登记和退休归回所有者 | 进度不参与授权，公共会话不直接修改练习私有状态 |
+| M6 清理与复评 | 主代理、`/root/implementation_advisor_r4`、`/root/implementation_advisor_r5` | 最终 Runtime 1598 项通过；两位 advisor 正在对同一代码提交独立评估 | 无未处理的必须修正项，两次独立认可，现役文档与临时资源收尾 |
 
-实现代理均以 `fork_turns=none` 创建，请求配置为 `gpt-6-astra`、`xhigh`；工具只确认创建，实际配置未核实。主代理负责集成、冲突与检查，不让每项常规动作再等待用户确认。
+实现代理与当前两位 advisor 均以 `fork_turns=none` 创建，请求配置为 `gpt-6-astra`、`xhigh`。工具只确认创建，实际配置未核实。advisor 不读取旧分数或另一位的结论，只读取固定 rubric、目标第 1 至 331 行、源码和原始证据；两位分别补充工程标准与需求符合性核查，同时独立评价全部八维。
 
-`/root/implementation_spec_advisor_r2` 同样请求 `gpt-6-astra`、`xhigh`，工具只回显任务创建，实际配置未核实。它没有读取先前分数或评审结论，只读固定规则、目标正文、当前源码及必要验证原件。
-
-`/root/implementation_spec_advisor_r3` 以 `fork_turns=none` 创建，请求配置仍为 `gpt-6-astra`、`xhigh`，实际配置未核实。它独立评估 `8c8e4a9`，没有读取 r2 或其它旧结论与分数。
-
-菜单修正的实际价值：用户从浮层移除已有应用风格覆盖时，文件已经保存，但通知观察者失败的结果未到达现有反馈位置。源码可达性已经由 advisor 指出，发生频率未知；影响是用户无法区分保存与通知状态，不是已证实的数据丢失。复用现有菜单入口、真实设置文件和受控通知失败建立回归，仅补齐结果交付，不新增错误框架或扩大 GUI 矩阵。
-
-已沿 `StyleRequested` 公共入口复现：原菜单意图的真实文件提交成功，结果 `Saved/Code/Message` 正确，但菜单 `Feedback` 为 null。红色原件为 `artifacts/architecture/validation/style-menu-notification-red.log` 与对应 TRX。修正只允许实际提交产生的精确后继身份显示菜单反馈；原源已经退休时沿已有设置/托盘反馈交付事实，不放宽 token 或重放保存。
-
-最终菜单修正原件为 `style-menu-notification-final.trx`（68 项）、`style-menu-linux-feedback-green.log`（5 项）及 `style-menu-{linux,windows}-final-build.log`（各零警告、零错误）。Windows App.Tests 仅 `-t:Compile` 通过，新增原生/浏览器反馈路由回归未在 WPF 运行。全局反馈始终消费明确的已提交警告，不用共享投影推测跨进程菜单是否已经显示，也不新增传输确认状态。
-
-实现取舍已由各次独立上下文 advisor 核对。`/root/implementation_advisor_writes` 明确指出：Published 许可不能凭 TTL、容量或断连当作未执行；普通未使用许可靠原执行者的精确未用退休事实结束，已认领执行靠原回执结算。Windows 复用原 Grant 的 `Quiet && !Claimed`，GTK/Qt/browser 在原源线程区分在途执行和已经完全退休的许可。超期缺事实才按原目标记为未知。正常关闭保持两端事件循环和原回执消费，结算后再释放。没有新持久账本、重试或通用 Quiet。
-
-验证证据在 `artifacts/architecture/validation/`、`artifacts/m3-consumers/` 与 `artifacts/m3gtk/`。原生 GUI 目前仅通过 GTK3 Unknown IME 拒绝及未用许可退休路径；Windows WPF 运行和物理 IME 尚未在本轮验证。App.Tests 交叉编译受 Linux 缺少原生 `TypeLay.NativeInput.dll` fixture 限制，不宣称完整测试项目通过。后文旧 CI 与桌面事实只说明基线限制，不能替代当前工作区验证。
-
-本次改进针对编辑回源、菜单呈现和保存设置的实际知识分散，证据与收益见目标文档的四项深化目标。用户故障发生频率未知；验证优先复用现有生产入口，只为新的责任交接补充必要场景，不扩展完整桌面或模型矩阵。
+当前下一动作由主代理负责：接收 `artifacts/architecture/implementation-advisor-r4.json` 与 `implementation-advisor-r5.json`，核对证据与算术，处理具体必须修正项；若均认可，则更新评估页和本页，清理已无用途的基线 worktree、临时 trace，并完成本地交付。复评期间生产代码保持固定，只整理文档。未达到完成条件前保留源码、工具链和验证原件。
 
 ## 当前验证环境与交付范围
 
-本机固定 .NET SDK 为 `artifacts/tools/dotnet/dotnet`，版本 10.0.401。GTK3、GTK4、Qt6 开发库可用，三端原生源码已编译。Windows App、Broker、Practice 与 NativeFixture 可交叉编译；本机不能运行 WPF。App.Tests 的 C# 编译成功，但完整构建仍缺生产 `TypeLay.NativeInput.dll`，不能把该结果写成完整测试项目通过。
+本机 .NET SDK 为 `artifacts/tools/dotnet/dotnet` 10.0.401。工程 Python、Ruff 与 Ninja 只在 `artifacts/tools/engineering/` 私有 venv。GTK3、GTK4、Qt6 开发库可用，三端原生源码已编译；Windows 可交叉编译，不能运行 WPF。Windows App.Tests 的 `-t:Compile` 通过，完整构建仍缺生产 `TypeLay.NativeInput.dll`，不报告完整测试项目通过。
 
-浏览器验证使用隔离的 headless Chromium，没有连接用户的浏览器配置。GTK3 补验沿现有 `native_e2e.py --gtk-refusal`，使用独立 Xvfb、niri 和私有 D-Bus，原入口退出码为 0，覆盖 Unknown IME 拒绝、按键透传和精确单次 `writeRetired`，另含原有 8 项通知与 19 项受控直接写入边界。原始证据见 `artifacts/m3gtk/native-result.json` 与 `run.log`；自有测试进程已退出。Xvfb/xdotool 只解包到 `artifacts/tools/x11/`，已核系统包签名，未安装到系统。
+以下原件保存在被忽略的 `artifacts/`。测试数量只描述运行结果，不代表完整平台覆盖。
 
-GTK3 成功捕获、编辑与接受、GTK4/Qt GUI 仍未验证；完整合作 Fcitx 环境未准备。本轮没有操作用户桌面，没有物理键盘、IME 或逐页像素验收。已有模型生命周期和质量事实保持，未下载模型或扩大质量矩阵。
+| 验证 | 原件 | 已证明的范围 |
+| --- | --- | --- |
+| 最终 Runtime 1598 项通过 | `architecture/validation/runtime-final-implementation.trx` 与 `.log` | `46b6629` 的共享生产编排配合受控端口，不是原生桌面验收 |
+| Core 320、Linux Input 221 项通过 | `architecture/validation/core-final.trx`、`input-final.log` | 纯规则和输入合同；最后菜单修正未改变 Core/Input 源码 |
+| 菜单通知失败复现与修复 | `architecture/validation/style-menu-notification-red.{log,trx}`、`style-menu-notification-final.{log,trx}` | 公共 `StyleRequested` 加真实设置文件；先观察保存成功但反馈缺失，再验证菜单/风格 68 项通过 |
+| Python 设置反馈 5 项通过 | `architecture/validation/style-menu-linux-feedback-green.log` | 真实 Python 消费方法保留共享结果；受控 Host 不证明系统通知可见 |
+| 最新双端生产构建 | `architecture/validation/style-menu-linux-final-build.log`、`style-menu-windows-final-build.log` | Linux Host 与 Windows App 均零警告、零错误；Windows 路由新增回归仅完成编译 |
+| Windows 术语消费者修正 | `architecture/validation/glossary-consumer-windows-build.log`、`glossary-consumer-windows-compile.log` | App 构建及 App.Tests 的 `-t:Compile` 零警告、零错误；本机无 WPF，未执行原生红绿复现或新增 GUI 断言 |
+| 真实浏览器 DOM 34 项通过 | `m3-consumers/browser.log`、`browser-source-regressions.log`、`browser-write-settlement.log` | 隔离 headless Chromium 的呈现、交互与结算消费者，未连接用户浏览器 |
+| GTK3 拒绝与未用许可退休 | `m3gtk/native-result.json`、`run.log`、`inside.log` | 既有 `native_e2e.py --gtk-refusal` 退出 0，覆盖 Unknown IME 拒绝、按键透传及精确单次 `writeRetired` |
+| 正式 setup-only Linux 包与搬迁 4 项通过 | `architecture/package/build-info.json`、`architecture/validation/linux-package-build-with-ninja.log`、`linux-relocated-package.log` | 包来源 `9dd5ada`，干净源码；实际 worker/Host、中文空格目录安装重装、CLI 启退与保数据卸载 |
 
-已用 `eng/linux/build.py --output artifacts/architecture/package` 构建正式 setup-only 包，`build-info.json` 记录 `9dd5ada` 且 `sourceDirty=false`。原有 `distribution_e2e.py` 的共享 worker 目录、真实 Host 设置/练习反馈、中文空格目录安装/重装/CLI 启动退出和卸载保留数据四项通过，日志为 `artifacts/architecture/validation/linux-relocated-package.log`。构建日志为 `linux-package-build-with-ninja.log`；首次缺 Ninja 的环境失败另保留在 `linux-package-build.log`，仅在私有工程 venv 补齐工具后完成构建。构建通过正式校验准备固定 CPU 运行库，没有下载模型。该包不含合作桌面 payload，不能用于宣称完整 GUI、合作 IME 或 Windows 分发已经验收。
+GTK3 使用独立 Xvfb、niri 和私有 D-Bus；Xvfb/xdotool 仅解包到 `artifacts/tools/x11/` 并核系统包签名，没有安装到系统。原件还含既有受控通知和直接写入边界，但不证明成功捕获、编辑、接受或原生 Undo。自有桌面测试进程已经退出。
 
-本轮本地变更的完成条件是职责迁移、受影响验证、现役文档与独立实现评估。平台桌面验收缺口单独保留，不将其计作本轮已经通过，不自动恢复 CI、发布或此前诊断任务。
+搬迁包通过正式脚本准备并校验固定 CPU 运行库，没有下载翻译模型。它不含合作桌面 payload，且来源早于最后的风格反馈修正，不能当成最终提交的完整发行验收。首次缺 Ninja 的构建失败原件为 `architecture/validation/linux-package-build.log`；补齐私有工具后成功，不改构建规则或放宽检查。
 
-## 当前接续顺序
+**仍未验收：** Windows 本轮真实设置、写入退休与关闭；GTK3 成功捕获、编辑和接受；GTK4/Qt GUI；物理 IME、真实 Undo、多屏和逐页像素表现。完整合作 Fcitx 环境未准备。编译、受控端口、CLI 退出和 GTK3 Unknown 拒绝不能替代这些结果。
 
-1. 已核对 `work/architecture-deepening` 的最新本地提交与工作树。保留现有源码、工具链和验证证据，不重做已通过且未再变动的检查。
-2. 当前修正后的 Runtime 原件为 `artifacts/architecture/validation/runtime-pause.trx`，1592 项通过；Linux 宿主与 Windows App 最新构建均为零警告、零错误。Core、Linux 输入与浏览器原验证仍见前文；编译与受控端口不能冒充原生桌面通过。
-3. 菜单结果修正和必要验证完成后，对同一最终提交创建两位互不读取结果的 `fork_turns=none` advisor。只给目标文件第 1 至 332 行、必要代码和原始验证证据，不给本页评分段、评估页、旧 advisor 报告或期待分数。请求配置仍为 `gpt-6-astra`、`xhigh`，实际未回显则记为未核实。
-4. 主代理处理新证据支持的必须修正项；原生平台缺少运行条件时继续保持未验收，不能靠改 rubric 或制造通用抽象收敛。取得新的独立结论后更新评估页与本页，评分原件保持 advisor 原文。
+本轮最后修正的实际价值是：用户从浮层移除已有应用风格覆盖时，文件已保存而通知观察者失败，原消费者却遗漏反馈。频率未知，未证实数据丢失。修正复用既有共享消息及两端反馈入口，只允许本次提交的精确后继接收菜单消息；全局反馈保留提交事实，不猜原生可见性、不抢焦点、不重放保存。没有新增通用错误框架、传输确认状态或完整 GUI 矩阵。变更 C# 的格式检查、Python Ruff 与差异空白检查通过。
 
-当前整体验收未完成，按用户要求保留 `artifacts/architecture-baseline` 基线 worktree、临时诊断和测试证据，待达到完成条件后再清理。继续执行既定架构目标，不启动 GitHub 流程或另一个重构方案。
+Windows 术语修正同属这一结果消费问题：浮层将 inactive 通知失败映射成普通成功，浏览器丢弃共享警告，删除撤销只读 `Saved`。三个现役入口已按源码调用链确认可达，修正只优先消费已有 `Message`，沿既有本地化与反馈路径呈现。保留原保存次数、表单身份、焦点与质量门；扩展现有 WPF 表单和撤销用例，不新增测试框架。本机缺少运行条件，不能将静态确认与编译称为真实 GUI 复现通过。
 
-设置修正的验证先沿真实 host 复现结果被压成布尔值，再验证实际 Python 保存方法能保留共享消息。原 Host 回归的一个旧 setup 仍断言布尔值，迁移到明确 `saved` 后该项通过；练习 fixture 改读 `PracticeResult.allowed`，不把结果对象的 truthiness 当作允许。没有放宽实际安全断言。Ruff 检查本批 20 个 Python 文件通过，差异空白检查通过；完整 Runtime 和双端构建后仅 Python 反馈与测试收尾，相关 4 项反馈回归再次通过。
-
-Windows 最后四处重复反馈只改为消费已有 `result.Message` 或 `SettingsCommitPresentation.NotificationFailedMessage`，没有增加状态、改变反馈或取消规则。App 最新交叉编译零警告、零错误，原件为 `artifacts/architecture/validation/windows-shared-feedback-build.log`；本机无法运行 WPF 横幅测试，因此不新增镜像测试或声称已运行这些测试。
+本轮完成条件是职责迁移、受影响验证、现役文档及独立实现评估。以下已有产品缺口仍需目标平台证据，不自动恢复此前诊断、模型采集、CI 或发布任务。
 
 ## 仍需目标平台验证的已有问题
 
