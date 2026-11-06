@@ -1,6 +1,40 @@
-# 完成一次开发变更
+# 开发工作流与构建入口
 
 先确认变更影响哪个产品边界，再选择构建和验证入口。本页提供共享工作流程；[Windows 开发](../platforms/windows/development.md)和 [Linux 开发](../platforms/linux/development.md)分别维护平台环境与命令。
+
+## 工程入口与交付物
+
+`src/` 提供生产实现，`eng/` 组织检查和构建，`packaging/` 提供运行时包装。测试消费生产边界，发行包使用显式运行时清单。
+
+```mermaid
+flowchart TB
+    Source["生产源码 src/<br/>shared / windows / linux"]
+    Shared["共享检查<br/>dev.ps1 shared-check"]
+    Windows["Windows 构建与检查<br/>dev.ps1 分派至 eng/windows"]
+    Linux["Linux 构建与验证<br/>eng/linux/build.py 与 cooperative/"]
+    Tests["行为与进程验证结果<br/>TRX、日志和截图"]
+    Package["运行时包装 packaging/<br/>显式组件清单"]
+    Output["交付候选<br/>Windows ZIP / Linux tar.gz"]
+    Source -->|共享规则与协议| Shared
+    Source -->|Windows 消费者| Windows
+    Source -->|Linux 消费者| Linux
+    Shared -->|执行所选套件| Tests
+    Windows -->|执行所选检查| Tests
+    Linux -->|调用对应验证入口| Tests
+    Windows -->|发布所需运行时文件| Package
+    Linux -->|发布所需运行时文件| Package
+    Package -->|打包| Output
+```
+
+图中连线表示命令职责与产物关系，不表示每次变更都运行全部任务。包生成只产生候选，后续验证仍需说明实际覆盖范围。
+
+| 当前任务 | 从哪里开始 |
+| --- | --- |
+| 理解模块、进程或数据流。 | [系统架构](architecture.md)。修改会话或模型时，继续读[会话合同](session-runtime.md)或[模型运行架构](model-runtime.md)。 |
+| 修改并验证共享逻辑。 | 本页[共享检查](#运行共享检查)与[测试策略](testing.md)。 |
+| 构建、诊断或检查平台交付物。 | [Windows 开发](../platforms/windows/development.md)或 [Linux 开发](../platforms/linux/development.md)。 |
+| 根据已有质量假设采集模型输出。 | [翻译质量采集与评审](translation-quality.md)。普通开发检查不启动这类采集。 |
+| 恢复尚未完成的工作。 | [当前开发状态](development-state.md)。 |
 
 ## 确认范围与完成条件
 

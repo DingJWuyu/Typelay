@@ -186,12 +186,15 @@ python install.py uninstall --purge
 
 ## 开发与验收
 
-按你要解决的问题选择入口：
+工程文档按问题组织，源码导航位于 Linux 架构末尾：
 
-- 理解源码职责时，阅读[Linux 架构](architecture.md)和[共享架构](../../engineering/architecture.md)。
-- 构建或选择测试时，使用[Linux 开发指南](development.md)。
-- 核对当前提交的通过、失败和未测范围时，查看[当前开发状态](../../engineering/development-state.md)。
-- 判断产品是否达标时，查看[产品验收基线](../../../README.md#产品验收入口)和[原型对照](../../design/prototype-parity.md)。
-- 修改输入或交付边界时，阅读[共享 ADR](../../adr/)和[Linux 坐标 ADR](adr/0004-native-anchors.md)。
+| 你要解决的问题 | 文档入口 |
+| --- | --- |
+| 进程如何部署，输入、浮层与模型如何通信？ | [Linux 系统架构](architecture.md)描述进程、组件、关键时序和故障边界。 |
+| 两个平台共用哪些会话规则与模型合同？ | [共享架构](../../engineering/architecture.md)提供整体边界与共享运行时入口。 |
+| 如何构建，当前改动需要哪些验证？ | [Linux 开发指南](development.md)按变更选择构建、发行包、输入与桌面场景。 |
+| 当前提交已经验证到哪里？ | [当前开发状态](../../engineering/development-state.md)记录提交身份、原件、失败和未测范围。 |
+| 如何判断产品行为与界面是否达标？ | [产品验收基线](../../../README.md#产品验收入口)与[原型对照](../../design/prototype-parity.md)维护要求。 |
+| 修改边界时需要保留哪些决策？ | [共享 ADR](../../adr/)与[Linux 坐标 ADR](adr/0004-native-anchors.md)记录仍有效的约束。 |
 
 发行包附带浏览器、Fcitx、Qt 和 VS Code 接入说明。上述工程与产品链接指向该包提交对应的仓库文档。

@@ -1,6 +1,8 @@
 # 构建和验证 Linux 客户端
 
-Linux 开发使用 [eng/linux/build.py](../../../eng/linux/build.py)生成实际发行包，再按改动选择共享、安装、输入或桌面验证。普通用户安装见[使用说明](README.md)，平台职责见[架构说明](architecture.md)。本页的命令从仓库根目录执行，输出放在被忽略的 `artifacts/`。
+Linux 的生产构建入口是 [eng/linux/build.py](../../../eng/linux/build.py)。先按改动选择验证范围；涉及分发时，再从实际发行包验收。普通用户安装见[使用说明](README.md)，进程、接口和源码职责见[系统架构](architecture.md)。本页的命令从仓库根目录执行，输出放在被忽略的 `artifacts/`。
+
+构建从[开发环境](#准备开发环境)开始。已有环境时，可直接选择[变更场景](#按变更选择场景)、[模型包事务](#模型包事务)或[文档封装](#文档与发行包)。
 
 ## 准备开发环境
 
@@ -85,7 +87,7 @@ artifacts/build-tools/bin/python eng/linux/hy/build.py --runtime artifacts/linux
 
 | 改动 | 首先验证什么 | 还需要什么 |
 | --- | --- | --- |
-| 文档和注释 | 检查路径、锚点、命令定义和差异。 | README 被打包器消费，相关改动需核对文档封装合同。 |
+| 文档和注释 | 检查路径、锚点、命令定义和差异。 | 随包文档变化还需核对[文档封装合同](#文档与发行包)。 |
 | Core、Runtime 或协议 | 运行共享检查和对应公开边界回归。 | 改变平台交互时，还需相应宿主或真实桌面场景。 |
 | Linux Python 或 .NET 宿主 | 运行 Ruff、Host 构建和受影响测试。 | 输入、设置或呈现改动按下列场景补实际消费者证据。 |
 | 安装、启动或发行清单 | 从新构建的实际 tar.gz 运行搬迁回归。 | 完整接入包另验合作载荷，不能以 setup-only 代替。 |
@@ -245,3 +247,21 @@ env TYPELAY_HY_CPU_RUNTIME="$PWD/artifacts/linux/hy-cpu-runtime" /usr/bin/python
 ```
 
 无模型 ELF/ABI 检查只证明库加载、导出和隔离。质量采集的授权、固定样本、资源预算和发布判据统一见[翻译质量验证](../../engineering/translation-quality.md)，不要把安装成功、非空输出或旧模型证据当作新质量放行。
+
+## 文档与发行包
+
+Linux 文档有两种交付位置。`architecture.md` 和本页留在仓库，负责工程结构与开发方法。`README.md`、`browser.md`、`fcitx.md`、`qt.md` 和 `vscode.md` 随发行包交付，负责安装、接入及对应的维护入口。
+
+[package_documentation](../../../eng/linux/build.py)按以下规则生成随包文档：
+
+- 构建器改写 README 的“当前可验证候选”一节，填入本包提交与脏工作区身份。该节与“安装、启动与首次配置”标题是封装边界，修改标题需同步维护构建器。
+- README 中指向仓库的相对链接被转换为当前包提交下的 GitHub 链接。四份接入说明继续使用包内相对链接。
+- 四份接入说明按原字节复制。它们引用源码时使用代码路径，引用工程文档时经 `README.md#开发与验收` 跳转，避免产生包内不存在的相对链接。
+
+修改上述文档后，检查生成 README 的提交身份、包内链接和接入页复制结果。已有回归位于 [PackageReadmeTests](../../../tests/linux/test_build_bundle.py)，该组只生成临时文档，不需要桌面或模型：
+
+```sh
+python tests/linux/test_build_bundle.py PackageReadmeTests -v
+```
+
+文档生成与链接检查不证明对应包已经构建或产品验收通过。构建记录、测试结果和当前未测范围仍由[当前开发状态](../../engineering/development-state.md)记录。

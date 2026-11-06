@@ -4,6 +4,18 @@
 
 共享依赖与检查选择见[共享开发流程](../../engineering/development.md)。当前实现见[Windows 架构](architecture.md)，产品验收见[Windows 测试](testing.md)。本页的命令说明不表示当前源码已在 Windows 桌面执行。
 
+## 任务入口
+
+| 开发任务 | 入口与交付物 |
+| --- | --- |
+| 修改 Windows 代码并运行检查 | [准备与执行](#准备与执行)列出环境和根 `dev.ps1` 命令。 |
+| 构建可搬迁候选 | [分发和注册](#分发和注册的验证条件)定义实际 ZIP、组件配套与注册回归条件。 |
+| 准备原生推理载荷 | [Index](#index-默认载荷与独立检查)与 [Hy](#hy-生产载荷候选构建)分别管理固定载荷和生产消费者。 |
+| 修改源接受机制 | 先读[架构中的有序源接受](architecture.md#有序源接受怎样保留原按次)，再选择[真实 Runtime 受控组装](#真实-runtime-的受控组装)或[正向接受入口](#正向接受的剩余条件)。 |
+| 核对具体输入机制假设 | [机制实验](#运行机制实验前确认范围)保留各入口的目的、停止条件和证据限制。 |
+| 研究浏览器窗口身份 | [独立身份探针](browser-identity.md)仅在新线索满足其准入条件时运行，不进入日常检查。 |
+| 准备 Chrome 商店材料 | [商店发布准备](chrome-store-release.md)使用已核实际候选，创建条目与发布另需明确授权。 |
+
 ## 准备与执行
 
 使用 Windows x64、PowerShell 7.2+、[global.json](../../../global.json)指定的 .NET SDK、Python 3.13，以及 LLVM clang/lld-link。先创建并激活工程 Python 虚拟环境，再安装固定检查工具和构建：
@@ -78,7 +90,7 @@ Hy 新装仍为十二方向。中英补充必须由用户明确确认；修复�
 
 实验退出 0 只表示取得该入口定义的完整结果。`not_observed`、拒绝或来源未知可以是有效研究结果，均不表示可接受译文。外部执行器仍须约束进程总寿命，处理无法合作取消的系统调用。[check.yml](../../../.github/workflows/check.yml)保留的独立研究步骤不属于普通产品通过数，`continue-on-error` 只让其它独立工作继续。
 
-## 源接受低级回调超时诊断
+### 源接受低级回调超时诊断
 
 此入口验证 B-01 的具体交错：源已 Claim 并写入，而低级 Hook 尚未返回。最低系统为 Windows 10 1709。
 
@@ -91,7 +103,7 @@ Hy 新装仍为十二方向。中英补充必须由用户明确确认；修复�
 
 `observed_leak` 表示原 down/up 泄漏，`not_observed` 只表示本次没有看到，`precondition_failed` 表示前置或清理不完整。整例上限 150 秒，CI 外限 3 分钟。既有 Windows 原件已观察到写入后原 Tab down 泄漏，[B-01](architecture.md#b-01非原子写回与按键所有权)继续保留该否定结论。
 
-## 自有源线程键盘边界诊断
+### 自有源线程键盘边界诊断
 
 此入口只观察自有源线程的 `WH_KEYBOARD` 和原消息泵，不写正文或安装低级 Hook。
 
@@ -104,7 +116,7 @@ Hy 新装仍为十二方向。中英补充必须由用户明确确认；修复�
 
 `mechanism_observed_not_product_acceptance` 只说明局部机制被观察。它不能证明物理来源、LL 与 MSG 的唯一关联、跨线程尾键或完整接受。posted handler、回调末尾和队列提示也不证明最外层检索已经返回。
 
-## 自有源线程同步正文事务实验
+### 自有源线程同步正文事务实验
 
 此入口在自有 stock Edit 的真实源线程回调中执行生产 `OwnedPracticeField.TryExecute`，研究原键消费与同步事务能否共存。
 
@@ -117,7 +129,7 @@ Hy 新装仍为十二方向。中英补充必须由用户明确确认；修复�
 
 计划是固定的合成研究计划，不是正式控制器许可。每行 30 秒操作预算和 60 秒 xUnit 上限保持，`productionReadiness=false`。离散 HIMC/HKL 样本不证明 TSF profile 连续性、真实组合态、第三方部署或任意末期重入安全。
 
-## 普通 source 事务与同一 MSG 的受控接线
+### 普通 source 事务与同一 MSG 的受控接线
 
 此入口直接验证普通 SourceInstallation 在同一实际 `PM_REMOVE` MSG 上认领、置空并执行事务，使用受控软件输入。
 
@@ -134,13 +146,13 @@ source wire v7 明确拒绝旧版本，普通 Transaction v2 保持。Prepared �
 
 [既有 CI504](https://github.com/DingJWuyu/Typelay/actions/runs/40083637614)在真实 Notepad 的隔离构造验证了接受、撤回、Undo、零二次写与清理。那条非有序机械路线不具备当前严格来源证明。结果在 `artifacts/source-message-acceptance/<唯一目录>/result.json`；两行沿原 30 秒操作、60 秒单项及 CI 2 分钟外限执行。
 
-## 隔离严格来源拒绝入口
+### 隔离严格来源拒绝入口
 
 `TypeLaySourceStrictGetMessageProc` 是保留的拒绝构造。它在实际 MSG 上先查来源，普通注入、System、Unknown 或查询失败给出 `OriginUntrusted`；类别合格但缺少有序历史时给出 `QueueFreshnessUnproven`。两者都在正文变化前拒绝，原 MSG 和选区保持，grant 单调撤销。
 
 [StrictSourceOriginLeavesSyntheticTabUnconsumed](../../../tests/windows/TypeLay.App.Tests/SourceKeyboardBoundaryProbe.Message.cs)用 SendInput/PostMessage 检查零写和原键派发，结果位于 `artifacts/source-origin-rejection/`。这个入口不提供正向接受。`MSG.time` 或空队列也不能单独排除已被上游移出的旧键。当前有序路线的来源合同另见[输入来源资格](architecture.md#输入来源资格)。
 
-## 隔离有序LL见证与严格源接受候选
+### 隔离有序LL见证与严格源接受候选
 
 本节保留原有锚点，当前源码已经把有序路线接入正式 factory。旧推荐包仍按自身结果解释，不能因源码接入而更新下载包能力。
 
@@ -148,13 +160,13 @@ source wire v7 明确拒绝旧版本，普通 Transaction v2 保持。Prepared �
 
 当前受控 native API 回归直接编译生产 C，验证初始化、首键、尾键、旧历史、乱序、重入、IME、期限和注入拒绝。它证明算法在受控系统响应下的合同，不能替代 Windows、物理或 UIAccess 输入。Windows 的普通注入负例另外要求真实 LL 记录、原键派发、正文不变、零写与精确退休。
 
-### 隔离 Ctrl+F1–F24 候选
+#### 隔离 Ctrl+F1–F24 候选
 
 Ctrl 观察使用显式 `ObserveControlPrefix`，观察本身不能执行计划或显示接受就绪。原 Ctrl 正常派发并撤旧许可，功能键接受要求 Ctrl 后新捕获、新计划与新安装。旧在途读只可暂保人工文字，不能给 Ctrl 后接受授权。
 
 [Modifiers 回归](../../../tests/windows/TypeLay.App.Tests/NativeSourceControllerTests.Modifiers.cs)保留 fresh、旧读、正文、选区、配置与过早 Fn 的普通注入负例，以及显式物理 Ctrl+F7 人工稿入口。两种释放顺序、repeat、F10 SYS 形态和旧前缀拒绝由生产 C 边界覆盖。既有 Windows 软件检查不代表物理 Ctrl、UIAccess 或真实组合态已通过。
 
-### 真实 runtime 的受控组装
+#### 真实 runtime 的受控组装
 
 [WindowsRuntime.CreateSession](../../../src/windows/TypeLay.App/Windows/WindowsRuntime.cs)和 [Broker/Main](../../../src/windows/TypeLay.Broker/Program.cs)固定选择有序源路线。逐捕获 eligibility 只为计划建立资格；缺失、错目标、旧观察、错误版本、Direct、Wake 或 owned 不能借此获得普通源接受能力。
 
@@ -162,13 +174,13 @@ Ctrl 观察使用显式 `ObserveControlPrefix`，观察本身不能执行计划�
 
 本轮重构只完成相关构建与受控验证，当前 Windows GUI 未运行。旧 CI524 原套件的注入负例通过，但搬迁 Tab 曾在发键前到期；后来的包装职责调整没有把该旧失败改判为通过。当前推荐物理包仅采用下节明确的搬迁检查，完整证据状态以[开发状态](../../engineering/development-state.md)为准。
 
-## 正向接受的剩余条件
+### 正向接受的剩余条件
 
 现有人工入口 `ManualPhysicalAcceptanceKeyUsesOrderedSourceOnceAndSettlesItsOriginalTails` 每行只接收一次指定物理键。阳性要求恰一次 Verified、零原键派发、零 LL Activate 或二次写、原生 Undo、尾键退休与自有退出。每 grant 100ms 和 fixture 30 秒不变，失败不能补按或续期。
 
 物理 Tab、F7/F24、Ctrl+F7、UIAccess、真实输入法与正式外部应用部署各有独立范围。普通注入拒绝、受控 C 阳性或隔离物理用例不能相互替代。当前正式接线未形成这些完整证据，B-01 不能据此关闭。
 
-### 无 SDK 的隔离物理 Tab 验证包
+#### 无 SDK 的隔离物理 Tab 验证包
 
 [package-physical-tab.py](../../../eng/windows/package-physical-tab.py)保留 App.Tests、NativeFixture、Broker 三个 Release 输出树和锁定依赖许可，生成独立验证 ZIP。使用者需要 .NET 10 Desktop Runtime x64、同一 x64 `dotnet`、独占已解锁桌面和非管理员 PowerShell，不需要 SDK、Python 或模型。
 
@@ -178,7 +190,7 @@ Ctrl 观察使用显式 `ObserveControlPrefix`，观察本身不能执行计划�
 
 包身份集中在[使用说明](README.md#隔离物理-tab-验证包不是产品体验包)。用户按[包内说明](../../../packaging/windows/physical-tab/README.md)亲手执行一次 Tab，必须取得一项执行、一项通过、零跳过。当前包交付尚无物理阳性，不能作为产品体验包。
 
-## 同一检索处的独立来源分类观察
+### 同一检索处的独立来源分类观察
 
 此只读 F8 入口仅在来源边界实现、调用时点或平台合同改变时手动使用，既有研究已达到停止条件，不加入日常 CI。
 
@@ -191,7 +203,7 @@ Ctrl 观察使用显式 `ObserveControlPrefix`，观察本身不能执行计划�
 
 结果位于 `artifacts/source-message-origin/<唯一目录>/result.json`，沿原 30 秒操作与 60 秒 xUnit 上限。两处来源独立解释，`origin-class-transition-observed` 仅说明类别变化可观察；`sources-not-distinguished` 与未知类别也是有限研究结果。`productionReadiness`、`hardwarePositiveObserved`、`bindingProven` 均保持 false。
 
-## 自有标准 Edit 的既有 TSF context 准入
+### 自有标准 Edit 的既有 TSF context 准入
 
 此入口先确认未改造 stock Edit 是否有精确的现成 Text Services Framework（TSF）上下文，不测试写入。
 
@@ -204,7 +216,7 @@ Ctrl 观察使用显式 `ObserveControlPrefix`，观察本身不能执行计划�
 
 三次精确观察和清理都成立后，才可进入独立读锁研究。结果位于 `artifacts/tsf-context-admission/<唯一目录>/result.json`。宿主 25 秒、线程 29 秒、操作 30 秒、xUnit 60 秒，CI 外限 2 分钟。[既有 CI473](https://github.com/DingJWuyu/Typelay/actions/runs/39934831201)取得该首门结果，不证明键盘、组合态或写能力。
 
-### 独立被动键路由与同步选区读取
+#### 独立被动键路由与同步选区读取
 
 ```powershell
 & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe `
@@ -217,7 +229,7 @@ Ctrl 观察使用显式 `ObserveControlPrefix`，观察本身不能执行计划�
 
 结果在 `artifacts/tsf-key-routing/<唯一目录>/result.json`。无路由、拒锁、选区不可得与读取成功分别报告，预期阴性不自动成为程序失败，也不成为产品通过。xUnit 上限 90 秒，CI 外限 2 分钟。关闭在 COM 回调栈外执行，先封准入，再解除自己的 sink、释放引用并同 STA 配平 Deactivate；解除失败时保留引用并让自有进程失败退出。
 
-### 自有源键盘回调与 TSF 同步只读兼容性
+#### 自有源键盘回调与 TSF 同步只读兼容性
 
 ```powershell
 & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe `
@@ -228,13 +240,13 @@ Ctrl 观察使用显式 `ObserveControlPrefix`，观察本身不能执行计划�
 
 拒锁、未知或原键不保留即停止，不异步补偿或重试。结果在 `artifacts/tsf-source-key-read/<唯一目录>/result.json`，xUnit 上限 60 秒；宿主、线程与操作仍为 25/29/30 秒，另有 4 秒正常退出与 5 秒精确回收。该入口只按明确回归目的手动运行。[既有 CI477](https://github.com/DingJWuyu/Typelay/actions/runs/39990193024)证明了该自有栈的读取兼容性，未证明跨进程部署。
 
-### 同次源读取中的 composition 三态与输入配置库存
+#### 同次源读取中的 composition 三态与输入配置库存
 
 同一个 source-key-read 入口在原读锁中查询精确 context 的 `FindComposition(cookie, null)`，只取一个 composition view，不新增锁请求或读取组合文字。结果只分 `present`、`none-in-exact-context-at-read`、`unknown`。缺接口、异常、拒锁、重入或身份变化不能变成无组合。
 
 Hook 外仅查询输入 profile 库存，最多 64 项，保存 ID、状态和 HRESULT。它不安装、启用或切换 profile；库存不证明实际 IME 可组合。当前 `realImePositive=positive-not-run`，既有空枚举观察不能替代生产 Clear 或真实用户的组合开始、取消和提交。
 
-### TSF 正文来源约束
+#### TSF 正文来源约束
 
 [CI481](https://github.com/DingJWuyu/Typelay/actions/runs/40010604024)中，同栈 RW 获锁后，top context 正文为空、选区为 `[0,0]`，原生 Edit 却有 6 个 UTF-16 码元、选区 `[3,5]`。完整正文 equality 在修改前正确拒绝，零 SetText，原文和选区保持，原 Tab 正常导航。
 
