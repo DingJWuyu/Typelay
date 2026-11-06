@@ -4,7 +4,7 @@
 
 ## 当前身份与最近 CI
 
-用户已授权实施[目标架构](architecture-target.md)，当前分支是 `work/architecture-deepening`，基线为 `48baf7fe59a65a67a7a981470e259f01fdc7b4a4`。**对 `46b66294c2b984bf6c9d9ba26ae351a1540f3ba5` 的复评又确认 Windows 三处术语保存反馈遗漏，局部修正与构建已完成，尚需同一新提交上的两次独立确认。** 本轮仅本地开发，未推送、合并、运行 CI 或发布，也没有操作用户桌面。
+用户已授权实施[目标架构](architecture-target.md)，当前分支是 `work/architecture-deepening`，基线为 `48baf7fe59a65a67a7a981470e259f01fdc7b4a4`。**本轮架构实施已收敛。代码提交 `dd48597bbd0d8764985d2207c76ea70d6a3207f5` 获得两位全新上下文 advisor 的独立确认，评分分别为 86.3/100、87.0/100，必须修正项均为零。** 后续提交仅整理评估与状态文档。本轮仅本地开发，未推送、合并、运行 CI 或发布，也没有操作用户桌面。
 
 产品规格、已确认原型和有效 ADR 保持。评分只由 advisor 按[固定 rubric](architecture-rubric.md)给出，结论维护在[独立评估](architecture-assessment.md)。架构实施与完整桌面产品验收分别判断，以下未测能力不会因目录迁移或构建通过而关闭。
 
@@ -20,11 +20,13 @@
 | M3 交互身份与呈现 | 主代理、`/root/implement_presentation_consumers` | 实现完成，共享投影与实际消费者已迁移，真实 DOM 34 项及三端原生编译通过 | 文案与显示刷新不再决定交互寿命，真实编辑与原生授权保持独立 |
 | M4 会话与结算 | `/root/implement_session_operations`、`/root/implement_write_settlement`、`/root/implement_windows_write_retirement` | 实现完成，具体操作持有继续与退休责任；原生 GUI 验证范围见下文 | 主捕获退出专用阶段分支，原结果结算后才释放接收者 |
 | M5 教程职责 | `/root/implement_session_operations` | 实现完成，进度与真实源权限分开，按需命令登记和退休归回所有者 | 进度不参与授权，公共会话不直接修改练习私有状态 |
-| M6 清理与复评 | 主代理、`/root/implementation_advisor_r4`、`/root/implementation_advisor_r5` | 最终 Runtime 1598 项通过；两位 advisor 正在对同一代码提交独立评估 | 无未处理的必须修正项，两次独立认可，现役文档与临时资源收尾 |
+| M6 清理与复评 | 主代理、`/root/implementation_advisor_r6`、`/root/implementation_advisor_r7` | 已完成，同一代码提交两次独立认可，评估与状态文档已同步，临时 worktree 和 trace 已清理 | 无未处理的必须修正项，两次独立认可，现役文档与临时资源收尾 |
 
 实现代理与当前两位 advisor 均以 `fork_turns=none` 创建，请求配置为 `gpt-6-astra`、`xhigh`。工具只确认创建，实际配置未核实。advisor 不读取旧分数或另一位的结论，只读取固定 rubric、目标第 1 至 331 行、源码和原始证据；两位分别补充工程标准与需求符合性核查，同时独立评价全部八维。
 
-当前下一动作由主代理负责：接收 `artifacts/architecture/implementation-advisor-r4.json` 与 `implementation-advisor-r5.json`，核对证据与算术，处理具体必须修正项；若均认可，则更新评估页和本页，清理已无用途的基线 worktree、临时 trace，并完成本地交付。复评期间生产代码保持固定，只整理文档。未达到完成条件前保留源码、工具链和验证原件。
+主代理已核对 `artifacts/architecture/implementation-advisor-r6.json` 与 `implementation-advisor-r7.json` 的证据、指纹和算术，评估页已同步。本轮没有待修代码、待返回的 advisor 结论或运行中的自有测试。基线临时 worktree 与手工诊断 trace 已移除，构建服务器已退出；源码、有效回归、工具链和验证原件保留。
+
+后续验证由主代理接续，在对应目标环境可用时沿现有入口执行少量受影响场景：Windows 术语告警与撤销、编辑回源和关闭结算；GTK4/Qt 成功交互与未用许可退休。以下平台缺口没有被本轮关闭，完整合作包、物理 IME、Undo 与视觉验收仍需要对应真实证据，不自动恢复此前模型采集、CI 或发布任务。
 
 ## 当前验证环境与交付范围
 
