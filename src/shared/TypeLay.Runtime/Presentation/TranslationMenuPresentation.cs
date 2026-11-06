@@ -58,11 +58,25 @@ public sealed partial class SessionController
     private async Task<StyleChangeResult> ChangeViewStyleAsync(SessionStyleRequest request)
     {
         long feedbackRevision = _commandFeedbackRevision;
+        (SessionViewToken? Token, long Revision)? applied = null;
         var result = request.Style is not null && !_translationRelease.IsReleased(TranslationOperation.Style)
             ? new StyleChangeResult(false, "style-not-released")
-            : await ChangeStyleAsync(StyleScope.CurrentApplication, request.Style, request.SettingsRevision, request.Token);
+            : await SaveStyleAsync(StyleScope.CurrentApplication, request.Style, request.SettingsRevision,
+                request.Token, false, default, applied: (token, revision) => applied = (token, revision));
         if (!result.Saved)
             SetTranslationMenuFeedback(request.Token, feedbackRevision, TranslationMenuPresentation.Reason(result.Code));
+        else if (result.Message is { } message && applied is { Token: { } successor } delivery)
+        {
+            try
+            {
+                SetTranslationMenuFeedback(successor, delivery.Revision, message);
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                // Keep the committed result available to the host's existing
+                // settings feedback even when this renderer also fails.
+            }
+        }
         return result;
     }
 

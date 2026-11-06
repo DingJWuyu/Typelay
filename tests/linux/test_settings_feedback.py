@@ -30,6 +30,41 @@ class Host:
 
 
 class SettingsFeedbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_style_warning_reaches_settings_feedback_even_after_its_source_changes(self):
+        for retired in (False, True):
+            with self.subTest(source_retired=retired):
+                reports = []
+                input_service = SimpleNamespace(
+                    glib=SimpleNamespace(timeout_add=lambda *_: 1),
+                    current_presentation=lambda _: object(),
+                    settings_commit_reported=reports.append,
+                )
+                overlay = Overlay(Host(), input_service, None, lambda: None)
+                token = {"revision": 1}
+                overlay.value = {"viewContext": {"token": token}}
+                peer = overlay.peer = object()
+                replacement = {"viewContext": {"token": {"revision": 2}}}
+                report = {
+                    "saved": True,
+                    "code": "style-saved-notification-failed",
+                    "message": NOTICE,
+                }
+
+                async def ask(operation, data=None):
+                    self.assertEqual(operation, "sessionStyle")
+                    self.assertEqual(data["token"], token)
+                    if retired:
+                        overlay.value = replacement
+                    return report
+
+                overlay.host = SimpleNamespace(ask=ask)
+                await overlay.set_session_style(peer, overlay.revision, token, {"style": None})
+                self.assertEqual(reports, [report])
+                self.assertEqual(
+                    overlay.session_token(),
+                    replacement["viewContext"]["token"] if retired else token,
+                )
+
     async def test_saved_tutorial_closes_after_delivering_its_shared_warning(self):
         reports = []
         tutorial = Tutorial.__new__(Tutorial)

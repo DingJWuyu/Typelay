@@ -5,8 +5,10 @@ namespace TypeLay.Runtime.Tests;
 
 public sealed class TranslationMenuTests
 {
-    [Fact]
-    public async Task ProductionMenuCanRemoveDormantOverrideWithoutReleasingStyleOrAlternative()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ProductionMenuCanRemoveDormantOverrideWithoutReleasingStyleOrAlternative(bool notificationFails)
     {
         using var s = new SessionScenario(modelIdentity: SessionScenario.HyIdentity,
             direction: new("zh", "ja"), initialStyles: new(TranslationStyle.Formal,
@@ -21,14 +23,81 @@ public sealed class TranslationMenuTests
         Assert.Equal(TranslationStyle.Natural, menu.ApplicationStyle);
         Assert.Null(menu.EffectiveStyle);
         Assert.False(menu.AlternativeReleased);
+        if (notificationFails)
+            s.Settings.StyleChanged += () => throw new InvalidOperationException("controlled style observer failure");
         long revision = s.Settings.Revision;
         var result = await s.View.StyleRequested!(new(s.View.Token, revision, null));
         Assert.True(result.Saved);
         Assert.True(s.Settings.Revision > revision);
         Assert.Empty(s.ReloadSettings().Styles!.Applications!);
         Assert.Equal(TranslationStyle.Formal, s.ReloadSettings().Styles!.Default);
+        if (notificationFails)
+        {
+            Assert.Equal("style-saved-notification-failed", result.Code);
+            Assert.Equal(SettingsCommitPresentation.NotificationFailedMessage, result.Message);
+            Assert.Equal(result.Message, s.View.Context!.TranslationActions!.Feedback);
+        }
         s.View.AlternativeRequested!(s.View.Token);
         Assert.Empty(s.Model.Jobs);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData("retired", false)]
+    [InlineData("session", false)]
+    [InlineData("command", false)]
+    [InlineData("session", true)]
+    [InlineData("command", true)]
+    public async Task CommittedMenuWarningDoesNotBorrowANewerInteraction(string successor, bool duringApply)
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand, modelIdentity: SessionScenario.HyIdentity,
+            direction: new("zh", "ja"), initialStyles: new(TranslationStyle.Formal,
+                new Dictionary<string, TranslationStyle> { ["org.typelay.ControlledApp"] = TranslationStyle.Natural }));
+        s.Model.StyledTranslationCapability = new(1);
+        s.Command("wake", 1);
+        s.Tick();
+        s.Tick(Limits.DebounceMs);
+        var token = s.View.Token;
+        bool advanced = false;
+        string? nextStatus = null;
+        void AdvanceAndFail()
+        {
+            if (advanced)
+                return;
+            advanced = true;
+            if (successor == "command")
+            {
+                s.Input.Notices.Enqueue(new("direct", CommandGeneration: s.Input.CommandGeneration,
+                    CommandSequence: 2, Rejection: Denial.Unsupported));
+                s.Tick();
+            }
+            else
+            {
+                s.Controller.StopSession();
+                if (successor == "session")
+                {
+                    s.FocusAnotherField();
+                    s.Command("wake", 2);
+                    s.Tick();
+                }
+            }
+            nextStatus = s.Controller.OperationStatus;
+            throw new InvalidOperationException("controlled observer failure after interaction changed");
+        }
+        if (duringApply)
+            s.Controller.Changed += AdvanceAndFail;
+        else
+            s.Settings.StyleChanged += AdvanceAndFail;
+
+        var result = await s.View.StyleRequested!(new(token, s.Settings.Revision, null));
+
+        Assert.True(advanced);
+        Assert.True(result.Saved);
+        Assert.Equal(SettingsCommitPresentation.NotificationFailedMessage, result.Message);
+        Assert.Empty(s.ReloadSettings().Styles!.Applications!);
+        Assert.Null(s.View.Context?.TranslationActions?.Feedback);
+        Assert.Equal(nextStatus, s.Controller.OperationStatus);
+        Assert.Null(s.Input.Permit);
         Assert.Empty(s.Service.Writes);
     }
 

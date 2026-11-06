@@ -8,6 +8,7 @@ import sys
 import uuid
 
 from settings_feedback import notice as commit_notice
+from settings_feedback import saved as commit_saved
 from wire import now_ms
 
 
@@ -783,7 +784,11 @@ class Overlay:
         try:
             # The shared controller owns qualification, persistence and feedback.
             # Never rebuild this request from a newer token after an await.
-            await self.host.ask("sessionStyle", {"token": token, **value})
+            result = await self.host.ask("sessionStyle", {"token": token, **value})
+            if commit_saved(result) and commit_notice(result):
+                # Keep the committed warning even if its menu projection is
+                # retired before this native source can display it.
+                self.input.settings_commit_reported(result)
         except (OSError, ValueError, EOFError, TimeoutError):
             if self.peer is peer and self.revision == revision and self.session_token() == token:
                 self.conceal("transport-unavailable")

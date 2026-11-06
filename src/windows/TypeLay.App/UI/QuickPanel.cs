@@ -409,8 +409,8 @@ internal sealed partial class QuickPanel : Window
             }
             var current = _session.GetStyleSettingsState();
             var result = await _session.ChangeStyleAsync(StyleScope.Global, choices.SelectedIndex == 2 ? TranslationStyle.Formal : TranslationStyle.Natural, current.SettingsRevision);
-            if (!result.Saved)
-                _saveError = UiTheme.L("风格未保存，请在设置中查看当前状态。", "Style was not saved. Review its status in Settings.");
+            _saveError = result.Message ?? (result.Saved ? null
+                : UiTheme.L("风格未保存，请在设置中查看当前状态。", "Style was not saved. Review its status in Settings."));
             Refresh();
         };
         DockPanel.SetDock(choices, Dock.Right);

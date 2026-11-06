@@ -8,7 +8,7 @@ internal sealed class WindowsSessionView : ISessionView, ISourceInteraction
     private readonly ISessionView _native, _browser;
     private ISessionView? _active;
     private ISourceInteraction? SourceInteraction => _active as ISourceInteraction;
-    public WindowsSessionView(ISessionView native, ISessionView browser)
+    public WindowsSessionView(ISessionView native, ISessionView browser, Action<StyleChangeResult>? reportStyleSave = null)
     {
         _native = native;
         _browser = browser;
@@ -22,8 +22,14 @@ internal sealed class WindowsSessionView : ISessionView, ISourceInteraction
             view.EditorRegenerateRequested = action => ReferenceEquals(_active, view) && EditorRegenerateRequested is { } regenerate
                 ? regenerate(action) : Task.FromResult(false);
             view.AlternativeRequested = token => { if (ReferenceEquals(_active, view)) AlternativeRequested?.Invoke(token); };
-            view.StyleRequested = request => ReferenceEquals(_active, view) && StyleRequested is { } change
-                ? change(request) : Task.FromResult(new StyleChangeResult(false, "style-stale"));
+            view.StyleRequested = async request =>
+            {
+                var result = ReferenceEquals(_active, view) && StyleRequested is { } change
+                    ? await change(request) : new StyleChangeResult(false, "style-stale");
+                if (result.Saved && result.Message is not null)
+                    reportStyleSave?.Invoke(result);
+                return result;
+            };
             view.BeginGlossaryRequested = token => ReferenceEquals(_active, view) ? BeginGlossaryRequested?.Invoke(token) : null;
             view.AddGlossaryRequested = request => ReferenceEquals(_active, view) && AddGlossaryRequested is { } add
                 ? add(request) : Task.FromResult(new GlossaryChangeResult(false, "glossary-stale"));

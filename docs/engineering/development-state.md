@@ -2,27 +2,35 @@
 
 本页只维护现役任务。要求以[产品基线](../product/README.md)、[原型](../design/README.md)和[原型对照](../design/prototype-parity.md)为准；历史执行记录查 Git。
 
-## 本轮范围：实施架构目标
+## 当前身份与最近 CI
 
 用户已明确授权开始实施[目标架构](architecture-target.md)。当前分支为 `work/architecture-deepening`，从已评估的 `work/linux-usability` 基线 `48baf7f` 创建；产品规格、已确认原型和有效 ADR 保持。本轮在本地完成迁移和必要验证，不操作用户桌面，不启动 GitHub 流程或此前平台诊断。
 
-**用户已要求恢复，当前正在完成独立实现确认。** 已核对暂停提交 `9dd5ada` 与在盘验证原件，补齐正式 Linux 搬迁包检查，并收完 advisor 指出的文档前言和 Windows 文案重复。完整平台验收仍未完成。
+**用户已要求恢复，菜单反馈遗漏已修复，当前准备最终整合验证和独立复评。** 已核对暂停提交 `9dd5ada` 与在盘验证原件，补齐正式 Linux 搬迁包检查，并收完文档前言和 Windows 文案重复。完整平台验收仍未完成，本轮未运行 CI。
 
 [固定 rubric](architecture-rubric.md)保持不变，**90.3/100** 和 **90.5/100** 仍只是设计分数。当前独立实现复评针对 `9dd5ada` 给出 **85.3/100**，认可本轮架构收敛，未发现必须修改的代码缺陷，但明确不能宣称完整桌面产品交付。原件为 `artifacts/architecture/implementation-advisor-r2.json`。收尾后的代码还需新的独立确认，最终结论写入[独立评估](architecture-assessment.md)。目标文档只同步过时前言，职责、产品约束、迁移条件和 rubric 未变。
 
 | DAG 切片 | 负责人 | 当前状态与下一动作 | 完成条件 |
 | --- | --- | --- | --- |
 | M0 基线与环境 | 主代理 | 已完成，固定 SDK 10.0.401 与基线 Runtime 1565 项通过；GTK3/4、Qt6 可编译 | 区分既有失败、可保持路径与未测平台能力 |
-| M1 设置提交 | `/root/implement_settings` | 已补齐 Linux 简化保存入口、教程及 Windows 教程完成的明确结果交付；通知失败沿既有反馈显示，已保存教程仍按原行为关闭。真实 host 相关 10 项、反馈 4 项、练习 15 项与相关输入 4 项通过，待独立复评 | 视图不再推断提交点，所有保存入口交付明确结果，受影响行为验证完成 |
+| M1 设置提交 | `/root/implement_settings` | 已补齐简化保存、教程与浮层风格提交结果。通知失败警告进入精确后继菜单和两端既有设置/托盘反馈；QuickPanel 也消费共享消息，保留原质量门。68 项共享及 5 项 Python 反馈回归通过 | 视图不再推断提交点，所有保存入口交付明确结果，受影响行为验证完成 |
 | M2 Linux 输入所有权 | `/root/implement_linux_input` | 实现完成；受控输入 221、setup 117、desktop 20、practice 14 项通过；完整原生交互未验收 | Overlay 的 Input 私有记录读写退出，回源与断连语义保持 |
 | M3 交互身份与呈现 | 主代理、`/root/implement_presentation_consumers` | 实现完成；暂停呈现和表单单向身份已整合，浏览器三组共 34 项真实 DOM 回归、三端原生编译通过；GTK3 拒绝路径已在隔离桌面验证 | 显示与行为身份分离，各消费者旧比较退出 |
 | M4 会话与结算 | `/root/implement_session_operations`、`/root/implement_write_settlement`、`/root/implement_windows_write_retirement` | 实现完成；真实 Linux host 关闭交接和 GTK3 精确未用许可退休通过；其它原生写入与退出路径仍缺平台证据 | 具体操作拥有寿命，主 Capture/Stop 退出专用分支，关闭先交还结果 |
 | M5 教程职责 | `/root/implement_session_operations` | 已补齐按需练习命令的登记、观察和退休，主控制器不再写其私有字段；65 项受影响回归与最终全套 Runtime 通过 | 进度不参与权限，真实自有源证据保留 |
-| M6 清理与复评 | 主代理 | `9dd5ada` 已获 85.3 分独立认可；已同步目标前言，Windows 四处通知反馈改用既有共享结果或常量，最新 App 编译通过，准备最后一次全新上下文确认 | 旧路径退出，受影响构建/验证完成，实际实现独立复评 |
+| M6 清理与复评 | 主代理 | r3 对 `8c8e4a9` 给出 85.3 分但未收敛，原件为 `implementation-advisor-r3.json`。其菜单遗漏已修复，接下来完成一次完整 Runtime 整合验证，并对同一最终提交取得两位全新 advisor 的独立确认 | 旧路径退出，受影响构建/验证完成，实际实现独立复评 |
 
 实现代理均以 `fork_turns=none` 创建，请求配置为 `gpt-6-astra`、`xhigh`；工具只确认创建，实际配置未核实。主代理负责集成、冲突与检查，不让每项常规动作再等待用户确认。
 
 `/root/implementation_spec_advisor_r2` 同样请求 `gpt-6-astra`、`xhigh`，工具只回显任务创建，实际配置未核实。它没有读取先前分数或评审结论，只读固定规则、目标正文、当前源码及必要验证原件。
+
+`/root/implementation_spec_advisor_r3` 以 `fork_turns=none` 创建，请求配置仍为 `gpt-6-astra`、`xhigh`，实际配置未核实。它独立评估 `8c8e4a9`，没有读取 r2 或其它旧结论与分数。
+
+菜单修正的实际价值：用户从浮层移除已有应用风格覆盖时，文件已经保存，但通知观察者失败的结果未到达现有反馈位置。源码可达性已经由 advisor 指出，发生频率未知；影响是用户无法区分保存与通知状态，不是已证实的数据丢失。复用现有菜单入口、真实设置文件和受控通知失败建立回归，仅补齐结果交付，不新增错误框架或扩大 GUI 矩阵。
+
+已沿 `StyleRequested` 公共入口复现：原菜单意图的真实文件提交成功，结果 `Saved/Code/Message` 正确，但菜单 `Feedback` 为 null。红色原件为 `artifacts/architecture/validation/style-menu-notification-red.log` 与对应 TRX。修正只允许实际提交产生的精确后继身份显示菜单反馈；原源已经退休时沿已有设置/托盘反馈交付事实，不放宽 token 或重放保存。
+
+最终菜单修正原件为 `style-menu-notification-final.trx`（68 项）、`style-menu-linux-feedback-green.log`（5 项）及 `style-menu-{linux,windows}-final-build.log`（各零警告、零错误）。Windows App.Tests 仅 `-t:Compile` 通过，新增原生/浏览器反馈路由回归未在 WPF 运行。全局反馈始终消费明确的已提交警告，不用共享投影推测跨进程菜单是否已经显示，也不新增传输确认状态。
 
 实现取舍已由各次独立上下文 advisor 核对。`/root/implementation_advisor_writes` 明确指出：Published 许可不能凭 TTL、容量或断连当作未执行；普通未使用许可靠原执行者的精确未用退休事实结束，已认领执行靠原回执结算。Windows 复用原 Grant 的 `Quiet && !Claimed`，GTK/Qt/browser 在原源线程区分在途执行和已经完全退休的许可。超期缺事实才按原目标记为未知。正常关闭保持两端事件循环和原回执消费，结算后再释放。没有新持久账本、重试或通用 Quiet。
 
@@ -46,7 +54,7 @@ GTK3 成功捕获、编辑与接受、GTK4/Qt GUI 仍未验证；完整合作 Fc
 
 1. 已核对 `work/architecture-deepening` 的最新本地提交与工作树。保留现有源码、工具链和验证证据，不重做已通过且未再变动的检查。
 2. 当前修正后的 Runtime 原件为 `artifacts/architecture/validation/runtime-pause.trx`，1592 项通过；Linux 宿主与 Windows App 最新构建均为零警告、零错误。Core、Linux 输入与浏览器原验证仍见前文；编译与受控端口不能冒充原生桌面通过。
-3. 创建新的 `fork_turns=none` advisor 对收尾后的提交做最后一次独立确认。只给目标文件第 1 至 332 行、必要代码和原始验证证据，不给本页评分段、评估页、旧 advisor 报告或期待分数。请求配置仍为 `gpt-6-astra`、`xhigh`，实际未回显则记为未核实。
+3. 菜单结果修正和必要验证完成后，对同一最终提交创建两位互不读取结果的 `fork_turns=none` advisor。只给目标文件第 1 至 332 行、必要代码和原始验证证据，不给本页评分段、评估页、旧 advisor 报告或期待分数。请求配置仍为 `gpt-6-astra`、`xhigh`，实际未回显则记为未核实。
 4. 主代理处理新证据支持的必须修正项；原生平台缺少运行条件时继续保持未验收，不能靠改 rubric 或制造通用抽象收敛。取得新的独立结论后更新评估页与本页，评分原件保持 advisor 原文。
 
 当前整体验收未完成，按用户要求保留 `artifacts/architecture-baseline` 基线 worktree、临时诊断和测试证据，待达到完成条件后再清理。继续执行既定架构目标，不启动 GitHub 流程或另一个重构方案。
@@ -68,4 +76,6 @@ Windows 最后四处重复反馈只改为消费已有 `result.Message` 或 `Sett
 | 普通输入框与浏览器 | 物理 Tab、完整中文 IME、不同显示器/DPI、完整混版及恢复路径尚未形成同头验收；软件注入、DOM 合同与受控端口不能替代 |
 | 分发与视觉 | 搬迁后的完整发行包、真实原生 Undo/redo 与各端逐页像素一致性仍需对应平台证据；构建和静态检查不关闭这些缺口 |
 
-Index 仍是用户明确准备时的默认模型，保留已有 Argos/Hy 安装与选择。术语仅对已登记固定 Index profile 的中英双向开放；风格、另述及组合质量门不因架构整理而开放。安装、握手、采集和语言质量是不同证据。
+## 模型能力边界
+
+Index 仍是用户明确准备时的默认模型，保留已有 Argos/Hy 安装与选择。术语仅对已登记固定 Index profile 的中英双向开放；风格、另述及组合质量门不因架构整理而开放。安装、握手、采集和语言质量是不同证据。本轮没有采集新模型质量证据或改变发布行。

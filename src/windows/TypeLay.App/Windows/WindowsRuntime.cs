@@ -27,7 +27,8 @@ internal static class WindowsRuntime
     public static SessionController CreateSession(SettingsStore settings, ITranslationService model, OverlayWindow overlay,
         bool automationTest = false, IInputBroker? broker = null, WindowsApplicationSupport? support = null,
         PracticeHost? practice = null, Action<ShortcutRegistrationRecovery>? bindShortcutRecovery = null,
-        Action<Func<SourceObservation>>? bindSourceObservation = null)
+        Action<Func<SourceObservation>>? bindSourceObservation = null,
+        Action<StyleChangeResult>? reportStyleSave = null)
     {
         var monitor = new KeyboardHook(automationTest, overlay.Handle);
         overlay.ConfigureOrdinaryInput(monitor);
@@ -43,7 +44,7 @@ internal static class WindowsRuntime
         support?.BindBrowser(browser);
         var browserView = new BrowserSessionView(browser, () => overlay.SettingsRequested?.Invoke(),
             () => overlay.LanguageRequested?.Invoke());
-        var view = new WindowsSessionView(overlay, browserView);
+        var view = new WindowsSessionView(overlay, browserView, reportStyleSave);
         // The formal composition has one source route. Automation, user settings
         // and injected Brokers cannot select legacy sent activation or grant
         // eligibility; each real capture and source install still prove their part.

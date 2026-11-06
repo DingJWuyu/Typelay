@@ -73,7 +73,12 @@ internal static class Program
             practiceHost = new PracticeHost();
             ShortcutRegistrationRecovery? shortcutRecovery = null;
             session = WindowsRuntime.CreateSession(settings, model, overlay, automationTest, support: support, practice: practiceHost,
-                bindShortcutRecovery: recovery => shortcutRecovery = recovery);
+                bindShortcutRecovery: recovery => shortcutRecovery = recovery,
+                reportStyleSave: result =>
+                {
+                    if (!disposed && result.Message is { } message)
+                        tray?.ShowBalloonTip(5000, "TypeLay", message, Forms.ToolTipIcon.Warning);
+                });
             practiceHost.Bind(session);
             var window = new SettingsWindow(settings, model,
                 () => practiceHost.Open(Path.Combine(AppPaths.Data, "settings.json")), support, controller: session)

@@ -1395,7 +1395,7 @@ public sealed partial class SessionController : IDisposable
 
     private async Task<StyleChangeResult> SaveStyleAsync(StyleScope scope, TranslationStyle? style,
         long expectedSettingsRevision, SessionViewToken? token, bool reset, CancellationToken cancellationToken,
-        string? savedApplication = null)
+        string? savedApplication = null, Action<SessionViewToken?, long>? applied = null)
     {
         var capability = _model.StyledTranslationCapability;
         var combinedCapability = _model.StyledGlossaryTranslationCapability;
@@ -1449,7 +1449,11 @@ public sealed partial class SessionController : IDisposable
             var result = await _settings.CommitStylesAsync(expectedSettingsRevision, next,
                 () => _ownedSource.RetirementPending
                     ? RetireAutomaticPracticeAsync() : Task.FromResult(true),
-                () => Check(true), cancellationToken, ApplyStyleSettings);
+                () => Check(true), cancellationToken, () =>
+                {
+                    var successor = ApplyStyleSettings();
+                    applied?.Invoke(successor.Token, successor.Revision);
+                });
             return new(result.Saved, result.State == SettingsCommitState.CommittedNotificationFailed
                 ? "style-saved-notification-failed" : result.Saved ? "style-saved"
                 : result.Reason == "persistence-failed" ? "style-save-failed"
@@ -1519,11 +1523,14 @@ public sealed partial class SessionController : IDisposable
         && _hook.GetFocus(token.Target) != FocusMember.Other
         && _loop.NowMs >= source.ObservedAtMs && _loop.NowMs - source.ObservedAtMs <= Limits.ObservationMaxAgeMs;
 
-    private void ApplyStyleSettings()
+    private (SessionViewToken? Token, long Revision) ApplyStyleSettings()
     {
         _configurationRevision++;
         _commandFeedbackRevision++;
         _generation++;
+        // Capture the identity established by this commit before any external
+        // revoke/render/Changed callback can start another interaction.
+        var successor = (CurrentTranslationToken(), _commandFeedbackRevision);
         _permitUntil = 0;
         _presentationPermit = null;
         _statusOverride = null;
@@ -1546,6 +1553,7 @@ public sealed partial class SessionController : IDisposable
         }
         Render();
         Changed?.Invoke();
+        return successor;
     }
 
     public AlternativeState GetAlternativeState()

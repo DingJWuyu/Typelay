@@ -6,6 +6,40 @@ namespace TypeLay.App.Tests;
 
 public sealed class WindowsSessionViewTests
 {
+    [Theory]
+    [InlineData("native", false)]
+    [InlineData("native", true)]
+    [InlineData("windows-browser", false)]
+    [InlineData("windows-browser", true)]
+    public async Task SavedStyleWarningReachesHostFeedbackEvenAfterItsSurfaceRetires(string backend, bool retire)
+    {
+        var native = new View();
+        var browser = new View();
+        var reports = new List<StyleChangeResult>();
+        var router = new WindowsSessionView(native, browser, reports.Add);
+        var pending = new TaskCompletionSource<StyleChangeResult>();
+        router.StyleRequested = _ => pending.Task;
+        var settings = new UserSettings();
+        var session = new Session(settings.Direction);
+        var source = Source(backend);
+        session.Observe(source, FocusMember.Source, 1);
+        router.Render(session, settings, false);
+        var surface = backend == "native" ? native : browser;
+        var saving = surface.StyleRequested!(new(new(source.Target, Guid.NewGuid(), 7), 12, null));
+        if (retire)
+            router.HideQuietly();
+        int renders = surface.Rendered;
+        var committed = new StyleChangeResult(true, "style-saved-notification-failed");
+
+        pending.SetResult(committed);
+        Assert.Same(committed, await saving);
+
+        Assert.Same(committed, Assert.Single(reports));
+        Assert.Equal(renders, surface.Rendered);
+        router.HideQuietly();
+        Assert.False((await surface.StyleRequested!(new(new(source.Target, Guid.NewGuid(), 8), 13, null))).Saved);
+    }
+
     [Fact]
     public void ViewSwitchKeepsOneSurfaceAndRejectsOldSurfaceCallbacks()
     {
