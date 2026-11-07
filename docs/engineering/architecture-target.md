@@ -1,8 +1,8 @@
 # 架构约束与演进准则
 
-本文规定后续架构修改必须保留的产品行为、职责边界和迁移退出条件。当前系统、模块及进程视图见[系统架构](architecture.md)，具体实现语义见[会话合同](session-runtime.md)与[模型运行架构](model-runtime.md)。独立结论见[架构评估](architecture-assessment.md)，剩余工作只在[开发状态](development-state.md)维护。
+本文规定后续架构修改必须保留的产品行为、职责边界和迁移退出条件。当前系统、模块及进程视图见[系统架构](architecture.md)，具体实现语义见[会话合同](session-runtime.md)与[模型运行架构](model-runtime.md)。剩余工作只在[开发状态](development-state.md)维护。
 
-本页的文案整理没有重新评价架构，也没有改变产品规格或评分规则。既有评估针对当时的 Git 文档快照，指纹与提交见[评估身份](architecture-assessment.md#设计依据与评估身份)。架构实施收敛不代表原生交互、模型质量或完整产品验收通过。
+架构实施收敛不代表原生交互、模型质量或完整产品验收通过。
 
 ## 产品依据保持不变
 
