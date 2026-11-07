@@ -160,11 +160,13 @@ public sealed partial class SetupRenderingTests
     public Task GeneralFailedSaveRestoresTheSwitchAndRetriesOnlyTheCurrentRequest() => desktop.RunAsync(async () =>
     {
         await using var scene = new GeneralScene("en", "dark");
-        var old = GeneralToggle(GeneralElement<CheckBox>(scene.Window, "GeneralStartup"));
+        var old = GeneralToggle(GeneralElement<CheckBox>(scene.Window, "GeneralEnable"));
+        Assert.Empty(scene.StartupChanges);
         Directory.CreateDirectory(scene.Path + ".tmp");
         old.Toggle();
+        Assert.Empty(scene.StartupChanges);
         Assert.Equal(scene.Before, File.ReadAllText(scene.Path));
-        Assert.False(GeneralElement<CheckBox>(scene.Window, "GeneralStartup").IsChecked);
+        Assert.True(GeneralElement<CheckBox>(scene.Window, "GeneralEnable").IsChecked);
         Assert.True(GeneralElement<FrameworkElement>(scene.Window, "SettingsSaveBannerText").IsVisible);
         RenderTray(scene.Window, "general-save-failed-en-dark-920.png");
         Directory.Delete(scene.Path + ".tmp");
@@ -175,11 +177,41 @@ public sealed partial class SetupRenderingTests
         catch (ElementNotAvailableException) { }
         catch (ElementNotEnabledException) { }
         Assert.Equal(scene.Before, File.ReadAllText(scene.Path));
-        TrayInvoke(GeneralElement<Button>(scene.Window, "SettingsSaveBannerAction"));
+        Assert.Empty(scene.StartupChanges);
+        var retry = GeneralElement<Button>(scene.Window, "SettingsSaveBannerAction");
+        Assert.Equal("Retry", retry.Content);
+        TrayInvoke(retry);
         await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
-        Assert.True(WindowsRuntime.CreateSettings(scene.Path).Value.Startup);
-        Assert.True(GeneralElement<CheckBox>(scene.Window, "GeneralStartup").IsChecked);
+        Assert.Empty(scene.StartupChanges);
+        Assert.False(new SettingsStore(scene.Path).Value.Enabled);
+        Assert.False(GeneralElement<CheckBox>(scene.Window, "GeneralEnable").IsChecked);
         Assert.False(scene.Settings.Value.ExperimentalWriteback);
+    });
+
+    [Fact]
+    public Task GeneralStartupFileFailureShowsTheChangedSystemWarningWithoutRetrying() => desktop.RunAsync(async () =>
+    {
+        await using var scene = new GeneralScene("en", "dark");
+        Directory.CreateDirectory(scene.Path + ".tmp");
+        GeneralToggle(GeneralElement<CheckBox>(scene.Window, "GeneralStartup")).Toggle();
+        Assert.Equal([true], scene.StartupChanges);
+        Assert.Equal(scene.Before, File.ReadAllText(scene.Path));
+        Assert.False(GeneralElement<CheckBox>(scene.Window, "GeneralStartup").IsChecked);
+        RenderTray(scene.Window, "general-startup-save-failed-en-dark-920.png");
+        var warning = GeneralElement<TextBlock>(scene.Window, "SettingsSaveBannerText");
+        Assert.True(warning.IsVisible);
+        Assert.Equal("The settings file was not saved, but the Windows startup setting changed. Review the current settings and Windows startup state.", warning.Text);
+        Assert.DoesNotContain(Descendants(scene.Window).OfType<TextBlock>(), text => text.IsVisible
+            && text.Text == "设置文件未保存，登录启动的系统设置已更改。请检查当前设置与系统登录启动状态。");
+        var view = GeneralElement<Button>(scene.Window, "SettingsSaveBannerAction");
+        Assert.Equal("View", view.Content);
+        Directory.Delete(scene.Path + ".tmp");
+        TrayInvoke(view);
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.Equal([true], scene.StartupChanges);
+        Assert.Equal(scene.Before, File.ReadAllText(scene.Path));
+        Assert.False(new SettingsStore(scene.Path).Value.Startup);
+        Assert.False(GeneralElement<CheckBox>(scene.Window, "GeneralStartup").IsChecked);
     });
 
     [Theory]
@@ -328,6 +360,7 @@ public sealed partial class SetupRenderingTests
         {
             get;
         }
+        public List<bool> StartupChanges { get; } = [];
         public ModelClient Model
         {
             get;
@@ -351,7 +384,8 @@ public sealed partial class SetupRenderingTests
         public GeneralScene(string language, string theme)
         {
             Path = System.IO.Path.Combine(Directory, "settings.json");
-            Settings = WindowsRuntime.CreateSettings(Path);
+            Settings = new(Path, StartupChanges.Add,
+                app => System.IO.Path.GetFileNameWithoutExtension(app).Trim().ToLowerInvariant());
             Settings.Update(Settings.Value with
             {
                 UiLanguage = language,

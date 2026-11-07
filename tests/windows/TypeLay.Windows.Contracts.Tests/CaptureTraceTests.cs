@@ -25,8 +25,8 @@ public sealed class CaptureTraceTests
             request.Flush(125);
             using var sample = JsonDocument.Parse(Assert.Single(File.ReadAllLines(path + ".broker.jsonl")));
             var root = sample.RootElement;
-            Assert.Equal(["atMs", "operation", "result", "durationMs", "stages", "responseCompletedAtMs", "droppedCount"],
-                root.EnumerateObject().Select(property => property.Name));
+            Assert.Equal(["atMs", "droppedCount", "durationMs", "operation", "responseCompletedAtMs", "result", "stages"],
+                root.EnumerateObject().Select(property => property.Name).Order(StringComparer.Ordinal));
             Assert.Equal(100, root.GetProperty("atMs").GetInt64());
             Assert.Equal(125, root.GetProperty("responseCompletedAtMs").GetInt64());
             Assert.Equal("capture", root.GetProperty("operation").GetString());
@@ -297,7 +297,8 @@ public sealed class CaptureTraceTests
                 { ("prefix", 100, 110), ("payload", 110, 130), ("flush", 130, 160) })
             {
                 var boundary = delivery.GetProperty(stage);
-                Assert.Equal(["calledAtMs", "returnedAtMs"], boundary.EnumerateObject().Select(property => property.Name));
+                Assert.Equal(["calledAtMs", "returnedAtMs"],
+                    boundary.EnumerateObject().Select(property => property.Name).Order(StringComparer.Ordinal));
                 Assert.Equal(called, boundary.GetProperty("calledAtMs").GetInt64());
                 Assert.Equal(returned, boundary.GetProperty("returnedAtMs").GetInt64());
             }

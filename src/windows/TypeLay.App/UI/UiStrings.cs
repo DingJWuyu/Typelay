@@ -116,6 +116,8 @@ internal static class UiStrings
         ["重试保存"] = "Retry Save",
         ["设置已保存"] = "Settings saved",
         ["设置未保存"] = "Settings were not saved",
+        ["设置未保存。登录启动的系统状态未能确认，请检查系统登录启动设置。"] = "Settings were not saved. The Windows startup state could not be confirmed. Check Windows startup settings.",
+        ["设置文件未保存，登录启动的系统设置已更改。请检查当前设置与系统登录启动状态。"] = "The settings file was not saved, but the Windows startup setting changed. Review the current settings and Windows startup state.",
         ["已保存，请重新打开设置确认当前状态。"] = "Saved. Reopen Settings to confirm its current state.",
         ["未保存：请检查输入。草稿仍保留。"] = "Not saved. Check the value; your edit is retained.",
         ["请检查当前用户目录与组织策略。"] = "Check the current user's data directory and organization policy.",

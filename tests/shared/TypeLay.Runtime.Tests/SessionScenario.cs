@@ -398,7 +398,10 @@ internal sealed class SessionScenario : IDisposable
         {
             get; set;
         }
-        public TaskCompletionSource<WriteReceipt>? PendingWrite { get; set; }
+        public TaskCompletionSource<WriteReceipt>? PendingWrite
+        {
+            get; set;
+        }
         public WriteReceipt DirectReceipt { get; set; } = new(WriteStatus.RejectedBeforeMutation, Denial.Unsupported);
         public TaskCompletionSource<InputCapture>? PendingCapture
         {
@@ -705,7 +708,10 @@ internal sealed class SessionScenario : IDisposable
             CanAccept = false;
             Visible = true;
         }
-        public PresentationIdentity? PauseIdentity { get; private set; }
+        public PresentationIdentity? PauseIdentity
+        {
+            get; private set;
+        }
         public void HideQuietly()
         {
             Context = null;

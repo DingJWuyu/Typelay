@@ -27,6 +27,7 @@ SOURCE_PATHS = (
     "src/linux",
     "src/shared",
     "eng/linux",
+    "eng/index_profile.py",
     "eng/fonts/prepare.py",
     "eng/fonts/fonts.lock.json",
     "eng/fonts/Noto-CJK-LICENSE.txt",
@@ -108,6 +109,29 @@ def package_documentation(output, identity):
 def build(output, fixture=False, cooperation_package=None, hy_runtime=None, index_runtime=None):
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         raise RuntimeError("build-requires-linux-x86_64")
+    output = output.resolve()
+    if not output.is_relative_to(ROOT / "artifacts"):
+        raise ValueError("output-must-be-in-artifacts")
+    font_root = ROOT / "artifacts/ui-fonts"
+    native = ROOT / "artifacts/linux/native"
+    # The output is replaced wholesale. Reject both containment directions so
+    # it can neither erase build inputs nor write a package into their trees.
+    for source in (
+        font_root,
+        ROOT / "artifacts/font-sources",
+        native,
+        ROOT / "artifacts/linux/index-cpu-runtime",
+        ROOT / "artifacts/linux/index-cpu-download",
+        ROOT / "artifacts/TypeLay-Linux-preview-x86_64.tar.gz",
+        ROOT / "artifacts/TypeLay-Linux-preview-x86_64.tar.gz.sha256",
+        hy_runtime,
+        index_runtime,
+        cooperation_package,
+    ):
+        if source is not None:
+            source = source.resolve()
+            if output.is_relative_to(source) or source.is_relative_to(output):
+                raise ValueError(f"output-overlaps-build-input: {source}")
     if index_runtime is None:
         from eng.linux.index.prepare_runtime import prepare as prepare_index_runtime
 
@@ -117,15 +141,10 @@ def build(output, fixture=False, cooperation_package=None, hy_runtime=None, inde
     identity = source_identity(require_clean=cooperation_package is not None)
     if cooperation_package is not None and not cooperation_package.is_file():
         raise ValueError("requested-cooperation-package-is-missing")
-    output = output.resolve()
-    if output == ROOT or not output.is_relative_to(ROOT / "artifacts"):
-        raise ValueError("output-must-be-in-artifacts")
-    font_root = ROOT / "artifacts/ui-fonts"
     prepare_bundle(font_root, ROOT / "artifacts/font-sources")
     if output.exists():
         shutil.rmtree(output)
     output.mkdir(parents=True)
-    native = ROOT / "artifacts/linux/native"
     run(
         "dotnet",
         "publish",

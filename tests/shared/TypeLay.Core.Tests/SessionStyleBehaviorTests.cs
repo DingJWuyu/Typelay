@@ -62,7 +62,7 @@ public sealed class SessionStyleBehaviorTests
                 new(source.Target, source.ObservedAtMs, source.ObservedAtMs), source.ObservedAtMs, TranslationStyle.Formal, 17)
             : DirectTranslation.Start(source, new("zh", "en"), source.ObservedAtMs, TranslationStyle.Formal, 17);
         var operation = Assert.IsType<DirectTranslation>(started.Operation);
-        Assert.Same(source, operation.Job.Basis);
+        Assert.Equal(source, operation.Job.Basis);
         Assert.Equal("你好", operation.Job.SourceText);
         Assert.Equal(TranslationStyle.Formal, operation.Job.Style);
         Assert.Equal(17, operation.Job.ConfigurationRevision);

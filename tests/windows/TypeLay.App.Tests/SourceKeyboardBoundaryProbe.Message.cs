@@ -2,7 +2,9 @@ extern alias BrokerProduction;
 
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text.Json;
+using Microsoft.Win32.SafeHandles;
 using TypeLay.Core;
 using TypeLay.Windows.Contracts;
 using Xunit;
@@ -280,4 +282,12 @@ public sealed partial class SourceKeyboardBoundaryProbe
         }
         Assert.True(status != "precondition_failed", $"{mode}: {error}; results: {directory}");
     }
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool OpenProcessToken(nint process, uint access, out SafeAccessTokenHandle token);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetTokenInformation(SafeAccessTokenHandle token, int informationClass,
+        out uint value, uint size, out uint returned);
 }

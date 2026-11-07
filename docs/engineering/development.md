@@ -96,12 +96,11 @@ Python 开发工具进入 [eng/requirements.txt](../../eng/requirements.txt)。�
 
 主工作流是 [check.yml](../../.github/workflows/check.yml)。[ci_scope.py](../../eng/shared/ci_scope.py) 根据事件和提交证据选择检查范围。工作流的触发分支以 YAML 为准，存在触发器不代表获得修改该分支的授权。
 
-默认完整检查覆盖共享、Windows 和 Linux。两个平台工作分支的有效普通 push 可以按本次 push 触及的全部路径缩减平台范围。选择器会计入撤销、重命名和合并父提交；提交身份不完整、未知路径、共享生产变更或空变更会保留双端检查。
+默认完整检查覆盖共享、Windows 和 Linux。`trunk`、PR 和普通手动运行执行完整检查。`work/**` 分支的有效普通 push 可以按本次 push 触及的全部路径缩减平台范围。选择器会计入撤销、重命名和合并父提交；提交身份不完整、未知或共享路径、跨平台变更和空变更会保留双端检查。
 
 查看结果时，区分以下情形：
 
-- 仅文档的有效平台 push 只运行共享检查。Core、Runtime、Protocol 根目录已有 `*Tests.cs` 的普通修改可选择共享及 Windows 完整检查；新增、删除、重命名和辅助源码不适用该例外。
-- Linux 练习窗口的局部变更可选择练习部分验收。具体范围见 [Linux 场景选择](../platforms/linux/development.md#按变更选择场景)。Qt 的局部检查还需核对整支历史、固定源码和发行 artifact，见 [Qt 部分检查](../platforms/linux/qt.md#部分-qt-检查不构成发行验收)。部分场景通过只证明本次场景。
+- 仅文档的有效工作分支 push 只运行共享检查；只涉及单个平台的变更保留共享与该平台检查。共享测试修改也保留双端检查。
 - `index-windows` 和 `index-linux` 独立检查正式 Index 安装器与宿主生命周期。它们不替代既有输入、Hy 或 GUI 检查；`quality-only` 也不执行这些 Index job。
 - `quality-only` 必须同时显式选择质量采集。它用于固定响应采集，不构成产品验收。只有执行这类任务时才读[翻译质量采集指南](translation-quality.md#linux-模型包生命周期中的显式质量采集)。
 

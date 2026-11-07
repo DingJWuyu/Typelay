@@ -132,18 +132,10 @@ internal static class Program
         controls.Children.Add(submit);
         broker.Written += RefreshCounts;
         model.Changed += () => modelStatus.Text = model.Status;
-        var previewEditor = ((Grid)((Border)overlay.Content).Child).Children.OfType<TextBox>().Single();
-        string last = "", lastPreview = "";
-        int translatedPreviews = 0;
+        string last = "";
         var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
         timer.Tick += (_, _) =>
         {
-            if (previewEditor.Text != lastPreview)
-            {
-                lastPreview = previewEditor.Text;
-                if (lastPreview.Length > 0 && !lastPreview.Contains("翻译") && !lastPreview.Contains("准备"))
-                    translatedPreviews++;
-            }
             string report = JsonSerializer.Serialize(new
             {
                 suite = "production-desktop-fixture",
@@ -160,7 +152,6 @@ internal static class Program
                 injectedKeys = true,
                 replayRunning = inputReplay.IsEnabled,
                 sourceLength = a.Text.Length,
-                translatedPreviews,
                 overlayVisible = overlay.IsVisible
             });
             if (report != last)

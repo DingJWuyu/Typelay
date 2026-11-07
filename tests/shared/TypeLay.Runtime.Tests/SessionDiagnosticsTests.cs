@@ -54,7 +54,8 @@ public sealed class SessionDiagnosticsTests
             s.Service.PendingDirectWrite.SetResult(new(status, reason,
                 status == WriteStatus.Verified ? plan.Expected with
                 {
-                    Text = "private-direct-result", Selection = new(21, 21)
+                    Text = "private-direct-result",
+                    Selection = new(21, 21)
                 } : null));
             s.Tick();
             string trace = File.ReadAllText(path);

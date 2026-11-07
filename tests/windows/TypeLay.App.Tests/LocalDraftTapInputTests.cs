@@ -345,7 +345,11 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                     return;
                 // This observes the existing cancellation callback, not the
                 // native foreground event that may have preceded it.
-                Volatile.Write(ref firstCancellation, new { openingMatches = id == opening, state = ObserveState() });
+                Volatile.Write(ref firstCancellation, new
+                {
+                    openingMatches = id == opening,
+                    state = ObserveState()
+                });
             });
             hook.SetLocalDraftPrompt(opening, confirmation, replaceFocused: true);
             stage = "original-pair";
@@ -451,7 +455,13 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                 inputObservationsDropped++;
                 return;
             }
-            inputObservations.Add(new { phase, nativeTime, pressSequence = press?.Sequence, state = ObserveState() });
+            inputObservations.Add(new
+            {
+                phase,
+                nativeTime,
+                pressSequence = press?.Sequence,
+                state = ObserveState()
+            });
         }
         async Task Until(Func<bool> condition)
         {

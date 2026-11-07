@@ -218,6 +218,7 @@ class NativeForegroundGuardTests(unittest.TestCase):
                 )
             result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=5)
             cases = {
+                53: "window properties match independent buffers by name and preserve focus-set failures",
                 50: "original Ctrl + fresh grant accepts F7 once and keeps only Fn tail debt",
                 51: "Ctrl+F1-F24, F10 system messages, repeats and both release orders",
                 52: "observer/old snapshot/interrupted Ctrl/injected source/early Fn never authorize a write",
@@ -234,13 +235,15 @@ class NativeForegroundGuardTests(unittest.TestCase):
                 11: "owned capture requires the exact focus revision before reading",
                 12: "automatic lifetime cannot use ordinary v2 write routes",
                 13: "owned capture rechecks dynamic qualification before and after reading",
+                14: "owned input probe is body-free and requires the current clear input identity",
+                15: "owned acceptance rechecks the original input identity before mutation",
+                16: "accepted input context changes cannot reach text mutation",
                 17: "exact-field foreground preserves focus, identity, IME and deadline guards",
                 18: "source installation binds input identity and cannot revive a revoked grant",
                 19: "source PM_REMOVE commits the same MSG before selection",
                 20: "NOREMOVE preserves but downstream nested removal revokes the outer grant",
                 21: "source MSG refusal, revocation and withdrawal cannot restore or replay",
                 22: "sent source activation retains every original pending-work refusal",
-                23: "private source admission requires both MSG pointers or neither",
                 24: "claimed refusal and unknown retain native tail debt",
                 25: "native tail uncertainty/departure cannot revive and sent activation owes none",
                 26: "Prepared input and withdrawal cannot be rearmed",

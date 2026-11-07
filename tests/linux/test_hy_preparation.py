@@ -1,14 +1,17 @@
 """Archive preparation safety; small local tar files, no network or native loads."""
 
 import hashlib
+import importlib
 import io
 import json
 import runpy
 import sys
 import tarfile
 import tempfile
+import threading
 import types
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
@@ -18,7 +21,7 @@ sys.path.insert(0, str(ROOT))
 from hy_package_e2e import disk_budget, hy_assets, prepare_cache  # noqa: E402
 
 from eng.linux.build import package_worker  # noqa: E402
-from eng.linux.hy.prepare_runtime import extract_runtime, prepare  # noqa: E402
+from eng.linux.hy.prepare_runtime import extract_runtime  # noqa: E402
 
 
 class RuntimePreparationTests(unittest.TestCase):
@@ -270,19 +273,112 @@ class RuntimePreparationTests(unittest.TestCase):
         self.assertEqual(list(self.root.iterdir()), [])
 
     def test_offline_cache_miss_does_not_create_runtime(self):
-        with self.assertRaises(FileNotFoundError):
-            prepare(self.root / "cache", self.output, offline=True)
-        self.assertFalse(self.output.exists())
+        for family in ("hy", "index"):
+            with self.subTest(family=family):
+                runtime = importlib.import_module(f"eng.linux.{family}.prepare_runtime")
+                output = self.root / family / "runtime"
+                with patch("urllib.request.urlopen", side_effect=AssertionError("offline")):
+                    with self.assertRaises(FileNotFoundError):
+                        runtime.prepare(self.root / family / "cache", output, offline=True)
+                self.assertFalse(output.exists())
+
+    def test_overlapping_preparation_cannot_delete_an_active_download(self):
+        for family in ("hy", "index"):
+            with self.subTest(family=family):
+                runtime = importlib.import_module(f"eng.linux.{family}.prepare_runtime")
+                cache = self.root / family / "cache"
+                output = self.root / family / "runtime"
+                caller = threading.local()
+                checked_cache = threading.Barrier(2)
+                downloading, release = threading.Event(), threading.Event()
+                owned_files = set()
+                real_iterdir = Path.iterdir
+
+                def overlapping_listing(path):
+                    entries = tuple(real_iterdir(path))
+                    if path == cache and getattr(caller, "role", None):
+                        # Both real callers observe the empty cache before the
+                        # first download opens. No sleeps choose the interleaving.
+                        checked_cache.wait(timeout=5)
+                        if caller.role == "contender" and not downloading.wait(5):
+                            raise TimeoutError("owner did not start its download")
+                    return iter(entries)
+
+                class Download(io.BytesIO):
+                    status = 200
+                    url = "https://fixed.invalid/synthetic-runtime"
+
+                    def read(self, size):
+                        if caller.role == "owner" and self.tell():
+                            owned_files.update(real_iterdir(cache))
+                            downloading.set()
+                            if not release.wait(5):
+                                raise TimeoutError("owner download was not released")
+                            raise OSError("controlled transport interruption")
+                        return super().read(size)
+
+                def attempt(role):
+                    caller.role = role
+                    try:
+                        return runtime.prepare(cache, output)
+                    except (OSError, ValueError) as error:
+                        return error
+
+                with (
+                    ThreadPoolExecutor(max_workers=2) as pool,
+                    patch.object(Path, "iterdir", overlapping_listing),
+                    patch(
+                        "urllib.request.urlopen",
+                        side_effect=lambda *_args, **_kwargs: Download(b"truncated CPU archive"),
+                    ),
+                ):
+                    owner = pool.submit(attempt, "owner")
+                    contender = pool.submit(attempt, "contender")
+                    try:
+                        self.assertTrue(downloading.wait(5))
+                        self.assertIsInstance(contender.result(timeout=5), (OSError, ValueError))
+                        self.assertFalse(owner.done())
+                        self.assertTrue(owned_files)
+                        self.assertEqual(set(real_iterdir(cache)), owned_files)
+                    finally:
+                        release.set()
+                        owner_error = owner.result(timeout=5)
+                    self.assertIsInstance(owner_error, OSError)
+                self.assertFalse(output.exists())
+                self.assertEqual(list(cache.iterdir()), [])
+
+    def test_truncated_download_is_rejected_without_publishing_archive_or_runtime(self):
+        for family in ("hy", "index"):
+            with self.subTest(family=family):
+                runtime = importlib.import_module(f"eng.linux.{family}.prepare_runtime")
+                cache = self.root / family / "cache"
+                output = self.root / family / "runtime"
+                response = io.BytesIO(b"truncated CPU archive")
+                response.status = 200
+                response.url = "https://fixed.invalid/synthetic-runtime"
+                with patch("urllib.request.urlopen", return_value=response):
+                    with self.assertRaisesRegex(ValueError, "full hash mismatch"):
+                        runtime.prepare(cache, output)
+                self.assertFalse(output.exists())
+                self.assertEqual(list(cache.iterdir()), [])
 
     def test_corrupt_fixed_cache_fails_without_network_replacement(self):
-        cache = self.root / "cache"
-        cache.mkdir()
-        archive = cache / "llama-b11717-bin-ubuntu-x64.tar.gz"
-        archive.write_bytes(b"invalid cached archive")
-        with self.assertRaisesRegex(ValueError, "full hash mismatch"):
-            prepare(cache, self.output)
-        self.assertEqual(archive.read_bytes(), b"invalid cached archive")
-        self.assertFalse(self.output.exists())
+        for family, name in (
+            ("hy", "llama-b11717-bin-ubuntu-x64.tar.gz"),
+            ("index", "llama-b11913-bin-ubuntu-x64.tar.gz"),
+        ):
+            with self.subTest(family=family):
+                runtime = importlib.import_module(f"eng.linux.{family}.prepare_runtime")
+                cache = self.root / family / "cache"
+                cache.mkdir(parents=True)
+                output = self.root / family / "runtime"
+                archive = cache / name
+                archive.write_bytes(b"invalid cached archive")
+                with patch("urllib.request.urlopen", side_effect=AssertionError("bad cache")):
+                    with self.assertRaisesRegex(ValueError, "full hash mismatch"):
+                        runtime.prepare(cache, output)
+                self.assertEqual(archive.read_bytes(), b"invalid cached archive")
+                self.assertFalse(output.exists())
 
     def test_verified_target_is_copied_as_regular_file_without_tools(self):
         self.archive_with()

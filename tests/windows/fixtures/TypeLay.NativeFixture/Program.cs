@@ -35,25 +35,6 @@ internal static class Program
             return HyAdapterCheck.Run(args[1..]);
         if (args.Length == 2 && args[0] == "--winevent-stack-probe" && Path.IsPathFullyQualified(args[1]))
             return WinEventStackProbe.Run(args[1]);
-        if (args.Length == 2 && args[0] == "--stock-controls" && args[1] == "--tsf-context-admission")
-        {
-            _tsfContextAdmission = true;
-            return TsfContextAdmission.RunSta(RunTsfAdmissionWindows);
-        }
-        if (args.Length == 3 && args[0] == "--stock-controls" && args[1] == "--tsf-key-routing"
-            && args[2] is "Tab" or "End")
-        {
-            _tsfContextAdmission = true;
-            _tsfProbeKey = args[2] == "Tab" ? 9u : 0x23u;
-            return TsfContextAdmission.RunSta(RunTsfAdmissionWindows);
-        }
-        if (args.Length == 2 && args[0] == "--stock-controls" && args[1] == "--tsf-source-key-read")
-        {
-            _tsfContextAdmission = true;
-            _tsfProbeKey = 9;
-            _tsfSourceKeyboardRead = true;
-            return TsfContextAdmission.RunSta(RunTsfAdmissionWindows);
-        }
         bool hookTest = args.Length == 1 && args[0] is "--hook-test" or "--hook-test-automation";
         bool ownedControls = (args.Length == 4 || args.Length == 5) && args[0] == "--owned-controls"
             && Path.IsPathFullyQualified(args[1]) && Guid.TryParse(args[2], out _ownedConnection)
@@ -71,23 +52,11 @@ internal static class Program
         bool sourceClaimCase = args.Length == 3 && args[0] == "--stock-controls" && args[1] == "--source-claim-probe";
         if (sourceClaimCase)
             _sourceClaimProbe = args[2];
-        _sourceKeyboardProbeEnabled = args.Length == 2 && args[0] == "--stock-controls" && args[1] == "--source-keyboard-probe";
-        bool synchronousProbe = args.Length == 3 && args[0] == "--stock-controls"
-            && args[1] == "--source-sync-probe" && Path.IsPathFullyQualified(args[2]);
-        if (synchronousProbe)
-        {
-            _sourceKeyboardProbeEnabled = true;
-            _sourceSynchronousPath = args[2];
-        }
-        if (args.Length == 3 && args[0] == "--stock-controls"
-            && args[1] == "--source-message-probe" && Path.IsPathFullyQualified(args[2]))
-        {
-            _sourceKeyboardProbeEnabled = true;
+        bool sourceMessageProbe = args.Length == 3 && args[0] == "--stock-controls"
+            && args[1] == "--source-message-probe" && Path.IsPathFullyQualified(args[2]);
+        if (sourceMessageProbe)
             _sourceMessagePath = args[2];
-        }
-        _sourceOriginProbeEnabled = args.Length == 2 && args[0] == "--stock-controls" && args[1] == "--source-origin-probe";
-        _sourceKeyboardProbeEnabled |= _sourceOriginProbeEnabled;
-        bool stockControls = _sourceKeyboardProbeEnabled || ownedControls || returnFocusCase || sourceClaimCase || (args.Length == 1 && args[0] == "--stock-controls");
+        bool stockControls = sourceMessageProbe || ownedControls || returnFocusCase || sourceClaimCase || (args.Length == 1 && args[0] == "--stock-controls");
         if (args.Length != 0 && !hookTest && !stockControls)
             return 2;
         return RunWindows(hookTest, args.Contains("--hook-test-automation", StringComparer.Ordinal), stockControls);
@@ -95,14 +64,7 @@ internal static class Program
 
     private static nint _setupObservationField;
     private static int _setupFocusCount;
-    private static string? _sourceSynchronousPath, _sourceMessagePath;
-    private static bool _tsfContextAdmission;
-    private static int _tsfFocusVersion, _tsfObservations;
-    private static uint _tsfProbeKey;
-    private static bool _tsfSourceKeyboardRead;
-    private static TsfContextAdmission.KeyProbe? _tsfKeyProbe;
-    private static bool _tsfKeyResultWritten, _tsfCloseRequested;
-    private static bool _sourceKeyboardProbeEnabled, _sourceOriginProbeEnabled;
+    private static string? _sourceMessagePath;
     private static SourceKeyboardProbe? _sourceKeyboardProbe;
     private static string? _ownedPath;
     private static string? _retirementProbePath;
@@ -147,53 +109,6 @@ internal static class Program
     }
 
     [SupportedOSPlatform("windows")]
-    private static int RunTsfAdmissionWindows()
-    {
-        try
-        {
-            return RunWindows(false, false, true);
-        }
-        finally
-        {
-            CloseTsfKeyProbe();
-            // Covers startup failures as well as the message loop. The stock
-            // controls must be destroyed before RunSta balances COM ownership.
-            if (_root != 0 && N.IsWindow(_root))
-            {
-                KillTimer(_root, 4);
-                if (!N.DestroyWindow(_root))
-                    throw new InvalidOperationException("TSF fixture window cleanup failed.");
-            }
-        }
-    }
-
-    [SupportedOSPlatform("windows")]
-    private static void CloseTsfKeyProbe()
-    {
-        if (_tsfKeyProbe is null || _tsfKeyResultWritten)
-            return;
-        bool clean = _tsfKeyProbe.Close();
-        _tsfKeyResultWritten = true;
-        try
-        {
-            Console.WriteLine(JsonSerializer.Serialize(new
-            {
-                phase = "closed",
-                result = _tsfKeyProbe.Result
-            }));
-            Console.Out.Flush();
-        }
-        finally
-        {
-            // Unadvise failure means the CCW may still be callable. Keep all
-            // strong references and stop this owned process even if evidence
-            // output fails; never unload COM beneath a potentially live sink.
-            if (!clean)
-                Environment.Exit(2);
-        }
-    }
-
-    [SupportedOSPlatform("windows")]
     private static int RunWindows(bool hookTest, bool automation, bool stockControls)
     {
         N.SetProcessDpiAwarenessContext((nint)(-4));
@@ -224,7 +139,7 @@ internal static class Program
         _barrierEntered = barrierEntered;
         _barrierRelease = barrierRelease;
         _barrierDrained = barrierDrained;
-        using var sourceReentry = stockControls && _ownedPath is null && !_tsfContextAdmission
+        using var sourceReentry = stockControls && _ownedPath is null
             ? new SourceInstallationReentry(_root, barrierEntered!, barrierRelease!) : null;
         var fields = new List<FixtureField>();
         Add("A / single line", "a", "你好，我想测试 TypeLay。", 0, FieldAccess.Supported, 50);
@@ -242,8 +157,8 @@ internal static class Program
             _setupObservationField = _replayField;
             sourceReentry.ObserveSetupField(_setupObservationField);
         }
-        if (_sourceKeyboardProbeEnabled)
-            _sourceKeyboardProbe = new(_root, _replayField, _sourceSynchronousPath, _sourceMessagePath, _sourceOriginProbeEnabled);
+        if (_sourceMessagePath is { } sourceMessageLibrary)
+            _sourceKeyboardProbe = new(_root, _replayField, sourceMessageLibrary);
         if (_sourceClaimProbe is not null)
             WinEventStackProbe.LoadSourceClaim(_sourceClaimProbe);
         if (!hookTest)
@@ -266,8 +181,6 @@ internal static class Program
         N.ShowWindow(_root, 5);
         N.SetForegroundWindow(_root);
         N.SetFocus((nint)fields[0].Hwnd);
-        if (_tsfContextAdmission && SetTimer(_root, 4, 25_000, 0) == 0)
-            throw new InvalidOperationException("TSF admission deadline could not be installed.");
         var descriptor = new FixtureDescriptor(Environment.ProcessId, (long)_root, (long)_submit,
             Guid.NewGuid(), fields.ToArray());
         if (hookTest)
@@ -322,12 +235,6 @@ internal static class Program
                     && (!N.SetProp(_root, N.FixtureClickField, dispatched.Hwnd)
                         || !N.SetProp(_root, N.FixtureClickReceipt, preparationClickMarker)))
                     throw new InvalidOperationException("Fixture preparation click receipt failed.");
-                _tsfKeyProbe?.AfterDispatch(dispatched);
-                if (_tsfCloseRequested)
-                {
-                    _tsfCloseRequested = false;
-                    N.PostMessage(_root, 0x0010, 0, 0);
-                }
                 _sourceKeyboardProbe?.Dispatch(dispatched, after: true);
                 sourceReentry?.ObserveDispatchedInput(dispatched);
                 if (dispatchProbe)
@@ -393,16 +300,6 @@ internal static class Program
     [SupportedOSPlatform("windows")]
     private static nint RootWindowProc(nint hwnd, uint message, nuint wParam, nint lParam)
     {
-        if (_tsfProbeKey != 0 && message == 0x0010) // WM_CLOSE, outside any TSF callback.
-        {
-            // Destruction waits until the TSF callback stack has returned.
-            if (_tsfKeyProbe?.ComOperationActive == true)
-            {
-                _tsfCloseRequested = true;
-                return 0;
-            }
-            CloseTsfKeyProbe();
-        }
         if (message == 0x0002)
         {
             N.PostQuitMessage(0);
@@ -418,53 +315,6 @@ internal static class Program
         if (message == 0x0111 && ((wParam >> 16) & 0xffff) == 0x0100 && StockFields.Contains(lParam))
         {
             _lastFocusedField = lParam; // EN_SETFOCUS
-        }
-        if (_tsfContextAdmission && (message == 0x0111 && StockFields.Contains(lParam)
-            && ((wParam >> 16) & 0xffff) is 0x0100 or 0x0200 // EN_SETFOCUS / EN_KILLFOCUS
-            || message == 0x0006 && (wParam & 0xffff) == 0)) // Actual root deactivation.
-        {
-            _tsfFocusVersion++;
-            _tsfKeyProbe?.FocusChanged();
-        }
-        if (_tsfProbeKey != 0 && message == TsfContextAdmission.BeginKeyMessage
-            && _tsfKeyProbe is null && StockFields.Contains((nint)wParam) && lParam == 0)
-        {
-            _tsfKeyProbe = new(_root, (nint)wParam, _tsfProbeKey, () => _tsfFocusVersion, _tsfSourceKeyboardRead);
-            _tsfKeyProbe.Begin();
-            Console.WriteLine(JsonSerializer.Serialize(new
-            {
-                phase = "begun",
-                result = _tsfKeyProbe.Result
-            }));
-            Console.Out.Flush();
-            return 1;
-        }
-        if (_tsfProbeKey != 0 && message == TsfContextAdmission.KeyProgressMessage && _tsfKeyProbe is not null)
-        {
-            Console.WriteLine(JsonSerializer.Serialize(new
-            {
-                phase = "progress",
-                inputUpObserved = _tsfKeyProbe.Result.InputUpObserved
-            }));
-            Console.Out.Flush();
-            return 1;
-        }
-        if (_tsfContextAdmission && message == TsfContextAdmission.ObserveMessage
-            && ++_tsfObservations <= 4 && StockFields.Contains((nint)wParam) && lParam == 0)
-        {
-            Console.WriteLine(JsonSerializer.Serialize(TsfContextAdmission.Observe(
-                _root, (nint)wParam, () => _tsfFocusVersion)));
-            Console.Out.Flush();
-            return 1;
-        }
-        if (_tsfContextAdmission && message == 0x0113 && wParam == 4)
-        {
-            KillTimer(_root, 4);
-            if (_tsfProbeKey != 0)
-                N.PostMessage(_root, 0x0010, 0, 0);
-            else
-                N.DestroyWindow(_root);
-            return 0;
         }
         if (message == 0x0006 && _awaitReturnActivation) // WM_ACTIVATE, before DefWindowProc restores focus.
             _returnActivationSeen = (wParam & 0xffff) != 0;

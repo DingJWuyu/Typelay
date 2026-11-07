@@ -1,8 +1,8 @@
 using System.Runtime.InteropServices;
 using N = TypeLay.Platform.Windows.NativeMethods;
 
-// Explicit self-owned source-thread experiment, never a production acceptor.
-// Original three modes have no write API, LL hook, witness fabrication or callback pumping.
+// Controlled source-thread observation around the production native callback.
+// This observer does not grant acceptance or fabricate an input witness.
 internal sealed partial class SourceKeyboardProbe : IDisposable
 {
     internal const uint Arm = 0x8080, Snapshot = 0x8081, Close = 0x8082, PrepareMessageObserverMessage = 0x8083;
@@ -21,25 +21,13 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
     private record struct Event(string Stage, int Code, uint Key, long Bits, uint Thread,
         uint Process, bool FocusIsField, bool Consumed);
     private delegate nint HookProc(int code, nint wp, nint lp);
-    internal SourceKeyboardProbe(nint root, nint field, string? synchronousLibrary = null, string? sourceMessageLibrary = null, bool sourceOriginProbe = false)
+    internal SourceKeyboardProbe(nint root, nint field, string sourceMessageLibrary)
     {
-        if (sourceOriginProbe && (synchronousLibrary is not null || sourceMessageLibrary is not null))
-            throw new ArgumentException("The origin observer cannot load a transaction consumer.");
         _root = root;
         _field = field;
         _thread = GetCurrentThreadId();
-        if (synchronousLibrary is not null)
-        {
-            _synchronousField = new(field, synchronousLibrary);
-            _synchronousField.Begin(automatic: true);
-        }
         _keyboard = Keyboard;
         _sent = Sent;
-        if (sourceOriginProbe)
-        {
-            InitializeOriginProbe();
-            return;
-        }
         _keyboardHook = SetWindowsHookExW(2, _keyboard, 0, _thread);
         _sentHook = SetWindowsHookExW(4, _sent, 0, _thread);
         if (_keyboardHook == 0 || _sentHook == 0)
@@ -49,36 +37,27 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
         }
         try
         {
-            if (sourceMessageLibrary is not null)
-                InitializeMessageProbe(sourceMessageLibrary);
+            InitializeMessageProbe(sourceMessageLibrary);
         }
         catch { Dispose(); throw; }
     }
     internal void Configure(int mode)
     {
-        // 1: peek+consume F7, 2: observe F7, 3: observe Tab, 4: consume Tab.
-        if (mode is < 1 or > 14 || mode is >= 5 and <= 10 && _synchronousField is null
-            || (mode is 11 or 12 or 14) && _messageHook == 0 || mode == 13 && _originHook == 0)
+        if (mode is not (11 or 12 or 14) || _messageHook == 0)
             throw new ArgumentOutOfRangeException(nameof(mode));
         _mode = mode;
-        _key = mode <= 2 ? 0x76u : mode == 13 ? 0x77u : 9u;
+        _key = 9;
         _count = _overflow = _consumed = _noRemove = _actions = _sentCount = _before = _after = 0;
         _firstFound = _secondFound = false;
         _firstConsumed = _secondConsumed = 0;
         _error = null;
-        _peekPending = mode is 1 or 6 or 11;
-        if (mode is >= 5 and <= 10)
-            PrepareSynchronous(mode);
-        if (mode is 11 or 12 or 14)
-            PrepareMessage(mode);
-        if (mode == 13)
-            PrepareOrigin();
+        _peekPending = mode == 11;
+        PrepareMessage(mode);
         N.SetProp(_root, ReadyProperty, _peekPending ? 0 : mode);
     }
     // This bounded wait is in the opted-in outer pump, never in a callback.
     internal void BeforeRead()
     {
-        OriginBeforeRead();
         if (!_peekPending)
             return;
         _peekPending = false;
@@ -99,7 +78,6 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
     }
     internal void Dispatch(N.MessageStruct message, bool after)
     {
-        OriginDispatch(message, after);
         if (_mode == 0 || message.WParam != _key || message.Message is not (0x100 or 0x101))
             return;
         if (after)
@@ -107,8 +85,6 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
         else
         {
             _before++;
-            if (_synchronousField is not null)
-                N.SetProp(_root, "TypeLay.Test.SourceSync.Dispatched.v1", _before);
         }
         Record(after ? "after-dialog-or-dispatch" : "before-dialog", (int)message.Message,
             (uint)message.WParam, message.LParam, false);
@@ -117,19 +93,12 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
     {
         if (code < 0 || _mode == 0 || (uint)wp != _key)
             return CallNextHookEx(_keyboardHook, code, wp, lp);
-        if (_mode is >= 5 and <= 10)
-            return SynchronousKeyboard(code, wp, lp);
-        bool down = (unchecked((ulong)(long)lp) & 0x80000000) == 0;
         if (code == 3)
             _noRemove++;
         if (code == 0)
             _actions++;
-        bool consume = code == 0 && down && _consumed == 0 && _mode is 1 or 4
-            && GetCurrentThreadId() == _thread && GetFocus() == _field;
-        if (consume)
-            _consumed++;
-        Record("keyboard", code, (uint)wp, lp, consume);
-        return consume ? 1 : CallNextHookEx(_keyboardHook, code, wp, lp);
+        Record("keyboard", code, (uint)wp, lp, false);
+        return CallNextHookEx(_keyboardHook, code, wp, lp);
     }
     private nint Sent(int code, nint wp, nint lp)
     {
@@ -175,9 +144,7 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
         secondConsumed = _secondConsumed,
         rawDowns = (long)N.GetProp(_root, "TypeLay.Test.SourceObservedDown.v1"),
         rawUps = (long)N.GetProp(_root, "TypeLay.Test.SourceObservedUp.v1"),
-        synchronous = SynchronousResult(),
         sourceMessage = MessageResult(),
-        sourceOrigin = OriginResult(),
         events = _events.Take(_count).ToArray()
     };
     internal bool TryClose(bool sourceQuiet)
@@ -199,10 +166,8 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
         GC.KeepAlive(_keyboard);
         GC.KeepAlive(_sent);
         bool message = DisposeMessageProbe();
-        bool origin = DisposeOriginProbe();
-        if (!keyboard || !sent || !message || !origin)
+        if (!keyboard || !sent || !message)
             throw new InvalidOperationException("Self-owned source hooks failed to unhook.");
-        _synchronousField?.Retire();
         _disposed = true;
     }
     [StructLayout(LayoutKind.Sequential)]

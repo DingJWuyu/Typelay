@@ -128,7 +128,13 @@ public sealed class AcceptanceBehaviorTests
     public void ReplacedAndRevokedPermitsRetireUnusedButAClaimedPermitDoesNot()
     {
         var (gate, original, context) = NewGate();
-        var replacement = original with { Plan = original.Plan with { Id = Guid.NewGuid() } };
+        var replacement = original with
+        {
+            Plan = original.Plan with
+            {
+                Id = Guid.NewGuid()
+            }
+        };
         Assert.Null(gate.Publish(original));
         Assert.Equal(original, gate.Publish(replacement));
         Assert.Equal(replacement, gate.Revoke());
@@ -145,7 +151,10 @@ public sealed class AcceptanceBehaviorTests
     {
         var (gate, permit, context) = NewGate();
         gate.Publish(permit);
-        var refused = gate.ProcessAcceptanceKey(new(9, true, false, true), context with { Ime = ImeState.Unknown });
+        var refused = gate.ProcessAcceptanceKey(new(9, true, false, true), context with
+        {
+            Ime = ImeState.Unknown
+        });
         Assert.False(refused.Consume);
         Assert.Null(refused.Permit);
         Assert.Equal(permit, refused.RetiredUnusedPermit);

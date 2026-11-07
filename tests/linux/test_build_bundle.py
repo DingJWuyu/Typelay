@@ -74,7 +74,7 @@ class PackageReadmeTests(unittest.TestCase):
                     if target.startswith(upstream):
                         self.assertTrue(target.startswith(upstream + commit + "/"), target)
 
-    def test_generated_readme_identifies_this_package_not_a_recommended_old_artifact(self):
+    def test_generated_readme_identifies_this_package_and_resolves_delivered_links(self):
         for dirty in (False, True):
             with self.subTest(dirty=dirty), tempfile.TemporaryDirectory() as directory:
                 output = Path(directory)
@@ -90,7 +90,6 @@ class PackageReadmeTests(unittest.TestCase):
                 self.assertIn("sourceDirty=" + str(dirty).lower(), readme)
                 self.assertIn("[build-info.json](build-info.json)", readme)
                 self.assertNotIn("/artifacts/", readme)
-                self.assertNotIn("4be188b", readme)
                 self.assertIn("## 安装、启动与首次配置", readme)
                 self.assertIn("sha256sum", readme)
                 self.assertIn("--install-models", readme)
@@ -104,10 +103,274 @@ class PackageReadmeTests(unittest.TestCase):
                     "[构建与检查记录](https://github.com/DingJWuyu/Typelay/actions/workflows/check.yml)",
                     readme,
                 )
-                self.assertNotIn("最新推荐与检查结果", readme)
                 self.assertIn("/blob/" + "a" * 40 + "/docs/product/README.md", readme)
                 self.assertNotIn("](..", readme)
-                self.assertIn("不代表", readme)
+
+
+class BuildSafetyTests(unittest.TestCase):
+    """The real CLI must reject destructive paths before preparing or compiling.
+
+    Runtime directories contain preservation sentinels, never model data or a
+    claimed verified CPU runtime. Successful admission stops at a missing SDK.
+    """
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="typelay build safety ")
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+
+    def checkout(self):
+        repository = Path(tempfile.mkdtemp(dir=self.directory))
+        for relative in (
+            "eng/linux/build.py",
+            "eng/linux/cooperative/inputs.py",
+            "eng/linux/index/prepare_runtime.py",
+            "eng/fonts/prepare.py",
+            "eng/index_profile.py",
+            "src/shared/TypeLay.Worker/typelay_worker/index_assets.py",
+        ):
+            destination = repository / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / relative, destination)
+        sources, payload = inert_font_payload()
+        for relative, content in sources.items():
+            destination = repository / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(content)
+        for relative, content in payload.items():
+            if relative.startswith("fonts/"):
+                destination = repository / "artifacts/ui-fonts" / relative.removeprefix("fonts/")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(content)
+        for relative in (
+            "tools/keep",
+            "evidence/keep",
+            "font-sources/keep",
+            "linux/native/keep",
+            "linux/index-cpu-runtime/keep",
+            "linux/index-cpu-download/keep",
+        ):
+            destination = repository / "artifacts" / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(b"Existing build input must survive.\n")
+        (repository / ".gitignore").write_text("artifacts/\n__pycache__/\n")
+        # Keep the real Git command available, but stop at the first compiler.
+        # A rejected output must never reach that process or prepare resources.
+        tools = repository / "tool-bin"
+        tools.mkdir()
+        (tools / "git").symlink_to(shutil.which("git"))
+        environment = {
+            **os.environ,
+            "PATH": str(tools),
+            "HOME": str(repository / "home"),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+        for arguments in (
+            ("init", "--quiet"),
+            ("add", "."),
+            (
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "-m",
+                "Fixture",
+            ),
+        ):
+            subprocess.run(
+                ["git", *arguments],
+                cwd=repository,
+                env=environment,
+                check=True,
+                capture_output=True,
+                timeout=10,
+            )
+        return repository, environment
+
+    def files(self, directory):
+        return {
+            path.relative_to(directory).as_posix(): (
+                os.readlink(path) if path.is_symlink() else digest(path.read_bytes())
+            )
+            for path in directory.rglob("*")
+            if path.is_file() or path.is_symlink()
+        }
+
+    def invoke(self, repository, environment, output, *arguments):
+        return subprocess.run(
+            [sys.executable, "eng/linux/build.py", "--output", str(output), *map(str, arguments)],
+            cwd=repository,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+    def test_cli_preserves_existing_inputs_when_output_overlaps_fixed_build_directories(self):
+        for relative in (
+            "artifacts",
+            "artifacts/linux",
+            "artifacts/ui-fonts",
+            "artifacts/ui-fonts/package",
+            "artifacts/font-sources",
+            "artifacts/font-sources/package",
+            "artifacts/linux/native",
+            "artifacts/linux/native/package",
+            "artifacts/linux/index-cpu-runtime",
+            "artifacts/linux/index-cpu-runtime/package",
+            "artifacts/linux/index-cpu-download",
+            "artifacts/linux/index-cpu-download/package",
+        ):
+            with self.subTest(output=relative):
+                repository, environment = self.checkout()
+                artifacts = repository / "artifacts"
+                before = self.files(artifacts)
+                result = self.invoke(repository, environment, repository / relative)
+                self.assertEqual(self.files(artifacts), before, result.stderr)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("output-overlaps-build-input", result.stderr)
+
+    def test_cli_preserves_explicit_runtime_inputs_and_cooperation_archives(self):
+        for option in ("--hy-runtime", "--index-runtime", "--cooperation-package"):
+            for placement in ("same", "input-inside-output", "output-inside-input"):
+                if option == "--cooperation-package" and placement == "output-inside-input":
+                    continue  # An input archive is a file, not a package parent directory.
+                with self.subTest(option=option, placement=placement):
+                    repository, environment = self.checkout()
+                    stage = repository / "artifacts/caller-staging"
+                    source = stage / "input"
+                    if option == "--cooperation-package":
+                        source.parent.mkdir(parents=True)
+                        source.write_bytes(b"Cooperation archive must survive.\n")
+                    else:
+                        source.mkdir(parents=True)
+                        (source / "keep").write_bytes(b"Runtime input must survive.\n")
+                    output = {
+                        "same": source,
+                        "input-inside-output": stage,
+                        "output-inside-input": source / "package",
+                    }[placement]
+                    before = self.files(repository / "artifacts")
+                    result = self.invoke(repository, environment, output, option, source)
+                    self.assertEqual(self.files(repository / "artifacts"), before, result.stderr)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("output-overlaps-build-input", result.stderr)
+
+    def test_cli_resolves_aliases_before_comparing_output_with_inputs(self):
+        for alias_is_output in (False, True):
+            with self.subTest(alias_is_output=alias_is_output):
+                repository, environment = self.checkout()
+                artifacts = repository / "artifacts"
+                output = artifacts / "caller-package"
+                if alias_is_output:
+                    output.symlink_to(artifacts / "linux/native", target_is_directory=True)
+                    arguments = ()
+                else:
+                    runtime = output / "runtime"
+                    runtime.mkdir(parents=True)
+                    (runtime / "keep").write_bytes(b"Aliased runtime must survive.\n")
+                    alias = artifacts / "runtime-alias"
+                    alias.symlink_to(runtime, target_is_directory=True)
+                    arguments = ("--index-runtime", alias)
+                before = self.files(artifacts)
+                result = self.invoke(repository, environment, output, *arguments)
+                self.assertEqual(self.files(artifacts), before, result.stderr)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("output-overlaps-build-input", result.stderr)
+
+    def test_cli_rejects_unsafe_output_before_preparing_missing_resources(self):
+        for missing in ("ui-fonts", "linux/index-cpu-runtime"):
+            with self.subTest(missing=missing):
+                repository, environment = self.checkout()
+                artifacts = repository / "artifacts"
+                shutil.rmtree(artifacts / missing)
+                before = self.files(artifacts)
+                result = self.invoke(repository, environment, artifacts / "linux")
+                self.assertEqual(self.files(artifacts), before, result.stderr)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("output-overlaps-build-input", result.stderr)
+
+    def test_cli_preserves_release_archives_and_rejects_paths_outside_artifacts(self):
+        for relative in (
+            "outside-artifacts",
+            "artifacts/TypeLay-Linux-preview-x86_64.tar.gz",
+            "artifacts/TypeLay-Linux-preview-x86_64.tar.gz.sha256",
+        ):
+            with self.subTest(output=relative):
+                repository, environment = self.checkout()
+                output = repository / relative
+                output.write_bytes(b"Existing output must survive invalid placement.\n")
+                before = self.files(repository / "artifacts")
+                result = self.invoke(repository, environment, output)
+                self.assertEqual(self.files(repository / "artifacts"), before, result.stderr)
+                self.assertEqual(
+                    output.read_bytes(), b"Existing output must survive invalid placement.\n"
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("output-", result.stderr)
+
+    def test_cli_allows_replacing_a_separate_package_without_changing_build_inputs(self):
+        repository, environment = self.checkout()
+        artifacts = repository / "artifacts"
+        before = self.files(artifacts)
+        package = artifacts / "linux/package"
+        package.mkdir()
+        (package / "obsolete-file").write_text("The previous package can be replaced.\n")
+        result = self.invoke(repository, environment, package)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("No such file or directory: 'dotnet'", result.stderr)
+        self.assertTrue(package.is_dir())
+        self.assertEqual(self.files(artifacts), before, result.stderr)
+
+    def test_build_identity_includes_the_production_index_profile(self):
+        repository, environment = self.checkout()
+        command = [
+            sys.executable,
+            "-c",
+            "import json; from eng.linux.build import source_identity; "
+            "print(json.dumps(source_identity()))",
+        ]
+        before = subprocess.run(
+            command,
+            cwd=repository,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        self.assertFalse(json.loads(before.stdout)["sourceDirty"])
+        profile = repository / "eng/index_profile.py"
+        profile.write_bytes(profile.read_bytes() + b"\n# local production profile change\n")
+        after = subprocess.run(
+            command,
+            cwd=repository,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        self.assertTrue(json.loads(after.stdout)["sourceDirty"])
+        command[-1] = (
+            "from eng.linux.build import source_identity; source_identity(require_clean=True)"
+        )
+        finalization = subprocess.run(
+            command,
+            cwd=repository,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertNotEqual(finalization.returncode, 0)
+        self.assertIn("full-bundle-requires-clean-source-checkout", finalization.stderr)
 
 
 class CooperativeFontResourcesTests(unittest.TestCase):
@@ -712,8 +975,8 @@ class BrowserBundleTests(unittest.TestCase):
 
 class MainBundleTests(unittest.TestCase):
     def setUp(self):
-        (ROOT / "artifacts").mkdir(exist_ok=True)
-        self.temporary = tempfile.TemporaryDirectory(prefix="bundle-test-", dir=ROOT / "artifacts")
+        # Keep disposable nested Git repositories outside the working checkout.
+        self.temporary = tempfile.TemporaryDirectory(prefix="typelay-bundle-test-")
         self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name)
         self.repository = self.directory / "checkout"

@@ -175,13 +175,24 @@ def drive_preview_ui(port, process, output, source):
             assert "你好，世界。" in preview.inner_text() and "译文" in preview.inner_text()
             assert "你好，世界。" in editor.inner_text() and "保留原文" in editor.inner_text()
             assert source.read_text(encoding="utf-8") == original
+            # Freeze the actual dialog before confirmation. A different English
+            # result must not pass merely because the unselected suffix survived.
+            detail = preview.locator(".dialog-message-detail").inner_text()
+            selected_source = original.partition("\n")[0]
+            prefix = f"原文：\n{selected_source}\n\n译文：\n"
+            suffix = (
+                "\n\n请核对原文完整，输入法候选已完成。确认只替换本次范围，不会发送或保存文档。"
+            )
+            assert detail.startswith(prefix) and detail.endswith(suffix), detail
+            confirmed_translation = detail[len(prefix) : -len(suffix)]
+            assert confirmed_translation.strip()
+            expected = confirmed_translation.replace("\r\n", "\n").replace("\r", "\n")
+            expected += original[len(selected_source) :]
             page.screenshot(path=str(output / "selected-preview.png"))
             preview.get_by_role("button", name="确认替换", exact=True).click()
             preview.wait_for(state="hidden", timeout=10000)
-            translated = save_and_expect(
-                lambda text: text.endswith("\n保留原文")
-                and bool(re.search(r"[A-Za-z]", text.split("\n")[0]))
-            )
+            translated = save_and_expect(lambda text: text == expected)
+            assert re.search(r"[A-Za-z]", translated.split("\n")[0])
             assert translated != original
             page.screenshot(path=str(output / "selected-replaced.png"))
             page.keyboard.press("Control+z")

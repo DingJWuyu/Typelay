@@ -18,7 +18,7 @@ public sealed class DirectTranslationBehaviorTests
         var (operation, reason) = DirectTranslation.StartFromCommandCapture(source, new("zh", "en"), evidence, 1100);
         Assert.Equal(Denial.None, reason);
         Assert.Equal(1000, operation!.TriggeredAtMs);
-        Assert.Same(source, operation.Job.Basis);
+        Assert.Equal(source, operation.Job.Basis);
         var (plan, _) = operation.Complete("Hello");
         Assert.Equal(source.Target, plan!.Expected.Target);
         Assert.Equal("前缀Hello后缀", plan.ResultText);

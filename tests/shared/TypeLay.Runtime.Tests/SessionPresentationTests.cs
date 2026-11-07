@@ -9,10 +9,16 @@ public sealed class SessionPresentationTests
     public void PausedGeometryUpdatesOnlyTheDisplayAndPreservesMetadataOnlyObservation()
     {
         using var s = new SessionScenario();
-        s.Settings.Update(s.Settings.Value with { Enabled = false });
+        s.Settings.Update(s.Settings.Value with
+        {
+            Enabled = false
+        });
         s.Tick();
         var before = Assert.IsType<PresentationIdentity>(s.View.PauseIdentity);
-        s.Source = s.Source with { Bounds = new(15, 25, 300, 40) };
+        s.Source = s.Source with
+        {
+            Bounds = new(15, 25, 300, 40)
+        };
 
         s.Tick();
 
@@ -79,7 +85,12 @@ public sealed class SessionPresentationTests
         using var s = new SessionScenario();
         s.ReadyCandidate();
         var before = Assert.IsType<PresentationIdentity>(s.View.Context!.Identity);
-        s.Source = s.Source with { Text = "hello again", InputEpoch = s.Source.InputEpoch + 1, Selection = new(11, 11) };
+        s.Source = s.Source with
+        {
+            Text = "hello again",
+            InputEpoch = s.Source.InputEpoch + 1,
+            Selection = new(11, 11)
+        };
 
         s.Tick();
 

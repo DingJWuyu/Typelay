@@ -193,6 +193,7 @@ public sealed class ModelClientCapabilityTests
             _ = peer.Client.ReloadAsync(peer.CreateLoadPlan(ModelCatalog.Packages),
                 () => throw new InvalidOperationException("must-not-publish"), _ => false, canceled.Token);
         });
+        Assert.Equal(0, peer.ProcessStarts);
         Assert.False(peer.Client.Ready);
         Assert.Null(peer.Client.VerifiedIdentity);
     }
@@ -1318,6 +1319,10 @@ public sealed class ModelClientCapabilityTests
         {
             get;
         }
+        public int ProcessStarts
+        {
+            get; private set;
+        }
 
         public ProtocolPeer(string response, string? translationResponse = null, string inventory = "{\"schema\":1}",
             string? expectedRequest = null, bool holdAlternative = false, bool exitAfterHello = false, bool profileFiles = false)
@@ -1360,6 +1365,7 @@ public sealed class ModelClientCapabilityTests
                 PrepareProfileFiles(inventory);
             Client = new(_paths, _ =>
             {
+                ProcessStarts++;
                 var start = new ProcessStartInfo(OperatingSystem.IsWindows() ? "python" : "python3")
                 {
                     UseShellExecute = false,

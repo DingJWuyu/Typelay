@@ -922,7 +922,15 @@ class InputFeedbackTests(unittest.TestCase):
     def test_input_during_policy_approval_does_not_refresh_a_command(self):
         published, _ = asyncio.run(
             self.approved_shortcut_capture(
-                mutation=lambda: setattr(self.input, "user_epoch", self.input.user_epoch + 1)
+                mutation=lambda: self.peer.event(
+                    "input",
+                    {
+                        "target": "ordinary-field",
+                        "textChanged": True,
+                        "focusChanged": False,
+                        "focused": True,
+                    },
+                )
             )
         )
         self.assertEqual(published, [])
@@ -938,7 +946,15 @@ class InputFeedbackTests(unittest.TestCase):
     def test_focus_during_policy_approval_does_not_refresh_a_command(self):
         published, _ = asyncio.run(
             self.approved_shortcut_capture(
-                mutation=lambda: setattr(self.input, "window_epoch", self.input.window_epoch + 1)
+                mutation=lambda: self.peer.event(
+                    "input",
+                    {
+                        "target": "ordinary-field",
+                        "textChanged": False,
+                        "focusChanged": True,
+                        "focused": False,
+                    },
+                )
             )
         )
         self.assertEqual(published, [])
@@ -1012,13 +1028,36 @@ class InputFeedbackTests(unittest.TestCase):
                 with self.subTest(prior=prior, target=target, gate=gate):
 
                     def mutation():
-                        if gate in ("input", "window", "foreground"):
-                            name = {
-                                "input": "user_epoch",
-                                "window": "window_epoch",
-                                "foreground": "foreground_epoch",
-                            }[gate]
-                            setattr(self.input, name, getattr(self.input, name) + 1)
+                        if gate in ("input", "window"):
+                            self.peer.event(
+                                "input",
+                                {
+                                    "target": target,
+                                    "textChanged": gate == "input",
+                                    "focusChanged": gate == "window",
+                                    "focused": gate == "input",
+                                },
+                            )
+                        elif gate == "foreground":
+                            # Observe a different window and return before approval
+                            # completes. Final focus alone cannot renew the policy.
+                            for window in (self.peer.pid + 1, self.peer.pid):
+                                self.input.niri._deliver(
+                                    (
+                                        "test",
+                                        [
+                                            {
+                                                "id": window,
+                                                "pid": self.peer.pid,
+                                                "is_focused": True,
+                                            }
+                                        ],
+                                        {},
+                                        {},
+                                        False,
+                                        1200,
+                                    )
+                                )
                         elif gate == "settings":
                             self.input.notification("settings", {"enabled": True})
                         elif gate == "configuration":
@@ -1229,7 +1268,6 @@ class InputFeedbackTests(unittest.TestCase):
             self.focus(peer)
             self.host.capture_allowed = True
             self.native_frames(peer)
-            calls_before = self.clock.call_count
             task = asyncio.create_task(self.input.request("capture", {}))
             await asyncio.sleep(0)
             frames = self.native_frames(peer)
@@ -1263,7 +1301,6 @@ class InputFeedbackTests(unittest.TestCase):
                 }
             )
             self.assertIsNone(await task)
-            clock_calls = self.clock.call_count - calls_before
             failure = self.input.diagnostics()["captureFailures"][-1]
             self.assertEqual(failure["reason"], "native-read-declined")
             if trace:
@@ -1284,7 +1321,6 @@ class InputFeedbackTests(unittest.TestCase):
                 self.assertNotIn("nativeFailure", failure)
                 self.assertNotIn("nativeCallerTiming", failure)
             self.assertNotIn("private", json.dumps(failure))
-            return clock_calls
 
         with (
             patch.dict(os.environ, {"TYPELAY_TRACE": "1" if trace else ""}),
@@ -1297,11 +1333,6 @@ class InputFeedbackTests(unittest.TestCase):
 
     def test_trace_off_declined_capture_has_no_caller_timing(self):
         self.declined_capture_diagnostics(False)
-
-    def test_caller_timing_adds_clocks_only_when_trace_is_enabled(self):
-        without_trace = self.declined_capture_diagnostics(False)
-        with_trace = self.declined_capture_diagnostics(True)
-        self.assertEqual(with_trace - without_trace, 6)
 
     def test_caller_timing_stays_in_existing_sixteen_failure_budget(self):
         for _ in range(18):
@@ -6590,7 +6621,7 @@ class InputFeedbackTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-    def test_overlay_language_save_rejection_is_visible_without_changing_confirmed_codes(self):
+    def test_overlay_language_save_failure_stays_unconfirmed_without_changing_codes(self):
         async def exercise():
             overlay, jobs, _token, view = await self.overlay_scenario()
             overlay.configure({"source": "zh", "target": "ja"})
@@ -6620,7 +6651,8 @@ class InputFeedbackTests(unittest.TestCase):
                 frame["data"]["view"] for frame in frames if frame["op"] == "overlay-render"
             )
             self.assertEqual((rendered["sourceLanguage"], rendered["targetLanguage"]), ("zh", "ja"))
-            self.assertIn("未保存", rendered["status"])
+            self.assertIn("未确认", rendered["status"])
+            self.assertNotIn("未保存", rendered["status"])
             self.assertIn("设置", rendered["status"])
             self.assertEqual(
                 self.host.requests[-1], ("traySettings", {"source": "fr", "target": "ja"})

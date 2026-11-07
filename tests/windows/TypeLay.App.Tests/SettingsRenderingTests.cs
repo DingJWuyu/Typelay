@@ -254,7 +254,7 @@ public sealed partial class SettingsRenderingTests(WpfDesktopFixture desktop, IT
                             Stage($"shortcuts:{theme}:{width}");
                             window.ShowPage("shortcuts");
                             window.UpdateLayout();
-                            (Control Input, string Label)[] shortcutControls =
+                            (TextBox Input, string Label)[] shortcutControls =
                             [
                                 (ShortcutEditor(window), "唤醒翻译"),
                                 (ShortcutEditor(window, direct: true), "直接翻译并替换"),
@@ -266,16 +266,11 @@ public sealed partial class SettingsRenderingTests(WpfDesktopFixture desktop, IT
                             foreach (var (input, label) in shortcutControls)
                             {
                                 Assert.True(input.IsVisible, label);
-                                Assert.InRange(input.ActualWidth, input is TextBox ? 92 : 150, window.ActualWidth);
+                                Assert.InRange(input.ActualWidth, 92, window.ActualWidth);
                                 Assert.InRange(input.ActualHeight, 26, 50);
                                 var row = VisualTreeHelper.GetParent(input);
                                 Assert.NotNull(row);
                                 Assert.Single(Descendants(row).OfType<TextBlock>(), text => text.IsVisible && text.Text == label);
-                                if (input is ComboBox selector)
-                                {
-                                    Assert.False(selector.IsEditable);
-                                    Assert.Equal(30, selector.ActualHeight);
-                                }
                             }
                             AssertReadableSettingsText(window);
                             AssertReadableSelectedNavigation(window, "shortcuts", "快捷键");

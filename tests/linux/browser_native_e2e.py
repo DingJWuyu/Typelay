@@ -380,17 +380,31 @@ class NativeBrowserContract(unittest.TestCase):
 
     def focused_description(self, connection, previous=None):
         deadline = time.monotonic() + 3
-        while time.monotonic() < deadline:
-            description = self.request(connection, "describe")
-            if description and description["focused"] and description["target"] != previous:
-                return description
+        previous_timeout = connection.gettimeout()
+        try:
+            while (remaining := deadline - time.monotonic()) > 0:
+                connection.settimeout(remaining)
+                description = self.request(connection, "describe", deadline=deadline)
+                if time.monotonic() >= deadline:
+                    break
+                if description and description["focused"] and description["target"] != previous:
+                    return description
+        except TimeoutError:
+            pass  # A timed-out observation cannot satisfy the original deadline.
+        finally:
+            connection.settimeout(previous_timeout)
         self.fail("Browser did not report the new focused document")
 
     @staticmethod
-    def receive(connection):
+    def receive(connection, *, deadline=None):
         def exact(length):
             data = bytearray()
             while len(data) < length:
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("native-observation-deadline")
+                    connection.settimeout(remaining)
                 part = connection.recv(length - len(data))
                 if not part:
                     raise EOFError("native-host-closed")
@@ -443,12 +457,17 @@ class NativeBrowserContract(unittest.TestCase):
         ).encode()
         connection.sendall(struct.pack("<I", len(packet)) + packet)
 
-    def request(self, connection, operation, data=None):
+    def request(self, connection, operation, data=None, *, deadline=None):
         self.sequence += 1
         packet = json.dumps({"id": self.sequence, "op": operation, "data": data or {}}).encode()
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("native-observation-deadline")
+            connection.settimeout(remaining)
         connection.sendall(struct.pack("<I", len(packet)) + packet)
         for _ in range(128):
-            message = self.receive(connection)
+            message = self.receive(connection, deadline=deadline)
             if message.get("id") == self.sequence:
                 self.last_route = message.get("route")
                 return message.get("data")

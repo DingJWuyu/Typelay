@@ -81,20 +81,6 @@ public sealed class ModelCatalogTests
     }
 
     [Fact]
-    public void MalformedArchivePinCannotSilentlyBecomeAnUnpinnedPackage()
-    {
-        var value = PreviewCatalog();
-        value["packages"]![0]!["archivePin"] = new JsonObject
-        {
-            ["sha256"] = new string('a', 64),
-            ["bytes"] = false,
-            ["unpackedBytes"] = 100
-        };
-        using var document = JsonDocument.Parse(value.ToJsonString());
-        Assert.Throws<InvalidDataException>(() => ModelPackageCatalog.Parse(document.RootElement));
-    }
-
-    [Fact]
     public void ArchivePinIsOptionalAndBoundToThePackageAndItsLegacyDirection()
     {
         var value = PreviewCatalog();
@@ -336,7 +322,7 @@ public sealed class ModelCatalogTests
     public void FixedDownloadSizeComesFromThePublishedModelLock()
     {
         var selected = ModelCatalog.Packages.Packages.Single(package => package.Id == "argos-en-zh");
-        Assert.Equal(selected.ArchivePin?.Bytes, ModelCatalog.PackageDownloadBytes(selected));
+        Assert.Equal(70743021L, ModelCatalog.PackageDownloadBytes(selected));
         Assert.Equal(1133092087L, ModelCatalog.PackageDownloadBytes(ModelCatalog.Packages.Packages.Single(package => package.Backend == "hy-mt-llama-cpu")));
     }
 

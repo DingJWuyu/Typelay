@@ -22,7 +22,8 @@ def ready_report(indices=None):
         report["cases"] = [report["cases"][index] for index in indices]
     report["hello"] = {
         "packages": [{**report["expectedPackage"], "directions": ["zh_en", "en_zh"]}],
-        **dict.fromkeys(capture.CAPABILITIES, 1),
+        "styledTranslationVersion": 1,
+        "alternativeTranslationVersion": 1,
     }
     report["requests"] = [{"id": 1, "op": "hello"}]
     return report
@@ -146,6 +147,34 @@ class StyleAlternativeCaptureTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(600, report["configuredLimits"]["totalTimeoutSeconds"])
         self.assertEqual(60, report["configuredLimits"]["workerRequestSeconds"])
+        self.assertEqual(
+            report["requiredCapabilities"],
+            {"styledTranslationVersion": 1, "alternativeTranslationVersion": 1},
+        )
+
+    async def test_missing_any_required_capability_is_refused_before_the_first_request(self):
+        for capability in ("styledTranslationVersion", "alternativeTranslationVersion"):
+            with self.subTest(capability=capability):
+                report = ready_report([0])
+                del report["hello"][capability]
+                process = peer(
+                    [
+                        ("translated", "ordinary", ""),
+                        ("translated", "natural", ""),
+                        ("translated", "formal", ""),
+                        ("no-alternative", "", ""),
+                    ]
+                )
+                with self.assertRaisesRegex(
+                    ValueError, "exact-index-capabilities-required-no-fallback"
+                ):
+                    await capture.collect_cases(process, report)
+                self.assertEqual([], requests(process))
+                self.assertEqual([{"id": 1, "op": "hello"}], report["requests"])
+                self.assertEqual("not-run", report["quality"])
+                self.assertTrue(
+                    all(value is None for value in report["cases"][0]["responses"].values())
+                )
 
     async def test_all_sixty_four_frames_use_the_source_and_actual_same_case_ordinary_previous(
         self,
@@ -264,6 +293,9 @@ class StyleAlternativeCaptureTests(unittest.IsolatedAsyncioTestCase):
         process = peer([("translated", "ordinary", ""), ("error", "", "structure-not-preserved")])
         with self.assertRaisesRegex(ValueError, "index-translation-not-completed-no-fallback"):
             await index_quality.collect_cases(
-                process, report, variants=capture.VARIANTS, capabilities=capture.CAPABILITIES
+                process,
+                report,
+                variants=capture.VARIANTS,
+                capabilities=("styledTranslationVersion", "alternativeTranslationVersion"),
             )
         self.assertEqual(2, len(requests(process)))

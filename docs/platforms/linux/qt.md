@@ -97,8 +97,6 @@ cmake --build artifacts/linux/qt-native
 
 ### 部分 Qt 检查不构成发行验收
 
-Qt-only CI 仅用于已有的临时迭代入口。选择器先比较相对 `trunk` 的整支历史，再核对被执行的非 Qt 生产源码，与 `eng/shared/ci_scope.py` 中 `QT_BASELINE` 指定的提交逐字节相同。缺少提交对象或比较失败时回到完整 Linux 检查。复用的发行 artifact 必须匹配固定来源及校验；失效或不符就失败，不换未知版本。结果只覆盖本次 Qt 场景。
-
 完整 Qt probe 明确失败后，若正式 module/fixture 已生成，仍可收集独立交互证据。既有 `tests/linux/qt_cooperative/desktop_admission.py`先核对同源码输入、实际二进制和已完成的默认异步证据，再允许明确选择未封装的构建输入：
 
 ```sh

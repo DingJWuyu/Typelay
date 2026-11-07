@@ -1064,7 +1064,11 @@ public sealed class SessionControllerTests
         s.Tick();
         Assert.Equal(captures, s.Service.Captures);
         s.Service.PendingDirectWrite.SetResult(new(WriteStatus.Verified, Denial.None,
-            plan.Expected with { Text = "translated", Selection = new(10, 10) }));
+            plan.Expected with
+            {
+                Text = "translated",
+                Selection = new(10, 10)
+            }));
         s.Tick();
         Assert.True(closing.IsCompletedSuccessfully);
         Assert.Equal(new WriteSettlementSummary(1, 0, 0), await closing);
@@ -1085,7 +1089,11 @@ public sealed class SessionControllerTests
         var closing = s.Controller.ShutdownAsync();
         var notice = new InputNotice("accepted", permit, CompletedReceipt:
             new(WriteStatus.Verified, Denial.None,
-                permit.Plan.Expected with { Text = "translated", Selection = new(10, 10) }));
+                permit.Plan.Expected with
+                {
+                    Text = "translated",
+                    Selection = new(10, 10)
+                }));
         s.Input.Notices.Enqueue(notice);
         s.Input.Notices.Enqueue(notice);
         s.Tick(2000);
@@ -2135,7 +2143,11 @@ public sealed class SessionControllerTests
         var feedback = new List<CommandFeedback>();
         s.Controller.OperationFeedback += feedback.Add;
         s.Service.DirectReceipt = new(WriteStatus.Verified, Denial.None,
-            s.Fresh with { Text = "translated", Selection = new(10, 10) });
+            s.Fresh with
+            {
+                Text = "translated",
+                Selection = new(10, 10)
+            });
         s.Command("direct");
         s.Tick();
         s.CompleteTranslation("translated");
@@ -2598,7 +2610,11 @@ public sealed class SessionControllerTests
         Assert.Single(s.Service.DirectWrites);
         Assert.True(await s.Controller.PrepareModelChangeAsync());
         s.Service.PendingDirectWrite.SetResult(new(status, reason,
-            status == WriteStatus.Verified ? s.Fresh with { Text = "submitted", Selection = new(9, 9) } : null));
+            status == WriteStatus.Verified ? s.Fresh with
+            {
+                Text = "submitted",
+                Selection = new(9, 9)
+            } : null));
         s.Tick();
         Assert.Contains(status == WriteStatus.Verified ? "已直接替换" : "未获确认", s.Controller.OperationStatus);
         s.Tick(5000);

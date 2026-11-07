@@ -2931,6 +2931,9 @@ def run_outer(arguments, script=None):
     (arguments.output / result_name).unlink(missing_ok=True)
     failure = arguments.output / "inside.failed"
     failure.unlink(missing_ok=True)
+    completion = arguments.output / "inside-exit.json"
+    if not quality:
+        completion.unlink(missing_ok=True)
     runtime = arguments.output / "runtime"
     runtime.mkdir(mode=0o700, exist_ok=True)
     config = arguments.output / "niri.kdl"
@@ -2983,6 +2986,20 @@ def run_outer(arguments, script=None):
             command.extend(["--qt-cooperative", str(arguments.qt_cooperative)])
         if arguments.editor_bundle:
             command.extend(["--editor-bundle", str(arguments.editor_bundle)])
+    if not quality:
+        # Niri owns the inside process, so outer cannot waitpid it. This parent
+        # waits for the real exit, including run()'s finally/cleanup, before
+        # publishing a receipt. It inherits the compositor's process group.
+        supervisor = (
+            "import json,subprocess,sys;from pathlib import Path;"
+            "child=subprocess.run(sys.argv[2:]);"
+            "receipt=Path(sys.argv[1]);"
+            "pending=receipt.with_suffix('.json.tmp');"
+            "pending.write_text(json.dumps({'exitCode':child.returncode}));"
+            "pending.replace(receipt);"
+            "raise SystemExit(child.returncode)"
+        )
+        command = [command[0], "-I", "-B", "-c", supervisor, str(completion), *command]
     # The compositor's first-run help owns keyboard focus independently of its
     # focused-window IPC state. This disposable test session has no help UI.
     config.write_text(
@@ -3040,11 +3057,22 @@ def run_outer(arguments, script=None):
                 not quality
                 and time.monotonic() < deadline
                 and compositor.poll() is None
-                and not result.exists()
-                and not failure.exists()
+                and not completion.exists()
             ):
                 time.sleep(0.1)
-            if not result.exists():
+            finished = (
+                None if quality or not completion.exists() else json.loads(completion.read_text())
+            )
+            if (
+                not result.exists()
+                or failure.exists()
+                or not quality
+                and (
+                    not isinstance(finished, dict)
+                    or type(finished.get("exitCode")) is not int
+                    or finished["exitCode"] != 0
+                )
+            ):
                 for inside_log in sorted(arguments.output.glob("inside*.log")):
                     print(inside_log.read_text(), file=sys.stderr)
                 raise RuntimeError("nested niri/GTK contract failed; inspect nested-niri.log")

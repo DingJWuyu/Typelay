@@ -37,13 +37,38 @@ class ComparisonTests(unittest.TestCase):
             self.assertEqual(report["variants"][0]["cases"], report["variants"][1]["cases"])
 
     def test_validate_only_is_independent_of_windows_default_encoding(self):
+        import argos_repetition_comparison as experiment
+
         original = Path.read_text
 
         def windows_default(path, encoding=None, errors=None):
             return original(path, encoding=encoding or "cp1252", errors=errors)
 
-        with patch.object(Path, "read_text", windows_default):
-            self.test_validate_only_freezes_two_ordinary_configurations_without_worker()
+        (ROOT / "artifacts").mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=ROOT / "artifacts") as directory:
+            output = Path(directory) / "result.json"
+            with (
+                patch.object(Path, "read_text", windows_default),
+                patch.object(
+                    sys, "argv", [str(RUNNER), "--validate-only", "--output", str(output)]
+                ),
+                patch("sys.stdout", new_callable=io.StringIO),
+            ):
+                self.assertEqual(experiment.main(), 2)
+            report = json.loads(output.read_text(encoding="utf8"))
+            self.assertEqual(report["status"], "not-run")
+            self.assertEqual(len(report["variants"]), 2)
+            for variant in report["variants"]:
+                daily = next(case for case in variant["cases"] if case["id"] == "zh-daily-01")
+                self.assertEqual(daily["text"], "你方便明天下午把文件发给我吗？")
+                self.assertEqual(
+                    daily["semantic_anchors"], ["问对方是否方便", "明天下午", "把文件发给我"]
+                )
+                holdout = next(case for case in variant["cases"] if case["id"] == "holdout-zh-01")
+                self.assertEqual(
+                    holdout["text"], "请不要取消明天的会议，我只是想把开始时间推迟十分钟。"
+                )
+                self.assertEqual(holdout["semantic_anchors"], ["不取消；明天；只延后开始十分钟"])
 
     def test_real_collection_keeps_non_linux_admission_closed(self):
         import argos_repetition_comparison as experiment

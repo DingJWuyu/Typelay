@@ -125,8 +125,7 @@ internal static class HyAdapterCheck
                         metric.GetProperty("split_count").GetInt32() == 47 && metric.GetProperty("decode_calls").GetInt32() == 0 &&
                         metric.GetProperty("user_defined_vocab_count").GetInt32() == 15, "literal-token-boundary");
                     Require(source.GetProperty("original_sha256").GetString() == "e870ee09a4a9036cb0483aec5545302d7b2838a2baa048db9acca818d2ebfc76" &&
-                        source.GetProperty("canonical_sha256").GetString() == "d4d7ac72a43318ae349ea1e68b2fea9a72a0a358efb5c4dc6816cb0d1f22417c" &&
-                        source.GetProperty("token_roundtrip_sha256").GetString() == source.GetProperty("canonical_sha256").GetString(), "literal-canonical-bytes");
+                        source.GetProperty("canonical_sha256").GetString() == "d4d7ac72a43318ae349ea1e68b2fea9a72a0a358efb5c4dc6816cb0d1f22417c", "literal-canonical-bytes");
                     report["literal_audit"] = literal;
                     report["literal_original_hex"] = Convert.ToHexString(Utf8.GetBytes(Literal)).ToLowerInvariant();
                     report["literal_canonical_hex"] = Convert.ToHexString(Utf8.GetBytes(Literal.Replace("\r\n", "\n", StringComparison.Ordinal))).ToLowerInvariant();

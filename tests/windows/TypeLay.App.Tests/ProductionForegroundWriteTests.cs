@@ -901,7 +901,7 @@ public sealed partial class ProductionForegroundWriteTests
             _pipeToken = broker.StartInfo.Environment["TYPELAY_PIPE_TOKEN"]!;
             _isolatedDirectory = isolatedDirectory;
         }
-        public static async Task<Desktop> Start(bool withoutNativeDll = false, bool owned = false, string? retirementProbe = null, string? returnFocus = null, string? returnTrace = null, string? sourceClaimProbe = null, bool isolatedSourceAcceptance = false, bool sourceKeyboardProbe = false, bool sourceSynchronousProbe = false, bool sourceMessageProbe = false, bool sourceOriginProbe = false, bool sourceMessageAcceptance = false, bool orderedSourceMessageWitness = false)
+        public static async Task<Desktop> Start(bool withoutNativeDll = false, bool owned = false, string? retirementProbe = null, string? returnFocus = null, string? returnTrace = null, string? sourceClaimProbe = null, bool isolatedSourceAcceptance = false, bool sourceMessageProbe = false, bool sourceMessageAcceptance = false, bool orderedSourceMessageWitness = false)
         {
             var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(30));
@@ -910,7 +910,7 @@ public sealed partial class ProductionForegroundWriteTests
             string? isolatedDirectory = null;
             try
             {
-                fixture = await StockFixture.Start(deadline.Token, owned, retirementProbe, returnFocus, sourceClaimProbe, sourceKeyboardProbe, sourceSynchronousProbe, sourceMessageProbe, sourceOriginProbe);
+                fixture = await StockFixture.Start(deadline.Token, owned, retirementProbe, returnFocus, sourceClaimProbe, sourceMessageProbe);
                 string directory = Path.Combine(Repository(), "src/windows/TypeLay.Broker/bin/Release/net10.0-windows");
                 if (withoutNativeDll)
                 {
@@ -1055,7 +1055,7 @@ public sealed partial class ProductionForegroundWriteTests
         public nint Field(string name) => (nint)host.Fields.Single(value => value.Name == name).Hwnd;
         private Guid _connection, _run;
         private long _sequence = 1;
-        public static async Task<StockFixture> Start(CancellationToken token, bool owned = false, string? retirementProbe = null, string? returnFocus = null, string? sourceClaimProbe = null, bool sourceKeyboardProbe = false, bool sourceSynchronousProbe = false, bool sourceMessageProbe = false, bool sourceOriginProbe = false)
+        public static async Task<StockFixture> Start(CancellationToken token, bool owned = false, string? retirementProbe = null, string? returnFocus = null, string? sourceClaimProbe = null, bool sourceMessageProbe = false)
         {
             Guid connection = Guid.NewGuid(), run = Guid.NewGuid();
             string assembly = Path.Combine(Repository(),
@@ -1080,17 +1080,9 @@ public sealed partial class ProductionForegroundWriteTests
                 Assert.Null(returnFocus);
                 arguments = [.. arguments, "--source-claim-probe", sourceClaimProbe];
             }
-            if (sourceSynchronousProbe)
-            {
-                Assert.False(owned || sourceKeyboardProbe);
-                Assert.Null(returnFocus);
-                Assert.Null(sourceClaimProbe);
-                arguments = [.. arguments, "--source-sync-probe", Path.Combine(Repository(),
-                    "src/windows/TypeLay.Broker/bin/Release/net10.0-windows/TypeLay.NativeInput.dll")];
-            }
             if (sourceMessageProbe)
             {
-                Assert.False(owned || sourceKeyboardProbe || sourceSynchronousProbe);
+                Assert.False(owned);
                 Assert.Null(returnFocus);
                 Assert.Null(sourceClaimProbe);
                 // The backend owner loads from this test process's base directory.
@@ -1098,20 +1090,6 @@ public sealed partial class ProductionForegroundWriteTests
                 // not install/call a second copy of the native consumer.
                 arguments = [.. arguments, "--source-message-probe",
                     Path.Combine(AppContext.BaseDirectory, "TypeLay.NativeInput.dll")];
-            }
-            if (sourceOriginProbe)
-            {
-                Assert.False(owned || sourceKeyboardProbe || sourceSynchronousProbe || sourceMessageProbe);
-                Assert.Null(returnFocus);
-                Assert.Null(sourceClaimProbe);
-                arguments = [.. arguments, "--source-origin-probe"];
-            }
-            if (sourceKeyboardProbe)
-            {
-                Assert.False(owned);
-                Assert.Null(returnFocus);
-                Assert.Null(sourceClaimProbe);
-                arguments = [.. arguments, "--source-keyboard-probe"];
             }
             // The fixture creates its own Win32 windows; its redirected control
             // streams do not need a separate console window.
@@ -1214,99 +1192,6 @@ public sealed partial class ProductionForegroundWriteTests
         public ValueTask DisposeAsync() => new(Stop(process));
     }
 
-    // This first-stage TSF probe reuses only the existing self-owned process
-    // lifecycle. No Broker, native-input DLL, model or input injection is started.
-    internal static async Task RunTsfContextAdmissionProbe(Action<JsonElement> observed, Action<bool> exited)
-    {
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(30));
-        var process = StartProcess(Path.Combine(Repository(),
-            "tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll"),
-            "--stock-controls", "--tsf-context-admission");
-        nint root = 0;
-        bool normalShutdown = false;
-        var errors = new List<Exception>();
-        try
-        {
-            string? line = await process.StandardOutput.ReadLineAsync(deadline.Token);
-            var host = JsonSerializer.Deserialize<FixtureDescriptor>(line ?? "null");
-            Assert.NotNull(host);
-            Assert.Equal(process.Id, host.ProcessId);
-            root = (nint)host.RootHwnd;
-            nint a = (nint)host.Fields.Single(field => field.Name == "a").Hwnd;
-            nint b = (nint)host.Fields.Single(field => field.Name == "b").Hwnd;
-            string originalA = N.ReadText(a, Limits.MaxTextUnits), originalB = N.ReadText(b, Limits.MaxTextUnits);
-            await Focus(a);
-            await Observe(b, "native_focus_mismatch"); // Wrong exact field is rejected before TSF lookup.
-            await Observe(a, null);
-            await Focus(b);
-            await Observe(b, null);
-            await Focus(a);
-            await Observe(a, null);
-            Assert.Equal(originalA, N.ReadText(a, Limits.MaxTextUnits));
-            Assert.Equal(originalB, N.ReadText(b, Limits.MaxTextUnits));
-            Assert.Equal((nuint)0, N.Send(root, N.FixtureSubmitCount));
-            async Task Focus(nint field)
-            {
-                NativeSourceSetup.RequestOwnedForeground(root, field, process, deadline.Token);
-                Assert.True(N.PostMessage(root, N.FixtureFocus, (nuint)field, 0));
-                var until = Stopwatch.StartNew();
-                while (N.Focused() != (root, field) && until.Elapsed < TimeSpan.FromSeconds(2))
-                    await Task.Delay(10, deadline.Token);
-                Assert.Equal((root, field), N.Focused());
-            }
-            async Task Observe(nint field, string? denial)
-            {
-                Assert.True(N.PostMessage(root, 0x8090, (nuint)field, 0));
-                string? response = await process.StandardOutput.ReadLineAsync(deadline.Token);
-                using var document = JsonDocument.Parse(response ?? "null");
-                var result = document.RootElement.Clone();
-                observed(result); // Retain the actual negative result before failing admission.
-                Assert.Equal(process.Id, result.GetProperty("Process").GetInt32());
-                Assert.Equal("STA", result.GetProperty("Apartment").GetString());
-                Assert.False(result.GetProperty("ProductionReadiness").GetBoolean());
-                Assert.True(result.GetProperty("OwnedReferencesReleased").GetBoolean());
-                Assert.Equal((long)field, result.GetProperty("ExpectedField").GetInt64());
-                Assert.Equal(denial, result.GetProperty("Denial").GetString());
-                if (denial is not null)
-                {
-                    Assert.False(result.GetProperty("ManagerPresent").GetBoolean());
-                    return;
-                }
-                Assert.Equal("exact_existing_context_observed", result.GetProperty("Stage").GetString());
-                Assert.Equal((long)field, result.GetProperty("ViewWindow").GetInt64());
-                Assert.True(result.GetProperty("SameContextOnRecheck").GetBoolean());
-                Assert.Equal(result.GetProperty("FocusVersionBefore").GetInt32(),
-                    result.GetProperty("FocusVersionAfter").GetInt32());
-            }
-        }
-        catch (Exception failure) { errors.Add(failure); }
-        finally
-        {
-            try
-            {
-                // A negative admission still gets normal GUI/COM teardown, with
-                // its own cleanup budget rather than the canceled operation token.
-                using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(4));
-                if (!process.HasExited && root != 0)
-                    Assert.True(N.PostMessage(root, 0x0010, 0, 0)); // WM_CLOSE
-                await process.WaitForExitAsync(cleanup.Token);
-                Assert.Equal(0, process.ExitCode);
-                normalShutdown = true;
-            }
-            catch (Exception failure) { errors.Add(failure); }
-            try
-            {
-                await Stop(process); // Exact handle proof, bounded kill only if still needed.
-                exited(normalShutdown);
-            }
-            catch (Exception failure) { errors.Add(failure); }
-        }
-        if (errors.Count != 0)
-            throw new AggregateException("TSF context admission or cleanup failed.", errors);
-    }
-
-    private static Process StartProcess(params string[] arguments) => StartProcessWithTrace(null, createNoWindow: false, arguments);
     private static Process StartProcessWithTrace(string? trace, bool createNoWindow, params string[] arguments)
     {
         var info = new ProcessStartInfo("dotnet")

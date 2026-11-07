@@ -128,7 +128,7 @@ public sealed class ModelInstallationStoreTests
     {
         using var stream = typeof(ModelCatalog).Assembly.GetManifestResourceStream("TypeLay.ModelCatalog.json")!;
         var value = JsonNode.Parse(stream)!;
-        var hy = value["packages"]![2]!;
+        var hy = value["packages"]!.AsArray().Single(package => package!["id"]!.GetValue<string>() == HyPackage.Id)!;
         hy["directions"] = new JsonArray(hy["directions"]!.AsArray()
             .Where(item => item!["id"]!.GetValue<string>() is not ("zh_en" or "en_zh"))
             .Select(item => item!.DeepClone()).ToArray());

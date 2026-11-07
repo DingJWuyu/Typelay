@@ -293,9 +293,6 @@ def run():
                 text = output.raw[:length].decode("utf-8", "strict") if not rc else None
             if hashlib.sha256(raw).hexdigest() != original_hash:
                 raise RuntimeError("original source mutated")
-            source_audit["token_roundtrip_sha256"] = (
-                source_audit["canonical_sha256"] if metrics.roundtrip_ok else None
-            )
             response = {
                 "source_audit": source_audit,
                 "event": "result",

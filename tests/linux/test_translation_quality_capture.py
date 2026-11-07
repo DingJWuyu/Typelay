@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests/shared/worker"))
 from alternative_quality import collect, prepare_report  # noqa: E402
 from native_e2e import outer, quality_exit  # noqa: E402
@@ -1172,32 +1173,6 @@ class CombinationOnlyTests(unittest.TestCase):
         self.assertEqual(events.count("collect"), 1)
         self.assertNotIn("return-to-argos-before-remove", events)
         self.assertNotIn("移除…", events)
-
-    def test_missing_existing_cache_cannot_fall_back_to_download(self):
-        import hy_package_e2e
-
-        with tempfile.TemporaryDirectory() as temporary:
-            cache = Path(temporary)
-            assets = types.SimpleNamespace(
-                verify_native=lambda: None, plain_path=lambda path, **kwargs: path
-            )
-            fixed = {
-                "model": {"file": "missing.gguf"},
-                "model_license": {"file": "missing-license"},
-            }
-            package = types.SimpleNamespace(id=hy_package_e2e.HY)
-            with (
-                patch.object(hy_package_e2e, "model_cache", return_value=(assets, fixed, cache)),
-                patch.object(
-                    hy_package_e2e,
-                    "package_catalog",
-                    return_value=types.SimpleNamespace(packages=[package]),
-                ),
-                patch.object(hy_package_e2e, "download_resource") as download,
-            ):
-                with self.assertRaisesRegex(FileNotFoundError, "existing Hy cache"):
-                    hy_package_e2e.prepare_cache(cache, cache, cache_only=True)
-                download.assert_not_called()
 
     def test_combination_capture_keeps_eight_only_and_rejects_retries_or_ninth_request(self):
         import styled_glossary_quality

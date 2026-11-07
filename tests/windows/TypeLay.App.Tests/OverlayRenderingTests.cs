@@ -2210,7 +2210,6 @@ public sealed partial class OverlayRenderingTests(WpfDesktopFixture desktop)
             Assert.DoesNotContain("Tab", VisibleLabels(overlay));
             Assert.DoesNotContain("Esc", VisibleLabels(overlay));
             Assert.DoesNotContain("接受", VisibleLabels(overlay));
-            Assert.DoesNotContain("Tab", VisibleLabels(overlay));
             Assert.False(resume.IsVisible);
             resume.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Assert.Equal(new long[] { 12, 13 }, revisions);

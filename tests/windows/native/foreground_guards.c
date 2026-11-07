@@ -7,6 +7,30 @@
 #undef __declspec
 #undef API
 
+// Windows runs this freestanding fixture without the CRT. These byte operations
+// stay independent of the production UTF-16 comparison, copy and wipe helpers.
+#ifdef _WIN32
+void *memcpy(void *destination, const void *source, size_t bytes) {
+    unsigned char *out = destination;
+    const unsigned char *in = source;
+    for (size_t i = 0; i < bytes; i++) out[i] = in[i];
+    return destination;
+}
+void *memset(void *destination, int value, size_t bytes) {
+    unsigned char *out = destination;
+    for (size_t i = 0; i < bytes; i++) out[i] = (unsigned char)value;
+    return destination;
+}
+int memcmp(const void *first, const void *second, size_t bytes) {
+    const unsigned char *a = first, *b = second;
+    for (size_t i = 0; i < bytes; i++)
+        if (a[i] != b[i]) return a[i] < b[i] ? -1 : 1;
+    return 0;
+}
+#else
+#include <string.h>
+#endif
+
 _Static_assert(sizeof(L"") == sizeof(WCHAR), "Compile with 16-bit wchar_t");
 
 enum Scenario {
@@ -30,6 +54,8 @@ static const WCHAR initial_text[] = L"pre old post";
 static const WCHAR replacement_text[] = L"fresh";
 static const WCHAR written_text[] = L"pre fresh post";
 static Transaction request;
+static Transaction transaction_copy;
+static int transaction_wire_enabled, transaction_mapped, transaction_allocated, transaction_open;
 // One bounded source wire at the existing OS API seam. Production still owns
 // installation, claim, invalidation and retirement through its exported hook.
 static SourceInstallation source_wire, source_copy;
@@ -59,7 +85,7 @@ int GetCurrentInputMessageSource(InputMessageSource *value) {
     value->device_type = origin_device; value->origin_id = origin_id;
     return origin_success;
 }
-enum { InstallMessage = 0xc101, RevokeMessage, PollMessage, ActivateMessage };
+enum { InstallMessage = 0xc101, RevokeMessage, PollMessage, ActivateMessage, TransactionMessage, OwnedCaptureMessage };
 static struct {
     enum Scenario scenario;
     HANDLE foreground, focus, source_ancestor, root_ancestor;
@@ -98,11 +124,11 @@ static void change_capture_state(int boundary) {
     }
 }
 
-// These are controlled OS responses, not Windows IPC/queue evidence. Every
-// non-source test keeps the original fail-if-called boundary.
+// These are controlled OS responses, not Windows IPC/queue evidence.
+// Source and transaction callbacks must use their own enabled wire.
 LRESULT CallNextHookEx(HANDLE hook, int code, WPARAM wp, LPARAM lp) {
     (void)hook; (void)code; (void)wp; (void)lp;
-    require(source_wire_enabled && !origin_must_be_first);
+    require((source_wire_enabled || transaction_wire_enabled) && !origin_must_be_first);
     if (retrieved_message && lp == (LPARAM)retrieved_message) {
         message_next_calls++;
         int fault = message_next_fault;
@@ -110,7 +136,7 @@ LRESULT CallNextHookEx(HANDLE hook, int code, WPARAM wp, LPARAM lp) {
         if (fault == 1) retrieved_message->wparam = 0x76;
         if (fault == 2) {
             TestQueueMessage nested;
-            copy(&nested, retrieved_message, sizeof(nested));
+            memcpy(&nested, retrieved_message, sizeof(nested));
             message_nested_calls++;
             TypeLaySourceGetMessageProc(0, 1, (LPARAM)&nested);
             require(nested.message == 0x100 && !source_wire.invoked && !source_wire.claim);
@@ -130,14 +156,14 @@ LRESULT CallNextHookEx(HANDLE hook, int code, WPARAM wp, LPARAM lp) {
             &witness_wire, sizeof(witness_wire)));
         if (fault == 10) {
             TestQueueMessage nested;
-            copy(&nested, retrieved_message, sizeof(nested));
+            memcpy(&nested, retrieved_message, sizeof(nested));
             message_nested_calls++;
             TypeLaySourceOrderedGetMessageProc(0, 1, (LPARAM)&nested);
             require(nested.message == 0x100 && source_wire.claim != 1);
         }
         if (fault == 8) {
             TestQueueMessage nested;
-            copy(&nested, retrieved_message, sizeof(nested));
+            memcpy(&nested, retrieved_message, sizeof(nested));
             origin_id = 2;
             message_nested_calls++;
             TypeLaySourceStrictGetMessageProc(0, 1, (LPARAM)&nested);
@@ -145,7 +171,7 @@ LRESULT CallNextHookEx(HANDLE hook, int code, WPARAM wp, LPARAM lp) {
         }
         if (fault == 5) {
             TestQueueMessage nested;
-            copy(&nested, retrieved_message, sizeof(nested));
+            memcpy(&nested, retrieved_message, sizeof(nested));
             TypeLaySourceGetMessageProc(0, 1, (LPARAM)&nested);
             require(nested.message == 0x100 && source_wire.claim == 1);
         }
@@ -157,17 +183,23 @@ static int same_name(const WCHAR *a, const WCHAR *b) {
     return *a == *b;
 }
 uint32_t RegisterWindowMessageW(const WCHAR *name) {
-    require(source_wire_enabled);
+    require(source_wire_enabled || transaction_wire_enabled);
     if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourceInstall.v7")) return InstallMessage;
     if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourceRevoke.v7")) return RevokeMessage;
     if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourcePoll.v7")) return PollMessage;
     if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourceActivate.v7")) return ActivateMessage;
-    if (same_name(name, message_name)) return 0xc105;
-    if (same_name(name, owned_capture_message_name)) return 0xc106;
+    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.Transaction.v2")) return TransactionMessage;
+    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.OwnedCapture.v2")) return OwnedCaptureMessage;
     field.invalid_call = 1;
     return 0;
 }
 HANDLE OpenFileMappingW(uint32_t access, int inherit, const WCHAR *name) {
+    if (transaction_wire_enabled) {
+        require(access == 6 && !inherit && !transaction_open
+            && same_name(name, (const WCHAR *)L"Local\\TypeLay.Input.00000000000000550000000000000066"));
+        transaction_open = 1;
+        return handle(11);
+    }
     if (witness_enabled && name[20] == 'W') {
         require(source_wire_enabled && access == 6 && !inherit);
         return handle(10);
@@ -177,6 +209,12 @@ HANDLE OpenFileMappingW(uint32_t access, int inherit, const WCHAR *name) {
     return handle(8);
 }
 void *MapViewOfFile(HANDLE mapping, uint32_t access, uint32_t high, uint32_t low, size_t bytes) {
+    if (mapping == handle(11)) {
+        require(transaction_wire_enabled && transaction_open && access == 6 && !high && !low
+            && bytes == sizeof(request) && !transaction_mapped);
+        transaction_mapped = 1;
+        return &request;
+    }
     if (mapping == handle(10)) {
         require(witness_enabled && access == 6 && !high && !low
             && bytes == sizeof(witness_wire));
@@ -189,6 +227,11 @@ void *MapViewOfFile(HANDLE mapping, uint32_t access, uint32_t high, uint32_t low
     return &source_wire;
 }
 int UnmapViewOfFile(const void *view) {
+    if (view == &request) {
+        require(transaction_wire_enabled && transaction_mapped);
+        transaction_mapped = 0;
+        return 1;
+    }
     if (view == &witness_wire) {
         require(witness_enabled && witness_mapped);
         witness_mapped--;
@@ -198,15 +241,33 @@ int UnmapViewOfFile(const void *view) {
     source_mapped = 0;
     return 1;
 }
-int CloseHandle(HANDLE value) { require(source_wire_enabled && (value == handle(8) || (witness_enabled && value == handle(10)))); return 1; }
-HANDLE GetProcessHeap(void) { require(source_wire_enabled); return handle(9); }
+int CloseHandle(HANDLE value) {
+    if (value == handle(11)) {
+        require(transaction_wire_enabled && transaction_open && !transaction_mapped && !transaction_allocated);
+        transaction_open = 0;
+        return 1;
+    }
+    require(source_wire_enabled && (value == handle(8) || (witness_enabled && value == handle(10))));
+    return 1;
+}
+HANDLE GetProcessHeap(void) { require(source_wire_enabled || transaction_wire_enabled); return handle(9); }
 void *HeapAlloc(HANDLE heap, uint32_t flags, size_t bytes) {
+    if (transaction_wire_enabled && bytes == sizeof(transaction_copy)) {
+        require(heap == handle(9) && flags == 8 && transaction_mapped && !transaction_allocated);
+        transaction_allocated = 1;
+        return &transaction_copy;
+    }
     require(source_wire_enabled && heap == handle(9) && flags == 8
         && bytes == sizeof(source_copy) && !source_allocated);
     source_allocated = 1;
     return &source_copy;
 }
 int HeapFree(HANDLE heap, uint32_t flags, void *value) {
+    if (value == &transaction_copy) {
+        require(transaction_wire_enabled && heap == handle(9) && !flags && transaction_allocated);
+        transaction_allocated = 0;
+        return 1;
+    }
     require(source_wire_enabled && heap == handle(9) && !flags
         && value == &source_copy && source_allocated);
     source_allocated = 0;
@@ -242,7 +303,7 @@ static LRESULT stock_edit(HANDLE hwnd, uint32_t message, WPARAM wp, LPARAM lp) {
         field.text_reads++;
         require(wp > (WPARAM)field.length && lp != 0);
         if (wp <= (WPARAM)field.length || !lp) return 0;
-        copy((void *)lp, field.text, ((size_t)field.length + 1) * sizeof(WCHAR));
+        memcpy((void *)lp, field.text, ((size_t)field.length + 1) * sizeof(WCHAR));
         return field.length;
     case GetSelection:
         field.selection_reads++;
@@ -268,7 +329,7 @@ static LRESULT stock_edit(HANDLE hwnd, uint32_t message, WPARAM wp, LPARAM lp) {
         require((field.foreground == handle(RootWindow) || field.foreground == handle(SourceWindow))
             && field.focus == handle(SourceWindow));
         require(field.start == 12 && field.end == 12 && field.length == 12);
-        require(equal(field.text, initial_text, 13));
+        require(memcmp(field.text, initial_text, 13 * sizeof(WCHAR)) == 0);
         require(field.coarse_ms == source_expected_write_tick && request.deadline == 600);
         require(field.precise_100ns == 10000000 && request.authorization_deadline_ms == 1000);
         require(wp == 4 && lp == 7);
@@ -336,7 +397,7 @@ static LRESULT stock_edit(HANDLE hwnd, uint32_t message, WPARAM wp, LPARAM lp) {
         for (int i = 0; i < replacement_length; i++) updated[offset++] = replacement[i];
         for (int i = field.end; i < field.length; i++) updated[offset++] = field.text[i];
         updated[offset] = 0;
-        copy(field.text, updated, ((size_t)offset + 1) * sizeof(WCHAR));
+        memcpy(field.text, updated, ((size_t)offset + 1) * sizeof(WCHAR));
         field.length = offset;
         field.start += replacement_length;
         field.end = field.start;
@@ -425,8 +486,8 @@ intptr_t GetClassLongPtrW(HANDLE hwnd, int index) {
     return (intptr_t)stock_edit + field.class_changed;
 }
 int GetClassInfoW(HANDLE instance, const WCHAR *name, WindowClass *result) {
-    require(instance == 0 && equal(name, (const WCHAR *)L"Edit", 5));
-    wipe(result, sizeof(*result));
+    require(instance == 0 && memcmp(name, (const WCHAR *)L"Edit", 5 * sizeof(WCHAR)) == 0);
+    memset(result, 0, sizeof(*result));
     result->procedure = stock_edit;
     return 1;
 }
@@ -434,18 +495,20 @@ int GetClassNameW(HANDLE hwnd, WCHAR *name, int capacity) {
     require_source(hwnd);
     require(capacity >= 5);
     if (capacity < 5) return 0;
-    copy(name, L"Edit", 5 * sizeof(WCHAR));
+    memcpy(name, L"Edit", 5 * sizeof(WCHAR));
     return 4;
 }
 HANDLE GetPropW(HANDLE hwnd, const WCHAR *name) {
     require_source(hwnd);
-    require(name == property || name == focus_property);
-    return handle((uintptr_t)(name == focus_property ? field.focus_revision : field.cookie));
+    int focus = same_name(name, (const WCHAR *)L"TypeLay.OwnedFocusRevision.v1");
+    require(focus || same_name(name, (const WCHAR *)L"TypeLay.NativeInput.Lifetime.v2"));
+    return handle((uintptr_t)(focus ? field.focus_revision : field.cookie));
 }
 int SetPropW(HANDLE hwnd, const WCHAR *name, HANDLE value) {
     require_source(hwnd);
-    require(name == property || name == focus_property);
-    if (name == focus_property) {
+    int focus = same_name(name, (const WCHAR *)L"TypeLay.OwnedFocusRevision.v1");
+    require(focus || same_name(name, (const WCHAR *)L"TypeLay.NativeInput.Lifetime.v2"));
+    if (focus) {
         if (field.fail_focus_property) return 0;
         field.focus_revision = (uint64_t)(uintptr_t)value;
     } else field.cookie = (uint64_t)(uintptr_t)value;
@@ -453,9 +516,10 @@ int SetPropW(HANDLE hwnd, const WCHAR *name, HANDLE value) {
 }
 HANDLE RemovePropW(HANDLE hwnd, const WCHAR *name) {
     require_source(hwnd);
-    require(name == property || name == focus_property);
-    HANDLE previous = handle((uintptr_t)(name == focus_property ? field.focus_revision : field.cookie));
-    if (name == focus_property) field.focus_revision = 0;
+    int focus = same_name(name, (const WCHAR *)L"TypeLay.OwnedFocusRevision.v1");
+    require(focus || same_name(name, (const WCHAR *)L"TypeLay.NativeInput.Lifetime.v2"));
+    HANDLE previous = handle((uintptr_t)(focus ? field.focus_revision : field.cookie));
+    if (focus) field.focus_revision = 0;
     else field.cookie = 0;
     return previous;
 }
@@ -501,7 +565,7 @@ int ImmReleaseContext(HANDLE hwnd, HANDLE context) {
 
 static void prepare_transaction(enum Scenario scenario) {
     source_expected_write_tick = 100;
-    wipe(&request, sizeof(request));
+    memset(&request, 0, sizeof(request));
     field.scenario = scenario;
     field.set_calls = field.replace_calls = field.text_reads = field.injected_changes = field.boundary_checked = 0;
     field.length_reads = field.selection_reads = 0;
@@ -525,8 +589,8 @@ static void prepare_transaction(enum Scenario scenario) {
     field.coarse_ms = 100;
     field.precise_100ns = 10000000;
     field.start = field.end = field.length = 12;
-    copy(field.text, initial_text, sizeof(initial_text));
-    request.version = VERSION;
+    memcpy(field.text, initial_text, sizeof(initial_text));
+    request.version = 2;
     request.op = 5;
     request.pid = ProcessId;
     request.thread = ThreadId;
@@ -540,14 +604,24 @@ static void prepare_transaction(enum Scenario scenario) {
     request.end = 7;
     request.expected_selection_start = request.expected_selection_end = 12;
     request.replacement_length = 5;
-    copy(request.expected, initial_text, sizeof(initial_text));
-    copy(request.replacement, replacement_text, sizeof(replacement_text));
+    memcpy(request.expected, initial_text, sizeof(initial_text));
+    memcpy(request.replacement, replacement_text, sizeof(replacement_text));
+}
+static void send_transaction(uint32_t message) {
+    require(!transaction_wire_enabled && !transaction_open && !transaction_mapped && !transaction_allocated);
+    transaction_wire_enabled = 1;
+    // Each message submits a fresh request. Completed mappings are terminal.
+    request.status = request.reason = 0;
+    CallMessage call = {0x66, 0x55, message, handle(SourceWindow)};
+    TypeLayCallWndProc(0, 0, (LPARAM)&call);
+    require(!transaction_open && !transaction_mapped && !transaction_allocated);
+    transaction_wire_enabled = 0;
 }
 static void run_transaction(enum Scenario scenario) {
-    wipe(&field, sizeof(field));
+    memset(&field, 0, sizeof(field));
     field.cookie = LifetimeCookie;
     prepare_transaction(scenario);
-    execute(&request);
+    send_transaction(TransactionMessage);
 }
 
 static int reached_selection_boundary(int injected_changes) {
@@ -558,15 +632,15 @@ static int reached_selection_boundary(int injected_changes) {
 }
 static int rejected_without_text_write(uint32_t reason) {
     return reached_selection_boundary(1) && request.status == 2 && request.reason == reason
-        && field.replace_calls == 0 && field.length == 12 && equal(field.text, initial_text, 13);
+        && field.replace_calls == 0 && field.length == 12 && memcmp(field.text, initial_text, 13 * sizeof(WCHAR)) == 0;
 }
 static int unchanged_writes_scope_and_verifies(void) {
     run_transaction(Unchanged);
     return reached_selection_boundary(0) && request.status == 1 && request.reason == 0
-        && field.replace_calls == 1 && field.length == 14 && equal(field.text, written_text, 15)
+        && field.replace_calls == 1 && field.length == 14 && memcmp(field.text, written_text, 15 * sizeof(WCHAR)) == 0
         && field.start == 9 && field.end == 9 && request.length == 14
         && request.selection_start == 9 && request.selection_end == 9
-        && equal(request.observed, written_text, 15)
+        && memcmp(request.observed, written_text, 15 * sizeof(WCHAR)) == 0
         && field.focus == handle(SourceWindow) && field.precise_100ns == 10000000;
 }
 static int changed_focus_rejects_without_text_write(void) {
@@ -586,7 +660,7 @@ static int expired_original_authorization_rejects_with_fresh_transaction_budget(
 }
 static int exact_field_foreground_keeps_the_original_transaction_guards(void) {
     for (int fault = 0; fault < 17; fault++) {
-        wipe(&field, sizeof(field));
+        memset(&field, 0, sizeof(field));
         field.cookie = LifetimeCookie;
         prepare_transaction(Unchanged);
         field.foreground = handle(SourceWindow);
@@ -612,34 +686,34 @@ static int exact_field_foreground_keeps_the_original_transaction_guards(void) {
         HANDLE foreground = field.foreground, focus = field.focus;
         uint64_t cookie = field.cookie;
         int64_t authorization = request.authorization_deadline_ms;
-        execute(&request);
+        send_transaction(TransactionMessage);
         if (field.invalid_call || field.foreground != foreground || field.focus != focus
             || field.cookie != cookie || request.authorization_deadline_ms != authorization) return 0;
         if (!fault) {
             if (request.status != 1 || request.reason || field.set_calls != 1 || field.replace_calls != 1
-                || !equal(field.text, written_text, 15) || field.start != 9 || field.end != 9
+                || memcmp(field.text, written_text, 15 * sizeof(WCHAR)) != 0 || field.start != 9 || field.end != 9
                 || request.length != 14 || request.selection_start != 9 || request.selection_end != 9
-                || !equal(request.observed, written_text, 15)) return 0;
+                || memcmp(request.observed, written_text, 15 * sizeof(WCHAR)) != 0) return 0;
         } else if (request.status != 2 || field.set_calls || field.replace_calls
-            || field.start != 12 || field.end != 12 || !equal(field.text, initial_text, 13)) return 0;
+            || field.start != 12 || field.end != 12 || memcmp(field.text, initial_text, 13 * sizeof(WCHAR)) != 0) return 0;
     }
-    wipe(&field, sizeof(field));
+    memset(&field, 0, sizeof(field));
     field.cookie = LifetimeCookie;
     prepare_transaction(ForegroundChangedAfterSelection);
     field.foreground = handle(SourceWindow);
-    execute(&request);
+    send_transaction(TransactionMessage);
     return request.status == 2 && request.reason == 10 && field.set_calls == 1 && !field.replace_calls
         && field.foreground == handle(OtherField) && field.focus == handle(SourceWindow)
-        && equal(field.text, initial_text, 13) && !field.invalid_call;
+        && memcmp(field.text, initial_text, 13 * sizeof(WCHAR)) == 0 && !field.invalid_call;
 }
 static int unknown_wire_operations_cannot_read_the_source(void) {
     const uint32_t operations[] = {0, 6, UINT32_MAX};
     for (int i = 0; i < 3; i++) {
-        wipe(&field, sizeof(field));
+        memset(&field, 0, sizeof(field));
         field.cookie = LifetimeCookie;
         prepare_transaction(Unchanged);
         request.op = operations[i];
-        execute(&request);
+        send_transaction(TransactionMessage);
         if (request.status != 2 || request.reason != 6 || field.text_reads
             || field.set_calls || field.replace_calls || field.invalid_call) return 0;
     }
@@ -650,25 +724,25 @@ static int owned_lifetime_cannot_be_restored_by_capture_or_release(void) {
     HANDLE hwnd = handle(SourceWindow);
     if (!TypeLayOwnedEditControl(hwnd, 1, 100) || !TypeLayOwnedEditControl(hwnd, 2, 0)) return 0;
     request.cookie = 101; request.op = 4;
-    execute(&request);
+    send_transaction(TransactionMessage);
     if (request.status != 1 || field.cookie != 101) return 0;
     if (!TypeLayOwnedEditControl(hwnd, 3, 0) || field.cookie != 0) return 0;
     const uint32_t stale_ops[] = {1, 3, 4, 2, 5};
     for (int i = 0; i < 5; i++) {
         request.op = stale_ops[i];
-        execute(&request);
+        send_transaction(TransactionMessage);
         if (request.status != 2 || request.reason != 2 || field.cookie != 0) return 0;
     }
     if (!TypeLayOwnedEditControl(hwnd, 2, 0) || field.cookie != 102) return 0;
-    request.op = 3; execute(&request);
+    request.op = 3; send_transaction(TransactionMessage);
     if (request.status != 2 || field.cookie != 102) return 0;
-    request.op = 1; execute(&request);
+    request.op = 1; send_transaction(TransactionMessage);
     if (request.status != 2 || field.cookie != 102) return 0;
-    request.cookie = 102; execute(&request);
+    request.cookie = 102; send_transaction(TransactionMessage);
     if (request.status != 1) return 0;
-    request.op = 3; execute(&request);
+    request.op = 3; send_transaction(TransactionMessage);
     return request.status == 1 && field.cookie == 102 && !field.invalid_call
-        && field.replace_calls == 1 && equal(field.text, written_text, 15);
+        && field.replace_calls == 1 && memcmp(field.text, written_text, 15 * sizeof(WCHAR)) == 0;
 }
 static int automatic_lifetime_cannot_use_the_ordinary_write_route(void) {
     HANDLE hwnd = handle(SourceWindow);
@@ -677,7 +751,7 @@ static int automatic_lifetime_cannot_use_the_ordinary_write_route(void) {
     for (int i = 0; i < 2; i++) {
         prepare_transaction(Unchanged);
         request.op = operations[i];
-        execute(&request); // No managed plan is required to close this lifetime's v2 route.
+        send_transaction(TransactionMessage); // No managed plan is required to close this lifetime's v2 route.
         if (request.status != 2 || request.reason != 6 || field.text_reads
             || field.set_calls || field.replace_calls || field.invalid_call) return 0;
     }
@@ -710,7 +784,7 @@ static int owned_preflight_refuses_without_consuming_or_mutating(void) {
             || request.status != 2 || field.set_calls || field.replace_calls
             || field.start != selection || field.end != selection
             || field.focus != hwnd || field.foreground != (fault == 6 ? hwnd : handle(RootWindow))
-            || !equal(field.text, initial_text, 13) || field.invalid_call) return 0;
+            || memcmp(field.text, initial_text, 13 * sizeof(WCHAR)) != 0 || field.invalid_call) return 0;
         const uint32_t reasons[] = {10, 3, 9, 9, 14, 4, 10};
         if (request.reason != reasons[fault]) return 0;
     }
@@ -721,15 +795,15 @@ static int owned_acceptance_reports_one_execution_and_cannot_replay(void) {
     uint64_t revision = TypeLayOwnedFocusRevision(handle(SourceWindow), 0);
     if (TypeLayOwnedEditTryExecute(&request, sizeof(request), revision) != 1
         || request.status != 1 || request.reason != 0 || field.replace_calls != 1
-        || !equal(field.text, written_text, 15) || field.start != 9 || field.end != 9
+        || memcmp(field.text, written_text, 15 * sizeof(WCHAR)) != 0 || field.start != 9 || field.end != 9
         || field.invalid_call) return 0;
     // The native transaction terminal state cannot execute the same buffer twice.
     if (TypeLayOwnedEditTryExecute(&request, sizeof(request), revision) != 0
         || field.replace_calls != 1 || field.set_calls != 1
-        || !equal(field.text, written_text, 15) || field.invalid_call) return 0;
+        || memcmp(field.text, written_text, 15 * sizeof(WCHAR)) != 0 || field.invalid_call) return 0;
     uint64_t cookie = field.cookie;
     prepare_transaction(Unchanged);
-    execute(&request); // Consuming/exhausting a local plan cannot restore the old write route.
+    send_transaction(TransactionMessage); // Consuming/exhausting a local plan cannot restore the old write route.
     return request.status == 2 && request.reason == 6 && field.cookie == cookie
         && !field.text_reads && !field.set_calls && !field.replace_calls;
 }
@@ -739,14 +813,14 @@ static int owned_capture_rechecks_the_exact_focus_revision_before_reading(void) 
     prepare_transaction(Unchanged);
     request.op = 6;
     request.authorization_deadline_ms = (int64_t)revision;
-    execute_owned_capture(&request);
+    send_transaction(OwnedCaptureMessage);
     if (request.status != 1 || request.reason || field.text_reads != 1
-        || !equal(request.observed, initial_text, 13) || field.set_calls || field.replace_calls) return 0;
+        || memcmp(request.observed, initial_text, 13 * sizeof(WCHAR)) != 0 || field.set_calls || field.replace_calls) return 0;
     prepare_transaction(Unchanged);
     request.op = 6;
     request.authorization_deadline_ms = (int64_t)revision;
     field.foreground = hwnd;
-    execute_owned_capture(&request);
+    send_transaction(OwnedCaptureMessage);
     if (request.status != 2 || field.text_reads || field.set_calls || field.replace_calls
         || field.foreground != hwnd || field.focus != hwnd) return 0;
     // Same-root A -> B -> A; matching HWNDs and cookie do not recover the old read.
@@ -757,11 +831,11 @@ static int owned_capture_rechecks_the_exact_focus_revision_before_reading(void) 
     prepare_transaction(Unchanged);
     request.op = 6;
     request.authorization_deadline_ms = (int64_t)revision;
-    execute_owned_capture(&request);
+    send_transaction(OwnedCaptureMessage);
     if (request.status != 2 || field.text_reads || field.set_calls || field.replace_calls) return 0;
     prepare_transaction(Unchanged);
     request.authorization_deadline_ms = (int64_t)TypeLayOwnedFocusRevision(hwnd, 0);
-    execute_owned_capture(&request); // The owned-capture entry may never route op5.
+    send_transaction(OwnedCaptureMessage); // The owned-capture entry may never route op5.
     return request.status == 2 && !field.text_reads && !field.set_calls && !field.replace_calls && !field.invalid_call;
 }
 static int accepted_owned_focus_round_trip_keeps_the_real_rejection(void) {
@@ -780,10 +854,10 @@ static int owned_capture_rechecks_dynamic_qualification_around_reading(void) {
             request.authorization_deadline_ms = (int64_t)TypeLayOwnedFocusRevision(handle(SourceWindow), 0);
             field.capture_boundary = boundary;
             field.capture_fault = fault;
-            execute_owned_capture(&request);
+            send_transaction(OwnedCaptureMessage);
             if (request.status != 2 || field.injected_changes != 1 || field.text_reads != boundary - 1
                 || field.set_calls || field.replace_calls || field.invalid_call
-                || !equal(field.text, initial_text, 13) || field.start != 12 || field.end != 12) return 0;
+                || memcmp(field.text, initial_text, 13 * sizeof(WCHAR)) != 0 || field.start != 12 || field.end != 12) return 0;
         }
     }
     return 1;
@@ -842,7 +916,7 @@ static int owned_input_identity_is_rechecked_inside_acceptance(void) {
         if (TypeLayOwnedEditTryExecuteWithInputContext(&request, sizeof(request), revision,
                 context.ime_context, context.keyboard_layout)
             || request.status != 2 || field.set_calls || field.replace_calls
-            || field.start != 12 || field.end != 12 || !equal(field.text, initial_text, 13)
+            || field.start != 12 || field.end != 12 || memcmp(field.text, initial_text, 13 * sizeof(WCHAR)) != 0
             || field.context_gets != field.context_releases || field.invalid_call) return 0;
         if (TypeLayOwnedEditCanExitWithInputContext(hwnd, root, ProcessId, ThreadId, field.cookie, revision, 1000,
                 context.ime_context, context.keyboard_layout)) return 0;
@@ -858,14 +932,14 @@ static int accepted_input_context_change_cannot_reach_text_mutation(void) {
         || TypeLayOwnedEditTryExecuteWithInputContext(&request, sizeof(request), revision,
             context.ime_context, context.keyboard_layout) != 1
         || request.status != 2 || !reached_selection_boundary(1) || field.replace_calls
-        || !equal(field.text, initial_text, 13) || field.context_gets != field.context_releases) return 0;
+        || memcmp(field.text, initial_text, 13 * sizeof(WCHAR)) != 0 || field.context_gets != field.context_releases) return 0;
     prepare_transaction(Unchanged);
     if (!TypeLayOwnedEditTryProbeInputContext(hwnd, root, ProcessId, ThreadId, field.cookie, revision, 1000, &context)
         || !TypeLayOwnedEditCanExitWithInputContext(hwnd, root, ProcessId, ThreadId, field.cookie, revision, 1000,
             context.ime_context, context.keyboard_layout)) return 0;
     return TypeLayOwnedEditTryExecuteWithInputContext(&request, sizeof(request), revision,
             context.ime_context, context.keyboard_layout) == 1
-        && request.status == 1 && field.replace_calls == 1 && equal(field.text, written_text, 15)
+        && request.status == 1 && field.replace_calls == 1 && memcmp(field.text, written_text, 15 * sizeof(WCHAR)) == 0
         && field.context_gets == field.context_releases && !field.invalid_call;
 }
 static int failed_focus_mirror_permanently_retires_owned_authority(void) {
@@ -883,7 +957,7 @@ static int failed_focus_mirror_permanently_retires_owned_authority(void) {
     return !TypeLayOwnedEditControl(hwnd, 2, 0) && !TypeLayOwnedFocusRevision(hwnd, 1)
         && !TypeLayOwnedEditTryExecute(&request, sizeof(request), revision)
         && request.status == 2 && !field.set_calls && !field.replace_calls
-        && field.start == 12 && field.end == 12 && equal(field.text, initial_text, 13)
+        && field.start == 12 && field.end == 12 && memcmp(field.text, initial_text, 13 * sizeof(WCHAR)) == 0
         && !field.cookie && !field.focus_revision && !field.invalid_call;
 }
 static void send_source(uint32_t message) {
@@ -893,15 +967,15 @@ static void send_source(uint32_t message) {
 static int source_input_identity_is_bound_until_exact_retirement(void) {
     source_wire_enabled = 1;
     for (int fault = 0; fault < 14; fault++) {
-        wipe(&field, sizeof(field));
+        memset(&field, 0, sizeof(field));
         field.cookie = LifetimeCookie;
         prepare_transaction(Unchanged);
-        wipe(&source_wire, sizeof(source_wire));
+        memset(&source_wire, 0, sizeof(source_wire));
         source_command = 0; source_expected_write_tick = 100;
         source_wire.version = 7; source_wire.mode = 1; source_wire.accept_key = 9; source_wire.bytes = sizeof(source_wire);
         source_wire.generation[0] = 1; source_wire.grant[0] = (uint64_t)fault + 1;
         source_wire.observed_at_ms = 900;
-        copy(&source_wire.tx, &request, sizeof(request));
+        memcpy(&source_wire.tx, &request, sizeof(request));
         if (fault == 9) field.change_input_at_read = 1;
         send_source(InstallMessage);
         if (fault == 9) {
@@ -943,11 +1017,11 @@ static int source_input_identity_is_bound_until_exact_retirement(void) {
         send_source(ActivateMessage);
         if (fault == 0 || fault == 8) {
             if (source_wire.claim != 1 || source_wire.tx.status != 1 || source_wire.tx.reason
-                || field.set_calls != 1 || field.replace_calls != 1 || !equal(field.text, written_text, 15)) return 0;
+                || field.set_calls != 1 || field.replace_calls != 1 || memcmp(field.text, written_text, 15 * sizeof(WCHAR)) != 0) return 0;
         } else {
             int claimed = fault == 4 || fault == 13;
             if (source_wire.claim != (uint32_t)claimed || source_wire.tx.status != 2
-                || field.set_calls != claimed || field.replace_calls || !equal(field.text, initial_text, 13)
+                || field.set_calls != claimed || field.replace_calls || memcmp(field.text, initial_text, 13 * sizeof(WCHAR)) != 0
                 || field.start != (claimed ? 4 : 12) || field.end != (claimed ? 7 : 12)) return 0;
             if (source_wire.tx.reason != (uint32_t)(fault >= 10 ? 2 : fault == 7 ? 15 : 9)
                 || (fault >= 10 && field.injected_changes != 1)) return 0;
@@ -967,18 +1041,18 @@ static int prepare_source_message_key(int ordered, uint32_t key) {
     source_wire_enabled = 1;
     message_next_fault = message_nested_calls = message_change_at_limit = 0;
     message_pending = queue_status_calls = 0;
-    wipe(&field, sizeof(field));
+    memset(&field, 0, sizeof(field));
     field.cookie = LifetimeCookie;
     prepare_transaction(Unchanged);
-    wipe(&source_wire, sizeof(source_wire));
+    memset(&source_wire, 0, sizeof(source_wire));
     source_command = 0; source_expected_write_tick = 100;
     source_wire.version = 7; source_wire.mode = 1; source_wire.accept_key = key; source_wire.bytes = sizeof(source_wire);
     source_wire.generation[0] = 1; source_wire.grant[0] = 71;
     source_wire.observed_at_ms = 900;
-    copy(&source_wire.tx, &request, sizeof(request));
+    memcpy(&source_wire.tx, &request, sizeof(request));
     witness_enabled = ordered;
     if (ordered) {
-        wipe(&witness_wire, sizeof(witness_wire));
+        memset(&witness_wire, 0, sizeof(witness_wire));
         source_wire.witness_lifetime[0] = ++witness_lifetime;
         source_wire.claim = 3;
         witness_wire.version = 2; witness_wire.bytes = sizeof(witness_wire);
@@ -1043,7 +1117,7 @@ static int source_removed_message_commits_before_selection(uint32_t pending) {
     if (message.message || message.wparam != 9 || message.lparam != 0x000f0001
         || message_next_calls != 1 || queue_status_calls || source_wire.claim != 1 || source_wire.invoked != 1
         || source_wire.acknowledgement != 1 || source_wire.acknowledged_operation != 1
-        || field.set_calls != 1 || field.replace_calls != 1 || !equal(field.text, written_text, 15)
+        || field.set_calls != 1 || field.replace_calls != 1 || memcmp(field.text, written_text, 15 * sizeof(WCHAR)) != 0
         || field.invalid_call || source_mapped || source_allocated) return 0;
     send_source(PollMessage);
     if (source_wire.tx.status != 1 || source_wire.state != 2 || source_wire.tx.reason
@@ -1083,7 +1157,7 @@ static int source_sent_activation_still_refuses_pending_work(void) {
         if (source_wire.claim || source_wire.tx.status != 2
             || source_wire.tx.reason != (SOURCE_PENDING_WORK | pending)
             || queue_status_calls != 1 || field.set_calls || field.replace_calls
-            || !equal(field.text, initial_text, 13) || field.invalid_call) return 0;
+            || memcmp(field.text, initial_text, 13 * sizeof(WCHAR)) != 0 || field.invalid_call) return 0;
         send_source(RevokeMessage);
         if (source_wire.state != 3 || source_mapped || source_allocated || field.invalid_call) return 0;
         source_wire_enabled = 0;
@@ -1096,21 +1170,6 @@ static int source_sent_activation_still_refuses_pending_work(void) {
     send_source(RevokeMessage);
     source_wire_enabled = 0;
     return source_wire.state == 3 && !source_mapped && !source_allocated && !field.invalid_call;
-}
-static int source_admission_pointer_pair_is_required(void) {
-    // Local defensive invariant only: both public hook callers construct either
-    // two pointers or neither. No public entry can manufacture this XOR state.
-    QueueMessage message = {handle(SourceWindow), 0x100, 9, 0x000f0001, 1000, {0, 0}, 0};
-    for (int missing = 0; missing < 2; missing++) {
-        prepare_transaction(Unchanged);
-        uint32_t claim = 0, reason = 0;
-        SourceAdmission admission = { &claim, &reason,
-            missing ? 0 : &message, missing ? &message : 0 };
-        execute_guarded(&request, 0, 0, 0, &admission);
-        if (request.status != 2 || request.reason != 6 || claim || reason || message.message != 0x100
-            || field.set_calls || field.replace_calls || field.text_reads || field.invalid_call) return 0;
-    }
-    return 1;
 }
 static int source_message_noremove_preserves_but_nested_remove_revokes_the_grant(void) {
     if (!prepare_source_message()) return 0;
@@ -1342,9 +1401,12 @@ static int source_strict_origin_is_classified_before_any_other_query(void) {
         TypeLaySourceStrictGetMessageProc(0, 1, (LPARAM)&message);
         retrieved_message = 0;
         if (origin_calls != 1 || origin_must_be_first || message_next_calls != 3
-            || !same_queue_message((QueueMessage *)&message, (QueueMessage *)&original)
+            || message.hwnd != original.hwnd || message.message != original.message
+            || message.wparam != original.wparam || message.lparam != original.lparam
+            || message.time != original.time || message.point.x != original.point.x
+            || message.point.y != original.point.y || message.private_value != original.private_value
             || source_wire.invoked || source_wire.claim == 1 || field.set_calls || field.replace_calls
-            || field.start != 12 || field.end != 12 || !equal(field.text, initial_text, 13)) return 0;
+            || field.start != 12 || field.end != 12 || memcmp(field.text, initial_text, 13 * sizeof(WCHAR)) != 0) return 0;
         // A later apparently trusted repeat cannot retry the rejected first key.
         origin_success = 1; origin_device = origin_id = 1;
         message.lparam = 0x400f0001u;
@@ -1436,7 +1498,7 @@ static void publish_source_key(uint64_t nonce, uint32_t time, uint32_t key, uint
     uint32_t flags, uint32_t eligible, uint32_t repeated) {
     uint64_t sequence = witness_wire.published + 1;
     SourceKeyWitness edge = {sequence, nonce, 1000, SourceWindow, time, key, scan, flags, eligible, repeated, 0};
-    copy(&witness_wire.records[(sequence - 1) % SOURCE_WITNESS_CAPACITY], &edge, sizeof(edge));
+    memcpy(&witness_wire.records[(sequence - 1) % SOURCE_WITNESS_CAPACITY], &edge, sizeof(edge));
     witness_wire.published = sequence;
 }
 static int ordered_dormant_reader_rejects_without_poisoning_the_next_grant(void) {
@@ -1459,7 +1521,7 @@ static int ordered_dormant_reader_rejects_without_poisoning_the_next_grant(void)
     if (source_wire.state != 3) return 0;
     source_wire.state = 0; source_wire.claim = 3; source_wire.invoked = 0;
     source_wire.grant[0] = 72;
-    copy(&source_wire.tx, &request, sizeof(request));
+    memcpy(&source_wire.tx, &request, sizeof(request));
     send_source(InstallMessage);
     if (source_wire.state != 1 || !TypeLaySourceArmWitness(&source_wire, sizeof(source_wire), 0x44,
             &witness_wire, sizeof(witness_wire))) return 0;
@@ -1506,7 +1568,7 @@ static int ordered_failed_first_arm_keeps_the_started_observation(void) {
     if (source_wire.state != 3) return 0;
     source_wire.state = 0; source_wire.claim = 3; source_wire.invoked = 0;
     source_wire.grant[0] = 72;
-    copy(&source_wire.tx, &request, sizeof(request));
+    memcpy(&source_wire.tx, &request, sizeof(request));
     send_source(InstallMessage);
     if (source_wire.state != 1 || !TypeLaySourceArmWitness(&source_wire, sizeof(source_wire), 0x44,
             &witness_wire, sizeof(witness_wire)) || witness_wire.initial_tick != 99
@@ -1578,7 +1640,7 @@ static int ordered_fresh_key_consumes_once_at_the_actual_message(uint32_t key, u
     if (message.message || witness_wire.consumed != 1 || witness_wire.poison
         || source_wire.claim != 1 || source_wire.invoked != 1 || source_wire.tx.status != 1
         || origin_calls != 1 || origin_must_be_first || message_next_calls != 1
-        || field.set_calls != 1 || field.replace_calls != 1 || !equal(field.text, written_text, 15)
+        || field.set_calls != 1 || field.replace_calls != 1 || memcmp(field.text, written_text, 15 * sizeof(WCHAR)) != 0
         || queue_status_calls || field.invalid_call || source_mapped || witness_mapped) return 0;
     send_source(PollMessage);
     if (source_wire.verified_at_ms != 1000 || source_wire.tx.status != 1) return 0;
@@ -1701,14 +1763,14 @@ static int ordered_old_press_keeps_its_actual_key_scan_and_extended_identity(voi
         // A second configuration cannot retire or replace the held F7 grant.
         // Save the old envelope at this OS mapping seam, not native slot state.
         static SourceInstallation original;
-        copy(&original, &source_wire, sizeof(original));
+        memcpy(&original, &source_wire, sizeof(original));
         source_wire.grant[0]++;
         source_wire.accept_key = 0x87;
         source_wire.state = 0;
         send_source(InstallMessage);
         if (source_wire.state == 1) return 0;
         uint64_t acknowledgement = source_wire.acknowledgement;
-        copy(&source_wire, &original, sizeof(original));
+        memcpy(&source_wire, &original, sizeof(original));
         source_wire.acknowledgement = acknowledgement;
         field.coarse_ms = 1300; field.precise_100ns = 22000000;
         uint32_t key = fault ? 0x76 : 0x87;
@@ -1779,7 +1841,7 @@ static int ordered_old_or_ambiguous_keys_cannot_borrow_a_fresh_head(void) {
             if (source_wire.state != 3) return 0;
             source_wire.state = 0; source_wire.claim = 3; source_wire.invoked = 0;
             source_wire.grant[0] = 72;
-            copy(&source_wire.tx, &request, sizeof(request));
+            memcpy(&source_wire.tx, &request, sizeof(request));
             field.coarse_ms = 100;
             publish_source_key(0, 100, 9, 15, 0, 0, 0);
             send_source(InstallMessage);
@@ -1854,7 +1916,7 @@ static int ordered_new_grant_retains_unconsumed_history(void) {
     source_wire.state = 0; source_wire.claim = 3; source_wire.invoked = 0;
     source_wire.grant[0] = 72;
     source_wire.witness_boundary_sequence = source_wire.witness_boundary_tick = 0;
-    copy(&source_wire.tx, &request, sizeof(request));
+    memcpy(&source_wire.tx, &request, sizeof(request));
     send_source(InstallMessage);
     if (source_wire.state != 1 || witness_wire.initial_tick != 99 || witness_wire.recording_active != 1 || witness_wire.attached_sequence != 1
         || witness_wire.published != 1 || witness_wire.consumed
@@ -1934,7 +1996,7 @@ static void prepare_fresh_control_grant(void) {
     source_wire.grant[0] = 72; source_wire.observed_at_ms = 1000;
     source_wire.mode = 1; source_wire.control_sequence = 1; source_wire.control_observed_ms = 1000;
     source_wire.control_input_epoch = 4;
-    copy(&source_wire.tx, &request, sizeof(request));
+    memcpy(&source_wire.tx, &request, sizeof(request));
 }
 static int ordered_control_requires_fresh_grant_and_keeps_only_function_tails(uint32_t key, int control_first,
     int system_messages, uint32_t injected_flag) {
@@ -2034,12 +2096,46 @@ static int ordered_control_refuses_old_or_interrupted_prefixes(void) {
             send_source(RevokeMessage);
         }
         if (source_wire.state != (fault == 1 ? 2u : 3u) || source_wire.claim == 1 || field.set_calls || field.replace_calls
-            || !equal(field.text, initial_text, 13) || field.invalid_call || source_mapped || witness_mapped || source_allocated) return 0;
+            || memcmp(field.text, initial_text, 13 * sizeof(WCHAR)) != 0 || field.invalid_call || source_mapped || witness_mapped || source_allocated) return 0;
     }
     return 1;
 }
 
+static int property_names_match_independent_string_buffers(void) {
+    WCHAR lifetime_name[] = L"TypeLay.NativeInput.Lifetime.v2";
+    WCHAR focus_name[] = L"TypeLay.OwnedFocusRevision.v1";
+    HANDLE hwnd = handle(SourceWindow);
+    memset(&field, 0, sizeof(field));
+    field.cookie = 43;
+    field.focus_revision = 67;
+    if (GetPropW(hwnd, lifetime_name) != handle(43) || GetPropW(hwnd, focus_name) != handle(67)
+        || field.invalid_call) return 0;
+    if (!SetPropW(hwnd, lifetime_name, handle(44)) || !SetPropW(hwnd, focus_name, handle(68))
+        || GetPropW(hwnd, lifetime_name) != handle(44) || GetPropW(hwnd, focus_name) != handle(68)
+        || field.invalid_call) return 0;
+    field.fail_focus_property = 1;
+    if (SetPropW(hwnd, focus_name, handle(69)) || GetPropW(hwnd, focus_name) != handle(68)
+        || field.invalid_call) return 0;
+    if (RemovePropW(hwnd, lifetime_name) != handle(44) || RemovePropW(hwnd, focus_name) != handle(68)
+        || GetPropW(hwnd, lifetime_name) || GetPropW(hwnd, focus_name) || field.invalid_call) return 0;
+    // The native executor must see the same lifetime registered through another
+    // caller's string buffer, and reject the old grant after that name is removed.
+    if (!SetPropW(hwnd, lifetime_name, handle(43))) return 0;
+    prepare_transaction(Unchanged);
+    send_transaction(TransactionMessage);
+    if (request.status != 1 || request.reason || field.replace_calls != 1
+        || memcmp(field.text, written_text, sizeof(written_text)) != 0 || field.invalid_call) return 0;
+    if (RemovePropW(hwnd, lifetime_name) != handle(43)) return 0;
+    prepare_transaction(Unchanged);
+    request.cookie = 43;
+    send_transaction(TransactionMessage);
+    return request.status == 2 && request.reason == 2 && !field.text_reads
+        && !field.set_calls && !field.replace_calls
+        && memcmp(field.text, initial_text, sizeof(initial_text)) == 0 && !field.invalid_call;
+}
+
 static int run_checks(void) {
+    if (!property_names_match_independent_string_buffers()) return 53;
     if (!ordered_control_requires_fresh_grant_and_keeps_only_function_tails(0x76, 1, 0, 0)) return 50;
     for (uint32_t key = 0x70; key <= 0x87; key++)
         for (int control_first = 0; control_first < 2; control_first++)
@@ -2087,7 +2183,6 @@ static int run_checks(void) {
     if (!source_message_noremove_preserves_but_nested_remove_revokes_the_grant()) return 20;
     if (!source_message_refusal_never_restores_or_replays_the_original()) return 21;
     if (!source_sent_activation_still_refuses_pending_work()) return 22;
-    if (!source_admission_pointer_pair_is_required()) return 23;
     if (!source_claimed_refusal_and_unknown_keep_the_press()) return 24;
     if (!source_tail_uncertainty_and_departure_cannot_revive()) return 25;
     if (!owned_lifetime_cannot_be_restored_by_capture_or_release()) return 5;

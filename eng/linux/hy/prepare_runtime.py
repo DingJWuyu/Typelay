@@ -101,8 +101,10 @@ def prepare(cache, output, *, offline=False):
             raise FileNotFoundError("fixed CPU archive unavailable in offline cache")
         deadline = time.monotonic() + 120
         partial = archive.with_suffix(archive.suffix + ".partial")
+        # Cleanup belongs only to the caller that exclusively created this file.
+        destination = partial.open("xb")
         try:
-            with partial.open("xb") as destination:
+            with destination:
                 request = urllib.request.Request(lock["url"], headers={"User-Agent": "TypeLay/1"})
                 with urllib.request.urlopen(request, timeout=20) as response:
                     if response.status != 200 or not response.url.startswith("https://"):
@@ -118,7 +120,6 @@ def prepare(cache, output, *, offline=False):
                     raise ValueError("fixed CPU archive download full hash mismatch")
             # Exclusive publication cannot overwrite an entry that appeared meanwhile.
             os.link(partial, archive)
-            partial.unlink()
         finally:
             partial.unlink(missing_ok=True)
         verify_file(archive, lock)

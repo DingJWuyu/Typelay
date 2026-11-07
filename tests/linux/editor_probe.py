@@ -193,12 +193,19 @@ class EditorProbe(unittest.TestCase):
             self.isolated("""fixtureMessages.some(message => message.event === 'ui'
               && message.data.operation === 'beginEdit')""")
         )
-        self.isolated("""fixtureRichView.revision = 2;
-          fixtureRichView.view.state = 'EditingTranslation';
-          fixtureRichView.view.presentation.editorOwnsText = true;
-          fixtureCommand({id: 5, op: 'overlay-render', data: fixtureRichView});
-          fixtureCommand({id: 6, op: 'overlay-edit', data: {
-            target: fixtureRichView.target, allowed: true}});""")
+        self.assertTrue(
+            self.isolated("""(() => {
+              fixtureRichView.revision = 2;
+              fixtureRichView.view.state = 'EditingTranslation';
+              fixtureRichView.view.presentation.editorOwnsText = true;
+              // The new state has its own host interaction and view token.
+              delete fixtureRichView.view.viewContext;
+              const rendered = fixtureCommand({id: 5, op: 'overlay-render', data: fixtureRichView});
+              fixtureCommand({id: 6, op: 'overlay-edit', data: {
+                target: fixtureRichView.target, allowed: true}});
+              return rendered?.visible;
+            })()""")
+        )
         self.assertFalse(
             self.page.locator("#editor-source").evaluate(
                 "root => root.classList.contains('ProseMirror-focused')"
@@ -436,13 +443,6 @@ class EditorProbe(unittest.TestCase):
         self.assertEqual(result["undone"], INITIAL)
         self.assertEqual(result["undoSelection"], {"from": 8, "to": 13})
         self.assertEqual(result["redone"], TRANSLATED)
-
-    def test_unguarded_tiptap_overwrites_reentrant_source_change(self):
-        result = self.probe("reentrant-unguarded", baseline=True)
-        self.assertTrue(result["reentered"])
-        # This is an explicit unsafe counterexample, not an acceptance pass.
-        self.assertEqual(result["after"], TRANSLATED)
-        self.assertNotEqual(result["after"], NEW_SOURCE)
 
     def test_guard_preserves_reentrant_change_and_its_native_undo(self):
         result = self.probe("reentrant-guarded")

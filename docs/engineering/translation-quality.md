@@ -138,24 +138,6 @@ gh workflow run check.yml --repo DingJWuyu/Typelay --ref work/linux-usability \
 
 同分支的 `full` 和 `quality-only` 使用两个固定并发组，每组会取消本组旧 run。编排者必须确认上一轮质量试验已终态，再发下一轮；不能靠新增参数绕开同组限制。实际跨组执行情况以 GitHub run 为准。
 
-没有 dispatch 入口时，只有已授权的 `work/linux-usability` 新提交可使用采集 footer。默认模式要求提交正文最后一个空行分隔段仅含以下一行：
-
-```text
-TypeLay-Quality-Capture: true
-```
-
-解码对照或固定诊断在同一末尾段紧接一行，二选一：
-
-```text
-TypeLay-Hy-Decode-Comparison: true
-```
-
-```text
-TypeLay-Fixed-Model-Diagnostics: true
-```
-
-每行必须唯一、精确且顺序固定。提交必须是已有分支的非强推，before 是 after 的祖先，after 等于 HEAD，事件的 head commit ID 和完整正文也必须与 Git 一致。正文中的代码围栏、引用、缩进、重复或畸形标记不能请求采集。校验由 [`ci_scope.py`](../../eng/shared/ci_scope.py) 完成；证据不足仍保留完整检查。footer 路径始终执行完整检查，不提供 `quality-only` 捷径，后续普通提交也不继承请求。
-
 ### 核对完成与退出
 
 逐份检查报告的输入、库存与 worker 身份，以及 `workerStarts=1`、`workerExitCode=0`、`workerExitConfirmed=true` 和完成状态。请求数必须精确匹配所选集合，每个 runner 另有一次 hello。不能只凭“不超过上限”宣布完成。
@@ -201,8 +183,6 @@ TypeLay-Fixed-Model-Diagnostics: true
 ## 普通翻译评测数据分层
 
 样本按实际用途分类，不按文件名推断独立性。`alternative_quality_inputs.json` 的 16 源、`argos_repetition_holdout.json` 的 8 源，以及 Hy 原始和 holdout 的 8 源均已消费。不同模型或配置对同源的响应不算新样本。
-
-`ordinary_daily_inputs.json` 提供 24 条合成日常输入，覆盖社交、工作、时间、消费、软件和结构场景。当前代码没有将它接入 runner。它提供场景覆盖，不代表用户流量抽样；准备数据也不等于模型已运行。
 
 新的最终验证集应在候选配置完全冻结后，由独立作者创建并复核。共享工作区不等于盲评隔离，暴露情况须记录；揭晓后用于调参即已消费。不要复用已消费的 Index 或 Hy 留出作为新一轮独立验证，也不要因部分方向未测而缩窄产品语言目标。
 

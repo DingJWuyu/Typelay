@@ -10,7 +10,9 @@ import sys
 import tempfile
 import threading
 import unittest
+from itertools import count
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
@@ -1051,6 +1053,40 @@ class GlossaryInteractionLossTests(unittest.TestCase):
 
 
 class GtkPreviewObservationTests(unittest.TestCase):
+    # Fixed fixture observations are independent of the render requests.
+    CANDIDATES = (
+        {"text": "Existing translation.", "foreground": "rgb(20,20,19)"},
+        {"text": "Existing translation.", "foreground": "rgb(116,114,108)"},
+        {"text": "Updated translation.", "foreground": "rgb(20,20,19)"},
+        {"text": "", "foreground": "rgb(20,20,19)"},
+        {"text": "Manual draft.", "foreground": "rgb(20,20,19)"},
+        {"text": "Manual draft.", "foreground": "rgb(20,20,19)"},
+        {"text": "Manual draft.", "foreground": "rgb(20,20,19)"},
+        {"text": "Manual draft.", "foreground": "rgb(20,20,19)"},
+    )
+
+    class FixtureClient:
+        hello = {"backend": "gtk3", "lifetime": "l"}
+
+        def __init__(self, candidates):
+            self.candidates = iter(candidates)
+            self.requests = []
+
+        def call(self, operation, request):
+            self.requests.append(request)
+            self.candidate = next(self.candidates)
+            return {"visible": True}
+
+        def state(self):
+            return {
+                "first": "source",
+                "second": "other",
+                "observedAtMs": 10**15,
+                "focus": "fixture-first",
+                "imeClear": True,
+                "candidate": {"editablePreview": False, **self.candidate},
+            }
+
     def test_refused_render_is_recorded_once_without_reading_or_retrying(self):
         class Client:
             hello = {"backend": "gtk3", "lifetime": "l"}
@@ -1078,45 +1114,53 @@ class GtkPreviewObservationTests(unittest.TestCase):
         self.assertLessEqual(phase["expiresAtMs"] - phase["renderStartedAtMs"], 800)
         self.assertNotIn("lastObservation", phase)
 
-    def test_eight_color_requests_keep_original_checks_and_bounded_observations(self):
-        class Client:
-            hello = {"backend": "gtk3", "lifetime": "l"}
-            requests = []
-
-            def call(self, operation, request):
-                self.requests.append(request)
-                return {"visible": True}
-
-        client, evidence = Client(), {}
+    def test_eight_preview_states_match_independent_fixture_observations(self):
+        client, evidence = self.FixtureClient(self.CANDIDATES), {}
         initial = {"first": "source", "second": "other"}
-
-        def state():
-            view = client.requests[-1]["view"]
-            muted = (
-                view["state"] == "Translating"
-                and view["text"]
-                and not view["presentation"]["editorOwnsText"]
-            )
-            return {
-                **initial,
-                "observedAtMs": 10**15,
-                "focus": "fixture-first",
-                "imeClear": True,
-                "candidate": {
-                    "text": view["text"],
-                    "foreground": "rgb(116,114,108)" if muted else "rgb(20,20,19)",
-                    "editablePreview": False,
-                },
-            }
-
         check_preview_colors(
-            client, {"target": "t", "authority": {}}, "g", state, initial, evidence
+            client,
+            {"target": "t", "authority": {}},
+            "g",
+            client.state,
+            initial,
+            evidence,
         )
         self.assertEqual(len(client.requests), 8)
         self.assertEqual(len(evidence["previewColorPhases"]), 8)
         self.assertTrue(
             all(p["lastObservation"]["textMatches"] for p in evidence["previewColorPhases"])
         )
+        self.assertTrue(
+            all(p["lastObservation"]["foregroundMatches"] for p in evidence["previewColorPhases"])
+        )
+
+    def test_wrong_preview_color_or_body_is_rejected(self):
+        for field, wrong, mismatch in (
+            ("foreground", "rgb(116,114,108)", "foregroundMatches"),
+            ("text", "Unexpected fixture body.", "textMatches"),
+        ):
+            with self.subTest(field=field):
+                candidates = [dict(candidate) for candidate in self.CANDIDATES]
+                candidates[0][field] = wrong
+                client, evidence = self.FixtureClient(candidates), {}
+                # Advance the system clock across the existing five-second
+                # observation deadline without sleeping through a known mismatch.
+                with (
+                    patch("gtk_session_reentry.time.monotonic", side_effect=count()),
+                    patch("gtk_session_reentry.time.sleep"),
+                    self.assertRaisesRegex(AssertionError, "rendered candidate style/size"),
+                ):
+                    check_preview_colors(
+                        client,
+                        {"target": "t", "authority": {}},
+                        "g",
+                        client.state,
+                        {"first": "source", "second": "other"},
+                        evidence,
+                    )
+                phases = evidence["previewColorPhases"]
+                self.assertEqual(len(phases), 1)
+                self.assertFalse(phases[0]["lastObservation"][mismatch])
 
 
 class PackageControlScrollTests(unittest.TestCase):

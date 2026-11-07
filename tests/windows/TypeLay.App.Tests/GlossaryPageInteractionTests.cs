@@ -138,22 +138,31 @@ public sealed partial class TranslationSettingsTests
         Term(scene.Window, "Translation 1").Text = "draft";
         Assert.True((await scene.Controller.ChangeGlossaryAsync([new("无术语", "术语表已更新")], scene.Settings.Revision, cancellationToken: TestContext.Current.CancellationToken)).Saved);
         Exception? failure = null;
+        bool observed = false;
         var pending = scene.Window.Dispatcher.BeginInvoke(new Action(() =>
         {
-            var dialog = Application.Current.Windows.Cast<Window>().Single(item => item.Owner == scene.Window);
+            Window? dialog = null;
             try
             {
+                dialog = Assert.Single(Application.Current.Windows.Cast<Window>(), item => item.Owner == scene.Window);
+                Assert.Equal("Glossary changed", dialog.Title);
+                Assert.True(dialog.IsVisible);
+                observed = true;
                 dialog.UpdateLayout();
                 Assert.Contains(Descendants(dialog).OfType<TextBlock>(), text => text.Text == "无术语 → 术语表已更新 · All directions");
                 Assert.DoesNotContain(Descendants(dialog).OfType<TextBlock>(), text => text.Text.Contains("全局"));
                 Click(dialog, "Keep Editing");
             }
-            catch (Exception error) { failure = error; dialog.Close(); }
+            catch (Exception error) { failure = error; dialog?.Close(); }
         }), DispatcherPriority.ContextIdle);
-        GlossaryKey(Term(scene.Window, "Translation 1"), Key.Enter);
-        pending.Abort();
+        try
+        {
+            GlossaryKey(Term(scene.Window, "Translation 1"), Key.Enter);
+        }
+        finally { pending.Abort(); }
         if (failure is not null)
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
+        Assert.True(observed, "The English glossary conflict dialog must be displayed.");
         Assert.Equal("术语表已更新", Assert.Single(scene.Reload().Glossary!.Rules).TargetTerm);
     });
 

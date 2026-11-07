@@ -2366,7 +2366,8 @@ while True:
         self.assertFalse(await self.ask("beginAutomaticPractice", str(uuid.uuid4())))
         await self.send({"reply": retirement["id"], "data": True})
         reply = await self.receive_until(lambda item: item.get("reply") == pause_id)
-        self.assertIs(reply["data"], True)
+        self.assertIs(reply["data"]["saved"], True)
+        self.assertEqual(reply["data"]["state"], "Committed")
         self.assertFalse(self.latest("settings")["enabled"])
         self.assertFalse(json.loads((self.home / "config/settings.json").read_text())["Enabled"])
         self.assertTrue(await self.ask("endAutomaticPractice", binding["runId"]))
@@ -2437,10 +2438,14 @@ while True:
         self.assertFalse(presentation["completed"])
         self.assertFalse(commit_saved(await self.ask("startAutomaticPractice", False)))
         self.assertEqual(self.latest("settings")["mode"], "OnDemand")
-        self.assertEqual(
-            await self.ask("finishAutomaticPractice", str(uuid.uuid4())),
-            {"saved": False, "retrySave": False},
-        )
+        before = (self.home / "config/settings.json").read_bytes()
+        result = await self.ask("finishAutomaticPractice", str(uuid.uuid4()))
+        self.assertIs(result["saved"], False)
+        self.assertEqual(result["state"], "NotCommitted")
+        self.assertEqual(result["reason"], "practice-retirement-unconfirmed")
+        self.assertIs(result["retrySave"], False)
+        self.assertEqual((self.home / "config/settings.json").read_bytes(), before)
+        self.assertEqual(self.latest("settings")["mode"], "OnDemand")
 
     async def test_theme_persistence_failure_is_confirmed_and_allows_explicit_retry(self):
         self.assertIs(commit_saved(await self.ask("settings", {"theme": "dark"})), True)
@@ -2555,13 +2560,6 @@ while True:
         self.assertEqual(
             json.loads((self.home / "config/settings.json").read_text())["Theme"], "dark"
         )
-
-    async def test_tray_preserves_a_supported_same_language_preference(self):
-        self.assertTrue(
-            commit_saved(await self.ask("traySettings", {"source": "fr", "target": "fr"}))
-        )
-        saved = self.latest("settings")
-        self.assertEqual((saved["source"], saved["target"]), ("fr", "fr"))
 
     async def test_tray_rejects_unknown_fields_wrong_types_and_invalid_values_without_writing(self):
         self.assertTrue(commit_saved(await self.ask("settings", {"enabled": True})))

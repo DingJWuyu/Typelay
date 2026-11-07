@@ -18,23 +18,6 @@ namespace TypeLay.App.Tests;
 
 public sealed partial class LanguagePickerInteractionTests
 {
-    [Fact]
-    public Task SettingsLanguageOptionTemplateTargetsTheGlyphAndItsViewportSeparately() => desktop.RunAsync(() =>
-    {
-        var resources = UiTheme.LanguageResources();
-        var item = new ComboBoxItem
-        {
-            Style = Assert.IsType<Style>(resources["SettingsLanguageOption"]),
-            IsSelected = true,
-            Tag = "selected"
-        };
-        Assert.True(item.ApplyTemplate());
-        var viewport = Assert.IsType<Viewbox>(item.Template.FindName("tick", item));
-        var glyph = Assert.IsType<System.Windows.Shapes.Path>(item.Template.FindName("tickStroke", item));
-        Assert.Equal(Visibility.Visible, viewport.Visibility);
-        Assert.Equal(Colors.White, Assert.IsType<SolidColorBrush>(glyph.Stroke).Color);
-    });
-
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -350,8 +333,18 @@ public sealed partial class LanguagePickerInteractionTests
         Assert.Equal(Assert.IsType<SolidColorBrush>(search.FindResource("Text")).Color,
             Assert.IsType<SolidColorBrush>(search.CaretBrush).Color);
         Assert.All(VisibleOptions(source), option => Assert.Equal(30, option.ActualHeight));
+        var selected = Assert.Single(VisibleOptions(source), option => option.IsSelected);
+        Assert.Equal("LanguageOption_zh", AutomationProperties.GetAutomationId(selected));
+        AssertVisibleLanguageCheck(selected);
         RenderLanguageSurface(content, $"settings-language-popup-{language}-{theme}.png");
-        await TypeTextAsync(window, PopupSearch(source), "zzzz");
+        await TypeTextAsync(window, search, "zh");
+        var highlighted = Assert.Single(VisibleOptions(source));
+        Assert.Equal("LanguageOption_zh", AutomationProperties.GetAutomationId(highlighted));
+        var check = AssertVisibleLanguageCheck(highlighted);
+        Assert.Equal(Colors.White, Assert.IsType<SolidColorBrush>(check.Stroke).Color);
+        RenderLanguageSurface(content, $"settings-language-selected-{language}-{theme}.png");
+        search.SelectAll();
+        await TypeTextAsync(window, search, "zzzz");
         Assert.Empty(VisibleOptions(source));
         var empty = Assert.IsType<TextBlock>(source.Template.FindName("PART_LanguageEmpty", source));
         Assert.True(empty.IsVisible);
@@ -359,6 +352,18 @@ public sealed partial class LanguagePickerInteractionTests
         RenderLanguageSurface(content, $"settings-language-empty-{language}-{theme}.png");
         await PressKeyAsync(window, 0x1B);
     });
+
+    private static System.Windows.Shapes.Path AssertVisibleLanguageCheck(ComboBoxItem option)
+    {
+        Assert.True(option.IsSelected);
+        option.UpdateLayout();
+        var check = Assert.Single(Descendants(option).OfType<System.Windows.Shapes.Path>(), glyph => glyph.IsVisible);
+        Assert.True(check.ActualWidth > 0 && check.ActualHeight > 0);
+        var bounds = check.TransformToAncestor(option).TransformBounds(check.RenderedGeometry.Bounds);
+        Assert.True(bounds.Width > 0 && bounds.Height > 0);
+        Assert.True(new Rect(0, 0, option.ActualWidth, option.ActualHeight).Contains(bounds));
+        return check;
+    }
 
     private static async Task ClickLanguageOptionAsync(ComboBoxItem option, Task committed)
     {

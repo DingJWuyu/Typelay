@@ -619,13 +619,6 @@ public sealed class SessionBehaviorTests
         Check(p.Status == "正在翻译" && p.Dot == StatusDot.Yellow && p.TabHint == "Tab 交还应用");
     }
 
-    [Fact(DisplayName = "ready-ui-copy-and-green-dot")]
-    public void ReadyUiCopyAndGreenDot()
-    {
-        var p = Presentation.From(SessionState.ValidTranslation, true);
-        Check(p.Status == "译文就绪" && p.Dot == StatusDot.Green && p.TabHint == "Tab 接受译文");
-    }
-
     [Fact(DisplayName = "editor-is-authority-during-edit-and-return")]
     public void EditorIsAuthorityDuringEditAndReturn()
     {
@@ -636,16 +629,19 @@ public sealed class SessionBehaviorTests
     public void Utf16RangeFuzzPreservesOutsideText()
     {
         var random = new Random(4107);
-        string[] pieces = ["中", "A", "🙂", "\r\n", "é", "e\u0301", "👩‍💻"];
+        // Every piece is well-formed UTF-16. Combining marks and ZWJ may be
+        // selected separately; the range does not promise grapheme boundaries.
+        string[] pieces = ["中", "A", "🙂", "\r", "\n", "é", "e", "\u0301", "👩", "\u200d", "💻"];
+        const string replacement = "译文🙂";
+        string Fragment(int minimum) => string.Concat(Enumerable.Range(0, random.Next(minimum, 5))
+            .Select(_ => pieces[random.Next(pieces.Length)]));
         for (int i = 0; i < 1000; i++)
         {
-            string text = string.Concat(Enumerable.Range(0, 8).Select(_ => pieces[random.Next(pieces.Length)]));
-            var boundaries = Enumerable.Range(0, text.Length + 1).Where(n => Utf16.IsBoundary(text, n)).ToArray();
-            int left = random.Next(boundaries.Length - 1), right = random.Next(left + 1, boundaries.Length);
-            var range = new TextRange(boundaries[left], boundaries[right]);
-            var result = WriteSafety.Replace(text, range, "译文🙂");
-            Check(result.Text == text[..range.Start] + "译文🙂" + text[range.End..]);
-            Check(Utf16.IsWellFormed(result.Text) && Utf16.IsBoundary(result.Text, result.Caret));
+            string prefix = Fragment(0), selected = Fragment(1), suffix = Fragment(0);
+            var range = new TextRange(prefix.Length, prefix.Length + selected.Length);
+            var result = WriteSafety.Replace(prefix + selected + suffix, range, replacement);
+            Assert.Equal(prefix + replacement + suffix, result.Text);
+            Assert.Equal(prefix.Length + replacement.Length, result.Caret);
         }
     }
 

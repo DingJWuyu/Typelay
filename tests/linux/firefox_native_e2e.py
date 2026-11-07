@@ -449,7 +449,9 @@ class FirefoxNativeContract(unittest.TestCase):
                     break
                 connection.settimeout(remaining)
                 started = time.monotonic()
-                latest = native.request(connection, "describe", {"target": target})
+                latest = native.request(
+                    connection, "describe", {"target": target}, deadline=deadline
+                )
                 describe_ms = round((time.monotonic() - started) * 1000, 2)
                 if latest is None or not latest["focused"]:
                     rejected += 1
@@ -471,6 +473,7 @@ class FirefoxNativeContract(unittest.TestCase):
                         "target": target,
                         "authority": latest["authority"],
                     },
+                    deadline=deadline,
                 )
                 after = time.clock_gettime_ns(time.CLOCK_BOOTTIME) // 1_000_000
                 if snapshot is None:
@@ -495,6 +498,8 @@ class FirefoxNativeContract(unittest.TestCase):
                 )
                 if snapshot is not None:
                     self.assertEqual(snapshot["target"], target)
+                    if time.monotonic() >= deadline:
+                        break
                     return snapshot
         except TimeoutError:
             pass  # The bounded observation remains failed below; never turn timeout into success.

@@ -619,7 +619,10 @@ public sealed class SettingsBehaviorTests : IDisposable
             cancellation.Cancel();
             throw new OperationCanceledException(cancellation.Token);
         };
-        var result = await store.CommitAsync(store.Revision, store.Value with { Target = "zh" },
+        var result = await store.CommitAsync(store.Revision, store.Value with
+        {
+            Target = "zh"
+        },
             cancellationToken: cancellation.Token);
         Assert.True(result.Saved);
         Assert.Equal(SettingsCommitState.CommittedNotificationFailed, result.State);

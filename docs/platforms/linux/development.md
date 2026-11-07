@@ -95,7 +95,7 @@ artifacts/build-tools/bin/python eng/linux/hy/build.py --runtime artifacts/linux
 | 浏览器或 VS Code | 运行各接入页列出的真实扩展/本地主机测试。 | DOM 或协议通过不能代替真实模型桌面链。 |
 | 模型准备与激活 | 运行真实包生命周期和失败保旧代场景。 | 推理、语言质量与输入框写回分别判断。 |
 
-共享检查与 CI 选择规则见[工程开发流程](../../engineering/development.md)。临时 Qt-only 结果只证明该场景，具体来源核验和 probe 要求见[Qt 验证](qt.md#构建与验证)。旧提交成功、单场景通过和工作流总状态都不能代替当前提交的 Linux 完整结论。
+共享检查与 CI 选择规则见[工程开发流程](../../engineering/development.md)。Qt 构建输入下的独立桌面观察只证明该场景，具体来源核验和 probe 要求见[Qt 验证](qt.md#构建与验证)。旧提交成功、单场景通过和工作流总状态都不能代替当前提交的 Linux 完整结论。
 
 ## 验证
 

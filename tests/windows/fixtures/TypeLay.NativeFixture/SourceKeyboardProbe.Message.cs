@@ -12,7 +12,7 @@ internal sealed partial class SourceKeyboardProbe
     private nint _messageLibrary, _messageHook;
     private string? _messageModulePath;
     private HookProc? _messageCallback;
-    private bool _messageAttempted, _messageAccepted, _insideMessageNative, _messageDetachmentAllowed;
+    private bool _messageAttempted, _messageAccepted, _insideMessageNative, _messageDetachmentAllowed, _sourceDeparted;
     private int _messageFirstDownAttempts, _messageBodyChanges, _messageRepeats, _messageUps;
     private int _messageReturns, _messageNullReturns, _messageNoRemove;
     private long _messagePauseStarted, _messagePauseFinished;
@@ -61,9 +61,8 @@ internal sealed partial class SourceKeyboardProbe
         _messageSelectionBefore = N.ReadSelection(_field);
     }
 
-    private void ObserveMessageFocus(uint message, nuint wp, nint lp)
+    internal void ObserveFocus(uint message, nuint wp, nint lp)
     {
-        ObserveOriginFocus(message, wp, lp);
         if (_messageHook == 0)
             return;
         if (_insideMessageNative && message == 0x0111 && lp == _field && ((wp >> 16) & 0xffff) == 0x300)
@@ -139,11 +138,6 @@ internal sealed partial class SourceKeyboardProbe
     // dialog handling, posted marker or other callback. Never called by the hook.
     internal void MessageRetrievalReturned(int status, N.MessageStruct message)
     {
-        if (_mode == 13)
-        {
-            OriginRetrievalReturned(status, message);
-            return;
-        }
         if (_mode is not (11 or 12 or 14) || status <= 0 || message.WParam != 9
             || message.Message is not (0 or 0x100 or 0x101))
             return;

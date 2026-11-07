@@ -107,7 +107,9 @@ internal sealed class WpfFixtureBroker : IInputBroker
     public Task<BrokerResponse> CallAsync(BrokerRequest request, TimeSpan? timeout = null)
     {
         BrokerResponse response;
-        if (request.Op == "capture")
+        if (request.Op == "hello")
+            response = new(BrokerProtocol.Version, request.Id, "ready");
+        else if (request.Op == "capture")
         {
             var (snapshot, focus) = Capture(request);
             response = new(BrokerProtocol.Version, request.Id, snapshot is null ? "silent" : "observed", snapshot, focus,
@@ -131,7 +133,7 @@ internal sealed class WpfFixtureBroker : IInputBroker
             response = new(BrokerProtocol.Version, request.Id, "cleared");
         }
         else
-            response = new(BrokerProtocol.Version, request.Id, "ready");
+            response = new(BrokerProtocol.Version, request.Id, "unsupported");
         return Task.FromResult(response);
     }
 

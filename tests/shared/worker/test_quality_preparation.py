@@ -3,6 +3,7 @@
 import asyncio
 import io
 import json
+import runpy
 import signal
 import subprocess
 import sys
@@ -239,9 +240,51 @@ class QualityPreparationTests(unittest.TestCase):
         def windows_default(path, encoding=None, errors=None):
             return original(path, encoding=encoding or "cp1252", errors=errors)
 
-        with patch.object(Path, "read_text", windows_default):
-            self.test_ordinary_diagnostic_validate_only_never_loads_assets()
-            self.test_ordinary_decode_plan_has_two_fixed_arms_without_assets()
+        (ROOT / "artifacts").mkdir(exist_ok=True)
+        for options in ([], ["--decode-comparison"]):
+            with (
+                self.subTest(options=options),
+                tempfile.TemporaryDirectory(dir=ROOT / "artifacts") as temporary,
+            ):
+                output = Path(temporary) / "ordinary-quality.json"
+                runner = RUNNERS / "ordinary_quality.py"
+                with (
+                    patch.object(Path, "read_text", windows_default),
+                    patch.object(
+                        sys,
+                        "argv",
+                        [str(runner), "--validate-only", "--output", str(output), *options],
+                    ),
+                    patch("sys.stdout", new_callable=io.StringIO),
+                ):
+                    with self.assertRaises(SystemExit) as error:
+                        runpy.run_path(str(runner), run_name="__main__")
+                    self.assertEqual(error.exception.code, 2)
+                outputs = [output]
+                if options:
+                    outputs.append(output.with_name("ordinary-b-quality.json"))
+                for path in outputs:
+                    report = json.loads(path.read_text(encoding="utf8"))
+                    self.assertEqual(report["status"], "not-run")
+                    delivery = next(
+                        case for case in report["cases"] if case["id"] == "zh-ja-delivery"
+                    )
+                    self.assertEqual(
+                        delivery["text"],
+                        "我还没答应周五前送到，但我会尽量在下午三点前把两份资料发给你。",
+                    )
+                    self.assertIn("尽量是努力意向，不是保证", delivery["semantic_anchors"])
+                    holdout = next(
+                        case for case in report["cases"] if case["id"] == "zh-ja-ticket-change"
+                    )
+                    self.assertEqual(
+                        holdout["text"],
+                        "我没有取消那两张票，只是请售票员把出发时间从九点改到十点；他还没有确认能否改好。",
+                    )
+                    if options:
+                        self.assertIn(
+                            "将以下文本翻译为", report["promptIdentity"]["instructionExpression"]
+                        )
 
     def test_glossary_preparation_keeps_full_inputs_and_review_unset_without_assets(self):
         (ROOT / "artifacts").mkdir(exist_ok=True)
@@ -476,8 +519,6 @@ class StyledGlossaryPreparationTests(unittest.TestCase):
     validate = QualityPreparationTests.validate
 
     def test_combination_validate_only_freezes_eight_requests_and_never_overwrites(self):
-        import styled_glossary_quality as combined
-
         (ROOT / "artifacts").mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=ROOT / "artifacts") as temporary:
             output = Path(temporary) / "combined.json"
@@ -505,7 +546,12 @@ class StyledGlossaryPreparationTests(unittest.TestCase):
             )
             self.assertEqual(limits["workerAddressSpaceBytesMaximum"], 2684354560)
             self.assertEqual(
-                report["requiredCapabilities"], dict.fromkeys(combined.CAPABILITIES, 1)
+                report["requiredCapabilities"],
+                {
+                    "styledTranslationVersion": 1,
+                    "glossaryTranslationVersion": 1,
+                    "styledGlossaryTranslationVersion": 1,
+                },
             )
             retry = self.validate("styled_glossary_quality.py", output)
             self.assertNotEqual(retry.returncode, 0)
@@ -570,7 +616,9 @@ class StyledGlossaryCollectionTests(unittest.IsolatedAsyncioTestCase):
             elapsedMs=1,
             packages=installation["expectedPackages"],
             directions=installation["expectedDirections"],
-            **dict.fromkeys(combined.CAPABILITIES, 1),
+            styledTranslationVersion=1,
+            glossaryTranslationVersion=1,
+            styledGlossaryTranslationVersion=1,
         )
         if missing:
             del hello[missing]
@@ -676,7 +724,15 @@ class StyledGlossaryCollectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r["id"] for r in requests], list(range(1, 10)))
         for offset in (1, 5):
             group = requests[offset : offset + 4]
-            self.assertEqual([r["op"] for r in group], [op for _, op in combined.OPERATIONS])
+            self.assertEqual(
+                [r["op"] for r in group],
+                [
+                    "translate",
+                    "translate-styled-v1",
+                    "translate-glossary-v1",
+                    "translate-styled-glossary-v1",
+                ],
+            )
             self.assertEqual(len({r["text"] for r in group}), 1)
             self.assertEqual(len({(r["source"], r["target"]) for r in group}), 1)
             self.assertNotIn("style", group[0])
@@ -695,9 +751,11 @@ class StyledGlossaryCollectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(process.stdin.getvalue(), before)
 
     async def test_missing_any_capability_stops_before_first_control_translation(self):
-        import styled_glossary_quality as combined
-
-        for capability in combined.CAPABILITIES:
+        for capability in (
+            "styledTranslationVersion",
+            "glossaryTranslationVersion",
+            "styledGlossaryTranslationVersion",
+        ):
             with self.subTest(capability=capability):
                 report, requests, _, _ = await self.capture(missing=capability)
                 self.assertEqual(report["status"], "failed")

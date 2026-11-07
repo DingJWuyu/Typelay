@@ -1,6 +1,6 @@
 """Explicitly prepare the pinned official CPU closure for Linux release builds.
 
-Downloads only the 17.1 MiB CPU archive, never a model or compiler. Existing
+Downloads only the pinned CPU archive, never a model or compiler. Existing
 cache entries are fully checked and an invalid cache fails closed. Production
 startup does not depend on this build-only archive or its download lock.
 """
@@ -101,8 +101,10 @@ def prepare(cache, output, *, offline=False):
             raise FileNotFoundError("fixed CPU archive unavailable in offline cache")
         deadline = time.monotonic() + 120
         partial = archive.with_suffix(archive.suffix + ".partial")
+        # Cleanup belongs only to the caller that exclusively created this file.
+        destination = partial.open("xb")
         try:
-            with partial.open("xb") as destination:
+            with destination:
                 request = urllib.request.Request(lock["url"], headers={"User-Agent": "TypeLay/1"})
                 with urllib.request.urlopen(request, timeout=20) as response:
                     if response.status != 200 or not response.url.startswith("https://"):
@@ -118,7 +120,6 @@ def prepare(cache, output, *, offline=False):
                     raise ValueError("fixed CPU archive download full hash mismatch")
             # Exclusive publication cannot overwrite an entry that appeared meanwhile.
             os.link(partial, archive)
-            partial.unlink()
         finally:
             partial.unlink(missing_ok=True)
         verify_file(archive, lock)

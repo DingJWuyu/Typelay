@@ -2,13 +2,21 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('help', 'restore', 'build', 'test', 'check', 'format', 'pack', 'run', 'e2e', 'native-e2e', 'hy-adapter-prepare', 'hy-adapter-e2e', 'hy-runtime-prepare', 'hy-product-prepare')]
+    [ValidateSet('help', 'restore', 'build', 'test', 'check', 'format', 'pack', 'run', 'e2e', 'package-e2e', 'native-e2e', 'hy-adapter-prepare', 'hy-adapter-e2e', 'hy-runtime-prepare', 'hy-product-prepare')]
     [string]$Task = 'help',
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
     [string]$HyRuntime,
-    [string]$IndexRuntime
+    [string]$IndexRuntime,
+    [ValidateSet('ordinary-notepad', 'hy-production', 'hy-packages', 'index-windows')]
+    [string]$Scenario
 )
+if ($Task -eq 'package-e2e' -and -not $Scenario) {
+    throw 'package-e2e requires -Scenario ordinary-notepad, hy-production, hy-packages or index-windows.'
+}
+if ($Scenario -and $Task -ne 'package-e2e') {
+    throw '-Scenario is only valid with package-e2e.'
+}
 if ($IndexRuntime -and $Task -notin @('pack', 'run')) {
     throw '-IndexRuntime is only valid with pack or run.'
 }
@@ -146,16 +154,36 @@ function Test-Distribution {
         Invoke-Checked python @('-m', 'unittest', 'discover', '-s', 'tests/windows', '-p', 'test_*.py', '-v')
     } finally { $env:TYPELAY_PACKAGE_ZIP = $previous }
 }
+function Test-PackageScenario {
+    if (-not $IsWindows -or -not [Environment]::Is64BitProcess) {
+        throw 'Package scenarios require Windows x64 and an already-built package and fixtures.'
+    }
+    $fixture = Join-Path $root "tests/windows/fixtures/TypeLay.DesktopFixture/bin/$Configuration/net10.0-windows"
+    foreach ($assembly in @('TypeLay.App', 'TypeLay.Runtime', 'TypeLay.Core', 'TypeLay.Protocol', 'TypeLay.Windows.Contracts')) {
+        Copy-Item -LiteralPath (Join-Path $artifacts "package/TypeLay/app/$assembly.dll") -Destination "$fixture/$assembly.dll" -Force
+    }
+    $arguments = switch ($Scenario) {
+        ordinary-notepad { @('--verify-ordinary-notepad', 'artifacts/ordinary-notepad', 'artifacts/package/TypeLay', 'artifacts/continuous-translation') }
+        hy-production { @('--verify-hy-production', 'artifacts/hy-production', 'artifacts/package/TypeLay', 'artifacts/hy-download') }
+        hy-packages {
+            @('--verify-hy-packages', 'artifacts/hy-packages', 'artifacts/package/TypeLay', 'artifacts/hy-download',
+                "tests/windows/fixtures/TypeLay.NativeFixture/bin/$Configuration/net10.0/TypeLay.NativeFixture.dll")
+        }
+        index-windows { @('--verify-index-production', 'artifacts/index-production', 'artifacts/package/TypeLay', 'artifacts/index-model-download') }
+    }
+    Invoke-Checked dotnet (@("$fixture/TypeLay.DesktopFixture.dll") + $arguments)
+}
 Push-Location $root
 try {
     switch ($Task) {
         help {
-            Write-Output 'Usage: ./dev.ps1 <restore|build|test|check|shared-check|format|pack|run|e2e|native-e2e|hy-adapter-prepare|hy-adapter-e2e|hy-runtime-prepare|hy-product-prepare> [-Configuration Debug|Release] [-HyRuntime <verified CPU directory>]'
+            Write-Output 'Usage: ./dev.ps1 <restore|build|test|check|shared-check|format|pack|run|e2e|package-e2e|native-e2e|hy-adapter-prepare|hy-adapter-e2e|hy-runtime-prepare|hy-product-prepare> [-Configuration Debug|Release] [-HyRuntime <verified CPU directory>]'
             Write-Output 'check: build, behavior/contract tests, Python tests, compiler/analyzer checks and formatting.'
             Write-Output 'shared-check: portable Core/Runtime/Protocol and worker tests; no Windows desktop or model installation.'
             Write-Output 'pack: self-contained distribution including fixed Index CPU payload, checksum and relocated-package/process E2E; no model download.'
             Write-Output 'pack/run -IndexRuntime <directory>: use a prepared Index CPU closure instead of build-time runtime preparation.'
             Write-Output 'native-e2e: controlled Win32 fixture adapter contracts; requires an unlocked Windows desktop.'
+            Write-Output 'package-e2e -Scenario <ordinary-notepad|hy-production|hy-packages|index-windows>: synchronize five packaged assemblies and run the existing package scenario; requires prepared inputs and built fixtures.'
             Write-Output 'hy-runtime-prepare: explicitly download/hash only the fixed official Windows CPU ZIP; no model or inference.'
             Write-Output 'pack/run -HyRuntime <directory>: build and include the production ABI5 payload; no model download.'
             Write-Output 'hy-product-prepare: verify fixed model/CPU test assets without compiling the audit adapter (600s cap).'
@@ -181,6 +209,7 @@ try {
         pack { Publish-Distribution $true }
         run { Publish-Distribution $false }
         e2e { Test-Distribution }
+        package-e2e { Test-PackageScenario }
         hy-runtime-prepare {
             Invoke-Checked python @('eng/windows/hy/prepare_runtime.py',
                 '--cache', (Join-Path $artifacts 'hy-production-cache'),

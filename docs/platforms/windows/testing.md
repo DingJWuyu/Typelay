@@ -149,7 +149,7 @@ Esc 后先确认撤权后的新观察与公开 Direct 就绪，再发送唯一 D
 
 ## Windows 浏览器合作链
 
-`--verify-browser-cooperation <结果目录> <发行根> <CfT路径>` 使用实际 App、BrowserHost、包内扩展和本轮已校验模型。Chrome for Testing（CfT）版本与摘要来自[固定来源](../../../tests/windows/support/chrome-for-testing.json)，缓存命中仍校验。它不运行旧身份研究探针。
+`--verify-browser-cooperation <结果目录> <发行根> <CfT路径>` 使用实际 App、BrowserHost、包内扩展和本轮已校验模型。Chrome for Testing（CfT）版本与摘要来自[固定来源](../../../tests/windows/support/chrome-for-testing.json)，缓存命中仍校验。
 
 真实注册仅在明确的 `TYPELAY_BROWSER_REGISTRATION_E2E=1` 环境启用。生产发现器读取标准 Chrome User Data，测试不改 `connection.json` 或注入另一个 profile 路径。一般运行要求根目录不存在并由 fixture 原子创建。
 

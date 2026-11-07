@@ -37,6 +37,15 @@ class IndexQualityPreparationTests(unittest.TestCase):
                 (report["status"], report["quality"], report["workerStarts"]),
             )
             self.assertEqual([], report["requests"])
+            self.assertEqual(
+                report["requiredCapabilities"],
+                {
+                    "styledTranslationVersion": 1,
+                    "glossaryTranslationVersion": 1,
+                    "styledGlossaryTranslationVersion": 1,
+                    "alternativeTranslationVersion": 1,
+                },
+            )
             self.assertEqual(1, report["requiredNativeAbi"])
             self.assertEqual(4096, report["configuredLimits"]["contextTokens"])
             self.assertEqual(1024, report["configuredLimits"]["maximumNewTokens"])
@@ -81,12 +90,75 @@ class IndexQualityPreparationTests(unittest.TestCase):
             self.assertEqual(600, report["configuredLimits"]["totalTimeoutSeconds"])
             self.assertEqual(0, report["workerStarts"])
             self.assertEqual("not-run", report["quality"])
+            self.assertEqual(
+                report["requiredCapabilities"],
+                {
+                    "styledTranslationVersion": 1,
+                    "glossaryTranslationVersion": 1,
+                    "styledGlossaryTranslationVersion": 1,
+                    "alternativeTranslationVersion": 1,
+                },
+            )
             self.assertIn("\r\n", report["cases"][6]["text"])
             self.assertTrue(report["cases"][7]["text"].startswith("  "))
             self.assertFalse(report["includeRefusalChecks"])
 
 
 class IndexQualityCaptureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_any_required_capability_is_refused_before_the_first_request(self):
+        for capability in (
+            "styledTranslationVersion",
+            "glossaryTranslationVersion",
+            "styledGlossaryTranslationVersion",
+            "alternativeTranslationVersion",
+        ):
+            with self.subTest(capability=capability):
+                report = index_quality.prepare_report()
+                report["cases"] = report["cases"][:1]
+                report["includeRefusalChecks"] = False
+                report["hello"] = {
+                    "packages": [{**report["expectedPackage"], "directions": ["zh_en", "en_zh"]}],
+                    "styledTranslationVersion": 1,
+                    "glossaryTranslationVersion": 1,
+                    "styledGlossaryTranslationVersion": 1,
+                    "alternativeTranslationVersion": 1,
+                }
+                del report["hello"][capability]
+                report["requests"] = [{"id": 1, "op": "hello"}]
+                frames = io.BytesIO()
+                for number in range(2, 8):
+                    write_frame(
+                        frames,
+                        dict(
+                            id=number,
+                            status="translated",
+                            text=f"synthetic response {number}",
+                            code="",
+                            elapsedMs=1,
+                        ),
+                    )
+                reader = asyncio.StreamReader()
+                reader.feed_data(frames.getvalue())
+                reader.feed_eof()
+
+                class Input(io.BytesIO):
+                    async def drain(self):
+                        pass
+
+                writer = Input()
+                with self.assertRaisesRegex(
+                    ValueError, "exact-index-capabilities-required-no-fallback"
+                ):
+                    await index_quality.collect_cases(
+                        SimpleNamespace(stdin=writer, stdout=reader), report
+                    )
+                self.assertEqual(b"", writer.getvalue())
+                self.assertEqual([{"id": 1, "op": "hello"}], report["requests"])
+                self.assertEqual("not-run", report["quality"])
+                self.assertTrue(
+                    all(value is None for value in report["cases"][0]["responses"].values())
+                )
+
     async def test_original_source_and_previous_candidate_are_captured_once_and_failure_stops_without_retry(
         self,
     ):
@@ -95,7 +167,10 @@ class IndexQualityCaptureTests(unittest.IsolatedAsyncioTestCase):
             "packages": [
                 {**report["expectedPackage"], "directions": list(index_quality.DIRECTIONS)}
             ],
-            **dict.fromkeys(index_quality.CAPABILITIES, 1),
+            "styledTranslationVersion": 1,
+            "glossaryTranslationVersion": 1,
+            "styledGlossaryTranslationVersion": 1,
+            "alternativeTranslationVersion": 1,
         }
         report["requests"] = [{"id": 1, "op": "hello"}]
         frames = io.BytesIO()
@@ -157,7 +232,10 @@ class IndexQualityCaptureTests(unittest.IsolatedAsyncioTestCase):
             "packages": [
                 {**report["expectedPackage"], "directions": list(index_quality.DIRECTIONS)}
             ],
-            **dict.fromkeys(index_quality.CAPABILITIES, 1),
+            "styledTranslationVersion": 1,
+            "glossaryTranslationVersion": 1,
+            "styledGlossaryTranslationVersion": 1,
+            "alternativeTranslationVersion": 1,
         }
         report["requests"] = [{"id": 1, "op": "hello"}]
         frames = io.BytesIO()

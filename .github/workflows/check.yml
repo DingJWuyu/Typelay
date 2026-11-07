@@ -1,9 +1,9 @@
 name: TypeLay checks
 on:
   push:
-    branches: [trunk, windows-preview, cachyos-preview, work/linux-usability, work/windows-experience]
+    branches: [trunk, "work/**"]
   pull_request:
-    branches: [trunk, windows-preview, cachyos-preview]
+    branches: [trunk]
   workflow_dispatch:
     inputs:
       check_mode:
@@ -40,12 +40,10 @@ jobs:
     outputs:
       windows: ${{ steps.select.outputs.windows }}
       linux: ${{ steps.select.outputs.linux }}
-      qt: ${{ steps.select.outputs.qt }}
       quality_only: ${{ steps.select.outputs.quality_only }}
       collect_quality: ${{ steps.select.outputs.collect_quality }}
       hy_decode_comparison: ${{ steps.select.outputs.hy_decode_comparison }}
       fixed_model_diagnostics: ${{ steps.select.outputs.fixed_model_diagnostics }}
-      practice: ${{ steps.select.outputs.practice }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -115,14 +113,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Bounded material candidate only, not a product or rendering gate.
-      - name: Observe and compile the pinned sheet shader candidate
-        continue-on-error: true
-        timeout-minutes: 1
-        shell: pwsh
-        run: |
-          ./eng/windows/observe-shader-compiler.ps1 -OutputPath artifacts/shader-compiler/inventory.json
-          ./eng/windows/build-sheet-shader.ps1 -OutputDirectory artifacts/shader-compiler/compiled
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
@@ -142,242 +132,6 @@ jobs:
         id: windows-build
         shell: pwsh
         run: ./dev.ps1 build
-      # Bounded mechanism experiment, not a product release gate. Reassess after this result.
-      - name: Observe synchronous acceptance inside the owned source thread
-        id: windows-source-synchronous
-        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-        continue-on-error: true
-        timeout-minutes: 7
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $PSNativeCommandUseErrorActionPreference = $false
-          $directory = 'artifacts/source-synchronous-acceptance'
-          New-Item -ItemType Directory -Path $directory -Force | Out-Null
-          @{ kind = 'mechanism-experiment'; status = 'running'; expectedRows = 6; sourceSha = $env:GITHUB_SHA } | ConvertTo-Json | Set-Content "$directory/runner.json"
-          & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe -explicit only -method 'TypeLay.App.Tests.SourceKeyboardBoundaryProbe.ObserveSelfOwnedSynchronousAcceptance' 2>&1 | Tee-Object -FilePath "$directory/runner.log"
-          $code = $LASTEXITCODE
-          $rows = @(Get-ChildItem -LiteralPath $directory -Filter result.json -File -Recurse | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json })
-          $modes = @($rows | ForEach-Object { [int]$_.mode } | Sort-Object)
-          $complete = ($modes -join ',') -eq '5,6,7,8,9,10'
-          $failed = @($rows | Where-Object { $_.status -ne 'mechanism_observed_not_product_acceptance' -or -not $_.hooksClosed -or -not $_.processesExited -or -not $_.inputsPaired })
-          $status = if (-not $complete) { 'incomplete' } elseif ($code -eq 0 -and $failed.Count -eq 0) { 'mechanism-observed' } else { 'experiment-failed' }
-          @{ kind = 'mechanism-experiment'; status = $status; exitCode = $code; expectedRows = 6; observedModes = $modes; productAcceptance = $false; sourceSha = $env:GITHUB_SHA } | ConvertTo-Json | Set-Content "$directory/runner.json"
-          if (-not $complete -or $failed.Count -ne 0) { exit 1 }
-          exit $code
-      # Research admission only: neither a product gate nor evidence of key/write support.
-      - name: Observe existing TSF context in an owned standard Edit
-        id: windows-tsf-context-admission
-        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-        continue-on-error: true
-        timeout-minutes: 2
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $PSNativeCommandUseErrorActionPreference = $false
-          $directory = 'artifacts/tsf-context-admission'
-          New-Item -ItemType Directory -Path $directory -Force | Out-Null
-          $runner = [ordered]@{ kind = 'research-admission'; status = 'running'; sourceSha = $env:GITHUB_SHA; exitCode = $null; productAcceptance = $false; resultCount = 0; resultMissing = $null; resultStatus = $null; processExited = $null; normalShutdown = $null; observationCount = 0; denial = $null; error = $null }
-          $runner | ConvertTo-Json | Set-Content "$directory/runner.json"
-          New-Item -ItemType File -Path "$directory/runner.log" -Force | Out-Null
-          try {
-            & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe -explicit only -method 'TypeLay.App.Tests.TsfContextAdmissionProbe.ObserveExistingContextOfSelfOwnedStockEdit' 2>&1 | Tee-Object -FilePath "$directory/runner.log"
-            $runner.exitCode = $LASTEXITCODE
-            $files = @(Get-ChildItem -LiteralPath $directory -Filter result.json -File -Recurse)
-            $runner.resultCount = $files.Count
-            $runner.resultMissing = $files.Count -eq 0
-            if ($files.Count -eq 0) {
-              $runner.status = 'missing-result'
-            } elseif ($files.Count -ne 1) {
-              $runner.status = 'nonunique-result'
-            } else {
-              $runner.status = 'invalid-result'
-              $row = Get-Content -LiteralPath $files[0].FullName -Raw | ConvertFrom-Json
-              $runner.resultStatus = $row.status
-              $runner.processExited = $row.processExited
-              $runner.normalShutdown = $row.normalShutdown
-              $observations = @($row.observations)
-              $runner.observationCount = $observations.Count
-              $runner.denial = if ($observations.Count -gt 0) { $observations[-1].Denial } else { $null }
-              $unreleased = @($observations | Where-Object { $_.OwnedReferencesReleased -isnot [bool] -or -not $_.OwnedReferencesReleased })
-              $positive = @($observations | Select-Object -Skip 1 | Where-Object { $_.Stage -eq 'exact_existing_context_observed' -and $null -eq $_.Denial -and $_.SameContextOnRecheck -eq $true -and $_.ViewWindow -eq $_.ExpectedField -and $_.FocusVersionBefore -eq $_.FocusVersionAfter })
-              $negativeControl = $observations.Count -ge 2 -and $observations[0].Denial -eq 'native_focus_mismatch' -and $observations[0].ManagerPresent -eq $false
-              if ($row.processExited -isnot [bool] -or -not $row.processExited -or $row.normalShutdown -isnot [bool] -or -not $row.normalShutdown -or $unreleased.Count -ne 0) {
-                $runner.status = 'cleanup-unconfirmed'
-              } elseif ($row.productionReadiness -ne $false -or $row.diagnosticOnly -ne $true -or -not $negativeControl -or $observations.Count -gt 4) {
-                $runner.status = 'invalid-observations'
-              } elseif ($runner.exitCode -eq 0 -and $row.status -eq 'existing_context_observed_not_keyboard_or_write_support' -and $observations.Count -eq 4 -and $positive.Count -eq 3) {
-                $runner.status = 'existing-context-observed-not-keyboard-or-write-support'
-              } elseif ($runner.exitCode -ne 0 -and $row.status -eq 'existing_context_not_admitted' -and -not [string]::IsNullOrEmpty($runner.denial) -and $runner.denial -ne 'observation_exception' -and $positive.Count -eq ($observations.Count - 2)) {
-                $runner.status = 'prerequisite-not-met'
-              } else {
-                $runner.status = 'probe-failed'
-              }
-            }
-          } catch {
-            $runner.error = $_.Exception.GetType().Name
-            if ($runner.status -eq 'running') { $runner.status = 'runner-failed' }
-          } finally {
-            $runner | ConvertTo-Json -Depth 5 | Set-Content "$directory/runner.json"
-          }
-          "TSF research admission: $($runner.status); exitCode=$($runner.exitCode). This is not product acceptance or a model verdict." | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          if ($runner.status -ne 'existing-context-observed-not-keyboard-or-write-support') { exit 1 }
-          exit 0
-      # Research completion is not route/read admission or a product acceptance gate.
-      - name: Observe passive TSF key routing and synchronous selection read
-        id: windows-tsf-key-routing
-        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-        continue-on-error: true
-        timeout-minutes: 2
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $PSNativeCommandUseErrorActionPreference = $false
-          $directory = 'artifacts/tsf-key-routing'
-          New-Item -ItemType Directory -Path $directory -Force | Out-Null
-          $runner = [ordered]@{ kind = 'research-observation'; status = 'running'; sourceSha = $env:GITHUB_SHA; exitCode = $null; productAcceptance = $false; resultCount = 0; resultMissing = $null; resultStatus = $null; cases = @(); error = $null }
-          $runner | ConvertTo-Json -Depth 5 | Set-Content "$directory/runner.json"
-          New-Item -ItemType File -Path "$directory/runner.log" -Force | Out-Null
-          try {
-            & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe -explicit only -method 'TypeLay.App.Tests.TsfKeyRoutingProbe.ObservePassiveTabAndEndRoutingAndSynchronousSelectionRead' 2>&1 | Tee-Object -FilePath "$directory/runner.log"
-            $runner.exitCode = $LASTEXITCODE
-            $files = @(Get-ChildItem -LiteralPath $directory -Filter result.json -File -Recurse)
-            $runner.resultCount = $files.Count
-            $runner.resultMissing = $files.Count -eq 0
-            if ($files.Count -eq 0) {
-              $runner.status = 'missing-result'
-            } elseif ($files.Count -ne 1) {
-              $runner.status = 'nonunique-result'
-            } else {
-              $runner.status = 'invalid-result'
-              $row = Get-Content -LiteralPath $files[0].FullName -Raw | ConvertFrom-Json
-              $runner.resultStatus = $row.status
-              $cases = @($row.cases)
-              $valid = $cases.Count -eq 2 -and $cases[0].Key -eq 'Tab' -and $cases[1].Key -eq 'End'
-              $clean = $cases.Count -gt 0
-              foreach ($case in $cases) {
-                $closed = $case.Closed
-                $route = $closed.RouteObserved; $session = $closed.SynchronousSessionObserved; $read = $closed.SelectionReadSucceeded
-                $runner.cases += [ordered]@{ key = $case.Key; status = $case.Status; routeObserved = $route; synchronousSessionObserved = $session; selectionReadSucceeded = $read; requestHResult = $closed.RequestHResult; sessionHResult = $closed.SessionHResult; selectionHResult = $closed.SelectionHResult; denial = $closed.Denial; processExited = $case.ProcessExited; normalShutdown = $case.NormalShutdown; cleanupComplete = $closed.CleanupComplete; defaultEffectVerified = $case.DefaultEffectVerified; error = $case.Error }
-                foreach ($value in @($case.ProcessExited, $case.NormalShutdown, $closed.CleanupComplete, $closed.Unadvised, $closed.ActivationBalanced, $closed.ReferencesReleased)) {
-                  if ($value -isnot [bool] -or -not $value) { $clean = $false }
-                }
-                if ($route -isnot [bool] -or $session -isnot [bool] -or $read -isnot [bool] -or $closed.ProductionReadiness -ne $false -or $null -ne $case.Error -or $null -ne $closed.Error) { $valid = $false }
-                if ($case.Status -eq 'prerequisite-not-met') {
-                  if ([string]::IsNullOrEmpty($closed.Denial) -or $route -ne $false -or $session -ne $false -or $read -ne $false -or $case.InputsInserted -ne 0) { $valid = $false }
-                } else {
-                  if ($case.InputsInserted -ne 2 -or $case.DefaultEffectVerified -ne $true -or $case.TextUnchanged -ne $true -or $case.ZeroSubmits -ne $true -or $closed.InputUpObserved -ne $true -or $null -ne $closed.Denial) { $valid = $false }
-                  switch ($case.Status) {
-                    'test-route-not-observed' { if ($route -ne $false -or $session -ne $false -or $read -ne $false -or $closed.RequestCount -ne 0) { $valid = $false } }
-                    'route-observed-synchronous-lock-refused' { if ($route -ne $true -or $session -ne $false -or $read -ne $false -or $closed.RequestCount -ne 1) { $valid = $false } }
-                    'synchronous-session-selection-unavailable' { if ($route -ne $true -or $session -ne $true -or $read -ne $false -or $closed.RequestCount -ne 1) { $valid = $false } }
-                    'selection-read-observed' { if ($route -ne $true -or $session -ne $true -or $read -ne $true -or $closed.RequestCount -ne 1) { $valid = $false } }
-                    default { $valid = $false }
-                  }
-                }
-              }
-              if (-not $clean) {
-                $runner.status = 'cleanup-unconfirmed'
-              } elseif ($runner.exitCode -ne 0 -or $row.status -eq 'probe-failed') {
-                $runner.status = 'probe-failed'
-              } elseif (-not $valid -or $row.diagnosticOnly -ne $true -or $row.productionReadiness -ne $false -or $row.status -ne 'research-observation-complete-not-product-acceptance') {
-                $runner.status = 'invalid-observations'
-              } else {
-                $runner.status = 'research-observation-complete-not-product-acceptance'
-              }
-            }
-          } catch {
-            $runner.error = $_.Exception.GetType().Name
-            if ($runner.status -eq 'running') { $runner.status = 'runner-failed' }
-          } finally {
-            $runner | ConvertTo-Json -Depth 5 | Set-Content "$directory/runner.json"
-          }
-          "TSF key research: $($runner.status); exitCode=$($runner.exitCode). Completion is not capability admission, product acceptance, or a model verdict." | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          foreach ($case in $runner.cases) {
-            "$($case.key): status=$($case.status); route=$($case.routeObserved); synchronousSession=$($case.synchronousSessionObserved); selectionRead=$($case.selectionReadSucceeded); normalShutdown=$($case.normalShutdown)." | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          }
-          if ($runner.status -ne 'research-observation-complete-not-product-acceptance') { exit 1 }
-          exit 0
-      # Reuses the retired owned-TSF write step's two-minute budget; no production gate.
-      - name: Observe ordinary source claim on the same removed message
-        id: windows-source-message
-        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-        continue-on-error: true
-        timeout-minutes: 2
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $PSNativeCommandUseErrorActionPreference = $false
-          $directory = 'artifacts/source-message-acceptance'
-          New-Item -ItemType Directory -Path $directory -Force | Out-Null
-          $runner = [ordered]@{ kind = 'mechanism-experiment'; status = 'running'; sourceSha = $env:GITHUB_SHA; exitCode = $null; expectedRows = 2; observedModes = @(); resultCount = 0; productAcceptance = $false; productionReadiness = $false; cases = @(); error = $null }
-          $runner | ConvertTo-Json -Depth 6 | Set-Content "$directory/runner.json"
-          New-Item -ItemType File -Path "$directory/runner.log" -Force | Out-Null
-          try {
-            & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe -explicit only -method 'TypeLay.App.Tests.SourceKeyboardBoundaryProbe.ObserveOrdinarySourceMessageAcceptance' 2>&1 | Tee-Object -FilePath "$directory/runner.log"
-            $runner.exitCode = $LASTEXITCODE
-            $files = @(Get-ChildItem -LiteralPath $directory -Filter result.json -File -Recurse)
-            $runner.resultCount = $files.Count
-            if ($files.Count -eq 0) {
-              $runner.status = 'missing-result'
-            } elseif ($files.Count -ne 2) {
-              $runner.status = 'incomplete-or-nonunique-result'
-            } else {
-              $rows = @($files | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json })
-              $runner.observedModes = @($rows | ForEach-Object { [int]$_.mode } | Sort-Object)
-              $valid = ($runner.observedModes -join ',') -eq '11,12'
-              $clean = $true
-              foreach ($row in $rows) {
-                $message = if (@($row.observations).Count -gt 0) { $row.observations[-1].source.sourceMessage } else { $null }
-                $runner.cases += [ordered]@{ mode = $row.mode; status = $row.status; claimed = $row.terminal.Claimed; quiet = $row.terminal.Quiet; firstDownAttempts = $message.firstDownAttempts; bodyChanges = $message.bodyChanges; nullReturns = $message.nullReturns; pausedObserved = $row.pausedObserved; hooksClosed = $row.hooksClosed; processesExited = $row.processesExited; inputsPaired = $row.inputsPaired; error = $row.error }
-                foreach ($value in @($row.hooksClosed, $row.processesExited, $row.inputsPaired, $row.terminal.Quiet)) {
-                  if ($value -isnot [bool] -or -not $value) { $clean = $false }
-                }
-                if ($row.diagnosticOnly -ne $true -or $row.productionReadiness -ne $false -or
-                    $row.status -ne 'mechanism_observed_not_product_acceptance' -or $null -ne $row.error -or
-                    $null -eq $message -or $message.firstDownAttempts -ne 1 -or $message.firstRetrievalMatches -ne $true -or
-                    $null -eq $row.terminal.Receipt -or
-                    $row.terminal.Claimed -ne ($row.mode -eq 11) -or
-                    ($row.mode -eq 11 -and $row.pausedObserved -ne $true)) { $valid = $false }
-              }
-              if (-not $clean) { $runner.status = 'cleanup-unconfirmed' }
-              elseif ($runner.exitCode -ne 0) { $runner.status = 'experiment-failed' }
-              elseif (-not $valid) { $runner.status = 'invalid-observations' }
-              else { $runner.status = 'mechanism-observed-not-product-acceptance' }
-            }
-          } catch {
-            $runner.error = $_.Exception.GetType().Name
-            if ($runner.status -eq 'running') { $runner.status = 'runner-failed' }
-          } finally {
-            $runner | ConvertTo-Json -Depth 6 | Set-Content "$directory/runner.json"
-          }
-          "Ordinary source MSG research: $($runner.status); exitCode=$($runner.exitCode). Controlled hook chain only, not strict input origin, real IME, or production acceptance." | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          foreach ($case in $runner.cases) {
-            "Mode $($case.mode): $($case.status); claimed=$($case.claimed); bodyChanges=$($case.bodyChanges); returnedNull=$($case.nullReturns); quiet=$($case.quiet); processExited=$($case.processesExited)." | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          }
-          if ($runner.status -ne 'mechanism-observed-not-product-acceptance') { exit 1 }
-          exit 0
-      - name: Preserve early Windows source research evidence
-        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' && hashFiles('artifacts/source-synchronous-acceptance/runner.*', 'artifacts/tsf-context-admission/runner.*', 'artifacts/tsf-key-routing/runner.*', 'artifacts/source-message-acceptance/runner.*') != '' }}
-        continue-on-error: true
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: typelay-windows-source-diagnostics-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            artifacts/source-synchronous-acceptance/runner.json
-            artifacts/source-synchronous-acceptance/runner.log
-            artifacts/source-synchronous-acceptance/**/result.json
-            artifacts/tsf-context-admission/runner.json
-            artifacts/tsf-context-admission/runner.log
-            artifacts/tsf-context-admission/**/result.json
-            artifacts/tsf-key-routing/runner.json
-            artifacts/tsf-key-routing/runner.log
-            artifacts/tsf-key-routing/*/result.json
-            artifacts/source-message-acceptance/runner.json
-            artifacts/source-message-acceptance/runner.log
-            artifacts/source-message-acceptance/*/result.json
-          if-no-files-found: warn
-          retention-days: 14
       - name: Verify Windows behavior and contracts
         id: windows-contracts
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
@@ -400,39 +154,6 @@ jobs:
             artifacts/test-results/rendering/
           if-no-files-found: error
           retention-days: 14
-      - name: Observe claimed-key low-level callback timeout in owned sources
-        id: windows-source-timeout
-        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-        timeout-minutes: 3
-        shell: pwsh
-        run: |
-          & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe -explicit only -method 'TypeLay.App.Tests.NativeSourceTimeoutProbe.RecordClaimThenLowLevelCallbackTimeout'
-          exit $LASTEXITCODE
-      - name: Observe source-thread keyboard boundaries in owned sources
-        id: windows-source-keyboard
-        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-        timeout-minutes: 4
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $PSNativeCommandUseErrorActionPreference = $false
-          $directory = 'artifacts/source-keyboard-boundary'
-          New-Item -ItemType Directory -Path $directory -Force | Out-Null
-          & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe -explicit only -method 'TypeLay.App.Tests.SourceKeyboardBoundaryProbe.ObserveSelfOwnedSourceKeyboardBoundary' 2>&1 | Tee-Object -FilePath "$directory/runner.log"
-          $exitCode = $LASTEXITCODE
-          $results = @(Get-ChildItem -LiteralPath $directory -Filter result.json -File -Recurse | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json })
-          $complete = $exitCode -eq 0 -and $results.Count -eq 3 -and
-            (($results.experiment | Sort-Object) -join ',') -eq 'dialog,forged,peek'
-          foreach ($row in $results) {
-            foreach ($value in @($row.diagnosticOnly, $row.hooksClosed, $row.processesExited, $row.inputsPaired, $row.bodiesUnchanged)) {
-              if ($value -isnot [bool] -or -not $value) { $complete = $false }
-            }
-            if ($row.productionReadiness -isnot [bool] -or $row.productionReadiness -or
-                $row.status -ne 'mechanism_observed_not_product_acceptance' -or $null -ne $row.error) { $complete = $false }
-          }
-          "Source keyboard boundary research: complete=$complete; exitCode=$exitCode; results=$($results.Count)/3. Controlled mechanisms only, not production acceptance." | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          if (-not $complete) { exit 1 }
-          exit 0
       - name: Observe standard Chrome profile after behavior tests
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         shell: pwsh
@@ -446,12 +167,6 @@ jobs:
           dotnet format TypeLay.slnx --verify-no-changes --no-restore
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest discover -s tests/shared/worker -v
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/windows/test_browser_profile_observation.py -v
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m ruff check .
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m ruff format --check --diff .
           exit $LASTEXITCODE
       - name: Verify the controlled native adapter
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
@@ -514,9 +229,6 @@ jobs:
         with:
           path: artifacts/browser-download/chrome-win64.zip
           key: ${{ steps.cooperative-browser-cache.outputs.cache-primary-key }}
-      # The metadata-only browser research probe is paused at an unresolved CI startup
-      # precondition. Run its documented script explicitly when new evidence warrants it;
-      # the ordinary Chrome product regression above remains required and keeps its result.
       # Prepare fixed assets before the sole production package; inference stays serialized.
       - name: Admit the bounded production Hy package chain
         id: hy-admission
@@ -586,11 +298,7 @@ jobs:
           # Business failure stays red; neither prior consumer may still be active.
           python eng/windows/verify-consumer-exit.py --scope before-notepad --continuous-proof artifacts/continuous-translation/consumer-exit.json --browser-proof artifacts/browser-cooperation/consumer-exit.json --continuous-nonce "$env:CONTINUOUS_NONCE" --browser-nonce "$env:BROWSER_NONCE" --run-id "$env:GITHUB_RUN_ID" --run-attempt "$env:GITHUB_RUN_ATTEMPT" --head "$env:GITHUB_SHA" --workflow-cancelled "$env:WORKFLOW_CANCELLED"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $fixture = 'tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows'
-          foreach ($assembly in @('TypeLay.App', 'TypeLay.Runtime', 'TypeLay.Core', 'TypeLay.Protocol', 'TypeLay.Windows.Contracts')) {
-            Copy-Item -LiteralPath "artifacts/package/TypeLay/app/$assembly.dll" -Destination "$fixture/$assembly.dll" -Force
-          }
-          dotnet "$fixture/TypeLay.DesktopFixture.dll" --verify-ordinary-notepad artifacts/ordinary-notepad artifacts/package/TypeLay artifacts/continuous-translation
+          ./dev.ps1 package-e2e -Scenario ordinary-notepad
           exit $LASTEXITCODE
       # Scene failure stays red; only independently verified owner exit admits Hy.
       - name: Verify all prior model consumers have exited
@@ -612,11 +320,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $fixture = 'tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows'
-          foreach ($assembly in @('TypeLay.App', 'TypeLay.Runtime', 'TypeLay.Core', 'TypeLay.Protocol', 'TypeLay.Windows.Contracts')) {
-            Copy-Item -LiteralPath "artifacts/package/TypeLay/app/$assembly.dll" -Destination "$fixture/$assembly.dll" -Force
-          }
-          dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-hy-production artifacts/hy-production artifacts/package/TypeLay artifacts/hy-download
+          ./dev.ps1 package-e2e -Scenario hy-production
           exit $LASTEXITCODE
       - name: Verify Hy install select preview and remove through Settings
         if: ${{ !cancelled() && steps.hy-production.outcome == 'success' }}
@@ -624,11 +328,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $fixture = 'tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows'
-          foreach ($assembly in @('TypeLay.App', 'TypeLay.Runtime', 'TypeLay.Core', 'TypeLay.Protocol', 'TypeLay.Windows.Contracts')) {
-            Copy-Item -LiteralPath "artifacts/package/TypeLay/app/$assembly.dll" -Destination "$fixture/$assembly.dll" -Force
-          }
-          dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-hy-packages artifacts/hy-packages artifacts/package/TypeLay artifacts/hy-download tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll
+          ./dev.ps1 package-e2e -Scenario hy-packages
           exit $LASTEXITCODE
       # Uses two minutes of the existing seven-minute cache/artifact tail, after
       # all prior desktop chains. It does not replace their failures or proofs.
@@ -658,23 +358,13 @@ jobs:
           path: |
             artifacts/continuous-translation/result.json
             artifacts/continuous-translation/consumer-exit.json
-            artifacts/continuous-translation/trace.jsonl
-            artifacts/continuous-translation/trace.jsonl.broker.jsonl
-            artifacts/continuous-translation/trace.jsonl.imm.jsonl
-            artifacts/continuous-translation/trace.jsonl.overlay.jsonl
-            artifacts/continuous-translation/trace.jsonl.practice.jsonl
+            artifacts/continuous-translation/trace*.jsonl
             artifacts/browser-cooperation/result.json
             artifacts/browser-cooperation/consumer-exit.json
-            artifacts/browser-cooperation/trace-app.jsonl
-            artifacts/browser-cooperation/trace-app.jsonl.broker.jsonl
-            artifacts/browser-cooperation/trace-app.jsonl.imm.jsonl
-            artifacts/browser-cooperation/trace-fixture.jsonl
+            artifacts/browser-cooperation/trace*.jsonl
             artifacts/ordinary-notepad/result.json
             artifacts/ordinary-notepad/consumer-exit.json
-            artifacts/ordinary-notepad/trace.jsonl
-            artifacts/ordinary-notepad/trace.jsonl.broker.jsonl
-            artifacts/ordinary-notepad/trace.jsonl.imm.jsonl
-            artifacts/ordinary-notepad/trace.jsonl.overlay.jsonl
+            artifacts/ordinary-notepad/trace*.jsonl
           if-no-files-found: warn
           retention-days: 14
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -683,24 +373,9 @@ jobs:
           name: typelay-windows-${{ github.sha }}
           path: |
             artifacts/test-results/
-            artifacts/shader-compiler/
-            artifacts/source-ll-timeout/
-            artifacts/source-keyboard-boundary/
-            artifacts/source-synchronous-acceptance/
-            artifacts/source-message-acceptance/
-            artifacts/tsf-context-admission/
-            artifacts/tsf-key-routing/
             artifacts/controller-trace.jsonl*
-            artifacts/continuous-translation/result.json
-            artifacts/continuous-translation/consumer-exit.json
-            artifacts/continuous-translation/trace*.jsonl
             artifacts/continuous-translation/data/setup-self-check.json
             artifacts/browser-profile/*.json
-            artifacts/browser-cooperation/result.json
-            artifacts/browser-cooperation/consumer-exit.json
-            artifacts/browser-cooperation/trace*.jsonl
-            artifacts/ordinary-notepad/*.json
-            artifacts/ordinary-notepad/trace*.jsonl
             artifacts/hy-results/*.json
             artifacts/hy-results/*.stderr
             artifacts/hy-production/*.json
@@ -722,7 +397,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
   linux:
-    name: ${{ needs.scope.outputs.practice == 'true' && 'Linux practice iteration (partial acceptance)' || needs.scope.outputs.quality_only == 'true' && 'Linux quality capture (not product acceptance)' || 'linux' }}
+    name: ${{ needs.scope.outputs.quality_only == 'true' && 'Linux quality capture (not product acceptance)' || 'linux' }}
     needs: scope
     if: needs.scope.outputs.linux == 'true'
     runs-on: ubuntu-latest
@@ -893,9 +568,12 @@ jobs:
           python tests/linux/test_gtk_preview_contract.py -v
           python tests/linux/test_qt_candidate_observation.py -v
           python tests/linux/test_argos_repetition_process.py -v
+          python tests/linux/test_index_package_diagnostics.py -v
+          python tests/linux/test_translation_quality_capture.py -v
+          python tests/linux/test_vscode_notifications.py -v
           python eng/linux/build.py --with-test-fixture --hy-runtime artifacts/linux/hy-cpu-runtime
       - name: Verify resumable model downloads over isolated HTTP
-        if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.build.outcome == 'success' }}
         run: |
           mkdir -p artifacts/linux/installation-progress
           python tests/linux/setup_e2e.py --http --progress-output artifacts/linux/installation-progress/records.json -v
@@ -907,34 +585,35 @@ jobs:
           export DISPLAY=:99
           python tests/linux/wire.py -v
           python tests/linux/session_host_protocol.py --host artifacts/linux/package/app/TypeLay.Linux -v
+          GDK_BACKEND=x11 dbus-run-session -- python tests/linux/test_settings_feedback.py -v
           python tests/linux/native_e2e.py --gtk-refusal --native artifacts/linux/native --output artifacts/linux/nested
       - name: Verify tray controls without downloading models
-        if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.build.outcome == 'success' }}
         run: |
           export DISPLAY=:99
           GDK_BACKEND=x11 dbus-run-session -- python tests/linux/tray_e2e.py --package artifacts/linux/package
       - name: Verify prototype tray panel without downloading models
-        if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.build.outcome == 'success' }}
         timeout-minutes: 1
         run: |
           export DISPLAY=:99
           mkdir -p artifacts/linux/tray-panel
           GDK_BACKEND=x11 dbus-run-session -- python tests/linux/tray_e2e.py --package artifacts/linux/package --panel-only --output artifacts/linux/tray-panel > artifacts/linux/tray-panel/inside.log 2>&1
       - name: Verify real download progress across three native surfaces
-        if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.build.outcome == 'success' }}
         timeout-minutes: 1
         run: |
           export DISPLAY=:99
           GDK_BACKEND=x11 dbus-run-session -- python tests/linux/tray_e2e.py --package artifacts/linux/package --progress-only --progress-records artifacts/linux/installation-progress/records.json --output artifacts/linux/installation-progress > artifacts/linux/installation-progress/inside.log 2>&1
       - name: Verify explicit quit confirmation without downloading models
-        if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.build.outcome == 'success' }}
         timeout-minutes: 1
         run: |
           export DISPLAY=:99
           mkdir -p artifacts/linux/quit-ui
           GDK_BACKEND=x11 dbus-run-session -- python tests/linux/quit_ui.py --package artifacts/linux/package --complete --output artifacts/linux/quit-ui > artifacts/linux/quit-ui/inside.log 2>&1
       - name: Verify native shortcut settings without downloading models
-        if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.build.outcome == 'success' }}
         run: |
           export DISPLAY=:99
           python tests/linux/native_e2e.py --desktop --desktop-scope settings-ui --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/settings-ui
@@ -961,24 +640,24 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
       - name: Verify ordinary browser fields through the production DOM adapter
-        if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.build.outcome == 'success' }}
         run: |
           export DISPLAY=:99
           python tests/linux/browser_e2e.py --chromium /usr/bin/chromium -v
       - name: Verify browser native messaging and document routing
-        if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.build.outcome == 'success' }}
         run: |
           export DISPLAY=:99
           python tests/linux/browser_native_e2e.py --package artifacts/linux/package --chromium /usr/bin/chromium -v
       - name: Probe source-owned VS Code edit transactions
-        if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.build.outcome == 'success' }}
         run: |
           export DISPLAY=:99
           set -- /usr/lib/electron*/electron
           test "$#" -eq 1
           python tests/linux/vscode_e2e.py --code "$1" --app /usr/lib/code
       - name: Probe real rich-editor transaction reentrancy
-        if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.build.outcome == 'success' }}
         run: |
           mkdir -p artifacts/editor-probe
           cp tests/linux/fixtures/editor/package*.json artifacts/editor-probe/
@@ -986,7 +665,7 @@ jobs:
           export DISPLAY=:99
           python tests/linux/editor_probe.py --dependencies artifacts/editor-probe --chromium /usr/bin/chromium -v
       - name: Verify Firefox temporary extension and native messaging
-        if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.build.outcome == 'success' }}
         run: |
           export DISPLAY=:99
           python tests/linux/firefox_native_e2e.py --package artifacts/linux/package --firefox /usr/bin/firefox --geckodriver /usr/bin/geckodriver --editor-bundle artifacts/editor-probe/fixture.js -v
@@ -1075,29 +754,8 @@ jobs:
           name: typelay-linux-qt-probe-failure-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             artifacts/linux/qt-cooperative-probe.log
-            artifacts/linux/qt-cooperative/versions.json
-            artifacts/linux/qt-cooperative/result.json
-            artifacts/linux/qt-cooperative/framework.log
-            artifacts/linux/qt-cooperative/async-runtime.json
-            artifacts/linux/qt-cooperative/async-state.json
-            artifacts/linux/qt-cooperative/async-transition.json
-            artifacts/linux/qt-cooperative/async-result.json
-            artifacts/linux/qt-cooperative/async-client.log
-            artifacts/linux/qt-cooperative/unmodified-reentry-result.json
-            artifacts/linux/qt-cooperative/unmodified-reentry-keymap.json
-            artifacts/linux/qt-cooperative/unmodified-reentry-native-state.json
-            artifacts/linux/qt-cooperative/unmodified-reentry-native.log
-            artifacts/linux/qt-cooperative/ordered-result.json
-            artifacts/linux/qt-cooperative/font-preference-observations.json
-            artifacts/linux/qt-cooperative/font-order-*.json
-            artifacts/linux/qt-cooperative/font-order-*.log
-            artifacts/linux/qt-cooperative/ordered-native-state.json
-            artifacts/linux/qt-cooperative/ordered-native.log
-            artifacts/linux/qt-cooperative/ordered-delayed-result.json
-            artifacts/linux/qt-cooperative/ordered-delayed-native-state.json
-            artifacts/linux/qt-cooperative/ordered-delayed-native.log
-            artifacts/linux/qt-cooperative/language-options-native-state.json
-            artifacts/linux/qt-cooperative/language-options-native.log
+            artifacts/linux/qt-cooperative/*.json
+            artifacts/linux/qt-cooperative/*.log
           if-no-files-found: error
           retention-days: 14
       - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -1165,7 +823,6 @@ jobs:
           import os
           import shutil
           import stat
-          import subprocess
           from contextlib import ExitStack
 
           names = ("core-build", "libime-build", "fcitx5-chinese-addons-build")
@@ -1183,38 +840,8 @@ jobs:
                   if not stat.S_ISDIR(os.stat(name, dir_fd=parent, follow_symlinks=False).st_mode):
                       raise RuntimeError(f"build cleanup requires a regular directory: {name}")
 
-              def measure(stage):
-                  print(f"Linux build storage {stage}", flush=True)
-                  commands = [("df", "-Pk", "."), ("df", "-Pi", ".")]
-                  remaining = [
-                      name for name in names
-                      if os.path.lexists(f"/proc/self/fd/{parent}/{name}")
-                  ]
-                  if remaining:
-                      commands.append(("du", "-P", "-x", "-sk", "--", *remaining))
-                  for command in commands:
-                      try:
-                          result = subprocess.run(
-                              command, cwd=f"/proc/self/fd/{parent}", pass_fds=(parent,),
-                              timeout=5, check=False,
-                          )
-                          if result.returncode:
-                              print(
-                                  f"Storage measurement failed: {command[0]} ({result.returncode})",
-                                  flush=True,
-                              )
-                      except (OSError, subprocess.TimeoutExpired) as error:
-                          print(
-                              f"Storage measurement unavailable: {command[0]} ({type(error).__name__})",
-                              flush=True,
-                          )
-
-              measure("before cleanup")
-              try:
-                  for name in names:
-                      shutil.rmtree(name, dir_fd=parent)
-              finally:
-                  measure("after cleanup")
+              for name in names:
+                  shutil.rmtree(name, dir_fd=parent)
           PY_STORAGE
       - name: Attach the matching desktop components to the main distribution
         id: complete-package
@@ -1233,63 +860,6 @@ jobs:
           mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR"
           chmod 700 "$XDG_RUNTIME_DIR"
           artifacts/linux/package/typelay --install-models argos
-      - name: Preserve bounded model activation failure metadata
-        if: ${{ !cancelled() && steps.models.outcome == 'failure' }}
-        run: |
-          python - <<'PY_METADATA'
-          import json, os, re, stat
-          from pathlib import Path
-          root = Path("artifacts/linux/desktop-data/typelay/components").absolute()
-          def kind(path):
-              try:
-                  mode = path.lstat().st_mode
-                  return "link" if stat.S_ISLNK(mode) else "directory" if stat.S_ISDIR(mode) else "file" if stat.S_ISREG(mode) else "other"
-              except FileNotFoundError:
-                  return "missing"
-              except OSError:
-                  return "unavailable"
-          def small_json(path):
-              try:
-                  if kind(path) != "file" or path.stat().st_size > 4096:
-                      return None
-                  value = json.loads(path.read_text())
-                  return value if isinstance(value, dict) else None
-              except (OSError, ValueError):
-                  return None
-          def relative(path, base):
-              try:
-                  return str(Path(os.path.abspath(path)).relative_to(Path(os.path.abspath(base))))
-              except ValueError:
-                  return "outside-generation"
-          report = {"currentKind": kind(root / "current"), "generations": []}
-          if report["currentKind"] == "link":
-              target = os.readlink(root / "current")
-              report["currentTarget"] = target if re.fullmatch(r"[0-9a-f]{32}", target) else "invalid-target"
-          generations = sorted(path for path in root.iterdir() if re.fullmatch(r"[0-9a-f]{32}", path.name) and kind(path) == "directory") if kind(root) == "directory" else []
-          report["generationCount"] = len(generations)
-          for generation in generations[:8]:
-              activation = small_json(generation / "activation.json")
-              check = small_json(generation / "self-check.json")
-              item = {"id": generation.name, "activationKind": kind(generation / "activation.json"), "activationValidJson": activation is not None, "selfCheckPassed": bool(check and check.get("status") == "passed")}
-              if activation:
-                  item["schema"] = activation.get("schema") if type(activation.get("schema")) is int else "invalid"
-                  previous = activation.get("previous")
-                  item["previous"] = previous if previous is None or isinstance(previous, str) and re.fullmatch(r"[0-9a-f]{32}", previous) else "invalid"
-              runtime = generation / "runtime"
-              python = runtime / "venv/bin/python"
-              item["pythonKind"] = kind(python)
-              item["declaredParents"] = [{"path": relative(parent, runtime), "kind": kind(parent)} for parent in (runtime, runtime / "venv", runtime / "venv/bin")]
-              try:
-                  target = Path(os.readlink(python)) if python.is_symlink() else python
-                  item["pythonLink"] = relative(target if target.is_absolute() else python.parent / target, runtime)
-                  resolved = python.resolve(strict=True)
-                  item["pythonResolved"] = relative(resolved, runtime)
-                  item["parents"] = [{"path": relative(parent, runtime), "kind": kind(parent)} for parent in list(resolved.parents)[:12] if parent == runtime or parent.is_relative_to(runtime)]
-              except (OSError, RuntimeError):
-                  item["pythonResolution"] = "unavailable"
-              report["generations"].append(item)
-          Path("artifacts/linux/model-activation-metadata.json").write_text(json.dumps(report, indent=2))
-          PY_METADATA
       # Independent scopes preserve both original contracts even when one fails.
       # Settings allows 360s, tutorial 240s; the Linux job/admission budgets stay fixed.
       - name: Verify settings with the real local model
@@ -1311,7 +881,7 @@ jobs:
       - name: Exercise ordinary GIMP comments through shipped Settings
         # Settings installs from the finalized main distribution, not the
         # independently packaged runtime. A missing prerequisite is not a GIMP run.
-        if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.complete-package.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.complete-package.outcome == 'success' }}
         timeout-minutes: 6
         run: |
           export DISPLAY=:99
@@ -1320,7 +890,7 @@ jobs:
           export XDG_CACHE_HOME="$PWD/artifacts/linux/ordinary-gimp-cache"
           python tests/linux/native_e2e.py --desktop --desktop-scope ordinary-gimp --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/ordinary-gimp
       - name: Exercise the production desktop and real browser input
-        if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.models.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.models.outcome == 'success' }}
         run: |
           export DISPLAY=:99
           export XDG_CONFIG_HOME="$PWD/artifacts/linux/desktop-config"
@@ -1328,7 +898,7 @@ jobs:
           export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
           python tests/linux/native_e2e.py --desktop --desktop-scope browser --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/desktop --editor-bundle artifacts/editor-probe/fixture.js
       - name: Exercise relocated Fcitx and cooperative GTK with the real local model
-        if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.fcitx-package.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.fcitx-package.outcome == 'success' }}
         run: |
           export DISPLAY=:99
           export XDG_CONFIG_HOME="$PWD/artifacts/linux/gtk-desktop-config"
@@ -1336,7 +906,7 @@ jobs:
           export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
           python tests/linux/native_e2e.py --desktop --desktop-scope gtk --gtk-session-bindings --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/gtk-desktop --fcitx-cooperative "artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative"
       - name: Exercise cooperative GTK4 Entry with the real local model
-        if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.fcitx-package.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.fcitx-package.outcome == 'success' }}
         run: |
           export DISPLAY=:99
           export XDG_CONFIG_HOME="$PWD/artifacts/linux/gtk4-desktop-config"
@@ -1344,7 +914,7 @@ jobs:
           export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
           python tests/linux/native_e2e.py --desktop --desktop-scope gtk4 --gtk-session-bindings --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/gtk4-desktop --fcitx-cooperative "artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative"
       - name: Exercise Qt6 widgets with explicit bundle or build provenance
-        if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.models.outcome == 'success' && (steps.qt.outcome == 'success' || steps.qt.outcome == 'failure') && steps.fcitx-package.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.models.outcome == 'success' && (steps.qt.outcome == 'success' || steps.qt.outcome == 'failure') && steps.fcitx-package.outcome == 'success' }}
         env:
           QT_PROBE_OUTCOME: ${{ steps.qt.outcome }}
         run: |
@@ -1365,7 +935,7 @@ jobs:
           esac
           python tests/linux/native_e2e.py --desktop --desktop-scope qt --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/qt-desktop --fcitx-cooperative "$fcitx_root" --qt-cooperative artifacts/linux/qt-cooperative
       - name: Verify installed VS Code command with the real local model
-        if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.models.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.models.outcome == 'success' }}
         run: |
           export DISPLAY=:99
           set -- /usr/lib/electron*/electron
@@ -1375,7 +945,7 @@ jobs:
       # model-package lifecycle. The original model and product deadlines stay fixed.
       - name: Admit the bounded formal Hy package lifecycle
         id: hy-admission
-        if: ${{ needs.scope.outputs.practice != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.complete-package.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.models.outcome == 'success' && steps.complete-package.outcome == 'success' }}
         env:
           PYTHONDONTWRITEBYTECODE: ${{ needs.scope.outputs.collect_quality == 'true' && '1' || '' }}
         run: |
@@ -1459,6 +1029,11 @@ jobs:
         with:
           name: typelay-linux-desktop-diagnostics-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            artifacts/linux/*/niri.kdl
+            artifacts/linux/*/inside.failed
+            artifacts/linux/*/inside-exit.json.tmp
+            artifacts/linux/qt-desktop/qt-motion-expand/frame-*.png
+            artifacts/linux/qt-desktop/qt-motion-chinese-draft/frame-*.png
             artifacts/linux/fcitx-probe/client.log
             artifacts/linux/fcitx-probe/field.json
             artifacts/linux/fcitx-probe/versions.json
@@ -1519,14 +1094,6 @@ jobs:
         with:
           name: typelay-linux-${{ github.sha }}
           path: |
-            artifacts/linux/nested/
-            artifacts/linux/desktop/
-            artifacts/linux/gtk-desktop/
-            artifacts/linux/qt-desktop/
-            artifacts/linux/gtk4-desktop/
-            artifacts/linux/settings-ui/
-            artifacts/linux/setup-settings/
-            artifacts/linux/setup-tutorial/
             artifacts/linux/ordinary-gimp/*.json
             artifacts/linux/ordinary-gimp/controller.jsonl
             artifacts/linux/ordinary-gimp/*.png
@@ -1546,7 +1113,6 @@ jobs:
             artifacts/linux/fcitx-cooperative-5.1.22/gtk*-glossary-session/*.log
             ${{ steps.complete-package.outcome != 'success' && 'artifacts/TypeLay-Fcitx-cooperative.tar.gz' || '' }}
             artifacts/linux/desktop-data/typelay/components/*/self-check.json
-            artifacts/linux/model-activation-metadata.json
             artifacts/linux/hy-package/*.json
             artifacts/linux/hy-package/*.log
             artifacts/linux/hy-package/*.png
@@ -1610,10 +1176,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet build tests/windows/fixtures/TypeLay.DesktopFixture -c Release -warnaserror
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $fixture = 'tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows'
-          foreach ($assembly in @('TypeLay.App', 'TypeLay.Runtime', 'TypeLay.Core', 'TypeLay.Protocol', 'TypeLay.Windows.Contracts')) {
-            Copy-Item -LiteralPath "artifacts/package/TypeLay/app/$assembly.dll" -Destination "$fixture/$assembly.dll" -Force
-          }
       - name: Verify Index default install, real inference and owned package transitions
         timeout-minutes: 11
         shell: pwsh
@@ -1624,7 +1186,7 @@ jobs:
             '{"suite":"index-windows-production-package-lifecycle","lifecycle":"not-run","reason":"insufficient-job-budget"}' | Set-Content artifacts/index-production/result.json
             exit 1
           }
-          dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-index-production artifacts/index-production artifacts/package/TypeLay artifacts/index-model-download
+          ./dev.ps1 package-e2e -Scenario index-windows
           exit $LASTEXITCODE
       - name: Preserve only structured Index verification
         if: always()
@@ -1697,100 +1259,5 @@ jobs:
         with:
           name: typelay-index-linux-${{ github.sha }}
           path: artifacts/index-production/result.json
-          if-no-files-found: warn
-          retention-days: 14
-  qt-iteration:
-    name: Linux Qt iteration (not full product acceptance)
-    needs: scope
-    if: needs.scope.outputs.qt == 'true'
-    runs-on: ubuntu-latest
-    container:
-      image: archlinux:base-devel
-      options: --shm-size=1g
-    timeout-minutes: 15
-    env:
-      TYPELAY_EXPECT_QT_VERSION: 6.11.2
-    permissions:
-      contents: read
-      actions: read
-    steps:
-      - name: Install isolated Qt iteration dependencies
-        run: pacman -Syu --noconfirm git cmake ninja pkgconf python curl unzip patch extra-cmake-modules libxkbcommon libxcb fcitx5 boost-libs opencc xorg-server-xvfb xdotool dbus gtk3 python-gobject libayatana-appindicator niri mesa grim noto-fonts-cjk uv icu openssl zlib
-      - name: Match the target Qt upstream ABI
-        run: |
-          mkdir -p /tmp/typelay-target-sdk
-          cd /tmp/typelay-target-sdk
-          package='qt6-base-6.11.2-3-x86_64.pkg.tar.zst'
-          curl --fail --location "https://archive.archlinux.org/packages/q/qt6-base/$package" -o "$package"
-          curl --fail --location "https://archive.archlinux.org/packages/q/qt6-base/$package.sig" -o "$package.sig"
-          echo '257c5ef6180119d5b4365bdfe2a2ad051694b5dff390eac8e736dd78b8107b21  qt6-base-6.11.2-3-x86_64.pkg.tar.zst' | sha256sum -c -
-          echo 'abf939ab10c2d7f28af81e5230c72e2acbd803fe43590fda331f474ec871dcfb  qt6-base-6.11.2-3-x86_64.pkg.tar.zst.sig' | sha256sum -c -
-          pacman -U --noconfirm "./$package"
-          test "$(pkg-config --modversion Qt6Core)" = 6.11.2
-          test -f /usr/lib/qt6/plugins/platforms/libqwayland.so
-      - name: Initialize the disposable container D-Bus identity
-        run: dbus-uuidgen --ensure=/etc/machine-id
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - name: Reuse the exact verified cooperation runtime
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p artifacts/qt-runtime artifacts/qt-probe-root
-          curl --fail --location --retry 2 \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H 'Accept: application/vnd.github+json' \
-            https://api.github.com/repos/DingJWuyu/Typelay/actions/artifacts/11797631952/zip \
-            -o artifacts/qt-runtime/evidence.zip
-          echo '3bf7bf2ebc650efd80f16073a1792633cabdfce45478888d0dadab39a815fa35  artifacts/qt-runtime/evidence.zip' | sha256sum -c -
-          unzip -p artifacts/qt-runtime/evidence.zip TypeLay-Fcitx-cooperative.tar.gz > artifacts/qt-runtime/runtime.tar.gz
-          echo 'afe4f71d8e7476eec1f48ed1c041a5f6f6a4191de66299b58f63a8e9fc5083ac  artifacts/qt-runtime/runtime.tar.gz' | sha256sum -c -
-          tar -xzf artifacts/qt-runtime/runtime.tar.gz -C artifacts/qt-runtime
-          unzip -p artifacts/qt-runtime/evidence.zip TypeLay-Linux-preview-x86_64.tar.gz > artifacts/qt-runtime/client.tar.gz
-          echo '23562c9f82ab9be9a4966978d61c600b3c74d4f07f91e80af0f0400ef6fe190a  artifacts/qt-runtime/client.tar.gz' | sha256sum -c -
-          tar -xzf artifacts/qt-runtime/client.tar.gz -C artifacts/qt-runtime
-          prefix="$PWD/artifacts/qt-runtime/TypeLay-Fcitx-cooperative/core"
-          ln -s "$prefix/bin/fcitx5" artifacts/qt-probe-root/fcitx5
-          ln -s "$prefix" artifacts/qt-probe-root/core-prefix
-          ln -s "$prefix/lib/fcitx5" artifacts/qt-probe-root/lib
-          printf '%s\n' 'sourceCommit=d607db1b8a3fc882cfd4a9c19a6e454d9b610189' 'artifactId=11797631952' > artifacts/qt-runtime/provenance.txt
-      - name: Probe the original Qt input path
-        run: python tests/linux/qt_cooperative/run.py --fcitx-root artifacts/qt-probe-root
-      - name: Install the same real local model for the isolated adapter scenario
-        run: |
-          mkdir -p artifacts/linux/desktop-data artifacts/linux/desktop-cache
-          python artifacts/qt-runtime/TypeLay-Linux-preview/desktop/setup.py "$PWD/artifacts/qt-runtime/TypeLay-Linux-preview" "$PWD/artifacts/linux/desktop-data/typelay" "$PWD/artifacts/linux/desktop-cache/typelay"
-      - name: Exercise the current adapter with the fixed production client
-        shell: bash
-        run: |
-          set -euo pipefail
-          export DISPLAY=:99
-          Xvfb :99 -screen 0 1280x800x24 > artifacts/qt-runtime/xvfb.log 2>&1 &
-          xvfb=$!
-          trap 'kill "$xvfb" 2>/dev/null || true' EXIT
-          for attempt in $(seq 1 100); do
-            if xdotool getdisplaygeometry >/dev/null 2>&1; then break; fi
-            kill -0 "$xvfb"
-            sleep 0.05
-          done
-          xdotool getdisplaygeometry
-          export XDG_CONFIG_HOME="$PWD/artifacts/linux/qt-desktop-config"
-          export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
-          export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
-          python tests/linux/native_e2e.py --desktop --desktop-scope qt --package artifacts/qt-runtime/TypeLay-Linux-preview --native artifacts/linux/native --output artifacts/linux/qt-desktop --fcitx-cooperative artifacts/qt-probe-root --qt-cooperative artifacts/linux/qt-cooperative
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
-        with:
-          name: typelay-qt-iteration-${{ github.sha }}
-          path: |
-            artifacts/linux/qt-cooperative/*.json
-            artifacts/linux/qt-cooperative/*.log
-            artifacts/qt-runtime/provenance.txt
-            artifacts/qt-runtime/xvfb.log
-            artifacts/linux/qt-desktop/
           if-no-files-found: warn
           retention-days: 14
