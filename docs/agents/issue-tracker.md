@@ -40,8 +40,6 @@ GitHub supports stacked PRs, one PR per branch, each on the one below, through t
 - **Open or update the PRs**: `gh stack submit --open`, since a run outside an interactive terminal opens drafts otherwise. Then set each new PR's title and body with `gh pr edit <number> --title <title> --body-file <file>`.
 - **After a lower layer merges**: `gh stack sync`.
 
-本仓库禁止强推，包括 `--force-with-lease`。执行上述提交或同步命令前，确认它不会重写已推送历史或强推；无法确认时不执行。`gh stack sync` 会在 rebase 后使用 `--force-with-lease`，此时改用合并同步：将最新下层分支合并进上层分支，解决冲突后常规推送。下层已合入 `hitl` 时，将 `hitl` 合并进剩余栈底分支，并把该 PR 的 base 改为 `hitl`，其余层保持相邻关系。
-
 ## Pull requests as a triage surface
 
 **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_

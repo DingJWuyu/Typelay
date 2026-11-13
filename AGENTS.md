@@ -10,9 +10,9 @@ TypeLay 是跨平台本地输入框翻译浮层。
 
 ## 分支与交付
 
-工作从 `hitl` 切分支，经 PR 合回 `hitl`，由负责人审查并合并。一个 spec 的多张 ticket 使用堆叠 PR：栈底基于 `hitl`，后续层从上一层切出，PR 指向紧邻的下层分支；操作见 [issue-tracker.md](docs/agents/issue-tracker.md#stacked-prs)。
+工作从 `hitl` 切分支，经 PR 合回 `hitl`，由负责人审查并合并；PR 的创建与堆叠操作见 [issue-tracker.md](docs/agents/issue-tracker.md)。
 
-禁止 force push。`main`、`trunk` 仅按负责人的明确授权更新。
+禁止对 `hitl`、`main`、`trunk` 强推。`main`、`trunk` 仅按负责人的明确授权更新。
 
 ## 仓库内容保留
 
