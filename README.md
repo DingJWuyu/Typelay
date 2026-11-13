@@ -41,8 +41,7 @@ docs/design/                已确认 UI 原型
 docs/engineering/           共享架构、开发和验证约定
 docs/platforms/             Windows/Linux 专属使用、实现与验收
 docs/adr/                   当前有效的工作区、产品增量与共享运行时决策
-docs/agents/                Agent skills、任务跟踪、领域与 triage 指引
-.agents/skills/             固定版本的上游 skills
+docs/agents/                任务跟踪、领域与 triage 配置
 ```
 
 Windows 与 Linux 保留独立宿主，不复制 Core、Runtime 或 worker；Linux 内多个后端共享的实现仍属于 Linux。模块归属与安全不变量见[架构约束](docs/engineering/architecture.md)，接口取舍见 [ADR-0003](docs/adr/0003-cross-platform-runtime.md)。VS Code 仅提供手动命令，尚未交付 macOS。
@@ -51,4 +50,4 @@ Windows 与 Linux 保留独立宿主，不复制 Core、Runtime 或 worker；Lin
 
 根 AGENTS.md 是 Agent 入口，按任务读取现役文档。仓库只保留当前开发、运行、测试或明确后续维护需要的内容，历史追溯使用 Git。没有已验收性能基准时不建空 benchmarks；复杂用例由产品教程承担。
 
-Matt Pocock skills 保留上游 user-invoke / model-invoke 分类，分支直接提交约定优先于默认 PR 工作流。许可证及第三方组件说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)；B-01/B-02/B-03 及关闭条件见[开放风险](docs/engineering/architecture.md#开放风险与安全边界)。
+许可证及第三方组件说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)；B-01/B-02/B-03 及关闭条件见[开放风险](docs/engineering/architecture.md#开放风险与安全边界)。

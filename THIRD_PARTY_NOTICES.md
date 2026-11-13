@@ -2,7 +2,7 @@
 
 ## 发布包
 
-`./dev.ps1 pack` 生成 Windows x64 自包含运行包：TypeLay 启动器、App、Broker、Python worker 源文件、教程资源、启动脚本及 .NET Core / Windows Desktop 运行时。不分发 .NET SDK、测试、原型、开发工具、Matt skills、Python 解释器、模型权重或用户数据。
+`./dev.ps1 pack` 生成 Windows x64 自包含运行包：TypeLay 启动器、App、Broker、Python worker 源文件、教程资源、启动脚本及 .NET Core / Windows Desktop 运行时。不分发 .NET SDK、测试、原型、开发工具、Python 解释器、模型权重或用户数据。
 
 运行时版本以 `app/TypeLay.App.runtimeconfig.json` 的 `includedFrameworks` 为准。发布过程从该次构建实际解析的 runtime packs 原样复制包内实际提供的许可证与第三方 notices，按包名和版本保存到 `app/licenses/`。不得删改、翻译或用本文件替代上游声明；更新 SDK 或发布方式后重新检查包内文件并运行发行包测试。
 
@@ -26,7 +26,7 @@ Linux 自包含发行包包含 .NET 运行时和共享 Python worker 源码；�
 
 ## 仅用于开发
 
-`.agents/skills/` 保留 Matt Pocock 上游技能及参考文件，原始许可证位于 `.agents/MATT-LICENSE`；来源 revision 和安装约束见 `docs/agents/skills.md`，安装器记录位于 `skills-lock.json`。这些文件不进入 Windows 运行包。
+Agent 配置模板来自 Matt Pocock skills，原始许可证保留在 `.agents/MATT-LICENSE`。工程 skills 由机器上的全局安装提供，仓库不内置副本。这些开发配置不进入 Windows 运行包。
 
 .NET SDK、xUnit、Ruff、Clang/LLD 用于构建、测试或格式检查，不作为产品工具链再分发。独立的物理 Tab 验证包包含已有测试输出及其 xUnit/测试依赖，遵循 [该包专属声明](packaging/windows/physical-tab/THIRD_PARTY_NOTICES.md)，不混入产品运行包。原生启动器只导入 Windows 系统 API。产品规格和已确认原型位于 `docs/product/` 与 `docs/design/`，不作为发布包的一部分。
 
