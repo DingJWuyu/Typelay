@@ -28,6 +28,8 @@ To show a screenshot or recording in a PR, reference it in the body as `![<alt>]
 
 每张 ticket 由一个 agent 实现，形成独立 PR，由负责人按风险审查后合并。独立 PR 的 base 是 `hitl`；一个 spec 的多张 ticket 使用下节的堆叠方式，最终合入 `hitl`。分支权限见根 [AGENTS.md](../../AGENTS.md)。
 
+负责人确认变更已合入 `hitl` 且满足验收条件后，关闭对应 ticket。GitHub 仅对默认分支解释 PR 的关闭关键字，见[官方说明](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue)。本仓库默认分支是 `main`，因此不能依赖合入 `hitl` 自动关票；依赖判断仍以 issue 的实际状态为准。
+
 ## Stacked PRs
 
 本仓库的栈底 base 是 `hitl`，下面命令中的 `<target>` 取 `hitl`。后续每层从上一层分支切出，PR 以紧邻的下层分支为 base。
@@ -37,6 +39,8 @@ GitHub supports stacked PRs, one PR per branch, each on the one below, through t
 - **Add a layer**: each layer is a new branch, since the finished branch may still be checked out in another worktree. Create the first with `gh stack init --base <target> <layer>`, and each later one from the top layer with `gh stack add <layer>`. Then bring the finished branch's commits onto it with `git cherry-pick <its-base>..<finished-branch>`.
 - **Open or update the PRs**: `gh stack submit --open`, since a run outside an interactive terminal opens drafts otherwise. Then set each new PR's title and body with `gh pr edit <number> --title <title> --body-file <file>`.
 - **After a lower layer merges**: `gh stack sync`.
+
+本仓库禁止强推，包括 `--force-with-lease`。执行上述提交或同步命令前，确认它不会重写已推送历史或强推；无法确认时不执行。`gh stack sync` 会在 rebase 后使用 `--force-with-lease`，此时改用合并同步：将最新下层分支合并进上层分支，解决冲突后常规推送。下层已合入 `hitl` 时，将 `hitl` 合并进剩余栈底分支，并把该 PR 的 base 改为 `hitl`，其余层保持相邻关系。
 
 ## Pull requests as a triage surface
 

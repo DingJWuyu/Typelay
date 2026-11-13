@@ -20,7 +20,7 @@
 使用 Windows x64、PowerShell 7.2+、[global.json](../../../global.json)指定的 .NET SDK、Python 3.13，以及 LLVM clang/lld-link。先创建并激活工程 Python 虚拟环境，再安装固定检查工具和构建：
 
 ```powershell
-git clone --branch trunk https://github.com/DingJWuyu/Typelay.git
+git clone --branch hitl https://github.com/DingJWuyu/Typelay.git
 cd Typelay
 python -m venv artifacts/build-tools
 .\artifacts\build-tools\Scripts\Activate.ps1
