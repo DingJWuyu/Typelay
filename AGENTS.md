@@ -45,14 +45,28 @@ TypeLay 是跨平台本地输入框翻译浮层。先保持既有产品行为，
 
 ## Agent skills
 
+使用机器上安装的全局工程 skills。
+
 ### Issue tracker
 
-本仓库使用 GitHub Issues。需要读写任务、规格或依赖时读 `docs/agents/issue-tracker.md`。PRs as a request surface: no。
+规格和 tickets 使用 DingJWuyu/Typelay 的 GitHub Issues。读写任务或依赖时，读取 [issue-tracker.md](docs/agents/issue-tracker.md)。
 
 ### Triage labels
 
-执行用户请求的 triage 时读 `docs/agents/triage-labels.md`；不要为了整理代码自动创建任务或改变标签。
+执行 triage 时，读取 [triage-labels.md](docs/agents/triage-labels.md) 中的五个默认角色映射。
 
 ### Domain docs
 
-单一领域上下文：根目录 `GLOSSARY.md` 与 `docs/adr/`；Linux 专属坐标决策在 `docs/platforms/linux/adr/`。进行领域探索或命名决策时读 `docs/agents/domain.md`。
+本仓库使用单一领域上下文。探索领域、命名或评审设计前，按 [domain.md](docs/agents/domain.md) 读取 GLOSSARY.md 和相关 ADR。
+
+### Docs
+
+编辑各级 AGENTS.md、docs/agents/、docs/CODING_STANDARDS.md、LESSONS.md 或 LESSONS-ARCHIVE.md 时，使用 writing-for-agents。docs/engineering/architecture-target.md、docs/engineering/testing.md 和 docs/design/prototype-parity.md 也按执行约束编写，使用 writing-for-agents。其他文档使用 technical-writing。
+
+## Coding standards
+
+编写和审查代码时，遵循 [docs/CODING_STANDARDS.md](docs/CODING_STANDARDS.md)。修改规范时，按 [LESSONS.md](LESSONS.md) 更新对应经验条目。
+
+## Lessons
+
+审查工作或运行 retro 前，读取 [LESSONS.md](LESSONS.md)，并按其中规则记录和更新经验。
