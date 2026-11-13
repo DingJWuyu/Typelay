@@ -36,7 +36,7 @@
 | 宿主编排、异步失效和设置持久化 | `tests/shared/TypeLay.Runtime.Tests` | 生产控制器配合受控端口的行为，以及真实临时文件的保存语义。 |
 | 帧协议、库存、文本结构和 worker 退出 | `tests/shared/TypeLay.Protocol.Tests` 与 `tests/shared/worker/` | 协议和无模型进程边界。替身输出不能证明翻译质量。 |
 | Windows 目标身份与 Broker DTO | `tests/windows/TypeLay.Windows.Contracts.Tests` | 可跨平台运行的 Windows 契约，仍不证明 WPF 或 UIA。 |
-| 平台输入、浮层、设置或编辑交互 | [Windows 测试](../platforms/windows/testing.md)或 [Linux 验证](../platforms/linux/development.md#验证) | 对应真实进程、受控宿主或桌面路径，范围须逐项标明。 |
+| 平台输入、浮层、设置或编辑交互 | [verify-typelay](../../.agents/skills/verify-typelay/SKILL.md) 提供 agent 私有会话与功能地图；[Windows 测试](../platforms/windows/testing.md)提供平台判据。 | 对应真实进程、受控宿主或桌面路径，范围须逐项标明。本机 Windows 只读取 Actions 证据。 |
 | 安装、启动或部署路径 | 平台说明中的发行包验证 | 搬迁后实际 ZIP 或 tar.gz 的入口与生命周期。 |
 | 模型输出是否保义、术语或风格是否有用 | [翻译质量采集与评审](translation-quality.md) | 固定身份和输入上的实际响应及人工评审，不能由协议通过推断。 |
 | 物理输入法、按键、Undo 或视觉表现 | 对应目标平台的真实桌面验收 | 用户实际交互。软件注入、嵌套合成器和截图各有独立范围。 |

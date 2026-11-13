@@ -24,11 +24,13 @@ Git 历史负责追溯，不建归档目录、阶段报告或历史快照。
 - 执行开发命令、增加依赖或调整 CI 时，读取[开发流程](docs/engineering/development.md)。Windows 和共享检查使用根目录 `dev.ps1`；Linux 构建和部署见 [Linux 开发](docs/platforms/linux/development.md)、`eng/linux/build.py` 和 `eng/linux/cooperative/`。
 - 改测试、修复缺陷或验收时，读取 [tests/AGENTS.md](tests/AGENTS.md) 和[测试策略](docs/engineering/testing.md)。
 - 改产品行为时，从 README 的[产品验收入口](README.md#产品验收入口)读取基线；改 UI 时，同时读取[设计入口](docs/design/README.md)和两份已确认原型。
-- 查阅平台使用、架构或验收方法时，读取 [Windows](docs/platforms/windows/README.md) 或 [Linux](docs/platforms/linux/README.md) 平台入口。
+- 查阅平台使用或架构时，读取 [Windows](docs/platforms/windows/README.md) 或 [Linux](docs/platforms/linux/README.md) 平台入口。
 
 ## Agent skills
 
 使用机器上安装的全局工程 skills。
+
+启动、驱动或验收 TypeLay 时，使用仓库内的 [verify-typelay](.agents/skills/verify-typelay/SKILL.md)。该技能维护功能地图和唯一的 agent 桌面操作流程；应用、输入法和模拟输入只在私有嵌套会话运行。本机 Windows 证据只来自 GitHub Actions。
 
 ### Issue tracker
 

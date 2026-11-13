@@ -127,44 +127,9 @@ env TYPELAY_LINUX_PACKAGE="$PWD/artifacts/TypeLay-Linux-preview-x86_64.tar.gz" /
 
 ### 在隔离桌面检查输入与设置
 
-嵌套桌面需要独立 Xvfb、niri、Mesa 软件渲染、D-Bus 和 xdotool。先按[现役 CI](../../../.github/workflows/check.yml)建立专用显示服务、HOME 和 XDG 目录。不要把测试命令指向用户桌面的 DISPLAY、配置或输入法会话。
+Agent 启动、驱动和清理桌面的唯一入口是仓库技能 [verify-typelay](../../../.agents/skills/verify-typelay/SKILL.md)。技能包含独立 HOME、XDG、D-Bus、Xvfb 和 niri 的完整命令，以及当前机器的依赖、模型安装和 Btrfs 绕法。原生拒绝、设置、教程、托盘和合作输入的驱动方式按其功能地图选择。
 
-原生 fixture 可以通过正式构建选项准备：
-
-```sh
-artifacts/build-tools/bin/python eng/linux/build.py --with-test-fixture
-```
-
-然后在独立显示环境中执行 Unknown 输入法拒绝检查：
-
-```sh
-/usr/bin/python3 tests/linux/native_e2e.py --gtk-refusal --native artifacts/linux/native --output artifacts/linux/nested
-```
-
-这条链验证拒绝、按键透传及相应原生合同，不证明成功捕获、翻译或接受。XTest 注入仅用于测试，不是产品输入方案，也不能冒充物理按键或输入法验收。
-
-生产桌面场景使用 `--desktop`、实际 `--package` 和对应 `--desktop-scope`。除专门的无模型场景外，先在隔离 XDG 数据目录通过正式安装器准备真实模型。需要合作输入的 scope 还必须传入同构建的 Fcitx/Qt 目录；具体命令见 [Fcitx](fcitx.md#构建与打包)、[Qt](qt.md#构建与验证)和[浏览器](browser.md#开发验证)。不要以夹具模型或改安装标记替代这些前提。
-
-托盘回归可以独立执行，不需要模型：
-
-```sh
-env GDK_BACKEND=x11 dbus-run-session -- xvfb-run -a /usr/bin/python3 tests/linux/tray_e2e.py --package artifacts/linux/package
-```
-
-它验证 GTK/Ayatana 注册、菜单、暂停恢复和持久化。真实 Waybar 点击、面板重启和图标视觉仍需用户桌面证据。
-
-### 设置与教程验收
-
-正式安装模型成功后，分别执行两条链。每条链使用自己的配置、输出目录和隔离 HOME，模型数据与缓存按现役 CI 指向已经准备的测试库存。
-
-```sh
-/usr/bin/python3 tests/linux/native_e2e.py --desktop --desktop-scope setup-settings --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/setup-settings
-/usr/bin/python3 tests/linux/native_e2e.py --desktop --desktop-scope setup-tutorial --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/setup-tutorial
-```
-
-设置场景保留 360 秒预算和方向安装回归，教程场景保留 240 秒并核验实际 Host Ready，各自按原规则清理。设置失败不阻止教程，教程失败也不抹去设置结果。单个 scope 通过不代替另一个，质量专用运行跳过时必须记为未运行。
-
-设置验收通过 AT-SPI 观察实际 GTK 控件。它检查 790 × 560 请求尺寸下的首屏、四页导航、主题选择、跨页快捷键与排除草稿、即时保存、失败回滚和关闭确认。应用排除还需观察保存后源捕获和浮层被拒绝，再明确保存移除。截图、HTML 原型和持久化单测不能代替这些交互；浅深 GTK 主题、滚动裁剪和目标屏幕缩放另行检查。
+模型 Ready、原生字段支持、实际预览、写回和物理输入法分别取证。设置场景还需检查跨页草稿、即时保存、失败回滚和关闭确认，不能用截图或持久化单测代替交互。真实 Waybar 点击、面板重启、缩放和物理输入法没有在该嵌套会话中得到证明。
 
 ### 原生输入回归的判据
 
