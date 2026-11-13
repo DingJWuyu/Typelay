@@ -34,11 +34,11 @@ flowchart TB
 | 修改并验证共享逻辑。 | 本页[共享检查](#运行共享检查)与[测试策略](testing.md)。 |
 | 构建、诊断或检查平台交付物。 | [Windows 开发](../platforms/windows/development.md)或 [Linux 开发](../platforms/linux/development.md)。 |
 | 根据已有质量假设采集模型输出。 | [翻译质量采集与评审](translation-quality.md)。普通开发检查不启动这类采集。 |
-| 恢复尚未完成的工作。 | [当前开发状态](development-state.md)。 |
+| 接手已有 ticket。 | 对应的 GitHub issue；操作见[任务跟踪约定](../agents/issue-tracker.md)。 |
 
 ## 确认范围与完成条件
 
-从 `trunk` 开始开发。分支、推送和发布权限遵循根 [AGENTS.md](../../AGENTS.md)。恢复现有任务时，先读[当前开发状态与安排](development-state.md)，确认负责人、依赖和仍未完成的验证。
+工作以 `hitl` 为集成分支。分支、推送和发布权限遵循根 [AGENTS.md](../../AGENTS.md)，堆叠 PR 的操作见[任务跟踪约定](../agents/issue-tracker.md)。接手 ticket 时，读取对应 GitHub issue 的要求、依赖和讨论。
 
 改代码前，读 [GLOSSARY.md](../../GLOSSARY.md) 和[工程架构](architecture.md)，确定模块归属。布局、项目依赖或打包变更还需遵循 [ADR-0001](../adr/0001-workspace-and-delivery.md)。产品行为以[产品验收基线](../product/README.md)为准，工程整理不授权改变规格。
 
@@ -114,4 +114,4 @@ CI artifact 按提交 SHA 命名。上传范围由工作流明确列出，避免
 
 按[结果表述](testing.md#结果表述)报告已执行、失败和未执行的范围。测试、lint 或打包失败尚未解决时，任务仍未完成；保留必要原件和进度。达到完成条件后删除临时文件，不另建任务归档。
 
-长程任务的下一动作与验证边界更新到[当前开发状态与安排](development-state.md)。推送前核对已有授权、目标分支和远端进度，遵守根 AGENTS.md 的分支规则。
+推送前核对已有授权、目标分支和远端进度，遵守根 AGENTS.md 的分支规则。

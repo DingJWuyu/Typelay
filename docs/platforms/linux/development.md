@@ -264,4 +264,4 @@ Linux 文档有两种交付位置。`architecture.md` 和本页留在仓库，�
 python tests/linux/test_build_bundle.py PackageReadmeTests -v
 ```
 
-文档生成与链接检查不证明对应包已经构建或产品验收通过。构建记录、测试结果和当前未测范围仍由[当前开发状态](../../engineering/development-state.md)记录。
+文档生成与链接检查不证明对应包已经构建或产品验收通过。已有构建记录、测试结果和未测范围见[当前开发状态](../../engineering/development-state.md)。

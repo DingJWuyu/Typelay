@@ -1,47 +1,30 @@
 # TypeLay agent instructions
 
-TypeLay 是跨平台本地输入框翻译浮层。先保持既有产品行为，再改进实现。
+TypeLay 是跨平台本地输入框翻译浮层。
 
-## 不变量
+## 硬性不变量
 
-- `DingJWuyu/Typelay` 的长期集成分支是 `trunk`，Windows/Linux 共用同一主线。临时平台或功能分支从 `trunk` 切出并合回；`main` 保留为稳定分支，只按明确发布授权更新。分支删除、重命名与稳定分支更新均须明确授权。推送前检查远端，禁止覆盖他人提交或 force push，不自动创建 PR。
-- 用中文沟通；使用普通连字符，不使用长破折号。提交信息不添加 Agent 署名或 co-author。
-- 不手动修改 CHANGELOG.md、自动生成文件或上游 skills。生成物通过相应工具更新；产品规格与已确认原型的行为变更须有用户明确授权。
-- 优先质量、简单性、健壮性和长期维护；不为单次操作建立平台、策略层或多余抽象。
-- 选择改进、增加测试或设发布门前，先按[实际价值判断](docs/engineering/testing.md#实际价值判断)说明场景、证据、频率、影响与成本收益；只追有产品价值的问题，不为找 bug 而找 bug。
-- 缺陷修复先沿实际用户路径复现；在能观察同一故障的边界保留回归。不要用源码字符串、实现反射或假模型测试证明产品可用。
-- 未知输入法状态、焦点身份和写入安全不得猜测或降级绕过。普通输入框是产品目标，代表性应用不是支持名单。
-- 发现真实 UI 问题、lint 失败、测试失败或不稳定性时处理根因；不以重试或放宽断言掩盖问题。
-- 立即产生大量子代理的 harness / dynamic workflows / ultra code 需要事先说明取舍并取得用户明确批准。
-- 达到完成条件后删除临时文件；未完成时在被忽略的工作目录保留必要证据和进度。报告失败、未测和环境限制，不冒充通过。
+- 产品需求仅来自[冻结规格](docs/product/TypeLay_产品规格_v1.0.md)、已接受的 [ADR-0002](docs/adr/0002-on-demand-and-direct-write.md)、[浮层原型](docs/design/TypeLay_UIUX_Prototype.html)和[托盘与设置原型](docs/design/TypeLay_Tray_Settings_Prototype.html)。改变产品行为须取得负责人的明确授权。
+- 未知输入法状态、焦点身份和写入安全不得猜测或降级绕过。
+- 使用中文沟通，不使用长破折号。提交信息不添加 agent 署名或 agent co-author。
 
-## 持续推进与中断恢复
+## 分支与交付
 
-- 对已授权的长程开发持续负责，禁止因单个工具、远端发布或测试等待而停掉全部工作。可用路径受限时，继续本地实现、回归、独立审查、文档维护或有明确目标的研究；按当前编排推进不依赖该限制的任务，不等用户反复提醒。
-- 持续推进不等于绕过权限。实际拒绝不得换路径规避；确需新增权限、扩大实验资源或用户选择时，记录具体动作与所缺条件，同时继续独立工作。未得到证据的完成、后台运行和试验结果不得虚报。
-- 源码和不可再生的测试、模型原始证据保存在持久工作区；临时目录只放可再生缓存。证据仍进入被忽略的 artifacts，不提交模型或原始日志。恢复时先核真实文件与提交对象；缺失原件明确标记，不用派生摘要冒充恢复。
-- 各责任线的当前状态、负责人、依赖、下一动作、验证证据与停止条件维护在唯一的[当前开发状态与安排](docs/engineering/development-state.md)。恢复执行先读该页，交接、实质进展和新失败及时更新；不要靠上下文记忆或另建历史快照维持编排。
-- 一批变更完成不是整个项目的暂停点。等待 CI、模型采集或授权期间，按现役产品缺口与依赖重新检查可并行工作，不只检查当前补丁是否做完；将可独立开发、验证或消除关键不确定性的下一动作及负责人更新到当前状态页。没有有用的独立动作时保持对待定结果的跟踪，并写清具体依赖与恢复条件，不把等待当作任务完成。不得为显得忙碌而扩展范围、堆冗余测试或无意义重跑；反复失败必须换取新证据。
+工作从 `hitl` 切分支，经 PR 合回 `hitl`，由负责人审查并合并。一个 spec 的多张 ticket 使用堆叠 PR：栈底基于 `hitl`，后续层从上一层切出，PR 指向紧邻的下层分支；操作见 [issue-tracker.md](docs/agents/issue-tracker.md#stacked-prs)。
 
-## 仓库内容保留规则
+禁止 force push。`main`、`trunk` 仅按负责人的明确授权更新。
 
-**仓库只保留对当前开发、运行、测试或可明确说明的后续维护具有实际价值的内容。Git 历史承担历史追溯，纯历史参考价值不是保留理由。**
+## 仓库内容保留
 
-- 规则覆盖整个仓库的代码、测试、文档、配置和资源，没有归档目录例外。判断依据是实际使用者、依赖关系或仍有效的工程约束，不是文件名、创建时间或“也许以后有用”。
-- 失去实际用途的内容直接删除。混有有效知识的文件，先把必要约束、方法或实现整合到对应的现役文档或代码，再删除原文件；不得搬到另一个目录继续留档。
-- 不创建或保留纯历史用途的 `history/`、`archive/`、旧版本副本、交接快照、阶段报告、清理记录、一次性日志和来源摘要清单。需要追溯时查 Git，不另建索引或总结。
-- 现役文档描述当前事实和可执行方法。ADR 只保留仍约束当前架构的决策与取舍，不作为工程活动日志；有效回归、第三方法律文本和当前依赖锁有实际用途，不能因年代较早或由工具生成而误删。
-- 删除内容时同步清理入口、引用、链接、配置和失效注释。保留既有职责边界，不新增替代性归档层，也不为了目录齐全保留空目录。
-- 构建输出与本次测试证据进入被忽略的 `artifacts/` 或 CI artifact，不提交到源码树。任务结束不另写清理报告，提交差异即为变更记录。上游技能建议的归档、阶段报告或总结同样受本规则约束。
+Git 历史负责追溯，不建归档目录、阶段报告或历史快照。
 
 ## 按任务读取
 
-- 恢复长程开发、编排并行任务、收到 CI 结果或发布前，读取并更新 [当前开发状态与安排](docs/engineering/development-state.md)；只维护现役任务，历史使用 Git。
-
-- 改代码前读 `GLOSSARY.md` 与 `docs/engineering/architecture.md`；涉及布局、依赖或打包决策时读 `docs/adr/0001-workspace-and-delivery.md`。
-- 执行开发命令、增加依赖或调整 CI 时读 `docs/engineering/development.md`，Windows 和共享检查以根目录 `dev.ps1` 为准；Linux 构建和部署以 `docs/platforms/linux/development.md`、`eng/linux/build.py` 与 `eng/linux/cooperative/` 为准。
-- 改测试、修复缺陷或验收时读 `tests/AGENTS.md` 与 `docs/engineering/testing.md`。
-- 改产品行为时从 README 的“产品验收入口”读取冻结规格与已接受 ADR-0002；改 UI 时再打开 `docs/design/` 的两个已确认 HTML 原型。平台使用、架构与验收分别见 `docs/platforms/windows/`、`docs/platforms/linux/`。两端实现缺口不降低原要求，不以工程整理为由改规格。
+- 改代码前，读取 [GLOSSARY.md](GLOSSARY.md) 和[系统架构](docs/engineering/architecture.md)。涉及布局、依赖或打包决策时，再读取 [ADR-0001](docs/adr/0001-workspace-and-delivery.md)。
+- 执行开发命令、增加依赖或调整 CI 时，读取[开发流程](docs/engineering/development.md)。Windows 和共享检查使用根目录 `dev.ps1`；Linux 构建和部署见 [Linux 开发](docs/platforms/linux/development.md)、`eng/linux/build.py` 和 `eng/linux/cooperative/`。
+- 改测试、修复缺陷或验收时，读取 [tests/AGENTS.md](tests/AGENTS.md) 和[测试策略](docs/engineering/testing.md)。
+- 改产品行为时，从 README 的[产品验收入口](README.md#产品验收入口)读取基线；改 UI 时，同时读取[设计入口](docs/design/README.md)和两份已确认原型。
+- 查阅平台使用、架构或验收方法时，读取 [Windows](docs/platforms/windows/README.md) 或 [Linux](docs/platforms/linux/README.md) 平台入口。
 
 ## Agent skills
 
