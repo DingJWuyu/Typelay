@@ -4,7 +4,7 @@ Windows 尚未关闭的用户问题集中在直接替换、Chrome 新标签页�
 
 ## 阅读范围
 
-任务负责人和下一安排统一见[当前开发状态](../../engineering/development-state.md)。产品要求遵循[共同应用支持与完整体验](../../product/application-support.md)，代表性应用不构成支持名单。
+产品要求遵循[共同应用支持与完整体验](../../product/application-support.md)，代表性应用不构成支持名单。
 
 本页只保留仍待关闭的问题。问题解决后，将仍有效的使用方法或平台约束并入对应现役文档，历史调查由 Git 与原始测试证据追溯。
 

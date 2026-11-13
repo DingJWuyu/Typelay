@@ -2,7 +2,7 @@
 
 本指南用于已有明确假设的模型质量任务。先冻结问题、输入和执行身份，再选择既有采集入口，最后独立评审原始响应。日常软件回归按[测试协议](testing.md)执行，不需要模型采集。
 
-当前只有固定 Index profile 的中英双向术语获得功能增量准入。风格、另述和组合质量门仍关闭。发布行见 [`TranslationReleasePolicy.Current`](../../src/shared/TypeLay.Runtime/Models/TranslationService.cs)，当前任务见[模型能力边界](development-state.md#模型能力边界)。本页提供操作方法，不授权启动下一轮试验或改变质量门。
+当前只有固定 Index profile 的中英双向术语获得功能增量准入。风格、另述和组合质量门仍关闭。发布行见 [`TranslationReleasePolicy.Current`](../../src/shared/TypeLay.Runtime/Models/TranslationService.cs)，现有能力说明见[模型能力边界](development-state.md#模型能力边界)。本页提供操作方法，不授权启动下一轮试验或改变质量门。
 
 ## 冻结问题、输入与运行条件
 

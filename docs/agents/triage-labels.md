@@ -1,13 +1,13 @@
 # Triage labels
 
-执行用户请求的 triage 流程时使用以下角色映射，不根据状态名猜测别名。
+工程 skills 使用以下五个角色。本仓库的标签名称与角色名称一致。
 
-| Role | Label |
-| --- | --- |
-| needs-triage | needs-triage |
-| needs-info | needs-info |
-| ready-for-agent | ready-for-agent |
-| ready-for-human | ready-for-human |
-| wontfix | wontfix |
+| Role | Label | 含义 |
+| --- | --- | --- |
+| needs-triage | needs-triage | 负责人需要评估该任务。 |
+| needs-info | needs-info | 任务等待补充信息。 |
+| ready-for-agent | ready-for-agent | 任务已明确，可由 agent 实现。 |
+| ready-for-human | ready-for-human | 任务需要人来实施。 |
+| wontfix | wontfix | 任务不安排实施。 |
 
-配置描述词汇，不等于远端已经创建。真正执行 triage 时先查询现有 labels，仅在该次任务授权范围内补齐缺少项。
+技能提到某个 triage 角色时，使用本表中的对应标签。

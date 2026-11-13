@@ -14,10 +14,10 @@ pacman -Q git base-devel cmake ninja pkgconf dotnet-sdk gtk3 gtk4 json-glib pyth
 
 按目标系统的包管理流程安装缺失项。GTK、PyGObject 和 Ayatana 使用系统包；工程工具与模型 worker 各有私有 Python 环境，不安装进系统 Python。合作输入另有固定版本和补丁要求，准备前读[Fcitx 预检](fcitx.md#预检)与[Qt 构建说明](qt.md#构建与验证)。
 
-从长期集成分支 `trunk` 开始，创建工程工具环境：
+从集成分支 `hitl` 开始，创建工程工具环境：
 
 ```sh
-git clone --branch trunk git@github.com:DingJWuyu/Typelay.git
+git clone --branch hitl git@github.com:DingJWuyu/Typelay.git
 cd Typelay
 uv venv artifacts/build-tools
 uv pip install --python artifacts/build-tools/bin/python -r eng/requirements.txt
@@ -264,4 +264,4 @@ Linux 文档有两种交付位置。`architecture.md` 和本页留在仓库，�
 python tests/linux/test_build_bundle.py PackageReadmeTests -v
 ```
 
-文档生成与链接检查不证明对应包已经构建或产品验收通过。构建记录、测试结果和当前未测范围仍由[当前开发状态](../../engineering/development-state.md)记录。
+文档生成与链接检查不证明对应包已经构建或产品验收通过。已有构建记录、测试结果和未测范围见[当前开发状态](../../engineering/development-state.md)。
