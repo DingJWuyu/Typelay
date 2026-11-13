@@ -52,8 +52,15 @@ def cleanup():
                 return {"stoppedPids": sorted(stopped), "remainingPids": []}
             for pid in owned:
                 try:
-                    os.kill(pid, sig)
-                    stopped.add(pid)
+                    descriptor = os.pidfd_open(pid)
+                    try:
+                        # Pin identity before rechecking ancestry; PID reuse must not
+                        # turn cleanup into a signal to an unrelated desktop process.
+                        if pid in descendants():
+                            signal.pidfd_send_signal(descriptor, sig)
+                            stopped.add(pid)
+                    finally:
+                        os.close(descriptor)
                 except ProcessLookupError:
                     pass
             time.sleep(0.1)
