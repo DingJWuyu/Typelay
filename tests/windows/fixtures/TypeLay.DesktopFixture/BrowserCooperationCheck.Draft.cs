@@ -12,6 +12,10 @@ internal static partial class BrowserCooperationCheck
         {
             get; set;
         }
+        public Preview? EditedPreview
+        {
+            get; set;
+        }
         public PageState? Before
         {
             get; set;
@@ -89,6 +93,10 @@ internal static partial class BrowserCooperationCheck
                 Require(edited.A == Source && edited.B == Other && edited.Replacements == 0 && edited.Submits == 0,
                     "editing-mutated-source");
                 await CaptureAsync(Path.Combine(directory, "draft-edited.png"), ct);
+                scene.Stage = "verify-visible-manual-draft-before-return";
+                observation.EditedPreview = await PreviewAsync(ct);
+                Require(observation.EditedPreview.Visible && observation.EditedPreview.Text == observation.Draft,
+                    "manual-draft-disappeared-before-return");
                 scene.Stage = "first-default-tab-return-only";
                 SendChord([0x09], cleanupErrors);
                 scene.ShortcutPresses = 1;

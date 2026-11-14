@@ -532,6 +532,10 @@ internal sealed partial class BrowserInput : IDisposable
     internal BrowserObservation? Latest(TargetId target) => _current?.Target == target ? _current : _observations.Latest(target);
     private void Lost(BrowserPeer peer)
     {
+        Trace("DEBUG-t13-browser-peer-closed", new
+        {
+            reason = peer.DiagnosticCloseReason
+        });
         if (_commandOwner?.Peer == peer)
             RequestCommandOwnerRefresh();
         _active.Remove(peer.ConnectionId);

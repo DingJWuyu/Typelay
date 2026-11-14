@@ -193,6 +193,8 @@ internal sealed class BrowserPeer : IDisposable
     private readonly BrowserPeerInbox _incoming;
     private long _sequence;
     private int _disposed;
+    private string? _diagnosticCloseReason;
+    internal string DiagnosticCloseReason => _incoming.DiagnosticCloseReason ?? _diagnosticCloseReason ?? "closed";
     public Guid ConnectionId { get; } = Guid.NewGuid();
     public string Origin
     {
@@ -243,6 +245,7 @@ internal sealed class BrowserPeer : IDisposable
                 data
             }))
                 return true;
+            Interlocked.CompareExchange(ref _diagnosticCloseReason, "request-output-unavailable", null);
             Dispose();
             return false;
         }, timeoutMs);
@@ -256,7 +259,10 @@ internal sealed class BrowserPeer : IDisposable
             op,
             data
         }))
+        {
+            Interlocked.CompareExchange(ref _diagnosticCloseReason, "send-output-capacity", null);
             Dispose();
+        }
     }
     internal async Task RunAsync(CancellationToken owner)
     {
@@ -265,6 +271,11 @@ internal sealed class BrowserPeer : IDisposable
         try
         {
             await _incoming.ReadAsync(_pipe, () => Alive, linked.Token).ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            Interlocked.CompareExchange(ref _diagnosticCloseReason, "read-" + DiagnosticError(error), null);
+            throw;
         }
         finally
         {
@@ -287,9 +298,29 @@ internal sealed class BrowserPeer : IDisposable
     }
     private async Task WriteAsync(CancellationToken ct)
     {
-        await foreach (var message in _outgoing.Reader.ReadAllAsync(ct).ConfigureAwait(false))
-            await Wire.WriteAsync(_pipe, JsonSerializer.SerializeToElement(message, BrowserServer.Json), ct).ConfigureAwait(false);
+        try
+        {
+            await foreach (var message in _outgoing.Reader.ReadAllAsync(ct).ConfigureAwait(false))
+                await Wire.WriteAsync(_pipe, JsonSerializer.SerializeToElement(message, BrowserServer.Json), ct).ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            Interlocked.CompareExchange(ref _diagnosticCloseReason, "write-" + DiagnosticError(error), null);
+            throw;
+        }
     }
+    // DEBUG-t13: fixed transport categories only, never exception messages or page data.
+    internal static string DiagnosticError(Exception error) => error switch
+    {
+        EndOfStreamException => "eof",
+        InvalidDataException => "invalid-data",
+        IOException => "io",
+        JsonException => "json",
+        ObjectDisposedException => "disposed",
+        InvalidOperationException => "invalid-operation",
+        OperationCanceledException => "cancelled",
+        _ => "other"
+    };
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -327,6 +358,10 @@ internal sealed class BrowserPeerInbox
     private int _outstandingEvents;
     private bool _closed, _scheduled, _draining;
     private Exception? _failure;
+    internal string? DiagnosticCloseReason
+    {
+        get; private set;
+    }
     public Task Completion => _completion.Task;
 
     private sealed class PendingReply(bool terminal, long deadline)
@@ -439,7 +474,10 @@ internal sealed class BrowserPeerInbox
                 // accepted receipt. Seal immediately; storage is at most 65,
                 // including any event currently executing on the UI thread.
                 if (++_outstandingEvents > EventCapacity)
+                {
+                    DiagnosticCloseReason ??= "input-event-capacity";
                     close = CloseCore();
+                }
                 if (!_scheduled)
                     schedule = _scheduled = true;
             }
@@ -465,6 +503,7 @@ internal sealed class BrowserPeerInbox
             {
                 if (_completion.Task.IsCompleted)
                     return; // ShutdownStarted already drained on the UI owner.
+                DiagnosticCloseReason ??= "dispatch-" + BrowserPeer.DiagnosticError(error);
                 close = CloseCore();
                 // This dispatch cannot deliver queued callbacks. Do not leave
                 // callers hanging, or turn an already read direct receipt into
@@ -529,6 +568,7 @@ internal sealed class BrowserPeerInbox
                 lock (_gate)
                 {
                     _failure ??= error;
+                    DiagnosticCloseReason ??= "callback-" + BrowserPeer.DiagnosticError(error);
                     close = CloseCore();
                 }
                 if (close)
