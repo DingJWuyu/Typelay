@@ -6,6 +6,7 @@
 
 - `settings/direction` 保存源语言与目标语言，并影响实际翻译。
 - `settings/appearance` 调整浮层主题、字体和字号，重开后保留。
+- `settings/apps-readability` 在英文 Apps 页读取连接名称、状态和按钮，并检查浅色侧栏文字。
 - `settings/draft` 修改快捷键或排除列表，保存、取消和跨页保留草稿。
 - `settings/pause` 暂停与恢复，并核对设置文件和真实浮层变化。
 
@@ -22,6 +23,8 @@ Preconditions: 私有会话内已有真实桌面进程。语言功能需要正�
 
 - **语言保存。** 执行 Launch 的 `gtk-preview.py` 旅程。它通过实际设置 UI 选择英文到中文，读取 `settings-saved.json`，并用该方向生成真实 GTK 译文。重开 `"$TYPELAY_VERIFY_PACKAGE/typelay" --settings` 后，还应核对所选语言的显示。
 - **设置导航。** 使用公开辅助函数 `select_settings_page(pid, "外观")` 或 `select_settings_page(pid, "快捷键")`。`pid` 必须来自本次 niri 窗口记录。`visible_named(pid, "外观：浅色")` 定位显示控件，`Atspi.Action.do_action(node.get_action_iface(), 0)` 触发真实动作。读取 `$XDG_CONFIG_HOME/typelay/settings.json` 核对保存，再重开核对显示。
+- **Apps 可读性。** 在新私有会话运行 `/usr/bin/python3 "$PWD/.agents/skills/verify-typelay/scripts/settings-apps.py"`。该旅程只用初始配置跳过教程，再从真实设置的外观页选择浅色和 English，经侧栏进入 Apps。它分别将窗口设为 900、740 像素，在浅色和深色下保存 `apps-<主题>-<宽度>.png`。`text-geometry.json` 检查名称和状态中的英文单词未被拆行。旅程还打开桌面连接按钮对应的组件选择或安装确认窗口，保存 `apps-connection-action.png`，取消后保存 `apps-after-action.png`，核对设置未变。逐张打开 PNG，检查名称、状态、按钮、图标和未选中的侧栏文字。此入口不需要模型，不证明组件安装或真实应用接入。
+- **系统字体与侧栏回归。** 在私有会话中设置 `TYPELAY_UI_FONT_ROOT="$TYPELAY_VERIFY_PACKAGE/fonts"`，执行 `/usr/bin/python3 tests/linux/test_ui_fonts.py -v` 和 `/usr/bin/python3 tests/linux/test_settings_feedback.py -v`。字体检查读取真实 GTK 系统字体，并在同一测试进程验证 Adwaita Sans 和另一系统字体偏好；侧栏检查真实标签在浅色、深色下的墨色。无显示的字体检查只证明通用字体回退，不能代替这条桌面语义检查。
 - **暂停 CLI。** 执行 `"$TYPELAY_VERIFY_PACKAGE/typelay" --toggle-pause`。先观察原浮层消失和持久化的 Enabled 变化，再执行相同命令恢复。重新输入合成文本确认翻译恢复，不能只看开关外观。
 - **快捷面板。** 执行 `"$TYPELAY_VERIFY_PACKAGE/typelay" --quick-panel`，保存实际面板截图和控件树，通过面板中的暂停动作验证同一行为，单独记录该入口。
 - **既有设置回归。** 在私有旅程脚本内执行 `DISPLAY="$TYPELAY_VERIFY_XDISPLAY" /usr/bin/python3 tests/linux/native_e2e.py --inside --desktop --desktop-scope settings-ui --package "$TYPELAY_VERIFY_PACKAGE" --native "$PWD/artifacts/linux/native" --output "$TYPELAY_VERIFY_OUTPUT/settings-ui"`，先创建其输出目录。该测试使用真实 GTK 设置和受控宿主，报告其范围，不替代真实模型、普通字段排除或写回。

@@ -40,7 +40,7 @@ window.typelay-surface.typelay-settings.settings-dark > headerbar.titlebar.defau
 .typelay-surface .settings-sidebar { background: #eeece5; border: 1px solid rgba(20,20,19,.085); border-radius: 12px; padding: 14px 10px 10px; margin: 8px; }
 .typelay-surface .settings-brand { font-size: 13px; font-weight: 600; }
 .typelay-surface .settings-navigation, .typelay-surface .settings-navigation list { background: transparent; border: 0; }
-.typelay-surface .settings-navigation row { border: 0; border-radius: 8px; padding: 0 8px; min-height: 32px; margin: 0 0 1px; }
+.typelay-surface .settings-navigation row { border: 0; border-radius: 8px; padding: 0 8px; min-height: 32px; margin: 0 0 1px; color: #141413; }
 .typelay-surface .settings-navigation row:selected { background: rgba(20,20,19,.08); color: #141413; font-weight: 600; }
 .typelay-surface .settings-navigation row:hover { background: rgba(20,20,19,.045); }
 .typelay-surface .settings-search-results, .typelay-surface .settings-search-results viewport { background: transparent; }
