@@ -253,7 +253,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 {
                     ObserveSourceReturnForeground(window);
                     ObserveEditorForeground(window);
-                    ObserveLocalDraftForeground(window, eventTime);
+                    ObserveLocalDraftForeground(window);
                 }
                 handled = true;
             }

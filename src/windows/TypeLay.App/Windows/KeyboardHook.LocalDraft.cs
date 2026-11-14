@@ -35,26 +35,6 @@ internal sealed partial class KeyboardHook
     private LocalDraftTap? _localDraftTap;
     private int _localDraftTraceSamples;
 
-    // [DEBUG-t12-draft] Temporary first-revocation probe. Queue only; the
-    // existing trace consumer owns serialization outside the hook callback.
-    private void TraceLocalDraftRevocation(string reason, LocalDraftAnchor anchor, uint? eventTime = null, nint? eventWindow = null)
-    {
-        if (!OwnedEditorTraceEnabled)
-            return;
-        nint current = Native.GetForegroundWindow();
-        QueueOwnedEditorTrace(new
-        {
-            operation = "DEBUG-t12-draft",
-            reason,
-            atMs = WindowsInterruptClock.NowMs,
-            eventTime,
-            eventTarget = eventWindow is null ? null : eventWindow == anchor.Overlay ? "overlay" : eventWindow == anchor.Source ? "source" : eventWindow == 0 ? "none" : "other",
-            currentTarget = current == anchor.Overlay ? "overlay" : current == anchor.Source ? "source" : current == 0 ? "none" : "other",
-            inputSequence = EditorInputSequence,
-            pressSequence = Volatile.Read(ref _localDraftPress)?.Sequence
-        });
-    }
-
     private void TraceLocalDraftKey(string stage, LocalDraftPress? press, long now)
     {
         if (!OwnedEditorTraceEnabled)
@@ -106,10 +86,7 @@ internal sealed partial class KeyboardHook
             Interlocked.Exchange(ref anchor.EditorFocus, null);
         if (!focused && Volatile.Read(ref _localDraftPress) is not null
             && Interlocked.Exchange(ref anchor.Invalid, 1) == 0)
-        {
-            TraceLocalDraftRevocation("editor-focus", anchor);
             anchor.Cancel(anchor.Opening);
-        }
     }
 
     // The real WPF down binds this particular native down, even if LL already
@@ -233,10 +210,7 @@ internal sealed partial class KeyboardHook
             // A second down (even at the same native timestamp), repeat,
             // wrong/extra up or intervening input cannot replace this candidate.
             if (Interlocked.Exchange(ref anchor.Invalid, 1) == 0)
-            {
-                TraceLocalDraftRevocation("key-series", anchor, data.Time);
                 anchor.Cancel(anchor.Opening);
-            }
             return;
         }
         var keys = Volatile.Read(ref _sessionKeys);
@@ -257,10 +231,7 @@ internal sealed partial class KeyboardHook
             // editor already retired. Never reset an existing candidate here.
             if (keep && !ReferenceEquals(Volatile.Read(ref anchor.EditorFocus), editorFocus)
                 && Interlocked.Exchange(ref anchor.Invalid, 1) == 0)
-            {
-                TraceLocalDraftRevocation("concurrent-editor-focus", anchor, data.Time);
                 anchor.Cancel(anchor.Opening);
-            }
         }
         if (data.Key == 9)
             TraceLocalDraftKey(down ? "tab-down" : "unmatched-tab-up", Volatile.Read(ref _localDraftPress), now);
@@ -377,16 +348,13 @@ internal sealed partial class KeyboardHook
                 null, prompt.Id, new(data.Point.X, data.Point.Y, injected)));
     }
 
-    private void ObserveLocalDraftForeground(nint foreground, uint eventTime)
+    private void ObserveLocalDraftForeground(nint foreground)
     {
         if (Volatile.Read(ref _localDraftAnchor) is not { } anchor)
             return;
         bool retained = foreground == anchor.Overlay || Volatile.Read(ref anchor.Returning) != 0
             && (foreground == anchor.Source || foreground == 0);
         if (!retained && Interlocked.Exchange(ref anchor.Invalid, 1) == 0)
-        {
-            TraceLocalDraftRevocation("foreground-event", anchor, eventTime, foreground);
             anchor.Cancel(anchor.Opening);
-        }
     }
 }

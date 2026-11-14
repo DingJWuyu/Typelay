@@ -125,8 +125,7 @@ public sealed partial class SetupRenderingTests
             double width = track.ActualWidth;
             double? beforeRetarget = null;
             long? firstReport = null, secondReport = null, releasedAt = null;
-            long? firstReportTick = null, releasedTick = null;
-            object? oldReleaseBoundary = null;
+            long? firstReportTick = null;
             long? firstFrameAt = null, lastFrameAt = null;
             long? first75At = null, last75At = null, first875At = null;
             int frameCount = 0;
@@ -169,25 +168,14 @@ public sealed partial class SetupRenderingTests
                         first875 ??= frame;
                         first875At ??= lastFrameAt;
                     }
-                    if (!released && bar.Value == 75 && firstReport is { } reported && firstReportTick is { } reportTick
+                    // Match the real download report's throttle clock. A finer
+                    // Stopwatch interval does not establish TickCount64's 80 ms.
+                    if (!released && bar.Value == 75 && firstReportTick is { } reported
+                        && Environment.TickCount64 - reported >= 80
                         && fill.Width > width * .5 && fill.Width < width * .75)
                     {
-                        long tick = Environment.TickCount64;
-                        double elapsed = Stopwatch.GetElapsedTime(reported).TotalMilliseconds;
-                        if (elapsed >= 80)
-                            oldReleaseBoundary ??= new
-                            {
-                                elapsed,
-                                tickElapsed = tick - reportTick
-                            };
-                        // The real downloader throttles using TickCount64. Its
-                        // clock must cross 80 ms before this one final segment;
-                        // Stopwatch can cross first on Windows' coarse tick.
-                        if (tick - reportTick < 80)
-                            return;
                         released = true;
                         releasedAt = Stopwatch.GetTimestamp();
-                        releasedTick = tick;
                         transfers[0].Body.FinalSegment.TrySetResult();
                     }
                 });
@@ -201,15 +189,6 @@ public sealed partial class SetupRenderingTests
                 Assert.Single(transfers);
                 Assert.False(scene.Model.Ready);
                 RenderTray(window, "onboarding-progress-retarget-settled-zh-CN-dark.png");
-                TestContext.Current.TestOutputHelper?.WriteLine("[DEBUG-t12-progress] " + System.Text.Json.JsonSerializer.Serialize(new
-                {
-                    oldReleaseBoundary,
-                    firstReportTick,
-                    releasedTick,
-                    firstReport,
-                    releasedAt,
-                    secondReport
-                }));
             }
             catch (Exception error) when (error is not OutOfMemoryException)
             {
@@ -221,9 +200,6 @@ public sealed partial class SetupRenderingTests
                         failure = error.GetType().Name,
                         timestampFrequency = Stopwatch.Frequency,
                         firstReport,
-                        firstReportTick,
-                        releasedTick,
-                        oldReleaseBoundary,
                         secondReport,
                         released,
                         releasedAt,

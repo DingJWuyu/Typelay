@@ -393,22 +393,17 @@ public sealed partial class SettingsRenderingTests
         Assert.True(Native.GetCursorPos(out var previous));
         try
         {
-            ApplicationDialogAction(window, () => RightClickApplicationRow(window, row), "ApplicationRemovalConfirmation", interact);
+            ApplicationDialogAction(window, () => RightClickApplicationRow(window, row), "ApplicationRemovalConfirmation", interact, pointerTarget: row);
         }
         finally { SetCursorPos(previous.X, previous.Y); }
     }
 
-    private static void RightClickApplicationRow(Window window, FrameworkElement row, bool observeNativeInput = false)
+    private static void RightClickApplicationRow(Window window, FrameworkElement row)
     {
         row.BringIntoView();
         window.UpdateLayout();
-        var point = row.PointToScreen(new Point(60, row.ActualHeight / 2));
-        var pixel = new NativePoint { X = (int)point.X, Y = (int)point.Y };
-        nint owner = new WindowInteropHelper(window).Handle;
-        nint hit = WindowFromPoint(pixel);
-        if (observeNativeInput || hit != owner)
-            ObserveApplicationInputHit(window, row, pixel, owner, hit);
-        Assert.Equal(owner, hit);
+        var pixel = ApplicationRowPoint(row);
+        Assert.Equal(new WindowInteropHelper(window).Handle, WindowFromPoint(pixel));
         Assert.Equal(0, Native.GetAsyncKeyState(2) & 0x8000);
         Assert.True(SetCursorPos(pixel.X, pixel.Y));
         // Actual native right-click routes directly to the confirmation; there is
@@ -420,109 +415,21 @@ public sealed partial class SettingsRenderingTests
         Assert.Equal(2u, sent);
     }
 
-    // [DEBUG-t12-hit] Inspect the original hit without replacing it. A screen
-    // capture after a mismatch must never turn the failed guard into input.
-    private static void ObserveApplicationInputHit(Window window, FrameworkElement row, NativePoint pixel, nint owner, nint hit)
+    private static NativePoint ApplicationRowPoint(FrameworkElement row)
     {
-        try
-        {
-            object Describe(nint handle)
-            {
-                var name = new System.Text.StringBuilder(256);
-                SheetScreen.GetClassNameW(handle, name, name.Capacity);
-                SheetScreen.GetWindowThreadProcessId(handle, out uint process);
-                bool bounds = SheetScreen.GetWindowRect(handle, out var rect);
-                return new
-                {
-                    handle = handle.ToInt64(),
-                    @class = name.ToString(),
-                    process,
-                    visible = SheetScreen.IsWindowVisible(handle),
-                    enabled = SheetScreen.IsWindowEnabled(handle),
-                    style = Native.GetWindowLongPtrW(handle, -16).ToInt64(),
-                    extendedStyle = Native.GetWindowLongPtrW(handle, -20).ToInt64(),
-                    bounds,
-                    rect.Left,
-                    rect.Top,
-                    rect.Right,
-                    rect.Bottom
-                };
-            }
-            var logical = window.PointFromScreen(new Point(pixel.X, pixel.Y));
-            var wpfHit = window.InputHitTest(logical) as DependencyObject;
-            object before = new
-            {
-                atMs = Environment.TickCount64,
-                pixel.X,
-                pixel.Y,
-                owner = Describe(owner),
-                hit = Describe(hit),
-                foreground = Native.GetForegroundWindow().ToInt64(),
-                window.IsLoaded,
-                window.IsVisible,
-                window.IsActive,
-                window.Opacity,
-                rowLoaded = row.IsLoaded,
-                rowVisible = row.IsVisible,
-                rowOpacity = row.Opacity,
-                rowWidth = row.ActualWidth,
-                rowHeight = row.ActualHeight,
-                wpfHitType = wpfHit?.GetType().Name,
-                wpfHitIsRow = ReferenceEquals(wpfHit, row) || wpfHit is Visual visual && row.IsAncestorOf(visual),
-                rowTransform = row.TransformToAncestor(window).Transform(new Point()),
-                contentOpacity = (window.Content as UIElement)?.Opacity
-            };
-            object? after = null;
-            if (hit != owner && SheetScreen.GetWindowRect(owner, out var rect))
-            {
-                int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
-                if (width is > 0 and <= 4096 && height is > 0 and <= 4096 && (long)width * height <= 4_000_000)
-                {
-                    int flush = SheetScreen.DwmFlush();
-                    after = new
-                    {
-                        atMs = Environment.TickCount64,
-                        flush,
-                        hit = Describe(WindowFromPoint(pixel))
-                    };
-                    using var bitmap = new System.Drawing.Bitmap(width, height);
-                    using var graphics = System.Drawing.Graphics.FromImage(bitmap);
-                    nint screen = SheetScreen.GetDC(0), output = graphics.GetHdc();
-                    try
-                    {
-                        Assert.NotEqual(0, screen);
-                        Assert.True(SheetScreen.BitBlt(output, 0, 0, width, height, screen, rect.Left, rect.Top, 0x00CC0020 | 0x40000000));
-                    }
-                    finally
-                    {
-                        graphics.ReleaseHdc(output);
-                        if (screen != 0)
-                            SheetScreen.ReleaseDC(0, screen);
-                    }
-                    bitmap.Save(Path.Combine(ApplicationSheetRenderingFolder(), "application-reopen-hit-failed.png"), System.Drawing.Imaging.ImageFormat.Png);
-                }
-            }
-            TestContext.Current.TestOutputHelper?.WriteLine("[DEBUG-t12-hit] " + JsonSerializer.Serialize(new
-            {
-                before,
-                after
-            }));
-        }
-        catch (Exception error) when (error is not OutOfMemoryException)
-        {
-            TestContext.Current.TestOutputHelper?.WriteLine("[DEBUG-t12-hit] observation failed: " + error.GetType().Name);
-        }
+        var point = row.PointToScreen(new Point(60, row.ActualHeight / 2));
+        return new NativePoint { X = (int)point.X, Y = (int)point.Y };
     }
 
-    private static void ApplicationDialogAction(SettingsWindow owner, Action open, string id, Action<Window> interact) =>
+    private static void ApplicationDialogAction(SettingsWindow owner, Action open, string id, Action<Window> interact, FrameworkElement? pointerTarget = null) =>
         ApplicationDialogActionAsync(owner, open, id, (dialog, ct) =>
         {
             ct.ThrowIfCancellationRequested();
             interact(dialog);
             return Task.CompletedTask;
-        });
+        }, pointerTarget: pointerTarget);
 
-    private static void ApplicationDialogActionAsync(SettingsWindow owner, Action open, string id, Func<Window, CancellationToken, Task> interact, bool awaitEntrance = true, bool observeNativeInput = false, FrameworkElement? inputTarget = null)
+    private static void ApplicationDialogActionAsync(SettingsWindow owner, Action open, string id, Func<Window, CancellationToken, Task> interact, bool awaitEntrance = true, bool observeNativeInput = false, FrameworkElement? pointerTarget = null)
     {
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         limit.CancelAfter(TimeSpan.FromSeconds(3));
@@ -533,14 +440,6 @@ public sealed partial class SettingsRenderingTests
         object? firstReadiness = null;
         int readinessObservations = 0, lastCandidateCount = 0;
         int rightDowns = 0, rightUps = 0;
-        int ownerFrames = 0, ownerContentRendered = 0;
-        TimeSpan? ownerLastFrame = null;
-        EventHandler rendered = (_, args) =>
-        {
-            ownerFrames++;
-            ownerLastFrame = ((RenderingEventArgs)args).RenderingTime;
-        };
-        EventHandler contentRendered = (_, _) => ownerContentRendered++;
         object? lastRightDown = null, lastRightUp = null;
         bool failureRecorded = false;
         HwndSource? nativeSource = null;
@@ -636,9 +535,6 @@ public sealed partial class SettingsRenderingTests
                     At = Environment.TickCount64,
                     RightDowns = rightDowns,
                     RightUps = rightUps,
-                    OwnerFrames = ownerFrames,
-                    OwnerLastFrame = ownerLastFrame,
-                    OwnerContentRendered = ownerContentRendered,
                     LastRightDown = lastRightDown,
                     LastRightUp = lastRightUp,
                     Observations = readinessObservations,
@@ -741,8 +637,6 @@ public sealed partial class SettingsRenderingTests
         {
             if (observeNativeInput)
             {
-                CompositionTarget.Rendering += rendered;
-                owner.ContentRendered += contentRendered;
                 try
                 {
                     nativeOwner = new WindowInteropHelper(owner).Handle;
@@ -794,13 +688,20 @@ public sealed partial class SettingsRenderingTests
                 }
             }
             timeout.Start();
-            // A page rebuilt after Hide can have arranged geometry before its
-            // Loaded event. Keep readiness and the single input inside the same
-            // three-second dialog budget, without renewing the input attempt.
-            while (inputTarget is { IsLoaded: false })
+            if (pointerTarget is not null)
             {
-                ct.ThrowIfCancellationRequested();
-                owner.Dispatcher.Invoke(() => { }, DispatcherPriority.Background);
+                pointerTarget.BringIntoView();
+                owner.UpdateLayout();
+                nint handle = new WindowInteropHelper(owner).Handle;
+                // Loaded and arranged geometry do not prove native hit testing
+                // after Hide/Show. Wait for this exact row's screen point in the
+                // original dialog budget, then send the original click once.
+                while (!pointerTarget.IsLoaded || !pointerTarget.IsVisible
+                    || WindowFromPoint(ApplicationRowPoint(pointerTarget)) != handle)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    owner.Dispatcher.Invoke(() => { }, DispatcherPriority.Background);
+                }
             }
             ct.ThrowIfCancellationRequested();
             open();
@@ -826,8 +727,6 @@ public sealed partial class SettingsRenderingTests
             }
             finally
             {
-                CompositionTarget.Rendering -= rendered;
-                owner.ContentRendered -= contentRendered;
                 if (nativeSource is not null && nativeHook is not null)
                 {
                     try

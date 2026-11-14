@@ -5,7 +5,6 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
-using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Threading;
 using TypeLay.Core;
@@ -68,75 +67,10 @@ public sealed partial class NativeSourceGlossaryTests
                 .OfType<ContextMenu>().Single(item => item.IsOpen);
             var command = menu.Items.OfType<MenuItem>().Single(item => AutomationProperties.GetAutomationId(item) == "MoreGlossary");
             Assert.True(command.IsEnabled);
-            var opening = new List<object>(8);
-            object Snapshot(string stage) => new
-            {
-                stage,
-                atMs = WindowsInterruptClock.NowMs,
-                menuOpen = menu.IsOpen,
-                overlay.IsVisible,
-                overlay.IsActive,
-                overlay.IsKeyboardFocusWithin,
-                sourceFocused = N.Focused() == (native.Root, native.A),
-                foreground = Native.GetForegroundWindow() == overlay.Handle ? "overlay"
-                    : Native.GetForegroundWindow() == native.Root ? "source" : "other",
-                monitor.WindowEpoch,
-                monitor.SourceUserEpoch,
-                formVisible = Children(overlay).OfType<TextBox>().Any(item => AutomationProperties.GetName(item) == "术语源词"),
-                formFocused = view.GlossaryEntryFocus is not null
-            };
-            var begin = overlay.BeginGlossaryRequested;
-            var close = overlay.CloseGlossaryRequested;
-            overlay.BeginGlossaryRequested = token =>
-            {
-                var entry = begin?.Invoke(token);
-                if (opening.Count < 8)
-                    opening.Add(new
-                    {
-                        stage = "begin-result",
-                        atMs = WindowsInterruptClock.NowMs,
-                        admitted = entry is not null,
-                        sourceOrigin = entry?.SourceOrigin
-                    });
-                return entry;
-            };
-            overlay.CloseGlossaryRequested = id =>
-            {
-                if (opening.Count < 8)
-                    opening.Add(Snapshot("close-request"));
-                close?.Invoke(id);
-            };
-            KeyboardFocusChangedEventHandler focus = (_, _) =>
-            {
-                if (opening.Count < 8)
-                    opening.Add(Snapshot("focus-changed"));
-            };
-            overlay.AddHandler(Keyboard.GotKeyboardFocusEvent, focus, true);
-            overlay.AddHandler(Keyboard.LostKeyboardFocusEvent, focus, true);
-            object before = Snapshot("before-command");
-            object? after = null;
-            try
-            {
-                await InvokeGlossaryCommandAsync(command, native.Token);
-                after = Snapshot("after-command");
-                Assert.False(menu.IsOpen);
-                while (view.GlossaryEntryFocus is null)
-                    await Task.Delay(10, native.Token);
-            }
-            finally
-            {
-                overlay.RemoveHandler(Keyboard.GotKeyboardFocusEvent, focus);
-                overlay.RemoveHandler(Keyboard.LostKeyboardFocusEvent, focus);
-                overlay.BeginGlossaryRequested = begin;
-                overlay.CloseGlossaryRequested = close;
-                TestContext.Current.TestOutputHelper?.WriteLine("[DEBUG-t12-glossary] " + JsonSerializer.Serialize(new
-                {
-                    before,
-                    after,
-                    final = Snapshot("final"),
-                    opening
-                }));
-            }
+            await InvokeGlossaryCommandAsync(command, native.Token);
+            Assert.False(menu.IsOpen);
+            while (view.GlossaryEntryFocus is null)
+                await Task.Delay(10, native.Token);
             Children(overlay).OfType<TextBox>().Single(item => AutomationProperties.GetName(item) == "术语源词").Text = "你好";
             Children(overlay).OfType<TextBox>().Single(item => AutomationProperties.GetName(item) == "术语译词").Text = "こんにちは";
             var save = Button(overlay, "保存术语");
