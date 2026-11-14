@@ -1,5 +1,6 @@
 """Exercise the Actions selector against real, isolated Git histories."""
 
+import json
 import os
 import subprocess
 import sys
@@ -89,6 +90,7 @@ class ScopeTests(unittest.TestCase):
             env={
                 **self.env,
                 "GITHUB_OUTPUT": str(output),
+                "GITHUB_STEP_SUMMARY": str(self.root / "summary.md"),
                 "EVENT_NAME": "push",
                 "BRANCH": branch,
                 "BEFORE": before,
@@ -274,6 +276,78 @@ class ScopeTests(unittest.TestCase):
                         CHECK_MODE=mode,
                         COLLECT_TRANSLATION_QUALITY=collect,
                     )
+
+    def test_pr_evidence_distinguishes_head_base_and_tested_merge(self):
+        head = self.commit({"docs/change.md": "PR change"})
+        self.reset(self.base)
+        base = self.commit({"docs/base.md": "base change"})
+        tested = self.commit({"docs/change.md": "PR change"}, parents=[base, head])
+        evidence = self.root / "evidence.json"
+        event = self.root / "event.json"
+        for base_ref in ("hitl", "work/spec3-t01"):
+            with self.subTest(base_ref=base_ref):
+                event.write_text(
+                    json.dumps(
+                        {
+                            "number": 42,
+                            "pull_request": {
+                                "head": {"ref": "work/spec3-t02", "sha": head},
+                                "base": {"ref": base_ref, "sha": base},
+                            },
+                        }
+                    )
+                )
+                self.assertEqual(
+                    FULL,
+                    self.select(
+                        self.base,
+                        EVENT_NAME="pull_request",
+                        GITHUB_EVENT_PATH=str(event),
+                        GITHUB_SHA=tested,
+                        GITHUB_REF="refs/pull/42/merge",
+                        CI_EVIDENCE_PATH=str(evidence),
+                    ),
+                )
+                report = json.loads(evidence.read_text())
+                self.assertEqual(report["tested_commit"], tested)
+                self.assertEqual(report["head"], {"ref": "work/spec3-t02", "sha": head})
+                self.assertEqual(report["base"], {"ref": base_ref, "sha": base})
+                self.assertEqual(report["pull_request"], 42)
+
+    def test_hitl_push_keeps_full_checks_and_records_actual_commits(self):
+        after = self.commit({"docs/change.md": "docs only"})
+        event = self.root / "event.json"
+        event.write_text(json.dumps({"before": self.base, "after": after}))
+        evidence = self.root / "evidence.json"
+        self.assertEqual(
+            FULL,
+            self.select(
+                self.base,
+                branch="hitl",
+                GITHUB_EVENT_PATH=str(event),
+                GITHUB_REF="refs/heads/hitl",
+                GITHUB_SHA=after,
+                CI_EVIDENCE_PATH=str(evidence),
+            ),
+        )
+        report = json.loads(evidence.read_text())
+        self.assertEqual(report["tested_commit"], after)
+        self.assertEqual(report["head"], {"ref": "refs/heads/hitl", "sha": after})
+        self.assertEqual(report["base"], {"ref": "refs/heads/hitl", "sha": self.base})
+
+    def test_evidence_rejects_a_checkout_different_from_the_event(self):
+        event = self.root / "event.json"
+        event.write_text("{}")
+        evidence = self.root / "evidence.json"
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.select(
+                self.base,
+                GITHUB_EVENT_PATH=str(event),
+                GITHUB_REF="refs/heads/hitl",
+                GITHUB_SHA="f" * 40,
+                CI_EVIDENCE_PATH=str(evidence),
+            )
+        self.assertFalse(evidence.exists())
 
     def test_manual_comparison_boolean_is_exact_and_requires_collection(self):
         for mode in ("full", "quality-only"):

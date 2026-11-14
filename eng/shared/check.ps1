@@ -13,13 +13,30 @@ $env:PYTHONPATH = Join-Path $root 'src/shared/TypeLay.Worker'
 $artifacts = Join-Path $root 'artifacts'
 
 function Test-Shared {
+    $failures = [Collections.Generic.List[string]]::new()
     foreach ($project in @('tests/shared/TypeLay.Core.Tests', 'tests/shared/TypeLay.Runtime.Tests',
             'tests/shared/TypeLay.Protocol.Tests', 'tests/windows/TypeLay.Windows.Contracts.Tests')) {
-        Invoke-Checked dotnet @('test', $project, '-c', $Configuration, '-p:RestoreLockedMode=true',
-            '--logger', 'trx', '--results-directory', (Join-Path $artifacts 'shared-test-results'))
+        try {
+            Invoke-Checked dotnet @('test', $project, '-c', $Configuration, '-p:RestoreLockedMode=true',
+                '--logger', 'trx', '--results-directory', (Join-Path $artifacts 'shared-test-results'))
+            Write-Host "${project}: passed"
+        } catch {
+            $failures.Add($project)
+            Write-Host "${project}: failed. $_"
+        }
     }
-    Invoke-Checked python @('-m', 'unittest', 'discover', '-s', 'tests/shared', '-v')
-    Invoke-Checked python @('-m', 'unittest', 'discover', '-s', 'tests/shared/worker', '-v')
+    foreach ($suite in @('tests/shared', 'tests/shared/worker')) {
+        try {
+            Invoke-Checked python @('-m', 'unittest', 'discover', '-s', $suite, '-v')
+            Write-Host "${suite}: passed"
+        } catch {
+            $failures.Add($suite)
+            Write-Host "${suite}: failed. $_"
+        }
+    }
+    if ($failures.Count -gt 0) {
+        throw "Shared checks failed: $($failures -join ', ')."
+    }
 }
 Push-Location $root
 try { Test-Shared }

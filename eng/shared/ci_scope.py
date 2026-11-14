@@ -1,8 +1,10 @@
 """Select platform checks from verified push evidence, failing closed to full jobs."""
 
+import json
 import os
 import re
 import subprocess
+from pathlib import Path
 
 LINUX_PATHS = ("src/linux/", "tests/linux/", "eng/linux/", "packaging/linux/")
 WINDOWS_PATHS = ("src/windows/", "tests/windows/", "eng/windows/", "packaging/windows/")
@@ -119,6 +121,38 @@ def select():
 
 
 def main():
+    if destination := os.environ.get("CI_EVIDENCE_PATH"):
+        event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+        pull_request = event.get("pull_request")
+        ref = os.environ["GITHUB_REF"]
+        tested = git("rev-parse", "HEAD").decode().strip()
+        if tested != os.environ["GITHUB_SHA"]:
+            raise ValueError("The checkout does not match the event's tested commit")
+        evidence = {
+            "event": os.environ["EVENT_NAME"],
+            "ref": ref,
+            "run_id": os.environ.get("GITHUB_RUN_ID"),
+            "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+            "tested_commit": tested,
+            "pull_request": event.get("number") if pull_request else None,
+            "head": (
+                {key: pull_request["head"][key] for key in ("ref", "sha")}
+                if pull_request
+                else {"ref": ref, "sha": event.get("after", tested)}
+            ),
+            "base": (
+                {key: pull_request["base"][key] for key in ("ref", "sha")}
+                if pull_request
+                else {"ref": ref, "sha": event.get("before")}
+            ),
+        }
+        path = Path(destination)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
+        if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
+            with open(summary, "a", encoding="utf-8") as stream:
+                stream.write("## Checked source\n\n```json\n")
+                stream.write(json.dumps(evidence, indent=2) + "\n```\n")
     selection = select()
     collect, comparison, diagnostic = quality_collection()
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
