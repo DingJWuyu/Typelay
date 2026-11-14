@@ -115,6 +115,10 @@ jobs:
         id: input-feedback
         if: ${{ !cancelled() && steps.python.outcome == 'success' }}
         run: python tests/linux/input_feedback.py -v
+      - name: Verify offline verification isolation and cache ownership
+        id: verification-resources
+        if: ${{ !cancelled() && steps.python.outcome == 'success' }}
+        run: python tests/linux/test_verification_resources.py -v
       - name: Verify shared behavior without Windows
         id: shared-behavior
         if: ${{ !cancelled() && steps.python.outcome == 'success' }}
@@ -124,7 +128,7 @@ jobs:
         if: always()
         env:
           CI_STEPS: ${{ toJSON(steps) }}
-          CI_REQUIRED_STEPS: python-lint python-format input-feedback shared-behavior
+          CI_REQUIRED_STEPS: python-lint python-format input-feedback verification-resources shared-behavior
         run: python eng/shared/ci_report.py
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
@@ -484,8 +488,7 @@ jobs:
     container:
       image: archlinux:base-devel
       # Electron's font service exceeds Docker's default 64 MiB /dev/shm.
-      # The offline verification test must create its own user/network namespaces.
-      options: --shm-size=1g --security-opt seccomp=unconfined
+      options: --shm-size=1g
     timeout-minutes: ${{ needs.scope.outputs.collect_quality == 'true' && 70 || 45 }}
     env:
       FIXED_MODEL_DIAGNOSTICS: ${{ needs.scope.outputs.fixed_model_diagnostics }}
@@ -742,10 +745,6 @@ jobs:
         id: test-private-session-paths
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         run: python tests/linux/test_private_session_paths.py -v
-      - name: Verify offline verification isolation and cache ownership
-        id: verification-resources
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_verification_resources.py -v
       - name: Verify Linux test_translation_quality_capture
         id: test-translation-quality-capture
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
@@ -1351,7 +1350,6 @@ jobs:
             test-argos-repetition-process
             test-index-package-diagnostics
             test-private-session-paths
-            verification-resources
             test-translation-quality-capture
             test-vscode-notifications
             build
