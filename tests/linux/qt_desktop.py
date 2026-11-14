@@ -1340,13 +1340,31 @@ def run_qt(
                     assert not new_write_outcomes(return_offset)
                 finally:
                     subprocess.run(["xdotool", "keyup", "F7", "Control_L"], check=True, timeout=2)
-                manual_acceptance_timing = {"readinessStartedAtMs": now_ms()}
+                manual_acceptance_timing = {
+                    "heldReleaseReturnedAtMs": now_ms(),
+                    "readinessStartedAtMs": now_ms(),
+                }
+
+                def pending_frame(value):
+                    # Reuse the original file reads. This does not capture,
+                    # wait for a newer frame or change acceptance readiness.
+                    return {
+                        name: value.get(name)
+                        for name in (
+                            "observedAtMs",
+                            "tlqtPendingDbus",
+                            "tlqtPendingForward",
+                            "tlqtOutputDepth",
+                        )
+                    }
 
                 def returned_manual_ready():
                     report = ready_to_accept("EditedTranslationPending")
-                    if report and settled(state()):
+                    actual = state() if report else None
+                    if report and settled(actual):
                         manual_acceptance_timing.update(
                             readyObservedAtMs=now_ms(),
+                            readyNativeFrame=pending_frame(actual),
                             acceptanceRemainingMs=report.get("acceptanceRemainingMs"),
                             acceptanceHintRemainingMs=report.get("acceptanceHintRemainingMs"),
                             nativePublications=report.get("input", {}).get(
@@ -1362,7 +1380,11 @@ def run_qt(
                 )
                 for name in ("firstF7Press", "firstF7Release"):
                     assert state()["keys"].get(name, 0) == before_return["keys"].get(name, 0)
-                before_write = state()["first"]["changes"]
+                before_write_state = state()
+                before_write = before_write_state["first"]["changes"]
+                manual_acceptance_timing["beforeWriteNativeFrame"] = pending_frame(
+                    before_write_state
+                )
                 manual_acceptance_timing["checkpointStartedAtMs"] = now_ms()
                 write_offset = trace_checkpoint()
                 manual_acceptance_timing["checkpointFinishedAtMs"] = now_ms()
