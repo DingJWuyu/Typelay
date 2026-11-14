@@ -150,7 +150,13 @@ public sealed partial class NativeSourceControllerTests
             HwndSourceHook initialHook = (nint hwnd, int message, nint wParam, nint lParam, ref bool handled) =>
             {
                 if (message is 0x0100 or 0x0101 && wParam == 9 && initialNativeKeys.Count < 4)
-                    initialNativeKeys.Add(new { At = Environment.TickCount64, Message = message, Flags = lParam.ToInt64(), Handled = handled });
+                    initialNativeKeys.Add(new
+                    {
+                        At = Environment.TickCount64,
+                        Message = message,
+                        Flags = lParam.ToInt64(),
+                        Handled = handled
+                    });
                 return 0;
             };
             KeyEventHandler initialKey = (_, e) =>

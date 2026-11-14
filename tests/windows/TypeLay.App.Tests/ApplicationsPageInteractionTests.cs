@@ -412,7 +412,21 @@ public sealed partial class SettingsRenderingTests
         // no internal removal callback or intermediate menu invocation here.
         Input[] input = [new() { MouseFlags = 8 }, new() { MouseFlags = 16 }];
         uint sent = SendInput(2, input, Marshal.SizeOf<Input>());
-        observeInput?.Invoke(new { Before = before, Sent = sent, After = ReadApplicationNativeInput(window) });
+        observeInput?.Invoke(new
+        {
+            TargetPoint = new
+            {
+                pixel.X,
+                pixel.Y
+            },
+            RowLoaded = row.IsLoaded,
+            RowVisible = row.IsVisible,
+            RowEnabled = row.IsEnabled,
+            RowHitTestVisible = row.IsHitTestVisible,
+            Before = before,
+            Sent = sent,
+            After = ReadApplicationNativeInput(window)
+        });
         if (sent == 1)
             SendInput(1, [input[1]], Marshal.SizeOf<Input>());
         Assert.Equal(2u, sent);
@@ -428,6 +442,23 @@ public sealed partial class SettingsRenderingTests
         };
         bool read = thread != 0 && TypeLay.Platform.Windows.NativeMethods.GetGUIThreadInfo(thread, ref gui);
         bool cursor = Native.GetCursorPos(out var point);
+        bool clientRead = SheetScreen.GetClientRect(handle, out var client);
+        var clientOrigin = new NativePoint();
+        bool clientOriginRead = SheetScreen.ClientToScreen(handle, ref clientOrigin);
+        bool boundsRead = SheetScreen.GetWindowRect(handle, out var bounds);
+        Point logical = cursor ? owner.PointFromScreen(new Point(point.X, point.Y)) : default;
+        DependencyObject? hit = cursor ? owner.InputHitTest(logical) as DependencyObject : null;
+        string? hitId = null;
+        for (int depth = 0; depth < 16 && hit is not null; depth++)
+        {
+            string id = AutomationProperties.GetAutomationId(hit);
+            if (!string.IsNullOrEmpty(id))
+            {
+                hitId = id;
+                break;
+            }
+            hit = hit is Visual ? VisualTreeHelper.GetParent(hit) : null;
+        }
         return new
         {
             At = Environment.TickCount64,
@@ -446,6 +477,30 @@ public sealed partial class SettingsRenderingTests
             point.X,
             point.Y,
             CursorWindow = cursor ? WindowFromPoint(new NativePoint { X = point.X, Y = point.Y }).ToInt64() : 0,
+            Bounds = boundsRead ? new
+            {
+                bounds.Left,
+                bounds.Top,
+                bounds.Right,
+                bounds.Bottom
+            } : null,
+            Client = clientRead && clientOriginRead ? new
+            {
+                OriginX = clientOrigin.X,
+                OriginY = clientOrigin.Y,
+                client.Left,
+                client.Top,
+                client.Right,
+                client.Bottom,
+                ContainsCursor = cursor && point.X >= clientOrigin.X && point.Y >= clientOrigin.Y
+                    && point.X < clientOrigin.X + client.Right && point.Y < clientOrigin.Y + client.Bottom
+            } : null,
+            WpfPoint = new
+            {
+                logical.X,
+                logical.Y
+            },
+            WpfHitId = hitId,
             RightHeld = (Native.GetAsyncKeyState(2) & 0x8000) != 0
         };
     }
@@ -481,6 +536,32 @@ public sealed partial class SettingsRenderingTests
         string nativeObserverState = "not-requested";
         int nativeMessages = 0, nativeDowns = 0, nativeUps = 0, nativeDoubleClicks = 0;
         var nativeSamples = observeNativeInput ? new List<object>(4) : null;
+        var queuedMouseSamples = observeNativeInput ? new List<object>(16) : null;
+        int queuedMouseMessages = 0, queuedMoves = 0;
+        ThreadMessageEventHandler queuedMouse = (ref MSG message, ref bool handled) =>
+        {
+            if (message.message is not (0x0200 or 0x0204 or 0x0205 or 0x0206 or 0x00A0 or 0x00A4 or 0x00A5 or 0x00A6 or 0x007B))
+                return;
+            queuedMouseMessages++;
+            if (message.message is 0x0200 or 0x00A0 && ++queuedMoves > 2)
+                return;
+            if (queuedMouseSamples!.Count >= 16)
+                return;
+            queuedMouseSamples.Add(new
+            {
+                At = Environment.TickCount64,
+                PostedAt = message.time,
+                OwnerMatches = message.hwnd == nativeOwner,
+                Target = message.hwnd.ToInt64(),
+                Message = message.message,
+                WParam = message.wParam.ToInt64(),
+                X = (short)((long)message.lParam & 0xffff),
+                Y = (short)((long)message.lParam >> 16 & 0xffff),
+                ScreenX = message.pt_x,
+                ScreenY = message.pt_y,
+                HandledAtEntry = handled
+            });
+        };
         static string? InputTarget(object source)
         {
             for (int depth = 0; depth < 8 && source is DependencyObject element; depth++)
@@ -671,6 +752,9 @@ public sealed partial class SettingsRenderingTests
         {
             if (observeNativeInput)
             {
+                // The WPF dispatcher raises this before translating/dispatching
+                // each queued MSG. Observe only this STA; never change handled.
+                ComponentDispatcher.ThreadFilterMessage += queuedMouse;
                 try
                 {
                     nativeOwner = new WindowInteropHelper(owner).Handle;
@@ -746,6 +830,8 @@ public sealed partial class SettingsRenderingTests
             }
             finally
             {
+                if (observeNativeInput)
+                    ComponentDispatcher.ThreadFilterMessage -= queuedMouse;
                 if (nativeSource is not null && nativeHook is not null)
                 {
                     try
@@ -758,6 +844,24 @@ public sealed partial class SettingsRenderingTests
         }
         if (action.Status == DispatcherOperationStatus.Pending)
             action.Abort();
+        if (observeNativeInput)
+        {
+            try
+            {
+                TestContext.Current.TestOutputHelper?.WriteLine("[DEBUG-t12-input] Application mouse queue: " + JsonSerializer.Serialize(new
+                {
+                    Id = id,
+                    Observed = observed,
+                    NativeMessages = nativeMessages,
+                    RightDowns = rightDowns,
+                    RightUps = rightUps,
+                    QueuedMouseMessages = queuedMouseMessages,
+                    Samples = queuedMouseSamples,
+                    Omitted = Math.Max(0, queuedMouseMessages - (queuedMouseSamples?.Count ?? 0))
+                }));
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { }
+        }
         if (failure is not null)
         {
             try

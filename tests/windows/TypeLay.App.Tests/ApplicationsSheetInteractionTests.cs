@@ -316,7 +316,7 @@ public sealed partial class SettingsRenderingTests
             ct.ThrowIfCancellationRequested();
             Assert.False(dialog.IsVisible);
             Assert.Null(old.Visual);
-        }, awaitEntrance: false);
+        }, awaitEntrance: false, observeNativeInput: retirement == "hide");
         Assert.Equal(before, File.ReadAllText(scene.Path));
         scene.Window.ShowPage("apps");
         ApplicationRemovalDialogAsync(scene.Window, "writer", async (dialog, ct) =>
