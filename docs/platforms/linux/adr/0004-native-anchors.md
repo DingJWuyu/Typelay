@@ -37,6 +37,6 @@ Qt6 使用源窗口拥有的子控件浮层。浏览器使用顶层文档内的�
 
 通用未合作 GTK 路径保持 Unknown。合作组件的当前控件范围与版本条件见 [Fcitx](../fcitx.md)、[Qt](../qt.md)和[浏览器说明](../browser.md)，不能外推到任意自绘字段或 Electron。
 
-验收需要分别观察编辑回源、父窗口移动与缩放、滚动裁剪和实际视觉。编译、协议回归或其他提交的桌面证据都不能替代当前目标环境；当前已测与未测范围见[开发状态](../../../engineering/development-state.md)。
+验收需要分别观察编辑回源、父窗口移动与缩放、滚动裁剪和实际视觉。编译、协议回归或其他提交的桌面证据都不能替代当前目标环境；当前已测与未测范围见[GitHub Issues](https://github.com/DingJWuyu/Typelay/issues)。
 
 维护坐标契约时，核对 [`gtk3/gtk-target.c`](../../../../src/linux/native/gtk3/gtk-target.c)、[`gtk4/gtk-target.c`](../../../../src/linux/native/gtk4/gtk-target.c)、[`qt-module.cpp`](../../../../src/linux/native/qt6/qt-module.cpp)和 [`content.js`](../../../../src/shared/browser/content.js)的几何输出，以及 [`geometry.py`](../../../../src/linux/desktop/geometry.py)的转换。此方案不依赖未合并的 niri 补丁或不公开的 GTK ABI。

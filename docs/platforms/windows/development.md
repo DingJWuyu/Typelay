@@ -104,7 +104,7 @@ Hy 新装仍为十二方向。中英补充必须由用户明确确认；修复�
 
 source wire v7 明确拒绝旧版本，普通 Transaction v2 保持。Prepared 安装后，App 先发布本地撤权和 capture fence，再 Arm，原 100ms 不续期。完成回执只由精确 poll/retire 结果产生，正文终态与资源 Quiet 分开；源端已写时 Runtime 只结算，不再 WriteAsync。错误 ACK 或超时不能充当未写证明。
 
-[既有 CI504](https://github.com/DingJWuyu/Typelay/actions/runs/40083637614)在真实 Notepad 的隔离构造验证了接受、撤回、Undo、零二次写与清理。那条非有序机械路线不具备当前严格来源证明。结果在 `artifacts/source-message-acceptance/<唯一目录>/result.json`；两行保留原 30 秒操作与 60 秒单项上限，外部执行器限制为 2 分钟。
+隔离构造中的非有序机械路线不提供当前严格来源证明。Notepad 各分支的原失败与未验范围由 [Issue #18](https://github.com/DingJWuyu/Typelay/issues/18)维护。结果在 `artifacts/source-message-acceptance/<唯一目录>/result.json`；两行保留原 30 秒操作与 60 秒单项上限，外部执行器限制为 2 分钟。
 
 ### 隔离严格来源拒绝入口
 
@@ -132,7 +132,7 @@ Ctrl 观察使用显式 `ObserveControlPrefix`，观察本身不能执行计划�
 
 [Ordered 回归](../../../tests/windows/TypeLay.App.Tests/NativeSourceControllerTests.Ordered.cs)用真实 factory、Router、Dispatcher、WPF、认证 Broker 与源 DLL。固定译文仅替代模型。Tab/F7 普通注入负例须先观察同一有效许可的真实接受提示，再发送唯一键对，核 `RejectedBeforeMutation/Unsupported`、`OriginUntrusted`、invoked=0、原键派发、零正文写和同 owner Quiet。
 
-本轮重构只完成相关构建与受控验证，当前 Windows GUI 未运行。旧 CI524 原套件的注入负例通过，但搬迁 Tab 曾在发键前到期；后来的包装职责调整没有把该旧失败改判为通过。当前推荐物理包仅采用下节明确的搬迁检查，完整证据状态以[开发状态](../../engineering/development-state.md)为准。
+搬迁 Tab 在发键前到期的旧失败与物理未验范围由 [Issue #21](https://github.com/DingJWuyu/Typelay/issues/21)维护。当前物理包的加载检查只证明下节列出的边界，不能代替真实按键或正式产品链。
 
 ### 正向接受的剩余条件
 

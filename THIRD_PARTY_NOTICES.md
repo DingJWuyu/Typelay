@@ -26,7 +26,31 @@ Linux 自包含发行包包含 .NET 运行时和共享 Python worker 源码；�
 
 ## 仅用于开发
 
-Agent 配置模板来自 Matt Pocock skills，原始许可证保留在 `.agents/MATT-LICENSE`。工程 skills 由机器上的全局安装提供，仓库不内置副本。这些开发配置不进入 Windows 运行包。
+Agent 配置模板来自 [Matt Pocock skills](https://github.com/mattpocock/skills)。本节保留覆盖现役模板的完整 MIT 许可原文。工程 skills 由机器上的全局安装提供，仓库不内置副本。这些开发配置不进入 Windows 运行包。
+
+```text
+MIT License
+
+Copyright (c) 2026 Matt Pocock
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
 
 .NET SDK、xUnit、Ruff、Clang/LLD 用于构建、测试或格式检查，不作为产品工具链再分发。独立的物理 Tab 验证包包含已有测试输出及其 xUnit/测试依赖，遵循 [该包专属声明](packaging/windows/physical-tab/THIRD_PARTY_NOTICES.md)，不混入产品运行包。原生启动器只导入 Windows 系统 API。产品规格和已确认原型位于 `docs/product/` 与 `docs/design/`，不作为发布包的一部分。
 

@@ -191,7 +191,7 @@ GTK3 TextView 的 transport proof 续接只允许单调 transport epoch 变化�
 - 平铺、滚动、窗口动画、多屏缩放、边缘、主题与托盘没有遮挡、抢焦点或明显视觉错误。
 - 模型准备、失败恢复、重复启动、登录启动、退出和卸载保留正确数据，没有遗留自有进程或按键占用。
 
-缺少环境时报告未运行。构建、协议、进程生命周期、真实模型、桌面交互与视觉结果分别记录，不相互替代。当前原件和未验范围见[当前开发状态](../../engineering/development-state.md)。
+缺少环境时报告未运行。构建、协议、进程生命周期、真实模型、桌面交互与视觉结果分别记录，不相互替代。当前原件和未验范围见[GitHub Issues](https://github.com/DingJWuyu/Typelay/issues)。
 
 ## 模型包事务
 
@@ -253,4 +253,4 @@ Linux 文档有两种交付位置。`architecture.md` 和本页留在仓库，�
 python tests/linux/test_build_bundle.py PackageReadmeTests -v
 ```
 
-文档生成与链接检查不证明对应包已经构建或产品验收通过。已有构建记录、测试结果和未测范围见[当前开发状态](../../engineering/development-state.md)。
+文档生成与链接检查不证明对应包已经构建或产品验收通过。已有构建记录、测试结果和未测范围见[GitHub Issues](https://github.com/DingJWuyu/Typelay/issues)。

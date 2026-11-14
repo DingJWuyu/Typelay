@@ -9,9 +9,9 @@ TypeLay 是 Windows/Linux 的本地输入翻译工具。自动模式跟随当前
 
 Windows 原有实验性 Tab 写回默认关闭，通用 UIA 读/校验/写入不能组成原子事务。直接替换与 Linux 合作路径各自依赖经过校验的目标能力；构建或自动化通过不等于物理输入法、Tab、所有应用或完整产品验收通过。
 
-Windows/Linux 同步推进共同产品功能与体验，各平台问题和验收分别记录；一端通过不代表另一端通过。[Windows 待办](docs/platforms/windows/open-issues.md)保留当前问题和复现证据。
+Windows/Linux 同步推进共同产品功能与体验，各平台问题和验收分别记录；一端通过不代表另一端通过。[GitHub Issues](https://github.com/DingJWuyu/Typelay/issues)保存未解决问题与验证证据。Windows 故障复现见[输入诊断](docs/platforms/windows/input-diagnostics.md)。
 
-源码中新用户明确准备时默认选择 **Index Translate 2B Q4_K_M**，已有 Argos/Hy 安装与选择不自动改变。启动不下载模型；模型更换不改变输入、焦点、预览、写回与 Undo 的安全条件。当前切换的实际验证及未通过项见[开发状态](docs/engineering/development-state.md)，不把新源码默认等同于既有推荐包已升级。
+源码中新用户明确准备时默认选择 **Index Translate 2B Q4_K_M**，已有 Argos/Hy 安装与选择不自动改变。启动不下载模型；模型更换不改变输入、焦点、预览、写回与 Undo 的安全条件。模型能力与质量门见[模型运行架构](docs/engineering/model-runtime.md#模型能力边界)。源码默认不改变既有发行包身份。
 
 ## 产品验收入口
 

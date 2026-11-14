@@ -2,6 +2,14 @@
 
 本文解释模型从安装代进入可用连接的过程，以及请求、切换和退出的边界。它面向修改 worker、模型适配器或安装流程的工程师。模型准备命令见平台开发文档，质量证据的采集方法见[翻译质量采集与评审](translation-quality.md)。
 
+## 模型能力边界
+
+新用户明确准备模型时默认选择 Index；已有 Argos/Hy 安装与选择保留。普通翻译、安装完成、worker 握手、采集完成和语言质量通过分别判断。
+
+[TranslationReleasePolicy.Current](../../src/shared/TypeLay.Runtime/Models/TranslationService.cs)只允许已登记固定 Index profile 的中英双向术语。风格、另述和组合质量门保持关闭，界面保存偏好不代表当前模型可以执行。Auto 的方向覆盖和精确模型身份仍按下文核对。
+
+质量问题与待验方向由[模型质量 Issue #23](https://github.com/DingJWuyu/Typelay/issues/23)承接。文档迁移和安装成功不改变发布策略，质量采集方法见[翻译质量采集与评审](translation-quality.md)。
+
 ## 组件与数据流
 
 平台安装器准备本地文件，`ModelClient` 负责连接及请求，Python worker 负责推理。`SessionController` 调用 `TranslationReleasePolicy` 核对产品采用资格。模型加载成功与产品允许使用高级功能分别判断。
@@ -32,7 +40,7 @@ flowchart TB
 
 `ModelLoadPlan` 冻结精确路径、库存 schema 和 active 包。worker 先校验库存元数据，再完整核对 active 包的文件与哈希，随后加载模型。inactive 包不加载。实际 hello 与加载计划逐项吻合后，ModelClient 才发布 Ready 和本次连接身份。目录存在、下载完成或安装标记存在都不是加载证明。
 
-高级操作同时需要技术能力和产品采用资格。当前[采用表](../../src/shared/TypeLay.Runtime/Models/TranslationService.cs)只开放固定 Index profile 的中英双向术语。风格、另述和风格术语组合仍未开放。Auto 必须覆盖该目标下全部可能的已选来源，不能借用一个方向的资格，也不在宿主猜测语言。
+高级操作同时需要技术能力和[产品采用资格](#模型能力边界)。Auto 必须覆盖该目标下全部可能的已选来源，不能借用一个方向的资格，也不在宿主猜测语言。
 
 worker 严格区分普通、风格、术语、组合和另述请求。未知操作、未知字段或缺少对应能力时明确失败，不回退普通翻译。模型原生能力、单句推理、质量采集和产品质量验收各有不同证据范围。
 

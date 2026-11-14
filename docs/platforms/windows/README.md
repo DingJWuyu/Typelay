@@ -2,7 +2,7 @@
 
 TypeLay 在原输入框旁显示本地译文。你可以继续输入、修改译文，再在目标能力允许时主动替换原文。Windows x64 版本仍是开发预览，普通输入框支持和完整产品验收尚未完成。
 
-**推荐包与当前源码不是同一版本。** 下方保留的 CI518 产品包有明确身份和有限验证结果。当前源码已包含后续输入与架构改动，但本轮 Windows GUI、写入退休和关闭流程尚未实测。最新开发状态见[当前开发状态与安排](../../engineering/development-state.md)。
+发行包能力以[包身份与对应证据](#当前可验证候选)为准，后续源码改动不会自动进入旧包。当前开发任务与验证结果由 [GitHub Issues](https://github.com/DingJWuyu/Typelay/issues)维护。
 
 Windows 通用 UI Automation 写回仍有并发覆盖风险，原有实验性 Tab 写回默认关闭。未知输入法状态只允许只读预览。测试实验写回时，只使用已备份的非敏感文字；编译或软件输入检查通过不能替代物理按键和真实输入法验收。
 
@@ -43,7 +43,7 @@ App、Broker、Practice 和 BrowserHost 必须来自同一完整包。输入组�
 
 按需练习默认用 `Ctrl+Shift+F9` 查看预览，再用 `Ctrl+Shift+F10` 重新翻译原文并直接替换。进度只计算真实预览与已确认的写入回执。重新开始保留输入，但会清除进度；配置变化或关闭也会结束本次进度。只有完成自动练习并成功保存，才记录教程提示偏好。
 
-[既有软件输入检查](https://github.com/DingJWuyu/Typelay/actions/runs/39046030080)覆盖了自有练习的首接受、编辑回源、人工稿接受与完成保存。它没有证明物理按键、实际输入法或当前源码的整套桌面体验已经通过。
+自有练习的软件输入回归不代替物理按键与真实输入法验收，完整环境覆盖由 [Issue #21](https://github.com/DingJWuyu/Typelay/issues/21)跟踪。
 
 ## 暂停与恢复
 
@@ -69,7 +69,7 @@ App、Broker、Practice 和 BrowserHost 必须来自同一完整包。输入组�
 
 在已安装 Hy 行选择**补充中英方向…**，明确确认后才复用本地已验证权重补充中英双向。取消不改变库存；修复和模型选择不会自动补方向。补充保留当前模型与语言，仍在使用 Argos 时需要另行选择 Hy。
 
-Hy 中英预览尚未开放风格与术语能力，译文可能错译或漏译。启用补充方向后，不承诺直接降级旧版本；你可在当前版本切回已安装的 Argos。移除模型或普通卸载不构成跨版本恢复承诺。实际安装、冷启动与质量边界见[模型能力边界](../../engineering/development-state.md#模型能力边界)。
+Hy 中英预览尚未开放风格与术语能力，译文可能错译或漏译。启用补充方向后，不承诺直接降级旧版本；你可在当前版本切回已安装的 Argos。移除模型或普通卸载不构成跨版本恢复承诺。实际安装、冷启动与质量边界见[模型能力边界](../../engineering/model-runtime.md#模型能力边界)。
 
 ## Chrome 合作扩展接入
 
@@ -90,9 +90,11 @@ Hy 中英预览尚未开放风格与术语能力，译文可能错译或漏译�
 
 ## 当前可验证候选
 
+以下身份用于核对已有包。Actions 下载有保留期限，取得时重新确认可用性；其它构建不能沿用这里的摘要或结果。
+
 ### 产品开发预览（CI518）
 
-推荐产品包来自 [CI518](https://github.com/DingJWuyu/Typelay/actions/runs/40134731709)，源码为 `c730092ec23c0eb4ec57b0c69e6ac089b3853b20`。该次 Windows 完整检查失败，包仅用于有限能力的开发预览。后继源码的功能与验证结果不会自动进入这个 ZIP。
+已记录的产品包来自 [CI518](https://github.com/DingJWuyu/Typelay/actions/runs/40134731709)，源码为 `c730092ec23c0eb4ec57b0c69e6ac089b3853b20`。该次 Windows 完整检查失败，包仅用于有限能力的开发预览。后继源码的功能与验证结果不会自动进入这个 ZIP。
 
 下载 [`typelay-windows-c730092ec23c0eb4ec57b0c69e6ac089b3853b20`](https://github.com/DingJWuyu/Typelay/actions/runs/40134731709/artifacts/12576793958)，核对内层文件：
 
@@ -106,7 +108,7 @@ Hy 中英预览尚未开放风格与术语能力，译文可能错译或漏译�
 Get-FileHash .\TypeLay-Windows-preview.zip -Algorithm SHA256
 ```
 
-摘要对应内层产品 ZIP，不对应外层 Actions 下载 ZIP。原候选核对已重算摘要；本轮文档整理没有重新下载该包。2026-11-06 的只读核验显示该 artifact 尚未过期，计划到期时间为 2026-11-07 21:51:20 UTC。过期后须重新取得并核验候选，不能换一个 ZIP 沿用此结论。
+摘要对应内层产品 ZIP，不对应外层 Actions 下载 ZIP。该摘要来自原候选核对，文档更新不代表重新验证该包。2026-11-06 的只读核验显示该 artifact 尚未过期，计划到期时间为 2026-11-07 21:51:20 UTC。过期后须重新取得并核验候选，不能换一个 ZIP 沿用此结论。
 
 该包的证据范围如下：
 
@@ -114,7 +116,7 @@ Get-FileHash .\TypeLay-Windows-preview.zip -Algorithm SHA256
 - Hy 设置 15 项和 production 5 阶段通过。三个发行包消费者加载的程序集身份与 ZIP 匹配；生命周期结果不代表质量放行。
 - App.Tests 为 869 通过、17 失败、21 未执行。失败位于导航激活准备，尚未进入后续源导航验证。连续翻译与 Chrome 合作链的局部通过不能覆盖这些失败。
 
-该包不开放普通源自动接受。现代 RichEdit 记事本、物理 Tab、真实中文输入法及完整应用兼容性均不能由上述结果推定通过。最新开发失败与未测项统一见[当前开发状态](../../engineering/development-state.md)。
+该包不开放普通源自动接受。现代 RichEdit 记事本、物理 Tab、真实中文输入法及完整应用兼容性均不能由上述结果推定通过。最新开发失败与未测项统一见[GitHub Issues](https://github.com/DingJWuyu/Typelay/issues)。
 
 ### 隔离物理 Tab 验证包（不是产品体验包）
 
@@ -134,4 +136,4 @@ Get-FileHash .\TypeLay-Windows-preview.zip -Algorithm SHA256
 
 ## 开发与验收入口
 
-[开发与分发](development.md)说明构建和研究命令；[平台架构](architecture.md)说明权限与进程边界；[测试与桌面验收](testing.md)说明每类证据能证明什么。[待解决问题](open-issues.md)保留用户尚未关闭的实际故障，产品要求仍以[产品验收入口](../../../README.md#产品验收入口)为准。
+[开发与分发](development.md)说明构建和研究命令；[平台架构](architecture.md)说明权限与进程边界；[测试与桌面验收](testing.md)说明每类证据能证明什么。[输入诊断](input-diagnostics.md)提供原字段取证方法，产品要求仍以[产品验收入口](../../../README.md#产品验收入口)为准。
