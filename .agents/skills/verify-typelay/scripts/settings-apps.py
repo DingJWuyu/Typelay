@@ -17,7 +17,6 @@ from gi.repository import Atspi  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "tests/linux"))
 from support.gtk_accessibility import (  # noqa: E402
     settings_navigation,
-    settings_page_row,
     visible_named,
 )
 
@@ -63,11 +62,26 @@ def main():
         assert Atspi.Action.do_action(node.get_action_iface(), 0), name
 
     def page(title, content):
-        selection, rows = wait(lambda: settings_navigation(pid), "settings navigation")
-        index, _row = settings_page_row(rows, title)
-        record(action="AT-SPI sidebar selection", name=title)
-        assert Atspi.Selection.select_child(selection, index)
-        wait(lambda: visible_named(pid, content), content)
+        selected = False
+
+        def ready():
+            nonlocal selected
+            if not selected:
+                navigation = settings_navigation(pid)
+                if navigation is None:
+                    return None
+                selection, rows = navigation
+                for index, row in enumerate(rows):
+                    if row is not None and visible_named(pid, title, root=row) is not None:
+                        record(action="AT-SPI sidebar selection", name=title)
+                        assert Atspi.Selection.select_child(selection, index), title
+                        selected = True
+                        break
+                if not selected:
+                    return None
+            return visible_named(pid, content)
+
+        wait(ready, "settings page visible: " + title)
 
     def capture(name):
         subprocess.run(["grim", str(output / (name + ".png"))], check=True, timeout=5)
