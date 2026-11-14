@@ -107,7 +107,9 @@ dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows
 
 独立直接替换场景在生产后端确认能力后，只注入一次 `Ctrl+Shift+F10`。必须取得 Verified，原框与同一模型结果相符，焦点保持、浮层隐藏且没有提交。每场景最后点击自有提交按钮，证明计数器可递增。前场景失败保留首错，只有清理已确认、模型可用且共享预算尚余时才继续独立场景。
 
-同一入口还包含自有自动练习、按需练习、普通网页冷态自动预览和 NTP 预览。它们共用原 90 秒桌面预算，不能用前一场景的结果补算后一场景。整个模式有 20 分钟取消期限，外部执行器另设进程上限。返回 0 表示全部要求通过，参数错误为 2，其余失败为 1。
+同一入口按七条独立旅程各执行一次：自有自动练习、普通控件快捷键、持续预览、直接替换、按需练习、普通网页冷态预览和 NTP 预览。七条旅程共用原 90 秒桌面预算，分别创建自己的源窗口、会话和浮层；模型只准备一次。前一旅程失败后，无依赖的旅程仍可在剩余预算内执行。清理失败、模型不可用或预算耗尽时，后续旅程记录 `not-run` 及原因。自有自动练习内的接受、编辑回源和完成仍按真实依赖执行，前置未完成时记录 `not-run / dependency-unavailable`。
+
+整个模式保留 20 分钟取消期限，外部执行器另设进程上限。原按键次数、从 keydown 起算的 500ms 期限和许可条件保持。每条旅程只尝试一次，未知写入结果不重试。返回 0 表示全部要求通过，参数错误为 2，其余失败为 1。
 
 上传只包含结构化结果、有界无正文 trace 和自检结果，不上传模型、缓存、输入或译文。`TYPELAY_TRACE` 的浮层慢渲染采样最多 32 条，只记录耗时至少 50ms 的阶段，默认关闭。
 
@@ -131,9 +133,13 @@ foreach ($assembly in @('TypeLay.App', 'TypeLay.Runtime', 'TypeLay.Core', 'TypeL
 dotnet "$fixture/TypeLay.DesktopFixture.dll" --verify-ordinary-notepad artifacts/ordinary-notepad artifacts/package/TypeLay artifacts/continuous-translation
 ```
 
-自动接受前先观察同一 App 唯一浮层的当前真实译文和公开能力。明确“仅预览”记录 `required-capability-unavailable` 失败，不发送接受键。出现真实接受提示也不能用普通 SendInput 作来源阳性；自动接受记录 `not-run / trusted-source-input-required`，人工稿接受记录依赖未就绪。
+自动接受前先观察同一 App 唯一浮层的当前真实译文和公开能力。明确“仅预览”时，接受记录为 `not-run`，保留 `required-capability-unavailable` 原因与实际观察，不发送接受键。出现真实接受提示也不能用普通 SendInput 作来源阳性；自动接受记录 `not-run / trusted-source-input-required`，人工稿接受记录依赖未就绪。
 
-只有这两类明确的发键前边界，才允许继续独立按需场景。继续前只读重核原预算、App/worker、原源身份、正文和精确焦点，不补焦点或改文。随后一次 F9、Esc、一次 F10、Undo 成功后才检查普通退出；原自动接受失败仍保留，整体不会变成通过。
+只有这两类明确的发键前边界，才允许继续独立按需场景。继续前只读重核原预算、App/worker、原源身份、正文和精确焦点，不补焦点或改文。随后一次 F9、Esc、一次 F10、Undo 成功后才检查普通退出；自动接受的未验范围仍保留，整体不会变成通过。
+
+`result.json` 的 `requiredOutcome` 单独表示当前自动化必过范围：应用前置、设置与模型、自动预览、按需取消及 Direct/原生 Undo、正常退出。五项全部通过，且另外两项仅因 `trusted-source-input-required` 及其编辑回源依赖而未执行时，`requiredOutcome` 为 `passed`，CLI 返回 0。此时整套 `outcome` 仍为 `not-run`，两个未执行分支的原状态和事实仍保留，物理输入验收由 [Issue #21](https://github.com/DingJWuyu/Typelay/issues/21) 承接。
+
+公开能力拒绝、未知原因、任一真实失败、必要场景缺失或未运行、超时、取消及清理失败，均使 `requiredOutcome` 为 `failed`，CLI 返回 1。CI 必需报告读取这个退出码；它表示上述必过范围通过，不表示普通源的可信自动接受或编辑回源已经验证。
 
 Esc 后先确认撤权后的新观察与公开 Direct 就绪，再发送唯一 Direct。trace 只用于排除页面缓存的旧 ready，不授写权。拒绝立即记录为原命令失败，不补发、不续时。
 

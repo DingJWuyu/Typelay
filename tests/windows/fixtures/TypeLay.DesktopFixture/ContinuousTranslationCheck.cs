@@ -89,49 +89,33 @@ internal static partial class ContinuousTranslationCheck
             setup.Outcome = "ready";
             setup.Stage = "complete";
 
-            // All scenes share one desktop budget. A failed scene
-            // does not buy a fresh deadline, model installation or worker restart.
+            // All journeys share the original desktop budget and model. Independent
+            // results let a failed journey preserve the remaining time for successors;
+            // a failed cleanup still blocks every successor.
             using var desktop = CancellationTokenSource.CreateLinkedTokenSource(all.Token);
             _desktopDeadlineAtMs = WindowsInterruptClock.NowMs + 90_000;
             desktop.CancelAfter(TimeSpan.FromSeconds(90));
-            (ownedFirstTab, ownedEditorHandoff, ownedTabReturn, ownedMouseReturn, ownedEditedAcceptance, ownedFinish) = await VerifyOwnedFirstTabAsync(directory, model, desktop.Token);
-            if (OwnedCleanupFailed())
-                ordinaryControls = new SceneResult { Stage = "previous-scene-cleanup", Failure = "previous-scene-cleanup-failed" };
-            else if (desktop.IsCancellationRequested)
-                ordinaryControls = new SceneResult { Stage = "desktop-budget", Failure = "desktop-deadline" };
-            else
-                ordinaryControls = await VerifyOrdinaryControlsAsync(directory, nativeFixture, model, desktop.Token);
-            if (OwnedCleanupFailed() || ordinaryControls.CleanupErrors.Count != 0)
-                continuous = new SceneResult { Stage = "previous-scene-cleanup", Failure = "previous-scene-cleanup-failed" };
-            else if (desktop.IsCancellationRequested)
-                continuous = new SceneResult { Stage = "desktop-budget", Failure = "desktop-deadline" };
-            else
-                continuous = await VerifyContinuousAsync(directory, nativeFixture, model, desktop.Token);
-            if (OwnedCleanupFailed() || ordinaryControls.CleanupErrors.Count != 0 || continuous.CleanupErrors.Count != 0)
-                direct = new SceneResult { Stage = "previous-scene-cleanup", Failure = "previous-scene-cleanup-failed" };
-            else if (desktop.IsCancellationRequested)
-                direct = new SceneResult { Stage = "desktop-budget", Failure = "desktop-deadline" };
-            else
-                direct = await VerifyDirectAsync(directory, nativeFixture, model, desktop.Token);
-            if (OwnedCleanupFailed() || ordinaryControls.CleanupErrors.Count != 0 || continuous.CleanupErrors.Count != 0 || direct.CleanupErrors.Count != 0)
-                practice = new SceneResult { Stage = "previous-scene-cleanup", Failure = "previous-scene-cleanup-failed" };
-            else if (desktop.IsCancellationRequested)
-                practice = new SceneResult { Stage = "desktop-budget", Failure = "desktop-deadline" };
-            else
-                practice = await VerifyPracticeAsync(directory, model, desktop.Token);
-            if (OwnedCleanupFailed() || ordinaryControls.CleanupErrors.Count != 0 || continuous.CleanupErrors.Count != 0 || direct.CleanupErrors.Count != 0 || practice.CleanupErrors.Count != 0)
-                coldPage = new SceneResult { Stage = "previous-scene-cleanup", Failure = "previous-scene-cleanup-failed" };
-            else if (desktop.IsCancellationRequested)
-                coldPage = new SceneResult { Stage = "desktop-budget", Failure = "desktop-deadline" };
-            else
-                coldPage = await VerifyColdPageAsync(directory, model, desktop.Token);
-            if (OwnedCleanupFailed() || ordinaryControls.CleanupErrors.Count != 0 || continuous.CleanupErrors.Count != 0 || direct.CleanupErrors.Count != 0 || practice.CleanupErrors.Count != 0
-                || coldPage.CleanupErrors.Count != 0)
-                newTab = new SceneResult { Stage = "previous-scene-cleanup", Failure = "previous-scene-cleanup-failed" };
-            else if (desktop.IsCancellationRequested)
-                newTab = new SceneResult { Stage = "desktop-budget", Failure = "desktop-deadline" };
-            else
-                newTab = await VerifyNewTabAsync(directory, model, desktop.Token);
+            (ownedFirstTab, ownedEditorHandoff, ownedTabReturn, ownedMouseReturn, ownedEditedAcceptance, ownedFinish)
+                = await VerifyOwnedFirstTabAsync(directory, model, desktop.Token);
+            async Task<SceneResult> Independent(Func<CancellationToken, Task<SceneResult>> run)
+            {
+                if (OwnedCleanupFailed() || new[] { ordinaryControls, continuous, direct, practice, coldPage, newTab }
+                    .Any(scene => scene.CleanupErrors.Count != 0))
+                    return new SceneResult { Stage = "previous-scene-cleanup", Failure = "previous-scene-cleanup-failed" };
+                if (all.IsCancellationRequested)
+                    return new SceneResult { Stage = "total-budget", Failure = "total-deadline" };
+                if (desktop.IsCancellationRequested)
+                    return new SceneResult { Stage = "desktop-budget", Failure = "desktop-deadline" };
+                if (!model.Ready)
+                    return new SceneResult { Stage = "model-unavailable", Failure = "model-not-ready" };
+                return await run(desktop.Token);
+            }
+            ordinaryControls = await Independent(token => VerifyOrdinaryControlsAsync(directory, nativeFixture, model, token));
+            continuous = await Independent(token => VerifyContinuousAsync(directory, nativeFixture, model, token));
+            direct = await Independent(token => VerifyDirectAsync(directory, nativeFixture, model, token));
+            practice = await Independent(token => VerifyPracticeAsync(directory, model, token));
+            coldPage = await Independent(token => VerifyColdPageAsync(directory, model, token));
+            newTab = await Independent(token => VerifyNewTabAsync(directory, model, token));
         }
         catch (Exception error) when (error is not OutOfMemoryException)
         {
@@ -174,6 +158,8 @@ internal static partial class ContinuousTranslationCheck
             errorCode = firstFailure?.ErrorCode ?? cleanupErrors.FirstOrDefault()?.ErrorCode,
             cleanupErrors,
             modelReady = ready,
+            totalBudgetSeconds = 1200,
+            desktopBudgetSeconds = 90,
             modelSetup = setup,
             directionInstallation,
             ownedAutomaticFirstTab = ownedFirstTab,

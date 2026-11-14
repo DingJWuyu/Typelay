@@ -166,6 +166,7 @@ internal static partial class HyPackageCheck
                         scene.Facts = new
                         {
                             requestedAcceptanceCue = true,
+                            acceptanceAttempted = false,
                             lastPublicObservation
                         };
                         throw new Failure("required-capability-unavailable");

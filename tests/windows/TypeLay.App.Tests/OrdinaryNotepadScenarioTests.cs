@@ -208,13 +208,14 @@ public sealed class OrdinaryNotepadScenarioTests
     }
 
     [Fact]
-    public async Task PublicDenialPreservesFailedAcceptanceWhileIndependentDirectAndExitRun()
+    public async Task PublicDenialLeavesUnattemptedAcceptanceNotRunWhileIndependentDirectAndExitRun()
     {
         var report = CreateReport(TestContext.Current.CancellationToken);
         var observed = new List<string>();
         var facts = new
         {
             requestedAcceptanceCue = true,
+            acceptanceAttempted = false,
             lastPublicObservation = new
             {
                 overlayCount = 1,
@@ -229,7 +230,7 @@ public sealed class OrdinaryNotepadScenarioTests
 
         Assert.Equal(["confirm-original-source", "direct", "exit"], observed);
         var acceptance = report.Scenes[0];
-        Assert.Equal("failed", acceptance.Outcome);
+        Assert.Equal("not-run", acceptance.Outcome);
         Assert.Equal("await-public-acceptance-cue", acceptance.Stage);
         Assert.Equal("required-capability-unavailable", acceptance.Failure);
         Assert.Equal("Failure", acceptance.ErrorType);
@@ -242,6 +243,8 @@ public sealed class OrdinaryNotepadScenarioTests
         Assert.Equal(540, saved.RootElement.GetProperty("budgetSeconds").GetInt32());
         Assert.Equal(520, saved.RootElement.GetProperty("operationBudgetSeconds").GetInt32());
         var scenes = saved.RootElement.GetProperty("scenes");
+        Assert.Equal("not-run", scenes[0].GetProperty("outcome").GetString());
+        Assert.False(scenes[0].GetProperty("facts").GetProperty("acceptanceAttempted").GetBoolean());
         Assert.Equal(1, scenes[0].GetProperty("facts").GetProperty("lastPublicObservation").GetProperty("overlayCount").GetInt32());
         Assert.Equal("automatic-accept-and-undo", scenes[1].GetProperty("facts").GetProperty("dependency").GetString());
         Assert.Equal("required-capability-unavailable", scenes[1].GetProperty("facts").GetProperty("reason").GetString());
@@ -307,7 +310,7 @@ public sealed class OrdinaryNotepadScenarioTests
         else
             Assert.IsType<HyPackageCheck.Failure>(caught);
         Assert.Empty(observed);
-        Assert.Equal(capabilityDenied ? "failed" : "not-run", report.Scenes[0].Outcome);
+        Assert.Equal("not-run", report.Scenes[0].Outcome);
         Assert.Equal(capabilityDenied ? "required-capability-unavailable" : "none", report.Scenes[0].Failure);
         Assert.Equal("not-run", report.Scenes[1].Outcome);
         Assert.Equal("failed", report.Scenes[2].Outcome);
@@ -438,6 +441,122 @@ public sealed class OrdinaryNotepadScenarioTests
             observed.Add(name);
             return Task.CompletedTask;
         }
+    }
+
+    [Fact]
+    public async Task RequiredNotepadResultPassesWhileTrustedInputBranchesRemainNotRun()
+    {
+        var report = await CompleteUnattendedNotepad();
+        using var saved = await Save(report, 0);
+        Assert.Equal("not-run", saved.RootElement.GetProperty("outcome").GetString());
+        Assert.Equal("passed", saved.RootElement.GetProperty("requiredOutcome").GetString());
+        var scenes = saved.RootElement.GetProperty("scenes").EnumerateArray().ToArray();
+        Assert.Equal("not-run", scenes.Single(scene => scene.GetProperty("name").GetString() == "automatic-accept-and-undo")
+            .GetProperty("outcome").GetString());
+        Assert.Equal("not-run", scenes.Single(scene => scene.GetProperty("name").GetString() == "edit-return-and-undo")
+            .GetProperty("outcome").GetString());
+    }
+
+    [Theory]
+    [InlineData("ordinary-app-preflight")]
+    [InlineData("settings-and-model")]
+    [InlineData("automatic-preview")]
+    [InlineData("on-demand-cancel-and-direct")]
+    [InlineData("ordinary-exit")]
+    public async Task MissingFailedOrUnexecutedRequiredNotepadSceneCannotPass(string name)
+    {
+        foreach (string outcome in new[] { "missing", "failed", "not-run" })
+        {
+            var report = await CompleteUnattendedNotepad();
+            var scene = report.Scenes.Single(scene => scene.Name == name);
+            if (outcome == "missing")
+                report.Scenes.Remove(scene);
+            else
+                scene.Outcome = outcome;
+            using var saved = await Save(report, 1);
+            Assert.Equal("failed", saved.RootElement.GetProperty("requiredOutcome").GetString());
+        }
+    }
+
+    [Theory]
+    [InlineData("failed-acceptance")]
+    [InlineData("failed-edit")]
+    [InlineData("unknown-input-boundary")]
+    [InlineData("wrong-edit-dependency")]
+    [InlineData("wrong-edit-reason")]
+    [InlineData("missing-boundary-evidence")]
+    [InlineData("cleanup")]
+    [InlineData("deadline")]
+    [InlineData("cancelled")]
+    [InlineData("unexpected-scene")]
+    [InlineData("empty-scenes")]
+    public async Task RequiredNotepadResultDoesNotHideOtherFailuresOrMissingEvidence(string defect)
+    {
+        var report = await CompleteUnattendedNotepad();
+        var acceptance = report.Scenes.Single(scene => scene.Name == "automatic-accept-and-undo");
+        var edit = report.Scenes.Single(scene => scene.Name == "edit-return-and-undo");
+        switch (defect)
+        {
+            case "failed-acceptance":
+                acceptance.Outcome = "failed";
+                break;
+            case "failed-edit":
+                edit.Outcome = "failed";
+                break;
+            case "unknown-input-boundary":
+                acceptance.Stage = "not-started";
+                break;
+            case "wrong-edit-dependency":
+                edit.Facts = new HyPackageCheck.OrdinaryEditDependency("other-scene", "trusted-source-input-required");
+                break;
+            case "wrong-edit-reason":
+                edit.Facts = new HyPackageCheck.OrdinaryEditDependency("automatic-accept-and-undo", "unknown");
+                break;
+            case "missing-boundary-evidence":
+                acceptance.Facts = null;
+                break;
+            case "cleanup":
+                report.CleanupErrors.Add("source-exit-unconfirmed");
+                break;
+            case "deadline":
+                report.OperationDeadlineReached = true;
+                break;
+            case "cancelled":
+                report.OperationToken = new CancellationToken(true);
+                break;
+            case "unexpected-scene":
+                report.Scenes.Add(new("unexpected"));
+                break;
+            case "empty-scenes":
+                report.Scenes.Clear();
+                break;
+        }
+        using var saved = await Save(report, 1);
+        Assert.Equal("failed", saved.RootElement.GetProperty("requiredOutcome").GetString());
+    }
+
+    [Fact]
+    public async Task PublicCapabilityDenialStillFailsRequiredNotepadResult()
+    {
+        var report = await CompleteUnattendedNotepad(capabilityDenied: true);
+        using var saved = await Save(report, 1);
+        Assert.Equal("failed", saved.RootElement.GetProperty("requiredOutcome").GetString());
+        Assert.Equal("failed", saved.RootElement.GetProperty("outcome").GetString());
+    }
+
+    private static async Task<HyPackageCheck.Report> CompleteUnattendedNotepad(bool capabilityDenied = false)
+    {
+        var report = new HyPackageCheck.Report("ordinary-notepad-shipped-app", 540, "ordinary-app-preflight", "settings-and-model",
+            "automatic-preview", "automatic-accept-and-undo", "edit-return-and-undo", "on-demand-cancel-and-direct", "ordinary-exit")
+        {
+            OperationToken = TestContext.Current.CancellationToken
+        };
+        foreach (string name in new[] { "ordinary-app-preflight", "settings-and-model", "automatic-preview" })
+            await report.Phase(name, _ => Task.CompletedTask);
+        await HyPackageCheck.RunOrdinaryNotepadInteractions(report,
+            _ => capabilityDenied ? Task.FromException(new HyPackageCheck.Failure("required-capability-unavailable")) : Task.CompletedTask,
+            _ => Task.CompletedTask, _ => Task.CompletedTask, () => { });
+        return report;
     }
 
     private static HyPackageCheck.Report CreateReport(CancellationToken ct) =>
