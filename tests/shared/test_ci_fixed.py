@@ -48,11 +48,13 @@ class FixedBuildTransportTests(unittest.TestCase):
             shutil.copyfile(ROOT / "eng/ci/fixed.py", script)
             data = b"synthetic fixed product"
             name = "fonts.tar.gz" if kind == "fonts" else f"{kind}.tar"
-            payload = (
-                "artifacts/ui-fonts/test.txt"
-                if kind == "fonts"
-                else f"artifacts/{'hy-download' if kind == 'hy' else 'index-model-download'}/test.gguf"
-            )
+            folder = {
+                "fonts": "ui-fonts",
+                "hy": "hy-download",
+                "index": "index-model-download",
+                "linux-tools": "linux-tools-cache",
+            }[kind]
+            payload = f"artifacts/{folder}/test.bin"
             archive = root / name
             with tarfile.open(archive, "w:gz" if kind == "fonts" else "w") as output:
                 info = tarfile.TarInfo(payload)
@@ -145,8 +147,8 @@ class FixedBuildTransportTests(unittest.TestCase):
     def test_lookup_does_not_download_existing_builds(self):
         self.run_transport("valid", "lookup")
 
-    def test_model_download_bytes_are_verified_before_becoming_a_local_cache(self):
-        for kind in ("hy", "index"):
+    def test_fixed_download_bytes_are_verified_before_becoming_a_local_cache(self):
+        for kind in ("hy", "index", "linux-tools"):
             for mode in ("valid", "corrupt"):
                 with self.subTest(kind=kind, mode=mode):
                     self.run_transport(mode, kind=kind)
@@ -193,24 +195,15 @@ class FixedBuildKeyTests(unittest.TestCase):
                 shutil.copytree(
                     ROOT / name, root / name, ignore=shutil.ignore_patterns("__pycache__")
                 )
-            # The command port supplies a stable installed SDK on hosts without pacman.
-            pacman = root / ("pacman.cmd" if sys.platform == "win32" else "pacman")
-            pacman.write_text(
-                "@echo fixed-test-sdk\n"
-                if sys.platform == "win32"
-                else "#!/bin/sh\necho fixed-test-sdk\n"
-            )
-            pacman.chmod(0o700)
-
-            def key():
+            def key(kind="fcitx"):
                 return subprocess.check_output(
-                    [sys.executable, str(root / "eng/ci/fixed.py"), "key", "fcitx"],
-                    env=os.environ | {"PATH": str(root) + os.pathsep + os.environ["PATH"]},
+                    [sys.executable, str(root / "eng/ci/fixed.py"), "key", kind],
                     text=True,
                     timeout=10,
                 ).strip()
 
             original = key()
+            original_tools = key("linux-tools")
             for name in (
                 "src/linux/native/gtk4/CMakeLists.txt",
                 "src/linux/native/qt6/CMakeLists.txt",
@@ -223,6 +216,7 @@ class FixedBuildKeyTests(unittest.TestCase):
                     contents = path.read_bytes()
                     path.write_bytes(contents + b"\n/* native edit */\n")
                     self.assertEqual(key(), original)
+                    self.assertEqual(key("linux-tools"), original_tools)
                     path.write_bytes(contents)
             for name in (
                 "eng/ci/arch-snapshot",
@@ -233,4 +227,11 @@ class FixedBuildKeyTests(unittest.TestCase):
                     contents = path.read_bytes()
                     path.write_bytes(contents + b"\n# deliberate pin update\n")
                     self.assertNotEqual(key(), original)
+                    if name == "eng/ci/arch-snapshot":
+                        self.assertNotEqual(key("linux-tools"), original_tools)
                     path.write_bytes(contents)
+
+            action = root / ".github/actions/linux-tools/action.yml"
+            action.write_bytes(action.read_bytes() + b"\n# deliberate package recipe edit\n")
+            self.assertNotEqual(key("linux-tools"), original_tools)
+            self.assertEqual(key(), original)

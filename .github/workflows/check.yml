@@ -70,6 +70,7 @@ jobs:
     - uses: ./.github/actions/linux-tools
       with:
         desktop: 'false'
+        producer: 'true'
     - &tested-source
       name: Record tested commit
       run: |
@@ -648,6 +649,9 @@ jobs:
   linux:
     name: Linux / ${{ matrix.group }}
     needs: fonts
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-latest
     container: *linux-container
     timeout-minutes: 45

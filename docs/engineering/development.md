@@ -114,7 +114,9 @@ CI 使用以下并行分工，各组保留现役测试命令、断言和产品�
 
 ### 固定产物的复用与更新
 
-[fixed.py](../../eng/ci/fixed.py) 将固定构建保存为 GitHub prerelease。tag 为 `ci-fonts-<SHA256>`、`ci-fcitx-<SHA256>`、`ci-hy-<SHA256>` 或 `ci-index-<SHA256>`，所有分支都能读取。字体的输入包含生成器、字体锁和固定工具版本。`ci-fcitx` 只保存第三方 Fcitx、LibIME、中文附加组件及对应的固定源码和数据。它的键包含 [third_party.py](../../eng/linux/cooperative/third_party.py) 中的源码和数据校验值、第三方补丁、构建配方及 [Arch 快照日期](../../eng/ci/arch-snapshot)。TypeLay 自身的 GTK4、Qt6 和公共头文件不进入第三方键。
+[fixed.py](../../eng/ci/fixed.py) 将固定构建保存为 GitHub prerelease。tag 为 `ci-fonts-<SHA256>`、`ci-fcitx-<SHA256>`、`ci-hy-<SHA256>`、`ci-index-<SHA256>` 或 `ci-linux-tools-<SHA256>`，所有分支都能读取。字体的输入包含生成器、字体锁和固定工具版本。`ci-fcitx` 只保存第三方 Fcitx、LibIME、中文附加组件及对应的固定源码和数据。它的键包含 [third_party.py](../../eng/linux/cooperative/third_party.py) 中的源码和数据校验值、第三方补丁、构建配方及 [Arch 快照日期](../../eng/ci/arch-snapshot)。TypeLay 自身的 GTK4、Qt6 和公共头文件不进入第三方键。
+
+Linux 的原始 pacman 包也通过 release 复用，键只包含快照日期和工具安装配方。现有生产者在新键首次运行时准备全部 SDK 与桌面软件包，消费者每轮仍执行原有完整包列表、签名与依赖校验，不复用已安装的系统目录。Python 和 GitHub CLI 从固定仓库引导后，才读取该原始包缓存。
 
 Linux 生产者和消费 runner 都将 pacman 仓库固定到该日期，并用 `-Syyuu` 同步全部已安装软件包，包含滚动容器中较新的包的降级。GTK4 和 Qt 的目标 ABI 包仍保留原 SHA-256 校验。普通上游更新不改变工具链；升级时主动修改快照日期，并在 Actions 验证依赖、目标 ABI 和完整场景。修改第三方源码 pin、数据、补丁或构建配方也会生成新键。新键第一次构建可以超过 10 分钟，PR 应记录触发变更和完整耗时；普通 TypeLay 原生源码改动仍须满足 10 分钟。
 

@@ -4,6 +4,9 @@ inputs:
   desktop:
     description: Install the browsers, editors and desktop scenario tools
     default: 'true'
+  producer:
+    description: Publish the complete pinned package cache when it is missing
+    default: 'false'
 runs:
   using: composite
   steps:
@@ -13,18 +16,42 @@ runs:
       printf 'Server = https://archive.archlinux.org/repos/%s/$repo/os/$arch\n' "$snapshot" > /etc/pacman.d/mirrorlist
       sed -i -E '/^#?ParallelDownloads[[:space:]]*=/d' /etc/pacman.conf
       sed -i '/^\[options\]/a ParallelDownloads = 8' /etc/pacman.conf
+      mkdir -p "$GITHUB_WORKSPACE/artifacts/linux-tools-cache"
+      sed -i '/^CacheDir[[:space:]]*=/d' /etc/pacman.conf
+      sed -i "/^\[options\]/a CacheDir = $GITHUB_WORKSPACE/artifacts/linux-tools-cache" /etc/pacman.conf
+    shell: bash
+  - name: Bootstrap the fixed download transport
+    run: pacman -Syyuu --needed --noconfirm python github-cli
+    shell: bash
+  - name: Restore pinned native and desktop packages
+    id: packages
+    run: |
+      if [ "$PRODUCER" = true ]; then
+        python eng/ci/fixed.py restore linux-tools
+      else
+        python eng/ci/fixed.py restore linux-tools --wait-for-job fcitx-build
+      fi
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PRODUCER: ${{ inputs.producer }}
     shell: bash
   - name: Install target native SDK
-    run: pacman -Syyuu --needed --noconfirm git cmake ninja pkgconf gtk3 gtk4 json-glib python
+    run: pacman -Su --needed --noconfirm git cmake ninja pkgconf gtk3 gtk4 json-glib python
       curl icu openssl zlib libxkbcommon-x11 dbus fcitx5 fcitx5-gtk fcitx5-chinese-addons boost libime
       patch fmt glib2-devel nlohmann-json expat xkeyboard-config iso-codes extra-cmake-modules gettext wayland-protocols plasma-wayland-protocols
       github-cli opencc procps-ng zstd qt6-base libxkbcommon libxcb
     shell: bash
   - name: Install desktop scenario tools
-    if: inputs.desktop == 'true'
+    if: inputs.desktop == 'true' || (inputs.producer == 'true' && steps.packages.outputs.hit != 'true')
     run: pacman -S --needed --noconfirm gimp at-spi2-core python-gobject libayatana-appindicator
       niri mesa uv grim noto-fonts-cjk xdg-desktop-portal-gtk xorg-server-xvfb xdotool
       chromium python-playwright firefox geckodriver code nodejs npm
+    shell: bash
+  - name: Publish pinned native and desktop packages
+    if: inputs.producer == 'true' && steps.packages.outputs.hit != 'true'
+    run: python eng/ci/fixed.py publish linux-tools
+    env:
+      GH_TOKEN: ${{ github.token }}
     shell: bash
   - name: Match the target GTK4 upstream release
     id: gtk4-sdk

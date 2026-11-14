@@ -29,6 +29,8 @@ def key(kind):
         )
     if kind == "fonts":
         files = ["eng/fonts/prepare.py", "eng/fonts/fonts.lock.json", "eng/requirements.txt"]
+    elif kind == "linux-tools":
+        files = ["eng/ci/arch-snapshot", ".github/actions/linux-tools/action.yml"]
     else:
         from eng.linux.cooperative.third_party import BUILD_INPUTS
 
@@ -42,7 +44,7 @@ def key(kind):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("key", "lookup", "restore", "publish"))
-    parser.add_argument("kind", choices=("fonts", "fcitx", "hy", "index"))
+    parser.add_argument("kind", choices=("fonts", "fcitx", "hy", "index", "linux-tools"))
     parser.add_argument("--tag")
     parser.add_argument("--wait-for-job", help="Wait for this run's named producer to publish")
     args = parser.parse_args()
@@ -52,7 +54,8 @@ def main():
     if args.action == "key":
         print(tag)
         return
-    suffix = {"fonts": ".tar.gz", "fcitx": ".tar.zst", "hy": ".tar", "index": ".tar"}[args.kind]
+    suffix = {"fonts": ".tar.gz", "fcitx": ".tar.zst"}.get(args.kind, ".tar")
+    compression = {"fonts": ["-z"], "fcitx": ["--zstd"]}.get(args.kind, [])
     archive = ROOT / "artifacts" / (args.kind + suffix)
     archive.parent.mkdir(exist_ok=True)
     repo = os.environ["GITHUB_REPOSITORY"]
@@ -116,14 +119,12 @@ def main():
             digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
         if digest != asset["digest"]:
             raise ValueError("Release asset digest mismatch")
-        extract = {"fonts": ["-xzf"], "fcitx": ["--zstd", "-xf"], "hy": ["-xf"], "index": ["-xf"]}[
-            args.kind
-        ]
         subprocess.run(
-            ["tar", *extract, str(archive)],
+            ["tar", *compression, "-xf", str(archive)],
             cwd=ROOT,
             check=True,
         )
+        archive.unlink()
         with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
             stream.write("hit=true\n")
     else:
@@ -132,11 +133,12 @@ def main():
             "fcitx": ["artifacts/linux/fcitx-cooperative-5.1.22"],
             "hy": ["artifacts/hy-download"],
             "index": ["artifacts/index-model-download"],
+            "linux-tools": ["artifacts/linux-tools-cache"],
         }[args.kind]
         subprocess.run(
             [
                 "tar",
-                *({"fonts": ["-z"], "fcitx": ["--zstd"], "hy": [], "index": []}[args.kind]),
+                *compression,
                 "--exclude=core-build",
                 "--exclude=libime-build",
                 "--exclude=fcitx5-chinese-addons-build",
