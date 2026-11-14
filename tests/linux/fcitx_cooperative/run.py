@@ -57,10 +57,21 @@ def flags(*packages):
     return shlex.split(run(["pkg-config", "--cflags", "--libs", *packages]))
 
 
-def build(out: Path, core_version: str):
+def build(out: Path, core_version: str, reuse=False):
     inputs = hashes(FCITX_TEST_INPUTS)
     (out / "result.json").unlink(missing_ok=True)
-    fcitx.build(out, core_version)
+    if reuse:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "cooperation_pack", ROOT / "packaging/linux/fcitx-cooperative/pack.py"
+        )
+        recipe = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(recipe)
+        recipe.metadata(out)
+        recipe.verify_sources(out)
+    else:
+        fcitx.build(out, core_version)
     run(
         [
             "cc",
@@ -720,6 +731,11 @@ def main():
     parser.add_argument("--session-deadline", type=float, help=argparse.SUPPRESS)
     parser.add_argument("--build-only", action="store_true")
     parser.add_argument(
+        "--reuse-build",
+        action="store_true",
+        help="Verify existing production bytes; compile current fixtures and rerun all scenes",
+    )
+    parser.add_argument(
         "--core-ready-output", type=Path, help="Append verified core readiness for CI"
     )
     parser.add_argument("--glossary-toolkit", choices=("gtk3", "gtk4"), help=argparse.SUPPRESS)
@@ -732,7 +748,7 @@ def main():
             parser.error("--session requires the outer absolute deadline")
         session(out, args.core_version, args.session_deadline, args.glossary_toolkit)
     else:
-        build(out, args.core_version)
+        build(out, args.core_version, args.reuse_build)
         if not args.build_only:
             # Independent desktops/daemons reuse the same already-built assets.
             for toolkit in (None, "gtk4", "gtk3"):
