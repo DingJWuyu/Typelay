@@ -4,7 +4,7 @@ import json
 from contextlib import ExitStack
 
 from native_e2e import plan, snapshot
-from support.xtest import prepare_key, prepare_pointer
+from support.xtest import prepare_key, prepare_pointer, prepare_xtest
 from wire import now_ms
 
 
@@ -58,11 +58,33 @@ def check_ordered_retirement(
         item["repliedAtMs"] = now_ms()
         return item["reply"]
 
+    def accepted_result(expected_plan, receipt_message, text_message):
+        def accepted():
+            client.call("describe")
+            return [event["data"] for event in client.events if event.get("event") == "accepted"]
+
+        receipts = wait_for(accepted, receipt_message)
+        assert len(receipts) == 1 and receipts[0]["planId"] == expected_plan["id"]
+        assert receipts[0]["receipt"]["status"] == "Verified"
+        final = wait_for(
+            lambda: (value := state()) and value["first"] == "Replacement body." and value,
+            text_message,
+        )
+        assert final["second"] == initial["second"]
+        assert final["firstEntry"]["insertions"] == initial["firstEntry"]["insertions"] + 1
+        assert final["firstEntry"]["deletions"] == initial["firstEntry"]["deletions"] + 1
+        assert (
+            final["firstEntry"]["start"] == final["firstEntry"]["end"] == len("Replacement body.")
+        )
+        return receipts, final
+
     with ExitStack() as resources:
+        connection = prepare_xtest(resources)
         control, function, tab = [
-            prepare_key(resources, name) for name in ("Control_L", "F7", "Tab")
+            prepare_key(resources, name, connection=connection)
+            for name in ("Control_L", "F7", "Tab")
         ]
-        pointer = prepare_pointer(resources, nested)
+        pointer = prepare_pointer(resources, nested) if stage == "ordered-retirement" else None
         try:
             source = wait_for(capture, "configured Ctrl source unavailable")
             before = state()
@@ -97,30 +119,10 @@ def check_ordered_retirement(
                 function(False)
                 control(False)
 
-                def accepted_original():
-                    client.call("describe")
-                    return [
-                        event["data"] for event in client.events if event.get("event") == "accepted"
-                    ]
-
-                receipts = wait_for(
-                    accepted_original, "equivalent refresh lost original Ctrl grant"
-                )
-                assert (
-                    len(receipts) == 1 and receipts[0]["planId"] == original["permit"]["plan"]["id"]
-                )
-                assert receipts[0]["receipt"]["status"] == "Verified"
-                final = wait_for(
-                    lambda: (value := state()) and value["first"] == "Replacement body." and value,
+                receipts, final = accepted_result(
+                    original["permit"]["plan"],
+                    "equivalent refresh lost original Ctrl grant",
                     "original Ctrl did not write its exact candidate",
-                )
-                assert final["second"] == initial["second"]
-                assert final["firstEntry"]["insertions"] == initial["firstEntry"]["insertions"] + 1
-                assert final["firstEntry"]["deletions"] == initial["firstEntry"]["deletions"] + 1
-                assert (
-                    final["firstEntry"]["start"]
-                    == final["firstEntry"]["end"]
-                    == len("Replacement body.")
                 )
 
                 def refreshed_retired():
@@ -213,26 +215,10 @@ def check_ordered_retirement(
             tab(True)
             tab(False)
 
-            def accepted():
-                client.call("describe")
-                return [
-                    event["data"] for event in client.events if event.get("event") == "accepted"
-                ]
-
-            receipts = wait_for(accepted, "new independent Tab did not complete")
-            assert len(receipts) == 1 and receipts[0]["planId"] == final["permit"]["plan"]["id"]
-            assert receipts[0]["receipt"]["status"] == "Verified"
-            result = wait_for(
-                lambda: (value := state()) and value["first"] == "Replacement body." and value,
+            receipts, result = accepted_result(
+                final["permit"]["plan"],
+                "new independent Tab did not complete",
                 "new independent Tab did not replace the original field",
-            )
-            assert result["second"] == initial["second"]
-            assert result["firstEntry"]["insertions"] == initial["firstEntry"]["insertions"] + 1
-            assert result["firstEntry"]["deletions"] == initial["firstEntry"]["deletions"] + 1
-            assert (
-                result["firstEntry"]["start"]
-                == result["firstEntry"]["end"]
-                == len("Replacement body.")
             )
             evidence.update(status="passed", accepted=receipts, final=result)
         except BaseException as error:
