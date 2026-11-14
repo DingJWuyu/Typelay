@@ -48,6 +48,30 @@ sys.exit(7 if not isolated and mode == "main-fail" else 9 if isolated and mode =
 
 
 class WindowsContractRunnerTests(unittest.TestCase):
+    def test_shards_partition_classes_and_isolate_archive_deadline_once(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "contracts", ROOT / "eng/windows/test_contracts.py"
+        )
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        # New classes must reach the remainder shard without a registry update.
+        for name in (
+            "SetupRenderingTests",
+            "ModelInstallerTests",
+            "NativeSourceControllerTests",
+            "FutureRegressionTests",
+        ):
+            with self.subTest(name=name):
+                self.assertEqual(
+                    1, sum(runner.includes_class(shard, name) for shard in range(1, 5))
+                )
+        self.assertEqual(
+            1,
+            sum(runner.includes_class(shard, "ModelInstallerTests") for shard in range(1, 5)),
+        )
+
     def run_case(self, mode):
         with tempfile.TemporaryDirectory(prefix="TypeLay contract runner ") as directory:
             root = Path(directory)
