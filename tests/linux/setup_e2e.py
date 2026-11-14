@@ -1056,7 +1056,7 @@ class PackageInstallationTests(unittest.TestCase):
         uv_calls = []
 
         def process(arguments, **options):
-            if arguments[0] != "uv":
+            if Path(arguments[0]).name != "uv":
                 return real_popen(arguments, **options)
             uv_calls.append(arguments)
             python = Path(options["env"]["UV_PYTHON_INSTALL_DIR"]) / "bin/python3.13"
@@ -1081,6 +1081,7 @@ class PackageInstallationTests(unittest.TestCase):
         for damage in (None, b"#!/usr/bin/python3\nraise SystemExit(1)\n", b"broken executable"):
             with (
                 self.subTest(damage=damage),
+                patch.object(setup.private_uv, "executable", return_value=Path("/controlled/uv")),
                 patch.object(setup.subprocess, "Popen", side_effect=process),
             ):
                 uv_calls.clear()
@@ -1156,7 +1157,9 @@ class PackageInstallationTests(unittest.TestCase):
                 success=False,
             )
             self.assertTrue(process.called)
-            self.assertTrue(all(call.args[0][0] != "uv" for call in process.call_args_list))
+            self.assertTrue(
+                all(Path(call.args[0][0]).name != "uv" for call in process.call_args_list)
+            )
 
     def test_offline_runtime_copy_cannot_grow_beyond_preflight_allowance(self):
         original = setup.copy_runtime
@@ -2985,7 +2988,7 @@ class InstallationFailureTests(unittest.TestCase):
 
             def process(arguments, **options):
                 output = b""
-                if arguments[0] != "uv":
+                if Path(arguments[0]).name != "uv":
                     self.assertIn("--self-check", arguments)
                     output = worker_result
                 elif arguments[1:3] == ["python", "install"]:
@@ -3094,6 +3097,7 @@ class InstallationFailureTests(unittest.TestCase):
                         ),
                     ],
                 ),
+                patch.object(setup.private_uv, "executable", return_value=Path("/controlled/uv")),
                 patch.object(subprocess, "Popen", side_effect=process),
                 patch.object(setup.urllib.request, "build_opener", return_value=opener),
                 patch.object(signal, "signal"),
@@ -3579,8 +3583,9 @@ class InstallationProcessTests(unittest.TestCase):
             shutil.copytree(ROOT / "src/shared/TypeLay.Worker", home / "worker")
             (home / "native").mkdir(parents=True)
             (home / "native/typelay-supervise").symlink_to(self.supervisor)
-            (base / "bin").mkdir()
-            executable = base / "bin/uv"
+            shutil.copytree(ROOT / "src/linux/desktop", home / "desktop")
+            (home / "support/uv").mkdir(parents=True)
+            executable = home / "support/uv/uv"
             executable.write_text(
                 f"#!{sys.executable}\n"
                 "import subprocess, sys, time\n"
@@ -3595,6 +3600,18 @@ class InstallationProcessTests(unittest.TestCase):
                 encoding="utf-8",
             )
             executable.chmod(0o700)
+            pin = {
+                **setup.private_uv.PIN,
+                "files": {
+                    "uv": {
+                        "bytes": executable.stat().st_size,
+                        "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+                    }
+                },
+            }
+            (executable.parent / "source.json").write_text(json.dumps(pin))
+            with (home / "desktop/private_uv.py").open("a") as module:
+                module.write("\nPIN = " + repr(pin) + "\n")
             current = base / "data/components/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             # Validate prior intent before reaching the supervised uv child.
             (current / "models").mkdir(parents=True)
@@ -3609,7 +3626,7 @@ class InstallationProcessTests(unittest.TestCase):
                     sys.executable,
                     "-I",
                     "-B",
-                    str(ROOT / "src/linux/desktop/setup.py"),
+                    str(home / "desktop/setup.py"),
                     str(home),
                     str(base / "data"),
                     str(base / "cache"),

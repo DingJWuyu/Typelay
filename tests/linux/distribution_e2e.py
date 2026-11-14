@@ -176,7 +176,7 @@ class DistributionTests(unittest.TestCase):
 
     def test_failed_setup_uses_shared_guidance_and_keeps_the_previous_version(self):
         current = self.home / "data/typelay/components/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-        # Reach the missing-uv boundary after validating the previous intent.
+        # Reach the missing private tool after validating the previous intent.
         (current / "models").mkdir(parents=True)
         (current / "models/installed.json").write_text(
             json.dumps({"schema": 1, "directions": ["zh_en", "en_zh"]})
@@ -184,34 +184,42 @@ class DistributionTests(unittest.TestCase):
         (current / "activation.json").write_text(json.dumps({"schema": 1, "previous": None}))
         (current / "retained").write_text("previous usable version")
         (current.parent / "current").symlink_to("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
-        for _ in range(2):
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    "-I",
-                    "-B",
-                    str(self.package / "desktop/setup.py"),
-                    str(self.package),
-                    str(self.home / "data/typelay"),
-                    str(self.home / "cache/typelay"),
-                ],
-                # No uv on this isolated path: fail at the real runtime boundary
-                # before any download, then exercise the packaged presentation host.
-                env={**self.env, "PATH": str(self.home / "empty-bin")},
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn('"category":"runtime"', result.stdout)
-            self.assertIn("重新准备本地翻译组件", result.stdout)
-            self.assertIn("安装诊断", result.stdout)
-            self.assertNotIn(str(self.home), result.stdout + result.stderr)
-            self.assertNotIn("Traceback", result.stdout + result.stderr)
-            self.assertEqual(
-                os.readlink(current.parent / "current"), "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-            )
-            self.assertEqual((current / "retained").read_text(), "previous usable version")
+        tool = self.package / "support/uv/uv"
+        held = tool.with_name("uv-held-by-test")
+        tool.rename(held)
+        try:
+            for _ in range(2):
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-I",
+                        "-B",
+                        str(self.package / "desktop/setup.py"),
+                        str(self.package),
+                        str(self.home / "data/typelay"),
+                        str(self.home / "cache/typelay"),
+                    ],
+                    # A missing private executable fails before any download, even
+                    # when a system uv is available.
+                    env=self.env,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('"category":"runtime"', result.stdout)
+                self.assertIn('"runtimeStep":"tool-verify"', result.stdout)
+                self.assertIn('"runtimeReason":"missing"', result.stdout)
+                self.assertIn("重新准备本地翻译组件", result.stdout)
+                self.assertIn("安装诊断", result.stdout)
+                self.assertNotIn(str(self.home), result.stdout + result.stderr)
+                self.assertNotIn("Traceback", result.stdout + result.stderr)
+                self.assertEqual(
+                    os.readlink(current.parent / "current"), "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                )
+                self.assertEqual((current / "retained").read_text(), "previous usable version")
+        finally:
+            held.rename(tool)
 
     def test_desktop_feedback_and_practice_use_shared_presentations(self):
         settings = self.home / "config/settings.json"

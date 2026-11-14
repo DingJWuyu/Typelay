@@ -53,6 +53,8 @@ artifacts/build-tools/bin/python eng/linux/build.py --output artifacts/linux/pac
 
 默认输出目录是 `artifacts/linux/package`，归档是 `artifacts/TypeLay-Linux-preview-x86_64.tar.gz` 及对应 `.sha256`。包内包含自包含 .NET 宿主、GTK3/GTK4 模块、桌面代码、浏览器接入、VS Code VSIX、worker 和安装器。模型权重不在包内。
 
+Linux 包固定携带 uv 0.13.6。构建器从 Astral 官方发布下载归档，核对固定摘要，再把二进制、来源记录及两份上游许可证放入 `support/uv/`。首次构建需要网络；已缓存的归档仍会重新校验。模型准备使用该工具的绝对路径，系统 uv 只用于上面的工程环境准备。
+
 这个命令会生成 setup-only 包。它包含设置和基础客户端，但没有 Fcitx 合作接入载荷。构建会准备固定 Index CPU 运行库；首次准备需要网络，除此之外还可能访问 SDK、NuGet 和字体来源。它不会下载翻译模型。
 
 需要完整桌面包时，先满足 [Fcitx 固定版本与数据前提](fcitx.md#预检)。在同一干净提交构建合作组件、打包，再封装主包：

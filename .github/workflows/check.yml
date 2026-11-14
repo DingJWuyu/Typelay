@@ -645,6 +645,10 @@ jobs:
         id: setup-e2e
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         run: python tests/linux/setup_e2e.py -v
+      - name: Verify Linux private uv preparation
+        id: private-uv
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        run: python tests/linux/test_private_uv.py -v
       - name: Verify Linux test_desktop_session
         id: test-desktop-session
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
@@ -1318,6 +1322,7 @@ jobs:
             test-ui-fonts
             test-build-bundle
             setup-e2e
+            private-uv
             test-desktop-session
             test-startup-diagnostics
             test-desktop-scope-results
@@ -1340,6 +1345,7 @@ jobs:
             test-qt-candidate-observation
             test-argos-repetition-process
             test-index-package-diagnostics
+            test-private-session-paths
             test-translation-quality-capture
             test-vscode-notifications
             build
@@ -1520,8 +1526,10 @@ jobs:
           import shutil, subprocess
           from pathlib import Path
           from eng.linux.build import package_worker
+          from eng.linux.uv.prepare import prepare as prepare_uv
           package = Path('artifacts/index-package').absolute()
           package_worker(package, index_runtime=Path('artifacts/index-runtime').absolute())
+          prepare_uv(Path('artifacts/linux/uv-download'), package / 'support/uv')
           shutil.copytree('src/linux/desktop', package / 'desktop', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
           (package / 'native').mkdir()
           subprocess.run(['gcc', '-O2', '-Wall', '-Wextra', '-Werror', 'src/linux/native/supervise.c', '-o', str(package / 'native/typelay-supervise')], check=True)

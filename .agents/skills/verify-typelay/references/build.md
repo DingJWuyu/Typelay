@@ -71,11 +71,11 @@ test -r "$(pkg-config --variable=pkgdatadir wayland-protocols)/stable/xdg-shell/
 ```bash
 uv venv artifacts/build-tools
 uv pip install --python artifacts/build-tools/bin/python \
-  -r eng/requirements.txt uv==0.13.8 ninja==1.13.2
+  -r eng/requirements.txt ninja==1.13.2
 export PATH="$PWD/artifacts/build-tools/bin:$PATH"
 ```
 
-系统 uv 0.12.13 在这台机器上找不到安装器要求的 CPython 3.13.16。上述工具环境提供已验证可用的 uv 0.13.8，并在改 HOME 前解析为绝对 PATH。GTK 旅程始终使用系统 `/usr/bin/python3`，工程虚拟环境没有系统 PyGObject。
+工程 uv 只用于创建构建工具环境。正式包在 `support/uv/` 携带固定私有 uv，模型安装器按绝对路径调用，无需升级系统 uv。构建会校验官方归档和二进制摘要，首次构建需要联网。GTK 旅程始终使用系统 `/usr/bin/python3`，工程虚拟环境没有系统 PyGObject。
 
 .NET SDK 必须满足 `global.json`。如果 `dotnet --version` 不匹配，在本工作树生成工具目录：
 

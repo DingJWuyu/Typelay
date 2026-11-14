@@ -10,6 +10,12 @@
 
 Linux 自包含发行包包含 .NET 运行时和共享 Python worker 源码；实际运行时包名/版本以 `app/TypeLay.Linux.deps.json` 的 `runtimepack.*` 条目为准。构建按这些条目匹配 SDK 解析的 runtime packs，把原始许可证与第三方 notices 保留在 `app/licenses/<包名>/<版本>/`；缺失或版本不符时打包失败。GTK、PyGObject、Ayatana AppIndicator 及其 D-Bus 菜单依赖由 CachyOS/Arch 的系统包管理器提供，不将系统库复制进发行包。系统依赖的许可证和 notices 随各自软件包维护；Ayatana 的来源为 https://github.com/AyatanaIndicators/libayatana-appindicator 。Linux 桌面的 TypeLay 托盘 SVG 为本项目资源。
 
+## Linux 私有 uv
+
+Linux 发行包在 `support/uv/` 携带 [Astral uv 0.13.6](https://github.com/astral-sh/uv/releases/tag/0.13.6)。官方 Linux x86_64 GNU 归档的 SHA-256 为 `f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645`；精确文件摘要和来源保存在随包 `source.json`，由安装器的固定声明复验。产品只分发和调用 `uv`，不分发 `uvx`，不修改用户已安装的工具或 shell 配置。
+
+uv 采用 MIT 或 Apache-2.0 双重许可。两份上游许可原文均原样保留在 `support/uv/LICENSE-MIT` 与 `support/uv/LICENSE-APACHE`。本声明不替代上游原文。Windows 的私有运行时准备不使用 uv。
+
 ## 首次联网准备
 
 私有 Python、推理依赖及模型分别由 Windows 的 `src/windows/TypeLay.App/Infrastructure/ModelInstaller.cs` 与 Linux 的 `src/linux/desktop/setup.py` 管理。Python worker 的直接依赖版本见 `src/shared/TypeLay.Worker/requirements.txt`，不得在本文件另建一份易失配的版本清单。
