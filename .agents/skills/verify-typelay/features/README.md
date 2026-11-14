@@ -5,8 +5,9 @@
 ## 共用前提
 
 - 每条桌面旅程都通过 `private-session.py`，使用自己的 HOME、XDG、D-Bus、Xvfb 和 niri。
+- 每条旅程默认离线，并统一复制 uv 与模型下载缓存。缓存来源、下载测试 opt-in 和失败清理遵循 [Network and caches](../SKILL.md#network-and-caches)。
 - 主包和合作组件来自匹配源码，真实模型通过正式安装器准备。权重缓存不等于已安装模型。
-- `TYPELAY_VERIFY_PACKAGE`、`TYPELAY_VERIFY_COOPERATIVE`、`TYPELAY_VERIFY_OUTPUT` 和 `TYPELAY_VERIFY_XDISPLAY` 由私有会话产生。下面功能文件中的命令只在该会话的旅程脚本内运行。
+- `TYPELAY_VERIFY_PACKAGE`、`TYPELAY_VERIFY_COOPERATIVE`、`TYPELAY_VERIFY_OUTPUT` 、`TYPELAY_VERIFY_INSTALL_CACHE`、`TYPELAY_VERIFY_MODEL_CACHE`、`TYPELAY_VERIFY_SCRATCH` 和 `TYPELAY_VERIFY_XDISPLAY` 由私有会话产生。下面功能文件中的命令只在该会话的旅程脚本内运行。
 - 动作使用合成文本。AT-SPI 仅查找本次进程拥有的控件，XTest 仅使用本次 Xvfb。
 - 地图中的其它平台入口也是待验证范围。Windows 在此机器只读取 Actions，Qt、浏览器或 VS Code 前提不足时如实记录未运行。
 

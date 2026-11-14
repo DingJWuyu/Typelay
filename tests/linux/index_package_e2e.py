@@ -9,7 +9,9 @@ import os
 import shutil
 import signal
 import struct
+import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -46,6 +48,21 @@ class Check:
         self.package, self.cache, self.output = package, cache, output
         self.data, self.config = output / "data", output / "config"
         self.downloads = output / "cache"
+        if scratch := os.environ.get("TYPELAY_VERIFY_SCRATCH"):
+            private = Path(tempfile.mkdtemp(prefix="index-lifecycle-", dir=scratch))
+            self.data, self.config = private / "data", private / "config"
+            self.downloads = private / "cache"
+            self.downloads.mkdir()
+            subprocess.run(
+                [
+                    "cp",
+                    "-a",
+                    "--reflink=auto",
+                    os.environ["TYPELAY_VERIFY_INSTALL_CACHE"] + "/.",
+                    str(self.downloads / "components"),
+                ],
+                check=True,
+            )
         self.children, self.sequence = [], 0
         self.host = None
         self.status = None
@@ -306,7 +323,7 @@ class Check:
         }
         lock = json.loads((worker / "native/index/model.lock.json").read_text())
         target = self.downloads / "components" / INDEX / lock["version"]
-        target.mkdir(parents=True)
+        target.mkdir(parents=True, exist_ok=True)
         for kind in ("model", "model_license"):
             record = lock[kind]
             source = self.cache / record["file"]

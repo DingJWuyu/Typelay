@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Type synthetic text in stock gtk3-demo and observe the production preview."""
 
-import argparse
 import json
 import os
 import re
@@ -70,9 +69,6 @@ def snapshot(pid):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cache", type=Path, required=True)
-    args = parser.parse_args()
     output = Path(os.environ["TYPELAY_VERIFY_OUTPUT"])
     session = json.loads((output / "session.json").read_text())
     assert session["NIRI_SOCKET"] == os.environ["NIRI_SOCKET"]
@@ -123,16 +119,8 @@ def main():
 
     try:
         (output / "preflight.log").write_text(run([*launch, "preflight"], timeout=60))
-        # Seed only the official download cache. The installer still verifies every byte.
-        catalog = json.loads((package / "worker/model-catalog.json").read_text())
-        model = next(p for p in catalog["packages"] if p["id"] == "index-translate-2b-q4-k-m")
-        cache = (
-            Path(os.environ["XDG_CACHE_HOME"])
-            / "typelay/components"
-            / model["id"]
-            / model["version"]
-        )
-        shutil.copytree(args.cache.resolve(), cache)
+        # private-session seeds download caches for every journey. The installer
+        # still installs into the empty final data directory and verifies bytes.
         with (output / "model-install.log").open("w") as log:
             record({"command": [app, "--install-models"], "emptyDataDirectory": True})
             subprocess.run(

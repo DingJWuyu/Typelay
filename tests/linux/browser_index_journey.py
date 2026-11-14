@@ -116,9 +116,9 @@ def run(arguments):
         assert not (paths.data / "components/current").exists()
         catalog = json.loads((installed / "worker/model-catalog.json").read_text())
         model = next(item for item in catalog["packages"] if item["id"] == INDEX)
-        shutil.copytree(
-            arguments.index_cache, paths.cache / "components" / INDEX / model["version"]
-        )
+        cache = paths.cache / "components" / INDEX / model["version"]
+        if arguments.index_cache.resolve() != cache.resolve():
+            shutil.copytree(arguments.index_cache, cache, dirs_exist_ok=True)
         app = installed / "typelay"
         actions.append({"command": [str(app), "--install-models"], "emptyDataDirectory": True})
         save("actions.json", actions)

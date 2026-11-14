@@ -115,6 +115,16 @@ jobs:
         id: input-feedback
         if: ${{ !cancelled() && steps.python.outcome == 'success' }}
         run: python tests/linux/input_feedback.py -v
+      - name: Verify offline verification isolation and cache ownership
+        id: verification-resources
+        if: ${{ !cancelled() && steps.python.outcome == 'success' }}
+        # Permit unprivileged namespaces only for this test, then restore the
+        # disposable runner policy. The test itself still runs as the runner user.
+        run: |
+          namespace_policy=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)
+          trap 'sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns="$namespace_policy"' EXIT
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          python tests/linux/test_verification_resources.py -v
       - name: Verify shared behavior without Windows
         id: shared-behavior
         if: ${{ !cancelled() && steps.python.outcome == 'success' }}
@@ -124,7 +134,7 @@ jobs:
         if: always()
         env:
           CI_STEPS: ${{ toJSON(steps) }}
-          CI_REQUIRED_STEPS: python-lint python-format input-feedback shared-behavior
+          CI_REQUIRED_STEPS: python-lint python-format input-feedback verification-resources shared-behavior
         run: python eng/shared/ci_report.py
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
