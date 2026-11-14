@@ -5,6 +5,61 @@ namespace TypeLay.Runtime.Tests;
 
 public sealed class ManualSourceObservationTests
 {
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public void SecondManualEditKeepsItsDraftThroughEditorHandoffAndConfirmedReturn(
+        bool captureBeforeEditorFocus, bool captureBeforeReturnConfirmation)
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.Service.SourceVersion = new(1, 1, 1, 1, 1, 1, 1, 1);
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        s.Input.InEditor = true;
+        s.View.DraftChanged!("First manual wording");
+        s.View.ReturnRequested!(s.View.Token);
+        s.Tick();
+        var firstPermit = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        int jobs = s.Model.Jobs.Count;
+
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        s.View.DraftChanged!("Second manual wording");
+        if (captureBeforeEditorFocus)
+        {
+            s.Tick();
+            Assert.Equal(SessionState.EditingTranslation, s.View.State);
+            Assert.Null(s.Input.Permit);
+        }
+        s.Input.InEditor = true;
+        if (captureBeforeReturnConfirmation)
+            s.Service.PendingReturn = new();
+        s.View.ReturnRequested!(s.View.Token);
+        if (captureBeforeReturnConfirmation)
+        {
+            s.Input.InEditor = false;
+            s.Tick();
+            Assert.Equal(SessionState.ReturningToSource, s.View.State);
+            Assert.Null(s.Input.Permit);
+            Assert.Empty(s.Service.Writes);
+            s.Service.PendingReturn!.SetResult(true);
+        }
+        s.Tick();
+        s.Tick();
+
+        Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
+        Assert.Equal("Second manual wording", s.View.Preview);
+        Assert.Equal(jobs, s.Model.Jobs.Count);
+        var secondPermit = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        Assert.NotEqual(firstPermit.Plan.Id, secondPermit.Plan.Id);
+        Assert.Empty(s.Service.Writes);
+        s.Input.Notices.Enqueue(new("accept", secondPermit, s.Loop.NowMs, s.Input.UserEpoch,
+            s.Input.ForegroundEpoch, CommandGeneration: s.Input.CommandGeneration));
+        s.Tick();
+        Assert.Equal("Second manual wording", Assert.Single(s.Service.Writes).Replacement);
+    }
+
     public static IEnumerable<object[]> NativeVersionChanges()
     {
         var random = new Random(7613);

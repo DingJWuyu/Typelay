@@ -1346,6 +1346,23 @@ private:
         return sameInteraction(before, after) && before.value("draftRevision") == after.value("draftRevision")
             && before.value("actionRevision") == after.value("actionRevision");
     }
+    static bool sameMotionView(const QJsonObject &before, const QJsonObject &after) {
+        // Fresh permits change the hint and display sequence inside the same
+        // interaction. Those display values do not change the spring's target.
+        const auto withoutAcceptanceDisplay = [](QJsonObject view) {
+            view.remove("canAccept");
+            auto context = view.value("viewContext").toObject();
+            auto identity = context.value("identity").toObject();
+            identity.remove("displaySequence");
+            context.insert("identity", identity);
+            view.insert("viewContext", context);
+            auto presentation = view.value("presentation").toObject();
+            presentation.remove("tabHint");
+            view.insert("presentation", presentation);
+            return view;
+        };
+        return withoutAcceptanceDisplay(before) == withoutAcceptanceDisplay(after);
+    }
     static QJsonObject formPresentation(const QJsonObject &view) {
         return view.value("viewContext").toObject().value("glossaryForm").toObject();
     }
@@ -3939,16 +3956,19 @@ private:
                         observedMenu->setProperty("typelay.qt.menu.retirement", QVariant::fromValue(retirement));
                     }
                 }
-                const bool continueMotion = overlayMotion_.isActive()
-                    && integer(data, "visualExpansionFrom", -1) == overlayRevision_
-                    && integer(data, "revision", -1) == overlayRevision_ + 1
+                const bool expansionEcho = integer(data, "visualExpansionFrom", -1) == overlayRevision_
+                    && integer(data, "revision", -1) == overlayRevision_ + 1 && view == overlayView_;
+                const bool acceptanceDisplay = integer(data, "revision", -1) == overlayRevision_
+                    && integer(data, "visualExpansionFrom", -1) == -1
+                    && sameDraftAction(previousIdentity, identity) && sameMotionView(overlayView_, view);
+                const bool continueMotion = overlayMotion_.isActive() && (expansionEcho || acceptanceDisplay)
                     && target == overlayTarget_ && target->field == motionSource_ && editor_ == motionEditor_
                     && editor_ && editor_->document() == motionDocument_ && editor_->document()->revision() == motionDocumentRevision_
                     && editor_->isReadOnly() == motionReadOnly_ && editor_->focusPolicy() == motionFocusPolicy_
                     && card_ && card_->parentWidget() == motionParent_ && motionParent_
                     && motionParent_->geometry() == motionParentBounds_ && target->field->window() == motionParent_
                     && geometry(target) == motionGeometry_ && data.value("generation") == overlayGeneration_
-                    && view == overlayView_ && data.value("theme").toString(QStringLiteral("system")) == overlayTheme_
+                    && data.value("theme").toString(QStringLiteral("system")) == overlayTheme_
                     && data.value("appearance").toObject() == overlayAppearance_;
                 if (overlayMotion_.isActive())
                     traceOverlayMotion("render", integer(data, "revision", -1), integer(data, "visualExpansionFrom", -1), continueMotion);
@@ -4055,8 +4075,8 @@ private:
                 status_->setVisible(isPaused || !capsule);
                 language_->setVisible(!isPaused); resume_->setVisible(isPaused); resume_->setEnabled(!pendingResume_);
                 if (isPaused) closeOverlayMenus();
-                // Only the exact one-use expansion echo may continue geometry.
-                // All current view/authority/edit state above has already applied.
+                // The expansion echo and acceptance-only display updates keep
+                // the same geometry. Current authority and edit checks still apply.
                 if (continueMotion) motionRevision_ = overlayRevision_;
                 overlayTheme_ = data.value("theme").toString(QStringLiteral("system"));
                 applyOverlayTheme();

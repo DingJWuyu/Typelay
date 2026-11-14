@@ -134,6 +134,10 @@ class OverlayMotionTraceTests(unittest.TestCase):
     def test_completed_native_motion_reports_its_actual_continuation(self):
         self.assertEqual(settled_overlay_motion(self.completed), {"revision": 94, "elapsedMs": 752})
 
+    def test_start_logging_can_follow_clock_restart_by_one_millisecond(self):
+        delayed_start = self.completed.replace("phase=started time=0", "phase=started time=1")
+        self.assertEqual(settled_overlay_motion(delayed_start), {"revision": 94, "elapsedMs": 752})
+
     def test_original_reverse_click_stops_old_motion_before_its_own_settlement(self):
         # CI run 43563208796 reached the compact frame with this original
         # single-click trace. The stopped expansion is not the new collapse.
@@ -185,6 +189,20 @@ class OverlayMotionTraceTests(unittest.TestCase):
                 "settled time=752 running=1 revision=95", "settled time=752 running=1 revision=94"
             ),
             self.completed + continuation,
+        ):
+            with self.subTest(trace=changed):
+                self.assertIsNone(settled_overlay_motion(changed))
+
+    def test_same_revision_display_continues_only_with_native_confirmation(self):
+        terminal = "tlqt-motion phase=settled time=752 running=1 revision=94 incoming=-1 from=-1 continuation=-1\n"
+        display = "tlqt-motion phase=render time=63 running=1 revision=94 incoming=94 from=-1 continuation=1\n"
+        continued = self.completed.replace(terminal, display + terminal)
+        self.assertEqual(settled_overlay_motion(continued), {"revision": 94, "elapsedMs": 752})
+        for changed in (
+            continued.replace(display, display.replace("continuation=1", "continuation=0")),
+            continued.replace(display, display.replace("incoming=94", "incoming=93")),
+            continued.replace(display, display.replace("from=-1", "from=94")),
+            continued.replace(terminal, terminal.replace("phase=settled", "phase=layout-stop")),
         ):
             with self.subTest(trace=changed):
                 self.assertIsNone(settled_overlay_motion(changed))

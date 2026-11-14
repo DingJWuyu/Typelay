@@ -852,15 +852,13 @@ public sealed partial class SessionController : IDisposable
                     } != basis)
                     StopSession("manual-observation-changed");
                 else if (continuous && snapshot.InputEpoch > _session.Current!.InputEpoch)
-                {
-                    RevokeInput("manual-source-observed");
-                    _permitUntil = 0;
-                    if (_session.RebaseManualCandidate(_session.Current, snapshot, now, resumeObservation: true))
-                        _generation++;
-                }
+                    RebaseObservedManualCandidate(snapshot, now, resumeObservation: true);
                 _manualObservation = null;
             }
-            else if (_manualObservation is { SourceVersion.IsValid: true } && _session.Current is { } manualSource
+            // Editing and returning own their original handoff checks. A prior
+            // pending observation cannot retire a later manual edit's draft.
+            else if (_session.State == SessionState.EditedTranslationPending
+                && _manualObservation is { SourceVersion.IsValid: true } && _session.Current is { } manualSource
                 && snapshot.Target == manualSource.Target && snapshot.Text == manualSource.Text
                 && !ManualSourceVersionMatches(result, request, now))
                 StopSession("manual-source-version-changed");
@@ -934,14 +932,9 @@ public sealed partial class SessionController : IDisposable
                 if (_session.RebaseManualCandidate(_session.Current!, snapshot, now))
                     _generation++;
             }
-            else if (ManualSourceVersionMatches(result, request, now)
-                && snapshot.InputEpoch > _session.Current!.InputEpoch)
-            {
-                RevokeInput("manual-source-observed");
-                _permitUntil = 0;
-                if (_session.RebaseManualCandidate(_session.Current, snapshot, now))
-                    _generation++;
-            }
+            else if (_session.Current is { } manualBasis && snapshot.InputEpoch > manualBasis.InputEpoch
+                && ManualSourceVersionMatches(result, request, now))
+                RebaseObservedManualCandidate(snapshot, now, resumeObservation: false);
             // A capture may finish between the platform return and its awaiting
             // continuation. It cannot publish before that return has been verified.
             if (_interaction?.BeforeObserve(result, request, now) == true)
@@ -1905,6 +1898,14 @@ public sealed partial class SessionController : IDisposable
         && observed.WindowEpoch == _hook.WindowEpoch && observed.ConfigurationRevision == _configurationRevision
         && observed.CommandGeneration == _hook.CommandGeneration && observed.ConnectionId == _hook.ConnectionId
         && _hook.Ready && _broker.Available && _hook.GetFocus(source.Target) == FocusMember.Source;
+
+    private void RebaseObservedManualCandidate(InputSnapshot snapshot, long now, bool resumeObservation)
+    {
+        RevokeInput("manual-source-observed");
+        _permitUntil = 0;
+        if (_session.RebaseManualCandidate(_session.Current!, snapshot, now, resumeObservation))
+            _generation++;
+    }
 
     private bool ManualInputEpochsAreCurrent() => _manualObservation is { } observed
         && observed.UserEpoch == _hook.UserEpoch && observed.SourceEpoch == _hook.SourceUserEpoch;

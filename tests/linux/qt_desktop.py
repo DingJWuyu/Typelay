@@ -95,18 +95,19 @@ def settled_overlay_motion(trace):
     revision = attempt[3]
     if not (
         attempt[2:] in ((0, revision, -1, -1, -1), (1, revision, -1, -1, -1))
-        and started[1:] == (0, 1, revision, -1, -1, -1)
+        and started[2:] == (1, revision, -1, -1, -1)
     ):
         return None
     elapsed = started[1]
     for render in events[2:-1]:
         incoming = render[4]
+        expansion_echo = incoming == revision + 1 and render[5] == revision
+        acceptance_display = incoming == revision and render[5] == -1
         if not (
             render[0] == "render"
-            and render[2:] == (1, revision, incoming, revision, 1)
-            # Every native continuation is old+1, but the actual incoming
-            # revision must be observed at each link rather than invented.
-            and incoming == revision + 1
+            and render[2:4] == (1, revision)
+            and render[6] == 1
+            and (expansion_echo or acceptance_display)
             and render[1] >= elapsed
         ):
             return None

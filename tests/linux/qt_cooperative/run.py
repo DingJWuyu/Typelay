@@ -431,7 +431,7 @@ def language_options(native, captured, generation, state, window, environment, n
     def controls():
         return state().get("overlayControls", {})
 
-    def render(advance_revision=True, can_edit=False):
+    def render(advance_revision=True, can_edit=False, appearance=None):
         nonlocal revision
         if advance_revision:
             revision += 1
@@ -459,6 +459,7 @@ def language_options(native, captured, generation, state, window, environment, n
                 "revision": revision,
                 "expiresAtMs": now_ms() + 800,
                 "theme": "light",
+                "appearance": appearance or {},
                 "view": view,
             },
         )["visible"]
@@ -786,6 +787,22 @@ def language_options(native, captured, generation, state, window, environment, n
         lambda: value if (value := state())["overlayMoreMenuVisible"] else None,
         "open Hide before view retirement",
     )
+    # Native editor readiness can change CanEdit without changing the formal
+    # interaction or action identity. It grants no editing or write by itself.
+    ready = render(advance_revision=False, can_edit=True)
+    assert ready["overlayMoreMenuVisible"] and ready["editorReadOnly"]
+    for name in (
+        "first",
+        "second",
+        "editorText",
+        "editorDocument",
+        "editorDocumentRevision",
+        "editorGeometry",
+        "overlayGeometry",
+        "focusTransitions",
+    ):
+        assert ready[name] == pressed[name], name
+    assert not [item for item in native.events if item.get("event") == "accepted"]
     bounds = pressed["overlayControls"]["typelay-hide"]["geometry"]
     before_escape = len(native.events)
     run(
@@ -802,7 +819,7 @@ def language_options(native, captured, generation, state, window, environment, n
         env=environment,
     )
     try:
-        retired_hide = render(advance_revision=False, can_edit=True)
+        retired_hide = render(can_edit=True)
         assert not retired_hide["overlayMoreMenuVisible"]
     finally:
         run(["xdotool", "mouseup", "1"], env=environment)
@@ -816,9 +833,26 @@ def language_options(native, captured, generation, state, window, environment, n
     render(can_edit=False)
     before_events = events()
     toggle(True, renew=False)
+    before_permissions = state()
     permissions = render(advance_revision=False, can_edit=True)
-    assert not permissions["overlayMenuVisible"], "changed editor permission must retire language"
+    assert permissions["overlayMenuVisible"], (
+        "editor readiness retains the same language interaction"
+    )
     assert not permissions["overlayMoreMenuVisible"]
+    assert permissions["editorReadOnly"]
+    for name in (
+        "first",
+        "second",
+        "editorText",
+        "editorDocument",
+        "editorDocumentRevision",
+        "editorGeometry",
+        "overlayGeometry",
+        "focusTransitions",
+    ):
+        assert permissions[name] == before_permissions[name], name
+    assert events() == before_events
+    assert not [item for item in native.events if item.get("event") == "accepted"]
     view.update(sourceLanguage="ja", targetLanguage="ko")
     render(advance_revision=False)
     for invalid in (None, {**choices, "target": choices["target"] * 2}):
@@ -843,6 +877,61 @@ def language_options(native, captured, generation, state, window, environment, n
     assert events() == before_events
     assert state()["first"]["text"] == original["first"]["text"]
     assert state()["second"]["text"] == original["second"]["text"]
+    # Real native motion must survive a fresh acceptance display in the same
+    # interaction, but a changed interaction, body or layout retires that motion.
+    motion_evidence = {}
+    preview = view["text"]
+    for change in ("acceptance-display", "interaction", "text", "layout"):
+        native.call("overlay-hide")
+        view["text"] = "Read-only long preview with stable source ownership. " * 24
+        view["canAccept"] = False
+        view["presentation"]["tabHint"] = "Ctrl+F7 交还应用"
+        baseline = render()
+        assert baseline["animationDuration"] > 0
+        checkpoint = native_log.stat().st_size
+        click("typelay-expand")
+
+        def motion_trace():
+            with native_log.open() as stream:
+                stream.seek(checkpoint)
+                return "\n".join(
+                    line for line in stream.read().splitlines() if line.startswith("tlqt-motion ")
+                )
+
+        wait(lambda: "phase=started " in motion_trace(), "original native expansion starts")
+        if change == "acceptance-display":
+            view["canAccept"] = True
+            view["presentation"]["tabHint"] = "Ctrl+F7 接受译文"
+        elif change == "text":
+            view["text"] += "Changed preview."
+        updated = render(
+            advance_revision=change == "interaction",
+            appearance={"textSize": 16} if change == "layout" else None,
+        )
+        if change == "acceptance-display":
+            trace = wait(
+                lambda: value if "phase=settled " in (value := motion_trace()) else None,
+                "same-interaction acceptance display preserves native settlement",
+            )
+            assert f"incoming={revision} from=-1 continuation=1" in trace
+            assert "phase=layout-stop " not in trace
+        else:
+            trace = motion_trace()
+            assert "phase=layout-stop " in trace, (change, trace)
+            assert "phase=settled " not in trace, (change, trace)
+        assert updated["editorReadOnly"] and not updated["editorFocused"]
+        for field in ("first", "second"):
+            assert updated[field] == baseline[field], (change, field)
+        native.call("describe")
+        assert not [item for item in native.events if item.get("event") == "accepted"]
+        motion_evidence[change] = trace.splitlines()
+    native_log.with_name("language-options-motion.json").write_text(
+        json.dumps(motion_evidence, indent=2) + "\n"
+    )
+    native.call("overlay-hide")
+    view["text"] = preview
+    view.pop("canAccept")
+    view["presentation"].pop("tabHint")
     # A genuinely outside QWidget must still receive the original mouse press.
     # End this fixture by focusing the other source, rather than manufacturing
     # a new authority or restoring focus after the click.
