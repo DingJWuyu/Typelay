@@ -1094,7 +1094,7 @@ def run(arguments):
             # Exercise the real extension, native host, niri PID authority, shared
             # controller and actual CPU model together, not only a DOM transport seam.
             from playwright.sync_api import sync_playwright
-            from support.browser_process import chromium_context
+            from support.browser_process import chromium_context, extension_worker
 
             with sync_playwright() as playwright:
                 browser_environment = dict(environment)
@@ -1113,11 +1113,7 @@ def run(arguments):
                     ],
                 ) as browser:
                     try:
-                        worker = (
-                            browser.service_workers[0]
-                            if browser.service_workers
-                            else browser.wait_for_event("serviceworker", timeout=15000)
-                        )
+                        worker = extension_worker(browser, extension)
                         subprocess.run(
                             [
                                 sys.executable,

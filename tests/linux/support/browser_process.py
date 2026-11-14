@@ -1,11 +1,29 @@
 """Disposable real Chromium with Playwright's default focus emulation disabled."""
 
+import json
 import os
 import signal
 import subprocess
 import time
 from contextlib import contextmanager
 from pathlib import Path
+
+
+def extension_worker(context, extension):
+    """Locate this packaged extension, even when Chromium starts built-in workers."""
+    manifest = json.loads((Path(extension) / "manifest.json").read_text())
+
+    def matches(worker):
+        return worker.evaluate(
+            "expected => { const actual = chrome.runtime.getManifest(); "
+            "return actual.name === expected.name && actual.version === expected.version "
+            "&& actual.background?.service_worker === expected.background.service_worker; }",
+            manifest,
+        )
+
+    return next((worker for worker in context.service_workers if matches(worker)), None) or (
+        context.wait_for_event("serviceworker", predicate=matches, timeout=15000)
+    )
 
 
 @contextmanager
