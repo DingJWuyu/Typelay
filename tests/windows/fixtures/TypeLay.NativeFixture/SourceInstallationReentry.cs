@@ -35,6 +35,7 @@ internal sealed class SourceInstallationReentry : IDisposable
     private bool _dispatchDownCompleted, _dispatchUpCompleted;
     private nint _setupField;
     private int _setupSelectionCount;
+    private int _setupEventCount, _setupEventDropped;
 
     internal void ObserveSetupField(nint field)
     {
@@ -63,6 +64,8 @@ internal sealed class SourceInstallationReentry : IDisposable
         if (code >= 0 && wp == 1)
         {
             var message = Marshal.PtrToStructure<N.MessageStruct>(lp);
+            if (message.Message is 0x0201 or 0x0202)
+                ObserveSetupEvent(2, message.Hwnd, message.Message, message.WParam, message.LParam, message.Time);
             nint dispatchField = N.GetProp(_root, "TypeLay.Test.SourceDispatchField.v1");
             nint dispatchKey = N.GetProp(_root, "TypeLay.Test.SourceDispatchKey.v1");
             if (dispatchField != 0 && dispatchKey != 0 && message.WParam == (nuint)dispatchKey
@@ -122,6 +125,8 @@ internal sealed class SourceInstallationReentry : IDisposable
 
     internal void ObserveDispatchedInput(N.MessageStruct message)
     {
+        if (message.Message is 0x0201 or 0x0202)
+            ObserveSetupEvent(3, message.Hwnd, message.Message, message.WParam, message.LParam, message.Time);
         // Called by the fixture's normal message pump only after dispatch/dialog
         // handling. WH_CALLWNDPROC is not evidence that posted input was handled.
         nint key = N.GetProp(_root, "TypeLay.Test.SourceDispatchKey.v1");
@@ -156,6 +161,8 @@ internal sealed class SourceInstallationReentry : IDisposable
         if (code >= 0)
         {
             var message = Marshal.PtrToStructure<CallMessage>(lp);
+            if (message.Message is 0x0006 or 0x0007 or 0x0008 or 0x001c or 0x0021)
+                ObserveSetupEvent(1, message.Hwnd, message.Message, message.WParam, message.LParam, null);
             if (_setupField != 0 && message.Hwnd == _setupField && message.Message == N.EM_SETSEL)
             {
                 // This existing WH_CALLWNDPROC observes entry, not stock Edit completion.
@@ -249,6 +256,39 @@ internal sealed class SourceInstallationReentry : IDisposable
             }
         }
         return CallNextHookEx(0, code, wp, lp);
+    }
+
+    private void ObserveSetupEvent(int phase, nint window, uint message, nuint wParam, nint lParam, uint? nativeTime)
+    {
+        if (_setupField == 0 || (window != _root && window != _setupField))
+            return;
+        // Only the opted-in source setup case reads these existing HWND
+        // properties. Never alter a message, its dispatch, or the stock Edit.
+        const string prefix = "TypeLay.Test.SourceSetup.Event.";
+        if (_setupEventCount == 32)
+        {
+            N.SetProp(_root, prefix + "Dropped", ++_setupEventDropped);
+            return;
+        }
+        try
+        {
+            string entry = prefix + _setupEventCount + ".";
+            bool stored = N.SetProp(_root, entry + "Phase", phase)
+                & N.SetProp(_root, entry + "Window", window)
+                & N.SetProp(_root, entry + "Message", (nint)message)
+                & N.SetProp(_root, entry + "WParam", unchecked((nint)wParam))
+                & N.SetProp(_root, entry + "LParam", lParam)
+                & N.SetProp(_root, entry + "NativeTime", (nint)(nativeTime ?? 0))
+                & N.SetProp(_root, entry + "ObservedAtMs", (nint)WindowsInterruptClock.NowMs);
+            if (!stored)
+                N.SetProp(_root, prefix + "Incomplete", 1);
+            if (!N.SetProp(_root, prefix + "Count", ++_setupEventCount))
+                N.SetProp(_root, prefix + "Incomplete", 1);
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            N.SetProp(_root, prefix + "Incomplete", 1);
+        }
     }
 
     public void Dispose()

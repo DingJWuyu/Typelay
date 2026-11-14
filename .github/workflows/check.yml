@@ -240,6 +240,18 @@ jobs:
       env:
         TYPELAY_TRACE: ${{ github.workspace }}/artifacts/controller-trace.jsonl
       run: python eng/windows/test_contracts.py --shard ${{ matrix.shard }} --configuration Release --results-directory artifacts/test-results
+    - name: Preserve Windows TRX and failure summaries without screenshots
+      if: ${{ !cancelled() && (steps.windows-contracts.outcome == 'success' || steps.windows-contracts.outcome == 'failure') }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: windows-trx-${{ matrix.shard }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          artifacts/test-results/*.trx
+          artifacts/test-results/current-contracts.json
+          artifacts/test-results/contracts-*/*/*.trx
+          artifacts/test-results/contracts-*/result.json
+        if-no-files-found: error
+        retention-days: 14
     - name: Package and smoke the isolated physical Tab handoff
       id: physical-tab-package
       if: ${{ !cancelled() && matrix.shard == 2 && steps.windows-build.outcome == 'success' }}
@@ -506,6 +518,16 @@ jobs:
           artifacts/hy-packages/*.json
           artifacts/hy-packages/*.png
           artifacts/hy-packages/trace*.jsonl
+        if-no-files-found: warn
+        retention-days: 14
+    - name: Preserve small Windows package identity and check results
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: windows-package-identity-${{ matrix.group }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          artifacts/ci/
+          artifacts/TypeLay-Windows-preview.zip.sha256
         if-no-files-found: warn
         retention-days: 14
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

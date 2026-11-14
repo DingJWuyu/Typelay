@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -237,7 +238,8 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
     public Task ExplicitOwnedForegroundPreparationPreservesGeometryBeforeTheSingleSourceClick(string scenario)
         => desktop.RunAsync(async () =>
         {
-            await using var source = await Source.Start();
+            bool observeInput = scenario == "foreground";
+            await using var source = await Source.Start(observeSetupInput: observeInput);
             Assert.True(N.GetWindowRect(source.Root, out var originalBounds));
             Assert.True(N.GetWindowRect(source.Field, out var fieldBounds));
             var point = new N.Point
@@ -266,13 +268,71 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
             int focusObservations = 0;
             (N.FocusObservation Focus, long AtMs)? firstFocus = null, lastFocus = null;
             nint coverRoot = 0;
+            var foregroundEvents = new List<object>(16);
+            var coverMessages = new List<object>(16);
+            int foregroundDropped = 0, coverDropped = 0, observerErrors = 0;
+            nint foregroundHook = 0;
+            HwndSource? coverSource = null;
+            string observationStage = "before-cover";
+            bool scenarioCompleted = false;
+            Native.WinEventProc foreground = (_, _, window, _, _, thread, eventTime) =>
+            {
+                try
+                {
+                    if (foregroundEvents.Count == 16)
+                    {
+                        foregroundDropped++;
+                        return;
+                    }
+                    foregroundEvents.Add(new
+                    {
+                        stage = observationStage,
+                        window = (long)window,
+                        role = WindowRole(window),
+                        thread,
+                        eventTime,
+                        observedAtMs = WindowsInterruptClock.NowMs
+                    });
+                }
+                catch (Exception error) when (error is not OutOfMemoryException) { observerErrors++; }
+            };
+            HwndSourceHook coverHook = (nint hwnd, int message, nint wParam, nint lParam, ref bool handled) =>
+            {
+                if (hwnd != coverRoot || message is not (0x0006 or 0x0007 or 0x0008 or 0x001c or 0x0021 or 0x0201 or 0x0202))
+                    return 0;
+                try
+                {
+                    if (coverMessages.Count == 16)
+                        coverDropped++;
+                    else
+                        coverMessages.Add(new
+                        {
+                            stage = observationStage,
+                            window = (long)hwnd,
+                            message,
+                            wParam = (long)wParam,
+                            lParam = (long)lParam,
+                            observedAtMs = WindowsInterruptClock.NowMs,
+                            handledAtEntry = handled
+                        });
+                }
+                catch (Exception error) when (error is not OutOfMemoryException) { observerErrors++; }
+                return 0; // Observe entry only; never change handled.
+            };
             try
             {
+                if (observeInput)
+                    foregroundHook = Native.SetWinEventHook(3, 3, 0, foreground, 0, 0, 0);
                 cover.Show();
                 await rendered.Task.WaitAsync(source.Token);
                 coverRenderedAtMs = WindowsInterruptClock.NowMs;
-                Assert.True(cover.Activate());
                 coverRoot = new WindowInteropHelper(cover).Handle;
+                if (observeInput)
+                {
+                    coverSource = HwndSource.FromHwnd(coverRoot);
+                    coverSource?.AddHook(coverHook);
+                }
+                Assert.True(cover.Activate());
                 Assert.Equal(coverRoot, N.GetForegroundWindow());
                 Assert.Equal(coverRoot, N.GetAncestor(WindowFromPoint(point), 2));
                 Assert.Equal(0, N.GetStyle(source.Root, -20) & 0x8); // WS_EX_TOPMOST.
@@ -289,7 +349,10 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                     Assert.Equal("source-foreground-identity-changed", failure.Code);
                 }
                 else
+                {
+                    observationStage = "foreground-request";
                     NativeSourceSetup.RequestOwnedForeground(source.Root, source.Field, source.Process, action.Token);
+                }
                 if (scenario == "foreground")
                 {
                     point = await NativeSourceSetup.WaitVisibleAsync(source.Root, source.Field, source.Process, observation, source.Token);
@@ -338,8 +401,10 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                     }
                     finally { SetThreadDpiAwarenessContext(previousDpi); }
                     observation.ClickStartedAtMs = WindowsInterruptClock.NowMs;
+                    observationStage = "original-click";
                     await NativeSourceSetup.ClickAsync(source.Root, source.Field, source.Process, source.Token);
                     observation.ClickEndedAtMs = WindowsInterruptClock.NowMs;
+                    observationStage = "focus-wait";
                     focusWaitStartedAtMs = WindowsInterruptClock.NowMs;
                     try
                     {
@@ -358,7 +423,9 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                     }
                     catch (OperationCanceledException) when (source.Token.IsCancellationRequested)
                     {
+                        observationStage = "cancelled";
                         WriteSourceLifetimeAfterFocusCancellation();
+                        WriteOriginalInputAfterFocusCancellation();
                         throw;
                     }
                     focusMatchedAtMs = WindowsInterruptClock.NowMs;
@@ -374,9 +441,17 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                 }
                 Assert.Equal(0, coverClicks);
                 Assert.Equal(Source.Text, N.ReadText(source.Field, Limits.MaxTextUnits));
+                scenarioCompleted = true;
             }
             finally
             {
+                bool observersDetached = foregroundHook == 0 || Native.UnhookWinEvent(foregroundHook);
+                try
+                {
+                    coverSource?.RemoveHook(coverHook);
+                }
+                catch (Exception error) when (error is not OutOfMemoryException) { observersDetached = false; }
+                GC.KeepAlive(foreground);
                 TestContext.Current.TestOutputHelper?.WriteLine($"Source visibility: attempts={observation.VisibilityAttempts}; "
                     + $"foregroundMatched={observation.VisibilityForegroundMatched}; geometry={observation.VisibilityGeometryAvailable}; firstHit={observation.VisibilityFirstHit}; lastHit={observation.VisibilityLastHit}.");
                 TestContext.Current.TestOutputHelper?.WriteLine("Source focus wait: " + JsonSerializer.Serialize(new
@@ -395,8 +470,63 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                 }));
                 cover.Close();
                 SetCursorPos(previous.X, previous.Y);
+                if (!observersDetached)
+                    TestContext.Current.TestOutputHelper?.WriteLine("Source input observers detached: false.");
+                if (scenarioCompleted)
+                    Assert.True(observersDetached, "source-input-observer-did-not-detach");
             }
             long? Since(long? atMs) => atMs - source.BudgetStartedAtMs;
+            string WindowRole(nint window) => window == source.Root ? "source-root" : window == source.Field ? "source-field"
+                : window == coverRoot && coverRoot != 0 ? "cover" : window == 0 ? "none" : "other";
+            void WriteOriginalInputAfterFocusCancellation()
+            {
+                if (!observeInput)
+                    return;
+                try
+                {
+                    const string prefix = "TypeLay.Test.SourceSetup.Event.";
+                    int count = Math.Clamp((int)N.GetProp(source.Root, prefix + "Count"), 0, 32);
+                    var events = Enumerable.Range(0, count).Select(index =>
+                    {
+                        string entry = prefix + index + ".";
+                        int phase = (int)N.GetProp(source.Root, entry + "Phase");
+                        nint window = N.GetProp(source.Root, entry + "Window");
+                        return new
+                        {
+                            phase = phase == 1 ? "call-entry" : phase == 2 ? "queue-remove" : phase == 3 ? "after-dispatch-or-dialog" : "unknown",
+                            window = (long)window,
+                            role = WindowRole(window),
+                            message = (int)N.GetProp(source.Root, entry + "Message"),
+                            wParam = (long)N.GetProp(source.Root, entry + "WParam"),
+                            lParam = (long)N.GetProp(source.Root, entry + "LParam"),
+                            nativeTime = phase is 2 or 3 ? (uint?)unchecked((uint)(long)N.GetProp(source.Root, entry + "NativeTime")) : null,
+                            observedAtMs = (long)N.GetProp(source.Root, entry + "ObservedAtMs")
+                        };
+                    }).ToArray();
+                    TestContext.Current.TestOutputHelper?.WriteLine(JsonSerializer.Serialize(new
+                    {
+                        operation = "source-click-focus-not-delivered",
+                        sourceProcess = source.Process.Id,
+                        sourceRoot = (long)source.Root,
+                        sourceField = (long)source.Field,
+                        cover = (long)coverRoot,
+                        source.BudgetStartedAtMs,
+                        foregroundObserverInstalled = foregroundHook != 0,
+                        coverObserverInstalled = coverSource is not null,
+                        foregroundEvents = foregroundEvents.ToArray(),
+                        foregroundDropped,
+                        coverMessages = coverMessages.ToArray(),
+                        coverDropped,
+                        observerErrors,
+                        sourceMessages = events,
+                        sourceMessagesDropped = (int)N.GetProp(source.Root, prefix + "Dropped"),
+                        sourceMessagesIncomplete = N.GetProp(source.Root, prefix + "Incomplete") != 0,
+                        sourcePropertiesReadAfterCancellation = true,
+                        desktopAfterCancellation = ObserveDesktopAfterCancellation()
+                    }));
+                }
+                catch (Exception error) when (error is not OutOfMemoryException) { }
+            }
             void WriteSourceLifetimeAfterFocusCancellation()
             {
                 try
@@ -570,12 +700,14 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
         internal nint Root => (nint)descriptor.RootHwnd;
         internal nint Field => (nint)descriptor.Fields.Single(item => item.Name == (multiline ? "b" : "a")).Hwnd;
         internal nint OtherField => (nint)descriptor.Fields.Single(item => item.Name == (multiline ? "a" : "b")).Hwnd;
-        internal static async Task<Source> Start(bool multiline = false)
+        internal static async Task<Source> Start(bool multiline = false, bool observeSetupInput = false)
         {
             string root = AppContext.BaseDirectory;
             while (!File.Exists(Path.Combine(root, "TypeLay.slnx")))
                 root = Directory.GetParent(root)?.FullName ?? throw new DirectoryNotFoundException("TypeLay.slnx");
             var start = new ProcessStartInfo("dotnet") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+            if (observeSetupInput)
+                start.Environment["TYPELAY_FIXTURE_OBSERVE_SOURCE_SETUP"] = "1";
             start.ArgumentList.Add(Path.Combine(root, "tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll"));
             start.ArgumentList.Add("--stock-controls");
             var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
@@ -618,6 +750,74 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
             await process.WaitForExitAsync(cleanup.Token);
         }
     }
+
+    private static object ObserveDesktopAfterCancellation()
+    {
+        uint thread = GetCurrentThreadId();
+        long observedAtMs = WindowsInterruptClock.NowMs;
+        nint current = GetThreadDesktop(thread);
+        int? currentError = current == 0 ? Marshal.GetLastPInvokeError() : null;
+        nint input = OpenInputDesktop(0, false, 1); // DESKTOP_READOBJECTS only.
+        int? inputError = input == 0 ? Marshal.GetLastPInvokeError() : null;
+        string? currentName = null, inputName = null;
+        int? currentNameError = null, inputNameError = null;
+        bool? inputClosed = null;
+        int? closeError = null;
+        try
+        {
+            if (current != 0)
+                currentName = ReadName(current, out currentNameError);
+            if (input != 0)
+                inputName = ReadName(input, out inputNameError);
+        }
+        finally
+        {
+            // GetThreadDesktop is borrowed; only OpenInputDesktop is ours.
+            if (input != 0)
+            {
+                inputClosed = CloseDesktop(input);
+                if (inputClosed == false)
+                    closeError = Marshal.GetLastPInvokeError();
+            }
+        }
+        return new
+        {
+            readAfterCancellation = true,
+            observedAtMs,
+            callerThread = thread,
+            threadDesktopAvailable = current != 0,
+            inputDesktopOpened = input != 0,
+            currentError,
+            inputError,
+            currentNameRead = currentName is not null,
+            inputNameRead = inputName is not null,
+            // Names are compared only in this observation. No desktop name,
+            // switch time, activation cause or atomic identity is inferred.
+            namesMatch = currentName is null || inputName is null ? (bool?)null : currentName == inputName,
+            currentNameError,
+            inputNameError,
+            inputClosed,
+            closeError
+        };
+
+        static string? ReadName(nint handle, out int? error)
+        {
+            var value = new StringBuilder(256);
+            bool read = GetUserObjectInformationW(handle, 2, value, value.Capacity * sizeof(char), out _); // UOI_NAME.
+            error = read ? null : Marshal.GetLastPInvokeError();
+            return read ? value.ToString() : null;
+        }
+    }
+
+    [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll", SetLastError = true)] private static extern nint GetThreadDesktop(uint thread);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern nint OpenInputDesktop(uint flags, [MarshalAs(UnmanagedType.Bool)] bool inherit, uint access);
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)] private static extern bool CloseDesktop(nint desktop);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetUserObjectInformationW(nint handle, int index, StringBuilder information, int length, out int needed);
     [DllImport("user32.dll")] private static extern nint SetThreadDpiAwarenessContext(nint context);
     [DllImport("user32.dll")] private static extern nint WindowFromPoint(N.Point point);
     [DllImport("user32.dll")]

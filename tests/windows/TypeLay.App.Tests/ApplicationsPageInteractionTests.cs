@@ -393,7 +393,7 @@ public sealed partial class SettingsRenderingTests
         Assert.True(Native.GetCursorPos(out var previous));
         try
         {
-            ApplicationDialogAction(window, () => RightClickApplicationRow(window, row), "ApplicationRemovalConfirmation", interact);
+            ApplicationDialogAction(window, () => RightClickApplicationRow(window, row), "ApplicationRemovalConfirmation", interact, pointerTarget: row);
         }
         finally { SetCursorPos(previous.X, previous.Y); }
     }
@@ -402,8 +402,7 @@ public sealed partial class SettingsRenderingTests
     {
         row.BringIntoView();
         window.UpdateLayout();
-        var point = row.PointToScreen(new Point(60, row.ActualHeight / 2));
-        var pixel = new NativePoint { X = (int)point.X, Y = (int)point.Y };
+        var pixel = ApplicationRowPoint(row);
         Assert.Equal(new WindowInteropHelper(window).Handle, WindowFromPoint(pixel));
         Assert.Equal(0, Native.GetAsyncKeyState(2) & 0x8000);
         Assert.True(SetCursorPos(pixel.X, pixel.Y));
@@ -416,15 +415,21 @@ public sealed partial class SettingsRenderingTests
         Assert.Equal(2u, sent);
     }
 
-    private static void ApplicationDialogAction(SettingsWindow owner, Action open, string id, Action<Window> interact) =>
+    private static NativePoint ApplicationRowPoint(FrameworkElement row)
+    {
+        var point = row.PointToScreen(new Point(60, row.ActualHeight / 2));
+        return new NativePoint { X = (int)point.X, Y = (int)point.Y };
+    }
+
+    private static void ApplicationDialogAction(SettingsWindow owner, Action open, string id, Action<Window> interact, FrameworkElement? pointerTarget = null) =>
         ApplicationDialogActionAsync(owner, open, id, (dialog, ct) =>
         {
             ct.ThrowIfCancellationRequested();
             interact(dialog);
             return Task.CompletedTask;
-        });
+        }, pointerTarget: pointerTarget);
 
-    private static void ApplicationDialogActionAsync(SettingsWindow owner, Action open, string id, Func<Window, CancellationToken, Task> interact, bool awaitEntrance = true, bool observeNativeInput = false)
+    private static void ApplicationDialogActionAsync(SettingsWindow owner, Action open, string id, Func<Window, CancellationToken, Task> interact, bool awaitEntrance = true, bool observeNativeInput = false, FrameworkElement? pointerTarget = null)
     {
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         limit.CancelAfter(TimeSpan.FromSeconds(3));
@@ -616,7 +621,7 @@ public sealed partial class SettingsRenderingTests
             }
             finally { completed = true; }
         }
-        var action = owner.Dispatcher.BeginInvoke(new Action(() => interaction = InteractAsync()), DispatcherPriority.ApplicationIdle);
+        DispatcherOperation? action = null;
         var timeout = new DispatcherTimer(DispatcherPriority.Send, owner.Dispatcher) { Interval = TimeSpan.FromSeconds(3) };
         timeout.Tick += (_, _) =>
         {
@@ -683,7 +688,55 @@ public sealed partial class SettingsRenderingTests
                 }
             }
             timeout.Start();
+            if (pointerTarget is not null)
+            {
+                pointerTarget.BringIntoView();
+                owner.UpdateLayout();
+                nint handle = new WindowInteropHelper(owner).Handle;
+                // Loaded and arranged geometry do not prove native hit testing
+                // after Hide/Show. Wait for this exact row's screen point in the
+                // original dialog budget, then send the original click once.
+                bool RowReceivesClick() => pointerTarget.IsLoaded && pointerTarget.IsVisible
+                    && WindowFromPoint(ApplicationRowPoint(pointerTarget)) == handle;
+                if (!RowReceivesClick())
+                {
+                    var frame = new DispatcherFrame();
+                    Exception? hitTestFailure = null;
+                    bool inspecting = false;
+                    void InspectFrame(object? sender, EventArgs args)
+                    {
+                        if (inspecting || !frame.Continue)
+                            return;
+                        inspecting = true;
+                        try
+                        {
+                            ct.ThrowIfCancellationRequested();
+                            if (RowReceivesClick())
+                                frame.Continue = false;
+                        }
+                        catch (Exception error)
+                        {
+                            hitTestFailure = error;
+                            frame.Continue = false;
+                        }
+                        finally { inspecting = false; }
+                    }
+                    CompositionTarget.Rendering += InspectFrame;
+                    try
+                    {
+                        // Cancellation wakes the dispatcher even if no frame is
+                        // rendered, so a hidden or closed owner cannot hang here.
+                        using var cancelled = ct.Register(() => frame.Continue = false);
+                        Dispatcher.PushFrame(frame);
+                    }
+                    finally { CompositionTarget.Rendering -= InspectFrame; }
+                    ct.ThrowIfCancellationRequested();
+                    if (hitTestFailure is not null)
+                        System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(hitTestFailure).Throw();
+                }
+            }
             ct.ThrowIfCancellationRequested();
+            action = owner.Dispatcher.BeginInvoke(new Action(() => interaction = InteractAsync()), DispatcherPriority.ApplicationIdle);
             open();
             owner.Dispatcher.Invoke(() => { }, DispatcherPriority.SystemIdle);
         }
@@ -717,7 +770,7 @@ public sealed partial class SettingsRenderingTests
                 }
             }
         }
-        if (action.Status == DispatcherOperationStatus.Pending)
+        if (action?.Status == DispatcherOperationStatus.Pending)
             action.Abort();
         if (failure is not null)
         {

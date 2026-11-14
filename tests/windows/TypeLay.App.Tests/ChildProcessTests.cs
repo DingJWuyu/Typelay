@@ -278,24 +278,26 @@ public sealed class ChildProcessTests(ITestOutputHelper output)
         void Enter(string next) => stages.Add(stage = next);
         bool ObserveExited(string name, ModelChildProcess owner)
         {
-            bool exited = owner.Process.HasExited;
-            // Capture an already-exited root before cleanup can terminate it.
-            // This observation is never a substitute for generation exit proof.
-            if (exited)
-                try
-                {
-                    uint? code = owner.GetRootExitCode();
-                    stages.Add(code is { } value
-                        ? $"owner-exited: owner={name}; rootSignaled=True; exitCode=0x{value:x8}"
-                        : $"owner-exit-observation: owner={name}; managedHasExited=True; rootSignaled=False");
-                }
-                catch (Exception error)
-                {
-                    int? nativeError = (error as Win32Exception)?.NativeErrorCode;
-                    stages.Add($"owner-exit-code-unavailable: owner={name}; type={error.GetType().Name}; " +
-                        $"hresult=0x{error.HResult:x8}; nativeError={nativeError?.ToString() ?? "none"}");
-                }
-            return exited;
+            // Process.HasExited can report an exit code before the kernel object
+            // is signaled. Observe the retained root, as the production owner does.
+            // Neither observation proves that the job/stderr/generation retired.
+            uint? code = owner.GetRootExitCode();
+            stages.Add(code is { } value
+                ? $"owner-root-observation: owner={name}; rootSignaled=True; exitCode=0x{value:x8}"
+                : $"owner-root-observation: owner={name}; rootSignaled=False");
+            try
+            {
+                if (owner.Process.HasExited)
+                    stages.Add($"owner-managed-observation: owner={name}; managedHasExited=True; " +
+                        $"exitCode=0x{unchecked((uint)owner.Process.ExitCode):x8}");
+            }
+            catch (Exception error)
+            {
+                int? nativeError = (error as Win32Exception)?.NativeErrorCode;
+                stages.Add($"owner-managed-observation-unavailable: owner={name}; type={error.GetType().Name}; " +
+                    $"hresult=0x{error.HResult:x8}; nativeError={nativeError?.ToString() ?? "none"}");
+            }
+            return code is not null;
         }
 
         try

@@ -6,6 +6,7 @@ using System.Text;
 using System.Runtime.InteropServices;
 using System.Security;
 using System.Text.Json;
+using System.Threading.Channels;
 using Microsoft.Win32;
 using TypeLay.Core;
 using TypeLay.Runtime;
@@ -59,6 +60,14 @@ internal static partial class Program
     private static string? _returnNotice;
     private static (OwnedReturnControl Control, OwnedCaptureDescriptor Descriptor)? _returnedSeal;
     private static readonly string? EditorTracePath = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
+    private static readonly Channel<object[]>? EditorTraceQueue = string.IsNullOrWhiteSpace(EditorTracePath) ? null
+        : Channel.CreateBounded<object[]>(new BoundedChannelOptions(8)
+        {
+            SingleReader = true,
+            SingleWriter = true,
+            FullMode = BoundedChannelFullMode.DropWrite
+        });
+    private static readonly Task EditorTraceWriter = EditorTraceQueue is null ? Task.CompletedTask : Task.Run(WriteEditorTracesAsync);
     private static readonly List<EditorTrace> EditorTraces = [];
     private static int _editorTraceCount;
     private static readonly List<object> AcceptanceRejectionTraces = [];
@@ -300,6 +309,8 @@ internal static partial class Program
             ReleaseAppearance();
             if (registered)
                 Native.UnregisterClassW(WindowClassName, _instance);
+            EditorTraceQueue?.Writer.TryComplete();
+            EditorTraceWriter.GetAwaiter().GetResult();
         }
     }
 
@@ -1098,11 +1109,11 @@ internal static partial class Program
             return;
         try
         {
-            // Only this outer GUI boundary writes, after the original ACK path.
-            // WndProc retains bounded enum/sequence facts, never text or handles.
-            var lines = new StringBuilder();
+            // Snapshot only numeric/enum facts on the GUI thread. Even after an
+            // ACK, serializing or writing here would block native input and reads.
+            var records = new List<object>();
             foreach (var entry in EditorTraces)
-                lines.AppendLine(JsonSerializer.Serialize(new
+                records.Add(new
                 {
                     atMs = entry.AtMs,
                     operation = "owned-editor-source",
@@ -1120,14 +1131,12 @@ internal static partial class Program
                     readCompletedAtMs = entry.ReadCompletedAtMs,
                     guiDequeuedAtMs = entry.GuiDequeuedAtMs,
                     guiQueueDelayMs = entry.GuiDequeuedAtMs - entry.ReadCompletedAtMs
-                }));
-            foreach (var entry in FinishTraces)
-                lines.AppendLine(JsonSerializer.Serialize(entry));
-            foreach (var entry in AcceptanceRejectionTraces)
-                lines.AppendLine(JsonSerializer.Serialize(entry));
+                });
+            records.AddRange(FinishTraces);
+            records.AddRange(AcceptanceRejectionTraces);
             if (_installTrace is not null)
-                lines.AppendLine(JsonSerializer.Serialize(_installTrace));
-            File.AppendAllText(EditorTracePath + ".practice.jsonl", lines.ToString());
+                records.Add(_installTrace);
+            EditorTraceQueue?.Writer.TryWrite(records.ToArray());
         }
         catch (Exception error) when (error is not OutOfMemoryException) { }
         finally
@@ -1136,6 +1145,21 @@ internal static partial class Program
             EditorTraces.Clear();
             AcceptanceRejectionTraces.Clear();
             _installTrace = null;
+        }
+    }
+
+    private static async Task WriteEditorTracesAsync()
+    {
+        await foreach (var records in EditorTraceQueue!.Reader.ReadAllAsync())
+        {
+            try
+            {
+                var lines = new StringBuilder();
+                foreach (var record in records)
+                    lines.AppendLine(JsonSerializer.Serialize(record));
+                File.AppendAllText(EditorTracePath + ".practice.jsonl", lines.ToString());
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { }
         }
     }
 

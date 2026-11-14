@@ -15,8 +15,8 @@ internal static partial class Program
     private static int _finishTraceCount;
     private static bool _finishCloseObserved;
 
-    // GUI-owned, bounded, content-free observations. The existing outer-loop
-    // trace flush owns I/O, never the stock button's window procedure.
+    // GUI-owned, bounded, content-free observations. The background trace writer
+    // owns I/O, never the stock button's window procedure.
     private static void TraceFinish(string stage, string? status = null)
     {
         try

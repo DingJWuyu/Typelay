@@ -58,7 +58,9 @@ internal sealed class WindowsInputService : IInputService
         var result = await broker.CaptureWakeAsync(new(BrokerProtocol.Version, 0, "capture-wake", "",
             UserEpoch: epochs.User, ForegroundEpoch: epochs.Foreground, SourceUserEpoch: epochs.Source,
             Excluded: excluded, ExpiresAtMs: capture.Origin.TriggeredAtMs + Limits.ObservationMaxAgeMs,
-            WakeOrigin: capture.Origin), stillCurrent);
+            WakeOrigin: capture.Origin), stillCurrent).ConfigureAwait(false);
+        // This conversion uses only the completed reply. Avoid another UI queue
+        // turn before TryRead performs its unchanged target and deadline checks.
         return result.Status == "observed"
             ? new(result.Snapshot, result.Focus, result.Application, result.UserEpoch, result.ForegroundEpoch)
             : new(null);
@@ -85,7 +87,19 @@ internal sealed class WindowsInputService : IInputService
                     OwnedCapture = descriptor,
                     CaptureDirect = false
                 };
-            var result = await broker.CallAsync(request);
+            // Register before calling the transport: editor admission can seal
+            // new reads, but it must also drain this already-issued observation.
+            var ownedRead = owned ? new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously) : null;
+            if (ownedRead is not null && !practice!.TryTrackOwnedCapture(context, ownedRead.Task))
+                return new(null);
+            BrokerResponse result;
+            bool observed = false;
+            try
+            {
+                result = await broker.CallAsync(request);
+                observed = result.Status == "observed";
+            }
+            finally { ownedRead?.TrySetResult(observed); }
             // A native claim may complete while this read is in flight. Let the
             // controller settle its exact receipt before observing post-write text.
             if (sourceAcceptanceConnected && monitor is not null)
