@@ -306,8 +306,9 @@ jobs:
         timeout-minutes: 10
         shell: pwsh
         run: |
+          # The PowerShell entry checks its owned process exit and throws on failure.
+          # It does not set LASTEXITCODE, which is reserved for the next native command.
           ./dev.ps1 hy-product-prepare
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python eng/shared/prepare_index_model.py --output artifacts/index-model-download
           exit $LASTEXITCODE
       - name: Save only verified Hy download assets to cache

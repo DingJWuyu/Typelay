@@ -152,7 +152,22 @@ internal static partial class BrowserCooperationCheck
         {
             get; set;
         }
+        public CommandReadinessObservation? FirstCommandReadiness
+        {
+            get; set;
+        }
+        public CommandReadinessObservation? LastCommandReadiness
+        {
+            get; set;
+        }
+        public int CommandReadinessSamples
+        {
+            get; set;
+        }
     }
+    private sealed record CommandReadinessObservation(int ReadyTextCount, int VisibleReadyTextCount,
+        int NotReadyTextCount, bool? SettingsContainsText, bool? ScrollViewportPresent,
+        bool? ScrollViewportVisible, bool? ScrollViewportContainsText);
     private sealed record SourceRetirementObservation(bool SourceChanged, bool ExactNewSource, int SourceLength,
         bool SourceFocused, bool PageFocused, int SelectionStart, int SelectionEnd, int Replacements, int Submits);
     private sealed record CommandPathEntry(long AtMs, string Stage, string Reason, string Kind,
@@ -588,7 +603,7 @@ internal static partial class BrowserCooperationCheck
                 // Read the same public current-field readiness after typing and
                 // selection, not before preparation can outlive its observation.
                 direct.Stage = "wait-public-command-ready";
-                await WaitPublicCommandReadyAsync(commandSettings!, windows!, sourceBounds, ct);
+                await WaitPublicCommandReadyAsync(commandSettings!, windows!, sourceBounds, direct, ct);
                 direct.Stage = "single-f10-selection";
                 SendChord([0x11, 0x10, 0x79], cleanupErrors);
                 direct.ShortcutPresses = 1;
@@ -606,7 +621,7 @@ internal static partial class BrowserCooperationCheck
                 await PrepareInputAsync(cdp!, windows!, "", "", selectSource: false, ct);
                 Record("final-text-complete", background);
                 background.Stage = "wait-public-command-ready";
-                await WaitPublicCommandReadyAsync(commandSettings!, windows!, sourceBounds, ct);
+                await WaitPublicCommandReadyAsync(commandSettings!, windows!, sourceBounds, background, ct);
                 background.Stage = "single-f10-full-text";
                 long offset = TraceLength(trace);
                 SendChord([0x11, 0x10, 0x79], cleanupErrors);

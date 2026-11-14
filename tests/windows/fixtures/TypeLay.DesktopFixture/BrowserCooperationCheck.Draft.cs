@@ -37,7 +37,10 @@ internal static partial class BrowserCooperationCheck
     {
         public async Task CaptureAsync(string path, CancellationToken ct)
         {
-            var screenshot = await PageCallAsync("Page.captureScreenshot", new { format = "png" }, ct);
+            var screenshot = await PageCallAsync("Page.captureScreenshot", new
+            {
+                format = "png"
+            }, ct);
             await File.WriteAllBytesAsync(path, Convert.FromBase64String(screenshot.GetProperty("data").GetString()!), ct);
         }
         public async Task VerifyDraftAsync(Scene scene, DraftObservation observation, string directory,

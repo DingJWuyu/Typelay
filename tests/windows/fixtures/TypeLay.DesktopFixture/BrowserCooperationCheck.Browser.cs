@@ -289,8 +289,13 @@ internal static partial class BrowserCooperationCheck
             var pages = targets.EnumerateArray().Where(target => target.GetProperty("type").GetString() == "page"
                 && target.GetProperty("url").GetString() == "about:blank").ToArray();
             Require(pages.Length == 1, "owned-initial-page-ambiguous");
+            stage("create-owned-page");
+            var created = await CallAsync("Target.createTarget", new
+            {
+                url = "about:blank"
+            }, null, ct);
+            _pageTarget = created.GetProperty("targetId").GetString();
             stage("attach-page");
-            _pageTarget = pages[0].GetProperty("targetId").GetString();
             var attach = await CallAsync("Target.attachToTarget", new
             {
                 targetId = _pageTarget,
