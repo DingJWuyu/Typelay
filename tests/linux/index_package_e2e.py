@@ -21,7 +21,11 @@ sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 from setup import FAILURE_PREFIX, failure_code  # noqa: E402
 
 INDEX = "index-translate-2b-q4-k-m"
-PROFILE = "index-v1-3b99612f3676f5ac8ef34c81e99bf8874a5ba5271207a15d39e947c9d42ef87d"
+PROFILE = "index-v1-d1ba1b7b9a3e78434e49767a43586a097ce40ef7607d170f1097cfae67c95180"
+
+
+class LifecycleFailure(AssertionError):
+    """A fixed local failure label, without peer text or exception details."""
 
 
 def digest(path):
@@ -46,6 +50,7 @@ class Check:
         self.host = None
         self.status = None
         self.protocol_phase = self.send_operation = None
+        self.model_phase = self.activation_outcome = None
         self.stage = "release-identity"
         self.report = {
             "scope": "linux-index-production-package-lifecycle",
@@ -76,6 +81,7 @@ class Check:
     def begin(self, name):
         self.stage = name
         self.protocol_phase = self.send_operation = None
+        self.model_phase = self.activation_outcome = None
 
     def passed(self):
         self.report["stages"][self.stage] = "passed"
@@ -83,6 +89,12 @@ class Check:
     def current(self):
         path = self.data / "components/current"
         return os.readlink(path) if path.is_symlink() else None
+
+    def require_generation(self, expected, reason):
+        self.model_phase = "generation"
+        if self.current() != expected:
+            raise LifecycleFailure(reason)
+        self.model_phase = None
 
     def inventory(self):
         return json.loads(
@@ -186,6 +198,7 @@ class Check:
             return (await self.receive(lambda value: value.get("reply") == identity))["data"]
 
     async def start(self):
+        self.model_phase = "host-start"
         self.status = None
         self.host = await self.process(
             [
@@ -202,32 +215,44 @@ class Check:
         self.host.stdin.write(b"\x01")
         await self.host.stdin.drain()
         self.protocol_phase = None
-        assert await self.ask("start") is True
+        if await self.ask("start") is not True:
+            raise LifecycleFailure("host-start-refused")
+        self.model_phase = None
 
     async def ready(self, active):
-        async with asyncio.timeout(60):
-            if not self.status or not self.status.get("modelReady"):
-                await self.receive(
-                    lambda value: value.get("event") == "status" and value["data"].get("modelReady")
-                )
-        assert (
-            self.status["modelReady"] and [p["id"] for p in self.status["modelPackages"]] == active
-        )
+        self.model_phase = "ready"
+        try:
+            async with asyncio.timeout(60):
+                if not self.status or not self.status.get("modelReady"):
+                    await self.receive(
+                        lambda value: value.get("event") == "status"
+                        and value["data"].get("modelReady")
+                    )
+        except TimeoutError:
+            raise LifecycleFailure("model-ready-timeout") from None
+        if self.status.get("modelReady") is not True:
+            raise LifecycleFailure("model-ready-invalid")
+        if [p["id"] for p in self.status["modelPackages"]] != active:
+            raise LifecycleFailure("ready-packages-mismatch")
         if active == [INDEX]:
-            assert len(self.status["modelDirections"]) == 14
-            assert self.status.get("modelInferenceProfileId") == PROFILE, (
-                "index-profile-unqualified"
-            )
+            if len(self.status["modelDirections"]) != 14:
+                raise LifecycleFailure("ready-directions-mismatch")
+            if self.status.get("modelInferenceProfileId") != PROFILE:
+                raise LifecycleFailure("index-profile-unqualified")
             self.report["inferenceProfiles"][self.stage] = self.status["modelInferenceProfileId"]
+        self.model_phase = None
 
     async def activate(self, generation, active):
-        assert (
-            await self.ask(
-                "activateModel", {"identity": uuid.uuid4().hex, "generation": generation}
-            )
-            == "confirmed"
+        self.model_phase = "activation"
+        result = await self.ask(
+            "activateModel", {"identity": uuid.uuid4().hex, "generation": generation}
         )
-        assert self.current() == generation
+        self.activation_outcome = (
+            result if result in ("confirmed", "unchanged", "unconfirmed") else "unrecognized"
+        )
+        if result != "confirmed":
+            raise LifecycleFailure("model-activation-refused")
+        self.require_generation(generation, "activated-generation-mismatch")
         await self.ready(active)
 
     async def stop(self):
@@ -290,7 +315,7 @@ class Check:
         self.passed()
         self.begin("prepare-default")
         generation = await self.prepare()
-        assert self.current() is None, "preparation-published-current"
+        self.require_generation(None, "preparation-published-current")
         self.passed()
         self.begin("activate-index")
         await self.start()
@@ -308,17 +333,18 @@ class Check:
         await self.stop()
         await self.start()
         await self.ready([INDEX])
-        assert self.current() == generation
+        self.require_generation(generation, "cold-start-generation-mismatch")
         self.passed()
         self.begin("failed-repair-retains-current")
         await self.prepare(
             self.request("Repair", [INDEX], [INDEX], current="0" * 32), expect_failure=True
         )
-        assert self.current() == generation
+        self.require_generation(generation, "failed-repair-generation-mismatch")
         await self.ready([INDEX])
         self.passed()
         self.begin("cancelled-candidate-retains-current")
         abandoned = await self.prepare(self.request("Repair", [INDEX], [INDEX]))
+        self.model_phase = "activation"
         self.sequence += 1
         reply, identity = self.sequence, uuid.uuid4().hex
         await self.send(
@@ -331,7 +357,13 @@ class Check:
         await self.send({"event": "cancelModelActivation", "data": identity})
         async with asyncio.timeout(60):
             response = await self.receive(lambda value: value.get("reply") == reply)
-        assert response["data"] == "unchanged" and self.current() == generation
+        result = response["data"]
+        self.activation_outcome = (
+            result if result in ("confirmed", "unchanged", "unconfirmed") else "unrecognized"
+        )
+        if result != "unchanged":
+            raise LifecycleFailure("model-cancellation-not-retained")
+        self.require_generation(generation, "cancelled-generation-mismatch")
         await self.ready([INDEX])
         self.passed()
         for name, operation, packages, active in (
@@ -359,7 +391,10 @@ class Check:
                 await self.lifecycle()
         except Exception as error:
             self.report["stages"][self.stage] = "failed"
-            self.report["failure"] = type(error).__name__ + ": " + str(error)[:200]
+            # Arbitrary exception messages can contain paths or peer/source text.
+            self.report["failure"] = type(error).__name__
+            if isinstance(error, LifecycleFailure):
+                self.report["failure"] += ": " + str(error)
             # Snapshot before cleanup signals/waits. None means exit not observed, not alive.
             self.report["failureContext"] = {
                 "protocolPhase": self.protocol_phase,
@@ -367,6 +402,25 @@ class Check:
                 "hostSupervisorReturnCode": self.host.returncode if self.host else None,
                 "directProcessReturnCodes": [process.returncode for process in self.children],
             }
+            if self.model_phase is not None:
+                code = (
+                    self.status.get("modelFailureCode") if isinstance(self.status, dict) else None
+                )
+                if code not in (
+                    None,
+                    "model-start-failed",
+                    "model-hello-packages",
+                    "model-hello-directions",
+                    "model-sequence",
+                    "model-inventory",
+                    "child-cleanup-unconfirmed",
+                ):
+                    code = "unrecognized"
+                self.report["failureContext"].update(
+                    modelPhase=self.model_phase,
+                    activationOutcome=self.activation_outcome,
+                    modelFailureCode=code,
+                )
         finally:
             # One independent cleanup budget, never a fresh budget for each child.
             try:

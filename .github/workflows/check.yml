@@ -733,6 +733,10 @@ jobs:
         id: test-index-package-diagnostics
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         run: python tests/linux/test_index_package_diagnostics.py -v
+      - name: Verify Linux test_private_session_paths
+        id: test-private-session-paths
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        run: python tests/linux/test_private_session_paths.py -v
       - name: Verify Linux test_translation_quality_capture
         id: test-translation-quality-capture
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}

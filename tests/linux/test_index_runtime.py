@@ -19,7 +19,10 @@ class IndexRuntimeTests(unittest.TestCase):
         supplied = os.environ.get("TYPELAY_INDEX_CPU_RUNTIME")
         if not supplied:
             raise unittest.SkipTest("explicit fixed Index CPU runtime required; no downloads")
-        cls.temporary = tempfile.TemporaryDirectory(prefix="typelay-index-")
+        # Exercise the normal package filesystem, including Btrfs subvolumes,
+        # rather than silently moving the actual ELF boundary onto /tmp tmpfs.
+        (ROOT / "artifacts").mkdir(exist_ok=True)
+        cls.temporary = tempfile.TemporaryDirectory(prefix="typelay-index-", dir=ROOT / "artifacts")
         cls.addClassCleanup(cls.temporary.cleanup)
         cls.directory = Path(cls.temporary.name)
         cls.worker = cls.directory / "搬迁 后的 worker"
@@ -95,6 +98,110 @@ class IndexRuntimeTests(unittest.TestCase):
                             ctypes.byref(n), ctypes.byref(m), cancel, None, error, 512)
                 assert code == 1 and n.value == 0
             loader.close()
+        """)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_foreign_preloaded_same_name_library_is_refused(self):
+        result = self.run_isolated("""
+            import ctypes, shutil
+            from pathlib import Path
+            from typelay_worker.index_assets import verify_native
+            from typelay_worker.index_cpu import LinuxRuntime
+            verified = verify_native()
+            source = Path(verified['cpu_runtime']['directory']) / 'libggml-base.so.0'
+            foreign = Path(sys.argv[1]) / 'foreign' / source.name
+            foreign.parent.mkdir(exist_ok=True)
+            shutil.copyfile(source, foreign)
+            library = ctypes.CDLL(str(foreign))
+            LinuxRuntime(verified)
+        """)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("loaded before the verified loader", result.stderr)
+
+    def test_changed_digest_is_refused_even_after_manifest_verification(self):
+        result = self.run_isolated("""
+            from pathlib import Path
+            from typelay_worker.index_assets import verify_native
+            from typelay_worker.index_cpu import LinuxRuntime
+            verified = verify_native()
+            target = Path(verified['cpu_runtime']['directory']) / 'libggml-base.so.0'
+            original = target.read_bytes()
+            try:
+                target.write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
+                LinuxRuntime(verified)
+            finally:
+                target.write_bytes(original)
+        """)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("fixed asset full hash mismatch", result.stderr)
+
+    def test_same_bytes_replacing_a_mapped_file_are_refused(self):
+        result = self.run_isolated("""
+            import ctypes
+            from pathlib import Path
+            from typelay_worker.index_assets import verify_native
+            from typelay_worker.index_cpu import LinuxRuntime
+            loader = LinuxRuntime(verify_native())
+            selected = loader.select_cpu_backend()
+            loader.load_adapter()
+            library = ctypes.CDLL(str(selected))
+            original = selected.read_bytes()
+            selected.unlink()
+            selected.write_bytes(original)
+            try:
+                loader.verify_loaded(selected)
+            finally:
+                loader.close()
+        """)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("deleted or anonymous runtime library mapping", result.stderr)
+
+    def test_identity_probe_failure_releases_temporary_mapping_and_descriptors(self):
+        result = self.run_isolated("""
+            from pathlib import Path
+            from unittest.mock import patch
+            from typelay_worker.index_assets import verify_native
+            from typelay_worker.index_cpu import LinuxRuntime
+            verified = verify_native()
+            before = len(list(Path('/proc/self/fd').iterdir()))
+            original_open = Path.open
+            def has_probe(data):
+                return any('rw-p 00000000' in row and 'libggml-base' in row
+                           for row in data.splitlines())
+            def read_maps(path, *args, **kwargs):
+                stream = original_open(path, *args, **kwargs)
+                if path == Path('/proc/self/maps'):
+                    data = stream.read()
+                    stream.seek(0)
+                    if has_probe(data):
+                        stream.close()
+                        raise PermissionError('denied with the verification mapping open')
+                return stream
+            with patch.object(Path, 'open', read_maps):
+                try:
+                    LinuxRuntime(verified)
+                except PermissionError:
+                    pass
+                else:
+                    raise AssertionError('mapping failure must reject the runtime')
+            assert not has_probe(Path('/proc/self/maps').read_text())
+            assert len(list(Path('/proc/self/fd').iterdir())) == before
+        """)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_successful_identity_checks_release_temporary_mapping_and_descriptors(self):
+        result = self.run_isolated("""
+            from pathlib import Path
+            from typelay_worker.index_assets import verify_native
+            from typelay_worker.index_cpu import LinuxRuntime
+            before = len(list(Path('/proc/self/fd').iterdir()))
+            loader = LinuxRuntime(verify_native())
+            loader.select_cpu_backend()
+            loader.load_adapter()
+            loader.close()
+            assert not any('rw-p 00000000' in row and 'libggml' in row
+                           for row in Path('/proc/self/maps').read_text().splitlines())
+            assert len(list(Path('/proc/self/fd').iterdir())) == before
         """)
         self.assertEqual(result.returncode, 0, result.stderr)
 

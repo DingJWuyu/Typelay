@@ -108,9 +108,9 @@ public sealed class TranslationReleasePolicy(IEnumerable<TranslationRelease> rel
         get;
     } = new([
         new(TranslationOperation.Glossary, "index-translate-2b-q4-k-m", "3a0eca6ce931d88d00614d427ab3ed8ff0743902", "zh_en",
-            "index-v1-3b99612f3676f5ac8ef34c81e99bf8874a5ba5271207a15d39e947c9d42ef87d"),
+            "index-v1-d1ba1b7b9a3e78434e49767a43586a097ce40ef7607d170f1097cfae67c95180"),
         new(TranslationOperation.Glossary, "index-translate-2b-q4-k-m", "3a0eca6ce931d88d00614d427ab3ed8ff0743902", "en_zh",
-            "index-v1-3b99612f3676f5ac8ef34c81e99bf8874a5ba5271207a15d39e947c9d42ef87d")
+            "index-v1-d1ba1b7b9a3e78434e49767a43586a097ce40ef7607d170f1097cfae67c95180")
     ]);
     public bool IsReleased(TranslationOperation operation) => _releases.Any(row => row.Operation == operation);
     public bool Allows(TranslationOperation operation, VerifiedModelIdentity identity, LanguageDirection direction)

@@ -7,6 +7,7 @@ Verify actual ELF mappings before the native handle becomes available.
 
 import _ctypes
 import ctypes
+import mmap
 import os
 import re
 import sys
@@ -53,18 +54,18 @@ class LinuxRuntime:
             library._handle = 0
 
     @staticmethod
-    def _mapped_modules():
-        # /proc records the kernel's actual mappings, independent of LD_LIBRARY_PATH
-        # and RUNPATH. Check inode/device too so path replacement cannot disguise a
-        # mapping of older bytes. Only the private llama/ggml closure is constrained;
-        # the user's unrelated environment and system libraries are unchanged.
+    def _maps():
         with Path("/proc/self/maps").open(encoding="utf-8", errors="surrogateescape") as stream:
             data = stream.read(8 * 1024 * 1024 + 1)
         if len(data) > 8 * 1024 * 1024:
             raise RuntimeError("loaded library map bound")
+        return [line.split(None, 5) for line in data.splitlines()]
+
+    @classmethod
+    def _mapped_modules(cls):
+        # /proc records actual mappings, independent of loader search paths.
         result = {}
-        for line in data.splitlines():
-            fields = line.split(None, 5)
+        for fields in cls._maps():
             if len(fields) != 6:
                 continue
             raw = fields[5]
@@ -82,6 +83,24 @@ class LinuxRuntime:
             result[name] = identity
         return result
 
+    @classmethod
+    def _file_mapping_identity(cls, path):
+        # Btrfs stat reports a subvolume device, while maps reports the superblock
+        # device. Compare maps with maps through a private, non-executable view of
+        # the verified file, rather than weakening the device check on that FS.
+        with plain_path(path).open("rb") as stream:
+            info = os.fstat(stream.fileno())
+            with mmap.mmap(stream.fileno(), 1, access=mmap.ACCESS_COPY) as view:
+                address = ctypes.addressof(ctypes.c_char.from_buffer(view))
+                for fields in cls._maps():
+                    start, end = (int(value, 16) for value in fields[0].split("-"))
+                    if start <= address < end and len(fields) == 6:
+                        current = plain_path(path).stat()
+                        if (info.st_dev, info.st_ino) != (current.st_dev, current.st_ino):
+                            raise RuntimeError("runtime library file changed during verification")
+                        return tuple(int(part, 16) for part in fields[3].split(":")), int(fields[4])
+        raise RuntimeError("runtime library verification mapping missing")
+
     def _verify_loaded(self, expected):
         loaded = self._mapped_modules()
         if set(loaded) != expected:
@@ -91,8 +110,7 @@ class LinuxRuntime:
             target = self.adapter if name == self.adapter.name else self.runtime / name
             if path != target:
                 raise RuntimeError("loaded runtime library path mismatch")
-            info = plain_path(path).stat()
-            if device != (os.major(info.st_dev), os.minor(info.st_dev)) or inode != info.st_ino:
+            if (device, inode) != self._file_mapping_identity(path):
                 raise RuntimeError("loaded runtime library file identity changed")
             record = self.adapter_record if name == self.adapter.name else self.records[name]
             verify_file(path, record)

@@ -110,6 +110,12 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--package", type=Path)
     parser.add_argument("--cooperative", type=Path)
+    parser.add_argument(
+        "--package-filesystem",
+        choices=("normal", "tmpfs"),
+        default="normal",
+        help="copy the package beside evidence; tmpfs is an explicit diagnostic comparison",
+    )
     parser.add_argument("--timeout", type=int, default=1200)
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -122,6 +128,9 @@ def main():
         return inside(output, command)
     if not args.package or not args.cooperative:
         parser.error("--package and --cooperative are required")
+    source_package = args.package.resolve()
+    if output.is_relative_to(source_package):
+        parser.error("output must be outside the source package")
     for tool in ("Xvfb", "xvfb-run", "xauth", "dbus-run-session", "niri", "grim", "xdotool"):
         if not shutil.which(tool):
             parser.error(f"missing tool: {tool}; read references/build.md")
@@ -138,10 +147,11 @@ def main():
         runtime_parent = Path(f"/run/user/{os.getuid()}")
         assert runtime_parent.is_dir() and runtime_parent.stat().st_uid == os.getuid()
         runtime = Path(tempfile.mkdtemp(prefix="typelay-verify-", dir=runtime_parent))
-        fs = subprocess.check_output(["stat", "-f", "-c", "%T", runtime], text=True).strip()
-        assert fs == "tmpfs", "Index workaround requires executable tmpfs"
-        package = runtime / "package"
-        shutil.copytree(args.package.resolve(), package)
+        package = (runtime if args.package_filesystem == "tmpfs" else scratch) / "package"
+        if args.package_filesystem == "tmpfs":
+            fs = subprocess.check_output(["stat", "-f", "-c", "%T", runtime], text=True).strip()
+            assert fs == "tmpfs", "diagnostic package path requires executable tmpfs"
+        shutil.copytree(source_package, package)
         # Keep tool paths, but inherit no desktop, input method, model or Python state.
         env = {key: os.environ[key] for key in ("PATH", "LD_LIBRARY_PATH") if key in os.environ}
         for key, name in (
