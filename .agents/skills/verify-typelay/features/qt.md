@@ -48,6 +48,8 @@ cp --reflink=auto "$PWD/artifacts/linux/qt-cooperative/fcitx5-qt.tar.gz" \
 
 保留 `language-options-result.json`、`language-options-native-state.json`、`language-options-native.log` 和 `language-configuration-*.png`。命令日志中的 `qt-configuration-click-request` 记录本次点击使用的快照。核对实际按下、释放和 clicked 回执；保留单次动作、原 15 秒观察期限和真实 pinyin 条件。Composing 点击、组合 Return、按住重复、释放后的独立 Return 分别判断。Unicode 搜索使用私有剪贴板粘贴，不是物理 Unicode 输入证据。
 
+同一原生版本内，设置推进正式 `actionRevision` 后，旧“更多”菜单必须关闭；仅反馈更新应保留当前菜单。无关翻译动作更新不能关闭语言菜单。三种情况都要保留源字段、编辑器正文与几何、焦点迁移记录的对照。
+
 **真实模型桌面。** Qt probe 成功后，按平台说明把 Qt 插件封入合作包，再将该包传给私有会话。`qt` 指向同源码构建的 fixture 目录。下列命令保留现役 Argos 桌面基线，不代表默认 Index 已通过。
 
 ```bash
@@ -67,6 +69,8 @@ DISPLAY="$TYPELAY_VERIFY_XDISPLAY" timeout --kill-after=10s 240s \
 此入口注入初始语言、模式和实验写回设置，并使用标准 Qt 控件 fixture。读取 `qt-desktop-runtime.json` 核对实际 Qt 版本、加载库和 Wayland 平台。保留候选、编辑、按键时序、源字段和唯一写回回执。失败时保留 `failure-status.json`、`failure.png`、`inside.log` 和原始 controller trace，后续未执行项目记为 `not-run`。
 
 核对人工稿恢复时，同时检查完整来源版本和新计划。过期接受保持零写入；新捕获只能在原生内容、选区、文档、焦点、上下文、字段和完整性版本均相等时恢复稿件，新接受必须是独立动作。合作 probe 的 `sourceObservationVersions` 记录原生捕获及正文、选区、只读和焦点 ABA 的版本变化。共享控制器回归不代替这组原生证据。
+
+减少动画与恢复应用样式只改变显示，`sourceObservationVersions` 应保持相等。真实桌面中的长人工稿在两次样式变化前后都必须保留；机器译文替代稿件属于丢稿，不能解释成高度采样差异。
 
 人工编辑器收起后，需要同一编辑器的最新紧凑帧，以及原次点击对应动画的 `started`、连续显示版本和 `settled`。反向点击可以先停止旧展开动画，随后仍须观察本次收起的完整终态。旧动画的停止、访问过紧凑高度或未结束日志都不能作为收起完成。
 

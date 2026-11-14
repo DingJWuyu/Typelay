@@ -706,6 +706,21 @@ def language_options(native, captured, generation, state, window, environment, n
     assert switched["editorGeometry"] == before_cancel["editorGeometry"]
     assert switched["first"] == before_cancel["first"]
     assert switched["focusTransitions"] == before_cancel["focusTransitions"]
+    menu_actions = {**menu_actions, "feedback": "Feedback keeps the current actions"}
+    feedback = render(advance_revision=False)
+    assert feedback["overlayMoreMenuVisible"]
+    assert not feedback["overlayMenuVisible"]
+    for name in (
+        "first",
+        "second",
+        "editorText",
+        "editorDocument",
+        "editorDocumentRevision",
+        "editorGeometry",
+        "overlayGeometry",
+        "focusTransitions",
+    ):
+        assert feedback[name] == switched[name], name
     menu_actions = {
         **menu_actions,
         "settingsRevision": 13,
@@ -2286,6 +2301,15 @@ def ordered_controls(
                 stable = capture_source_version()
                 source_versions["stable"] = stable["sourceVersion"]
                 assert capture_source_version()["sourceVersion"] == stable["sourceVersion"]
+                for reduced in (True, False):
+                    fixture("application-motion", reduced=reduced)
+                    after = capture_source_version()
+                    assert after["target"] == stable["target"] and after["text"] == stable["text"]
+                    assert after["selection"] == stable["selection"]
+                    assert after["sourceVersion"] == stable["sourceVersion"], reduced
+                    source_versions["reduced-motion" if reduced else "restored-motion"] = after[
+                        "sourceVersion"
+                    ]
                 for change in ("text-aba", "selection-aba", "read-only-aba", "focus-aba"):
                     before = capture_source_version()
                     if change == "text-aba":

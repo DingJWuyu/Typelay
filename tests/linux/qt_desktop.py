@@ -1466,11 +1466,19 @@ def run_qt(
                 recording = start_motion("qt-motion-reduced")
                 reduced_frames = finish_motion(recording, "qt-motion-reduced")
                 assert {frame["editor"]["height"] for frame in reduced_frames} == {167}
+                assert all(
+                    frame["text"] == candidate and frame["sourceFocused"]
+                    for frame in reduced_frames
+                )
                 command("application-motion", reduced=False)
                 wait_for(
                     lambda: state()["animationDuration"] > 0,
                     "Qt did not restore its original animation style preference",
                 )
+                restored = state()
+                assert restored["editorText"] == candidate
+                assert restored["first"]["text"] == motion_source
+                assert not new_write_outcomes(motion_trace)
                 # Existing metadata invalidation must withdraw a resizing
                 # surface, then stay hidden beyond its original finish time.
                 recording = start_motion("qt-motion-safety-hide")

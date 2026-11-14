@@ -3918,6 +3918,8 @@ private:
                 if (menuView_ && (menuView_->revision != integer(data, "revision", 0)
                     || menuView_->generation != data.value("generation")
                     || !sameInteraction(presentationIdentity(menuView_->view), identity)
+                    || (openedMenu_ == moreMenu_
+                        && presentationIdentity(menuView_->view).value("actionRevision") != identity.value("actionRevision"))
                     || menuView_->view.value("sourceLanguage") != view.value("sourceLanguage")
                     || menuView_->view.value("targetLanguage") != view.value("targetLanguage")
                     || languageChoices(menuView_->view, "source") != languageChoices(view, "source")
@@ -4238,7 +4240,11 @@ private:
         } else if (type == QEvent::MouseButtonPress || type == QEvent::Wheel
             || type == QEvent::TouchBegin) invalidate(target, false, false);
         if (type == QEvent::DynamicPropertyChange) {
-            advanceSourceRevision(target, target->integrity);
+            // Only the provider property participates in source identity.
+            // Qt also changes private font properties when applying a style;
+            // that display update cannot retire an unchanged manual draft.
+            if (static_cast<QDynamicPropertyChangeEvent *>(event)->propertyName() == ProviderProperty)
+                advanceSourceRevision(target, target->integrity);
             bind(target);
         }
         if (type == QEvent::Hide || type == QEvent::EnabledChange || type == QEvent::ReadOnlyChange) {
