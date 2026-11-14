@@ -1139,7 +1139,7 @@
         section[data-material=solid]{--surface:light-dark(#faf9f5,#262624);backdrop-filter:none}
         header{flex:none;display:flex;align-items:center;gap:6px;color:var(--muted)}
         header{min-height:28px;padding:0 8px 8px 10px;flex-wrap:wrap}
-        header .status{flex:1;min-width:0;text-align:right;overflow-wrap:anywhere;font-size:11.5px}
+        header .status{flex:1 0 auto;min-width:0;max-width:100%;text-align:right;overflow-wrap:anywhere;font-size:11.5px}
         header .language{display:inline-flex;align-items:center;gap:7px;border-radius:999px;
           padding:0 10px 0 9px;height:26px;min-height:26px;color:var(--ink-2);font:500 12px/1 var(--ui-font);white-space:nowrap}
         header .language:hover{background:var(--fill-2);color:var(--ink)}

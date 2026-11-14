@@ -2297,11 +2297,12 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.accepted(), [])
 
     def test_overlay_keeps_translation_primary_and_actions_visible(self):
-        output = ROOT / "artifacts/linux/browser-native/overlay"
+        output = ROOT / "artifacts/linux/browser-native/overlay" / f"layout-{uuid.uuid4().hex}"
         output.mkdir(parents=True, exist_ok=True)
+        print(f"Overlay layout screenshots: {output}", flush=True)
         self.page.keyboard.insert_text("Hello")
         for theme in ("light", "dark"):
-            for width in (320, 520):
+            for width in (180, 320, 520):
                 with self.subTest(theme=theme, width=width):
                     self.command("overlay-hide")
                     self.page.locator("#source").evaluate(
@@ -2440,6 +2441,7 @@ class BrowserContract(unittest.TestCase):
                     self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
                     view["presentation"]["editorOwnsText"] = True
                     view["state"] = "EditingTranslation"
+                    view["status"] = "编辑中"
                     data["revision"] += 1
                     self.assertTrue(self.command("overlay-render", data)["visible"])
                     self.command(
@@ -2468,6 +2470,33 @@ class BrowserContract(unittest.TestCase):
                     self.page.screenshot(
                         path=output / f"{theme}-{width}-editing.png", clip=host.bounding_box()
                     )
+                    layout = self.overlay_dom(
+                        self.overlay_control("TypeLay 译文", "textbox"),
+                        """function() {
+                          const header = this.getRootNode().querySelector('header');
+                          const status = header.querySelector('.status');
+                          const range = document.createRange(); range.selectNodeContents(status);
+                          const text = range.getBoundingClientRect();
+                          const panel = header.parentElement.getBoundingClientRect();
+                          return {status: status.textContent, textHeight: text.height,
+                            lineHeight: parseFloat(getComputedStyle(status).lineHeight),
+                            controls: Array.from(header.children).filter(node => !node.hidden).map(node => {
+                              const box = node.getBoundingClientRect();
+                              return {text: node.textContent, left: box.left - panel.left,
+                                right: box.right - panel.right, bottom: box.bottom - panel.bottom,
+                                width: box.width, height: box.height};
+                            })};
+                        }""",
+                    )
+                    (output / f"{theme}-{width}-editing.json").write_text(
+                        json.dumps(layout, ensure_ascii=False, indent=2) + "\n"
+                    )
+                    self.assertEqual(layout["status"], "编辑中")
+                    self.assertLessEqual(layout["textHeight"], layout["lineHeight"] + 1)
+                    for control in layout["controls"]:
+                        self.assertGreaterEqual(control["left"], 0, control)
+                        self.assertLessEqual(control["right"], 0, control)
+                        self.assertLessEqual(control["bottom"], 0, control)
 
     def test_packaged_cjk_faces_render_by_target_without_loading_all_regions(self):
         self.assertEqual(self.font_requests, [])
