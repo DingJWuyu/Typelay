@@ -37,6 +37,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   scope:
+    name: ${{ github.event_name == 'pull_request' && 'PR' || github.event_name == 'push' && github.ref == 'refs/heads/hitl' && 'hitl push' || github.event_name == 'push' && 'branch push' || 'manual' }} / scope
     runs-on: ubuntu-latest
     outputs:
       selected: ${{ steps.select.outcome }}
@@ -77,6 +78,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   shared:
+    name: ${{ github.event_name == 'pull_request' && 'PR' || github.event_name == 'push' && github.ref == 'refs/heads/hitl' && 'hitl push' || github.event_name == 'push' && 'branch push' || 'manual' }} / shared
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -135,6 +137,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
   check:
+    name: ${{ github.event_name == 'pull_request' && 'PR' || github.event_name == 'push' && github.ref == 'refs/heads/hitl' && 'hitl push' || github.event_name == 'push' && 'branch push' || 'manual' }} / check
     needs: scope
     if: ${{ !cancelled() && needs.scope.outputs.selected == 'success' && needs.scope.outputs.windows == 'true' }}
     runs-on: windows-latest
@@ -474,7 +477,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
   linux:
-    name: ${{ needs.scope.outputs.quality_only == 'true' && 'Linux quality capture (not product acceptance)' || 'linux' }}
+    name: ${{ github.event_name == 'pull_request' && 'PR' || github.event_name == 'push' && github.ref == 'refs/heads/hitl' && 'hitl push' || github.event_name == 'push' && 'branch push' || 'manual' }} / ${{ github.event_name == 'workflow_dispatch' && inputs.check_mode == 'quality-only' && 'Linux quality capture (not product acceptance)' || 'linux' }}
     needs: scope
     if: ${{ !cancelled() && needs.scope.outputs.selected == 'success' && needs.scope.outputs.linux == 'true' }}
     runs-on: ubuntu-latest
@@ -1393,7 +1396,7 @@ jobs:
 # Passing this job does not certify physical Tab, Chinese IME, visual parity or safe universal writeback.
 
   index-windows:
-    name: Windows Index package lifecycle (not desktop acceptance)
+    name: ${{ github.event_name == 'pull_request' && 'PR' || github.event_name == 'push' && github.ref == 'refs/heads/hitl' && 'hitl push' || github.event_name == 'push' && 'branch push' || 'manual' }} / Windows Index package lifecycle (not desktop acceptance)
     needs: scope
     if: ${{ !cancelled() && needs.scope.outputs.selected == 'success' && needs.scope.outputs.windows == 'true' }}
     runs-on: windows-latest
@@ -1471,7 +1474,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
   index-linux:
-    name: Linux Index package lifecycle (not desktop acceptance)
+    name: ${{ github.event_name == 'pull_request' && 'PR' || github.event_name == 'push' && github.ref == 'refs/heads/hitl' && 'hitl push' || github.event_name == 'push' && 'branch push' || 'manual' }} / Linux Index package lifecycle (not desktop acceptance)
     needs: scope
     if: ${{ !cancelled() && needs.scope.outputs.selected == 'success' && needs.scope.outputs.linux == 'true' && needs.scope.outputs.quality_only != 'true' }}
     runs-on: ubuntu-latest

@@ -98,6 +98,8 @@ Python 开发工具进入 [eng/requirements.txt](../../eng/requirements.txt)。�
 
 堆叠 PR 调整目标分支后，按[任务跟踪约定](../agents/issue-tracker.md#stacked-prs)同步栈。rebase 后推送新 head 会通过 `synchronize` 产生新证据。只改 base 而未更新 head 时，没有新的被测合并提交证据；审查仍须核对 artifact 中的 base 和 `tested_commit`。
 
+检查名按事件隔离。PR 使用固定的 `PR /` 前缀，`hitl` push 使用 `hitl push /`，其它 push 使用 `branch push /`，手动运行使用 `manual /`。工作分支收缩范围或手动质量采集不能产生 PR 的检查名。以后配置 PR 必需检查时，应从实际执行成功的 `PR /` 名称中选择，并包含 `PR / scope`。选择器失败时，下游 job 可能跳过；GitHub 会将 skipped 视为满足必需检查，不能单靠这些下游状态判断完整执行。
+
 [ci_scope.py](../../eng/shared/ci_scope.py) 根据事件和提交证据选择检查范围。PR 和 `hitl` push 始终保留共享、Windows 和 Linux 检查。PR 使用 Actions 默认检出的测试合并提交。每次运行的 Summary 和 `typelay-ci-source-*` artifact 记录事件、PR head、base、实际被测提交、run ID 和 attempt。审查时核对这三个提交身份，不把 PR head 当作测试合并提交。
 
 工作流触发后，检查范围由现役选择器确定。完整检查覆盖共享、Windows 和 Linux；符合条件的工作分支 push 可以按本次 push 触及的全部路径缩减平台范围。选择器会计入撤销、重命名和合并父提交；提交身份不完整、未知或共享路径、跨平台变更和空变更会保留双端检查。
