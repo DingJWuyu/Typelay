@@ -2,9 +2,11 @@
 
 import hashlib
 import os
+import random
 import sys
 import tempfile
 import unittest
+from itertools import permutations
 from pathlib import Path
 from unittest.mock import patch
 
@@ -182,17 +184,99 @@ class BackgroundDirectSettlementTests(unittest.TestCase):
             with self.subTest(rows=invalid):
                 self.assertIsNone(background_direct_settlement(invalid))
 
+    def generated_settlements(self):
+        # Literal receipt pairs are independent examples of the public ledger.
+        outcomes = (
+            ("write-Verified-None", {"status": "Verified", "reason": "None"}),
+            (
+                "write-RejectedBeforeMutation-ImeUnclear",
+                {"status": "RejectedBeforeMutation", "reason": "ImeUnclear"},
+            ),
+            (
+                "write-RejectedBeforeMutation-SourceChanged",
+                {"status": "RejectedBeforeMutation", "reason": "SourceChanged"},
+            ),
+            (
+                "write-OutcomeUnknown-None",
+                {"status": "OutcomeUnknown", "reason": "None"},
+            ),
+        )
+        identities = random.Random(1410)
+        for sample in range(64):
+            plan = f"plan-{identities.getrandbits(128):032x}"
+            other = f"other-{identities.getrandbits(128):032x}"
+            for operation, detail in outcomes:
+                yield (
+                    sample,
+                    other,
+                    [
+                        {"operation": "direct-write-start", "planId": plan},
+                        {"operation": operation, "planId": plan},
+                        {"operation": "direct-write-result", "planId": plan, "detail": detail},
+                    ],
+                )
+
+    def test_consistent_identity_renaming_preserves_the_receipt(self):
+        for sample, renamed_plan, rows in self.generated_settlements():
+            with self.subTest(sample=sample, terminal=rows[1]["operation"]):
+                original = background_direct_settlement(rows)
+                renamed = [{**row, "planId": renamed_plan} for row in rows]
+                self.assertEqual(original, rows[-1])
+                self.assertEqual(
+                    background_direct_settlement(renamed),
+                    {**original, "planId": renamed_plan},
+                )
+
+    def test_receipts_from_another_plan_cannot_complete_a_settlement(self):
+        for sample, other, rows in self.generated_settlements():
+            for changed in range(3):
+                with self.subTest(sample=sample, terminal=rows[1]["operation"], changed=changed):
+                    mixed = [
+                        {**row, "planId": other} if index == changed else row
+                        for index, row in enumerate(rows)
+                    ]
+                    self.assertIsNone(background_direct_settlement(mixed))
+
+    def test_duplicate_terminal_receipts_never_complete_the_plan(self):
+        for sample, _, rows in self.generated_settlements():
+            for terminal in rows[1:]:
+                for copies in range(1, 4):
+                    for position in range(4):
+                        with self.subTest(
+                            sample=sample,
+                            terminal=terminal["operation"],
+                            copies=copies,
+                            position=position,
+                        ):
+                            duplicated = rows[:position] + [terminal] * copies + rows[position:]
+                            self.assertIsNone(background_direct_settlement(duplicated))
+
+    def test_lifecycle_order_survives_unrelated_observations_only(self):
+        for sample, _, rows in self.generated_settlements():
+            for order in permutations(range(3)):
+                for position in range(4):
+                    with self.subTest(
+                        sample=sample,
+                        terminal=rows[1]["operation"],
+                        order=order,
+                        position=position,
+                    ):
+                        sequence = [rows[index] for index in order]
+                        sequence.insert(position, {"operation": "model-ready"})
+                        observed = background_direct_settlement(sequence)
+                        if order == (0, 1, 2):
+                            self.assertEqual(observed, rows[-1])
+                        else:
+                            self.assertIsNone(observed)
+
 
 class BackgroundDirectRefusalTests(unittest.TestCase):
     def refusal(self, reason="ImeUnclear"):
-        rows = [
-            {"operation": "direct-write-start", "planId": "current-plan"},
-            {
-                "operation": "direct-write-result",
-                "planId": "current-plan",
-                "detail": {"status": "RejectedBeforeMutation", "reason": reason},
-            },
-        ]
+        outcome = {
+            "operation": "direct-write-result",
+            "planId": "current-plan",
+            "detail": {"status": "RejectedBeforeMutation", "reason": reason},
+        }
         report = {
             "serviceStatus": (
                 "输入法状态尚未确认，TypeLay 未替换文字。请完成或取消当前输入后再操作。"
@@ -201,9 +285,9 @@ class BackgroundDirectRefusalTests(unittest.TestCase):
             ),
             "operationFeedback": {"code": "write-rejected", "revision": 9},
         }
-        return report, rows
+        return report, outcome
 
-    def test_only_matching_plan_refusal_and_new_corresponding_feedback_complete(self):
+    def test_settled_refusal_requires_new_corresponding_feedback(self):
         for reason in (
             "ImeUnclear",
             "SourceChanged",
@@ -212,31 +296,24 @@ class BackgroundDirectRefusalTests(unittest.TestCase):
             "EpochChanged",
         ):
             with self.subTest(reason=reason):
-                report, rows = self.refusal(reason)
-                self.assertTrue(background_direct_rejection_current(report, rows, 8))
-                self.assertFalse(background_direct_rejection_current(report, rows, 9))
+                report, outcome = self.refusal(reason)
+                self.assertTrue(background_direct_rejection_current(report, outcome, 8))
+                self.assertFalse(background_direct_rejection_current(report, outcome, 9))
                 report["serviceStatus"] = "已直接替换原输入框文字。"
-                self.assertFalse(background_direct_rejection_current(report, rows, 8))
-
-    def test_missing_duplicate_old_or_mismatched_plan_does_not_complete(self):
-        report, rows = self.refusal()
-        for incomplete in ([], rows[:1], rows[1:], rows * 2, list(reversed(rows))):
-            self.assertFalse(background_direct_rejection_current(report, incomplete, 8))
-        rows[1]["planId"] = "old-plan"
-        self.assertFalse(background_direct_rejection_current(report, rows, 8))
+                self.assertFalse(background_direct_rejection_current(report, outcome, 8))
 
     def test_other_reason_success_or_wrong_feedback_does_not_complete(self):
-        report, rows = self.refusal("Unsupported")
-        self.assertFalse(background_direct_rejection_current(report, rows, 8))
-        report, rows = self.refusal()
-        rows[1]["detail"]["status"] = "Verified"
-        self.assertFalse(background_direct_rejection_current(report, rows, 8))
-        report, rows = self.refusal()
+        report, outcome = self.refusal("Unsupported")
+        self.assertFalse(background_direct_rejection_current(report, outcome, 8))
+        report, outcome = self.refusal()
+        outcome["detail"]["status"] = "Verified"
+        self.assertFalse(background_direct_rejection_current(report, outcome, 8))
+        report, outcome = self.refusal()
         report["serviceStatus"] = self.refusal("SourceChanged")[0]["serviceStatus"]
-        self.assertFalse(background_direct_rejection_current(report, rows, 8))
-        report, rows = self.refusal()
+        self.assertFalse(background_direct_rejection_current(report, outcome, 8))
+        report, outcome = self.refusal()
         report["operationFeedback"]["code"] = "write-unconfirmed"
-        self.assertFalse(background_direct_rejection_current(report, rows, 8))
+        self.assertFalse(background_direct_rejection_current(report, outcome, 8))
 
 
 class AcceptanceInjectionTests(unittest.TestCase):
