@@ -1,6 +1,7 @@
 /* Actual Tiptap application fixture. TypeLay logic is loaded from production. */
 import {Editor} from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
+import {undoDepth, redoDepth} from '@tiptap/pm/history';
 
 const initial = '<p>Before <strong>hello world</strong> after <em>untouched</em></p>';
 let editor, other, reentered, originalUpdate;
@@ -117,3 +118,5 @@ window.editorProbeHistory = () => {
   editor.commands.redo();
   return {undone, undoSelection, redone: editor.getHTML()};
 };
+// Observe the host history without invoking undo or changing the document.
+window.editorProbeHistoryDepth = () => ({undo: undoDepth(editor.state), redo: redoDepth(editor.state)});

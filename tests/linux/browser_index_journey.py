@@ -1,13 +1,15 @@
 """Default Index journey through the installed browser extension and desktop."""
 
+import hashlib
 import json
 import os
 import shutil
 import subprocess
 import time
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
+from desktop_e2e import acceptance_observation_current
 from main import control
 from niri import contents, request
 from paths import Paths
@@ -26,6 +28,7 @@ DIRECT = SOURCE
 
 
 def run(arguments):
+    native_undo = arguments.desktop_scope == "browser-undo-index"
     output = arguments.output
     output.mkdir(parents=True, exist_ok=True)
     session = json.loads((Path(os.environ["TYPELAY_VERIFY_OUTPUT"]) / "session.json").read_text())
@@ -34,9 +37,12 @@ def run(arguments):
     os.environ["DISPLAY"] = os.environ["TYPELAY_VERIFY_XDISPLAY"]
     # Keep the installed package, model and disposable browser on the normal
     # filesystem. Only private sockets use the small XDG runtime directory.
-    stages = {
-        name: "not-run" for name in ("prepare-default", "preview", "draft", "selection", "direct")
-    }
+    stages = dict.fromkeys(
+        ("prepare-default", "native-undo")
+        if native_undo
+        else ("prepare-default", "preview", "draft", "selection", "direct"),
+        "not-run",
+    )
     result = {
         "featureIds": ["models/default-cli", "preview/browser-index", "writeback/browser-index"],
         "stages": stages,
@@ -47,6 +53,16 @@ def run(arguments):
         "quality": "requires sentence-by-sentence review of samples.json",
         "nativeUndo": "not-run; standard textarea setRangeText is not native undo proof",
     }
+    if native_undo:
+        result.update(
+            featureIds=["models/default-cli", "writeback/browser-undo-index"],
+            platform="Linux",
+            fixture="Tiptap 2.11.5 with StarterKit native ProseMirror history",
+            input="default Tab, Ctrl+Z and Ctrl+Shift+Z through private XTest",
+            initialDocument="editorProbeSetup creates marked HTML and selects hello before input",
+            nativeUndo="not-run",
+            editorBundleSha256=hashlib.sha256(arguments.editor_bundle.read_bytes()).hexdigest(),
+        )
     stage = "prepare-default"
     process, page, paths = None, None, None
     samples, actions = [], []
@@ -78,13 +94,16 @@ def run(arguments):
         return page.evaluate("""() => ({focused:document.hasFocus(),active:document.activeElement.id,
           fields:Object.fromEntries(['source','other'].map(id=>{const e=document.getElementById(id);
             return [id,{text:e.value,start:e.selectionStart,end:e.selectionEnd}]})),
-          events:[...journeyEvents]})""")
+          events:[...journeyEvents],
+          ...(window.editorProbeInspect ? {rich:{...editorProbeInspect(),
+            history:editorProbeHistoryDepth(),keys:[...journeyRichKeys]}} : {})})""")
 
     def capture(name):
         value = {"page": state(), "desktop": status()}
         save("actions.json", actions)
         save(name + ".json", value)
-        page.screenshot(path=str(output / (name + ".png")))
+        # Hiding the caret mutates contenteditable style and invalidates its capture.
+        page.screenshot(path=str(output / (name + ".png")), caret="initial")
         return value
 
     def rows():
@@ -102,6 +121,28 @@ def run(arguments):
             row["operation"] == "write-Verified-None" for row in outcomes
         ), outcomes
         return bool(outcomes)
+
+    @contextmanager
+    def general_settings():
+        assert control(paths, "settings") is True
+        settings_window = wait(
+            lambda: next(
+                (
+                    item
+                    for item in contents(request("Windows"), "Windows")
+                    if item.get("pid") == process.pid and item.get("title") == "TypeLay 设置"
+                ),
+                None,
+            ),
+            "owned settings window did not map",
+        )
+        request({"Action": {"FocusWindow": {"id": settings_window["id"]}}})
+        select_settings_page(process.pid, "通用")
+        try:
+            yield
+        finally:
+            request({"Action": {"CloseWindow": {"id": settings_window["id"]}}})
+            request({"Action": {"FocusWindow": {"id": window["id"]}}})
 
     try:
         identity = json.loads((arguments.package / "build-info.json").read_text())
@@ -190,7 +231,21 @@ def run(arguments):
                     ],
                 )
             )
-            worker = extension_worker(browser, extension)
+            stack.callback(
+                shutil.copyfile,
+                paths.config.parent / arguments.browser_kind / "chromium.log",
+                output / "chromium.log",
+            )
+            try:
+                worker = extension_worker(browser, extension)
+            except Exception:
+                save(
+                    "extension-targets.json",
+                    browser.browser.new_browser_cdp_session().send("Target.getTargets"),
+                )
+                save("extension-workers.json", [worker.url for worker in browser.service_workers])
+                raise
+            result["browser"] = {"kind": arguments.browser_kind, "version": browser.browser.version}
             result["extensionId"] = worker.url.split("/")[2]
             command(
                 "/usr/bin/python3",
@@ -279,12 +334,13 @@ def run(arguments):
                 )
 
             def permit(view="ValidTranslation"):
+                started = time.monotonic_ns() // 1_000_000
                 data = status()
+                elapsed = time.monotonic_ns() // 1_000_000 - started
                 return (
                     data
                     if data.get("viewState") == view
-                    and data.get("acceptanceReady")
-                    and data.get("acceptanceRemainingMs", 0) > 0
+                    and acceptance_observation_current(data, elapsed)
                     else None
                 )
 
@@ -299,6 +355,127 @@ def run(arguments):
                 samples.append({"case": name, "source": source, "translation": translated})
                 save("samples.json", samples)
 
+            if native_undo:
+                stage = "native-undo"
+                with general_settings():
+                    switch = wait(
+                        lambda: named(process.pid, "设置：原生输入框替换"),
+                        "experimental writeback control missing",
+                    )
+                    assert json.loads(paths.settings.read_text())["ExperimentalWriteback"] is False
+                    assert Atspi.Action.do_action(switch.get_action_iface(), 0)
+                    actions.append({"action": "enable 原生输入框替换 through settings UI"})
+                    wait(
+                        lambda: json.loads(paths.settings.read_text())["ExperimentalWriteback"]
+                        is True,
+                        "experimental writeback setting did not save",
+                    )
+                    save("settings-saved.json", json.loads(paths.settings.read_text()))
+                    command("grim", output / "settings-writeback.png")
+                page.evaluate("""() => {
+                  const mount=document.createElement('div'); mount.id='mount';
+                  mount.style.cssText='margin:24px;width:600px;padding:16px;border:1px solid #aaa';
+                  document.body.prepend(mount);
+                  window.journeyRichKeys=[];
+                  for(const type of ['keydown','keyup']) window.addEventListener(type,event=>{
+                    if(['Tab','z','Z'].includes(event.key)) journeyRichKeys.push({
+                      type,key:event.key,ctrl:event.ctrlKey,shift:event.shiftKey,
+                      trusted:event.isTrusted,target:event.target.id});
+                  },true);
+                }""")
+                page.add_script_tag(content=arguments.editor_bundle.read_text())
+                page.evaluate("editorProbeSetup('guarded')")
+                # Confirm the native selection through actual focused input.
+                shift = prepare_key(stack, "Shift_L", connection=connection)
+                shift(True)
+                shift(False)
+                report, node = wait(candidate, "rich Index preview did not render", 60)
+                translation = node["value"]["value"]
+                sample(stage, "hello", translation)
+                before = capture("undo-before")
+                original = before["page"]["rich"]
+                assert original["after"] == (
+                    "<p>Before <strong>hello world</strong> after <em>untouched</em></p>"
+                )
+                assert original["selection"] == {"from": 8, "to": 13}
+                assert original["history"] == {"undo": 0, "redo": 0}
+                assert before["page"]["active"] == "editor-source"
+                assert report["input"]["sessionShortcuts"]["bindings"]["accept"] == "Tab"
+                checkpoint = len(rows())
+                wait(permit, "rich Index candidate has no current permit")
+                press_tab()
+                expected = "Before " + translation + " world after untouched"
+                wait(
+                    lambda: terminal_write(checkpoint) and state()["rich"]["domAfter"] == expected,
+                    "default Tab did not replace the rich selection with the Index candidate",
+                )
+                accepted = capture("undo-accepted")
+                changed = accepted["page"]["rich"]
+                assert changed["after"] == (
+                    "<p>Before <strong>"
+                    + translation
+                    + " world</strong> after <em>untouched</em></p>"
+                )
+                assert changed["history"] == {"undo": 1, "redo": 0}
+                assert changed["preserved"] and changed["updateRestored"]
+                assert accepted["page"]["active"] == "editor-source"
+                receipt = writes(checkpoint)
+                assert [row["operation"] for row in receipt] == ["write-Verified-None"]
+                save("undo-receipt.json", receipt)
+
+                def host_history(*, redo=False):
+                    control_key = prepare_key(stack, "Control_L", connection=connection)
+                    z = prepare_key(stack, "z", connection=connection)
+                    actions.append({"action": "XTest Ctrl+Shift+Z" if redo else "XTest Ctrl+Z"})
+                    control_key(True)
+                    try:
+                        if redo:
+                            shift(True)
+                        z(True)
+                        z(False)
+                    finally:
+                        if redo:
+                            shift(False)
+                        control_key(False)
+
+                host_history()
+                wait(
+                    lambda: state()["rich"]["after"] == original["after"],
+                    "host Ctrl+Z did not restore the original marked document",
+                )
+                undone = capture("undo-restored")
+                restored = undone["page"]["rich"]
+                assert restored["domAfter"] == original["domAfter"]
+                assert restored["selection"] == original["selection"]
+                assert restored["history"] == {"undo": 0, "redo": 1}
+                assert undone["page"]["active"] == "editor-source"
+                host_history(redo=True)
+                wait(
+                    lambda: state()["rich"]["after"] == changed["after"],
+                    "host Ctrl+Shift+Z did not restore the same replacement",
+                )
+                redone = capture("undo-redone")
+                assert redone["page"]["rich"]["history"] == {"undo": 1, "redo": 0}
+                assert redone["page"]["rich"]["domAfter"] == changed["domAfter"]
+                assert redone["page"]["rich"]["selection"] == changed["selection"]
+                assert redone["page"]["active"] == "editor-source"
+                history_keys = [
+                    key
+                    for key in redone["page"]["rich"]["keys"]
+                    if key["type"] == "keydown" and key["key"].lower() == "z"
+                ]
+                assert len(history_keys) == 2
+                assert all(
+                    key["trusted"] and key["ctrl"] and key["target"] == "editor-source"
+                    for key in history_keys
+                )
+                assert [key["shift"] for key in history_keys] == [False, True]
+                assert writes(checkpoint) == receipt
+                result["nativeUndo"] = "passed"
+                stages[stage] = "passed"
+                save("doctor-after.json", json.loads(command(app, "--doctor")))
+                return
+
             stage = "preview"
             insert(SOURCE)
             report, node = wait(candidate, "real Index preview did not render", 60)
@@ -309,6 +486,9 @@ def run(arguments):
             stages[stage] = "passed"
 
             stage = "draft"
+            # A screenshot can span an overlay refresh. Resolve the current
+            # accessible candidate immediately before its actual click.
+            _, node = wait(candidate, "current Index candidate did not render for editing", 60)
             quad = cdp.send("DOM.getBoxModel", {"backendNodeId": node["backendDOMNodeId"]})[
                 "model"
             ]["border"]
@@ -393,31 +573,16 @@ def run(arguments):
             stages[stage] = "passed"
 
             stage = "direct"
-            assert control(paths, "settings") is True
-            settings_window = wait(
-                lambda: next(
-                    (
-                        item
-                        for item in contents(request("Windows"), "Windows")
-                        if item.get("pid") == process.pid and item.get("title") == "TypeLay 设置"
-                    ),
-                    None,
-                ),
-                "owned settings window did not map",
-            )
-            request({"Action": {"FocusWindow": {"id": settings_window["id"]}}})
-            select_settings_page(process.pid, "通用")
-            mode = wait(
-                lambda: named(process.pid, "设置：工作模式：按需"), "OnDemand control missing"
-            )
-            assert Atspi.Action.do_action(mode.get_action_iface(), 0)
-            wait(
-                lambda: json.loads(paths.settings.read_text())["Mode"] == 1,
-                "OnDemand setting did not save",
-            )
-            save("settings-saved.json", json.loads(paths.settings.read_text()))
-            request({"Action": {"CloseWindow": {"id": settings_window["id"]}}})
-            request({"Action": {"FocusWindow": {"id": window["id"]}}})
+            with general_settings():
+                mode = wait(
+                    lambda: named(process.pid, "设置：工作模式：按需"), "OnDemand control missing"
+                )
+                assert Atspi.Action.do_action(mode.get_action_iface(), 0)
+                wait(
+                    lambda: json.loads(paths.settings.read_text())["Mode"] == 1,
+                    "OnDemand setting did not save",
+                )
+                save("settings-saved.json", json.loads(paths.settings.read_text()))
             insert("Keep field B unchanged. 🙂", "other")
             insert(DIRECT)
             wait(
