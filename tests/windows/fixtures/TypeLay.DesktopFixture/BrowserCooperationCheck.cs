@@ -325,6 +325,11 @@ internal static partial class BrowserCooperationCheck
                 ownData = true;
                 await File.WriteAllTextAsync(ownerFile, ownerToken, ct);
                 await CopyModelAsync(directory, data, ct);
+                var installation = new ModelInstallationStore(data, Path.Combine(distribution, "worker", "run_worker.py"))
+                    .ReadInstallationState();
+                Require(installation.CurrentPackages.Count == 1
+                    && installation.CurrentPackages[0].Package.Id == "index-translate-2b-q4-k-m"
+                    && installation.CurrentPackages[0].Directions.Count == 14, "browser-default-index-required");
                 await File.WriteAllTextAsync(Path.Combine(data, "settings.json"), JsonSerializer.Serialize(new UserSettings(
                     Source: "zh", Target: "en", Theme: "light", UiLanguage: "zh-CN", OnboardingComplete: false, ExperimentalWriteback: false)), ct);
                 setup.Stage = "check-shipped-extension";
