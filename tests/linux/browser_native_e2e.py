@@ -205,6 +205,7 @@ class NativeBrowserContract(unittest.TestCase):
                             self.assertEqual(
                                 original["sessionBindings"],
                                 {
+                                    "presentationVersion": 1,
                                     "generation": "native-default",
                                     "accept": "Tab",
                                     "exit": "Esc",
@@ -445,6 +446,7 @@ class NativeBrowserContract(unittest.TestCase):
             {
                 "op": "configure-shortcuts",
                 "data": {
+                    "presentationVersion": 1,
                     "generation": "native-default",
                     "enabled": False,
                     "sessionEnabled": True,
