@@ -484,7 +484,8 @@ jobs:
     container:
       image: archlinux:base-devel
       # Electron's font service exceeds Docker's default 64 MiB /dev/shm.
-      options: --shm-size=1g
+      # The offline verification test must create its own user/network namespaces.
+      options: --shm-size=1g --security-opt seccomp=unconfined
     timeout-minutes: ${{ needs.scope.outputs.collect_quality == 'true' && 70 || 45 }}
     env:
       FIXED_MODEL_DIAGNOSTICS: ${{ needs.scope.outputs.fixed_model_diagnostics }}
