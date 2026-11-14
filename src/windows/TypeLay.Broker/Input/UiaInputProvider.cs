@@ -38,6 +38,32 @@ internal sealed class UiaInputProvider : IDisposable
         _sourcePrototype = sourcePrototype;
         _sourceMessageRoute = sourcePrototype && sourceMessageRoute;
         _orderedSourceMessageWitness = orderedSourceMessageWitness;
+        // Complete managed UIA's default provider registration before hello.
+        // An empty additional table preserves the defaults and reads no target.
+        string? preparationTrace = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
+        bool providersLoadedBefore = preparationTrace is not null && AppDomain.CurrentDomain.GetAssemblies()
+            .Any(assembly => assembly.GetName().Name == "UIAutomationClientsideProviders");
+        long preparationStarted = Stopwatch.GetTimestamp();
+        ClientSettings.RegisterClientSideProviders([]);
+        double preparationMs = Stopwatch.GetElapsedTime(preparationStarted).TotalMilliseconds;
+        // [DEBUG-t12-provider-preparation] One startup sample, outside every
+        // source-observation deadline. It performs no focused-element query.
+        if (!string.IsNullOrWhiteSpace(preparationTrace))
+        {
+            try
+            {
+                System.IO.File.AppendAllText(preparationTrace + ".broker.jsonl", System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    operation = "DEBUG-t12-provider-preparation",
+                    atMs = WindowsInterruptClock.NowMs,
+                    providersLoadedBefore,
+                    providersLoadedAfter = AppDomain.CurrentDomain.GetAssemblies()
+                        .Any(assembly => assembly.GetName().Name == "UIAutomationClientsideProviders"),
+                    registrationDurationMs = preparationMs
+                }) + Environment.NewLine);
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { }
+        }
         _edits = new(sourceMessageRoute: _sourceMessageRoute, orderedSourceMessageWitness: orderedSourceMessageWitness);
     }
     public string? Application => _application;
