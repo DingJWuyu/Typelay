@@ -329,6 +329,8 @@ def main():
                 "--",
                 "xvfb-run",
                 "-d",
+                "-w",
+                "0",
                 "-s",
                 "-screen 0 1280x960x24 -nolisten tcp",
                 "sh",
