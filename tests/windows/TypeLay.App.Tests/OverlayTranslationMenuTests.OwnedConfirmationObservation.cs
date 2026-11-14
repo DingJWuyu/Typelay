@@ -21,15 +21,11 @@ public sealed partial class OverlayTranslationMenuTests
         Refused,
         Expired
     }
-    // DEBUG-t12: observes the existing Broker boundary without another read,
-    // a new permission, or a change to the production Broker trace. Only the
-    // explicit overlap case injects one slow read through DelayNextCapture.
-    private sealed class OwnedConfirmationCaptureObservation : IInputBroker
+    // Delay only an already scheduled read through the existing broker boundary.
+    // The real broker still evaluates the original request and all its guards.
+    private sealed class OwnedConfirmationDelayedBroker : IInputBroker
     {
         private readonly BrokerClient _broker = new();
-        private readonly object _gate = new();
-        private readonly Queue<object> _events = new();
-        private int _sequence, _active, _dropped;
         private readonly TaskCompletionSource _delayedCaptureStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource _delayedCaptureCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource _editAdmitted = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -45,116 +41,42 @@ public sealed partial class OverlayTranslationMenuTests
             _delayMode = mode;
             Volatile.Write(ref _delayNext, 1);
         }
+        public void EditAdmitted() => _editAdmitted.TrySetResult();
         public bool Available => _broker.Available;
         public int ProcessId => _broker.ProcessId;
         public Task StartAsync() => _broker.StartAsync();
         public Task<BrokerResponse> CaptureWakeAsync(BrokerRequest request, Func<bool> stillCurrent) =>
             _broker.CaptureWakeAsync(request, stillCurrent);
         public Task<BrokerResponse> CallAsync(BrokerRequest request, TimeSpan? timeout = null) =>
-            request.Op == "capture-owned" ? ObserveCapture(request, timeout) : _broker.CallAsync(request, timeout);
-        private async Task<BrokerResponse> ObserveCapture(BrokerRequest request, TimeSpan? timeout)
+            request.Op == "capture-owned" && Interlocked.Exchange(ref _delayNext, 0) == 1
+                ? DelayCapture(request, timeout) : _broker.CallAsync(request, timeout);
+        private async Task<BrokerResponse> DelayCapture(BrokerRequest request, TimeSpan? timeout)
         {
-            int sequence;
-            lock (_gate)
-            {
-                sequence = ++_sequence;
-                _active++;
-                Add(new
-                {
-                    stage = "capture-start",
-                    sequence,
-                    atMs = WindowsInterruptClock.NowMs,
-                    active = _active,
-                    request.SourceUserEpoch,
-                    nativeFocusRevision = request.OwnedCapture?.NativeFocusRevision
-                });
-            }
-            BrokerResponse? response = null;
-            bool delayed = false;
             try
             {
-                if (Interlocked.Exchange(ref _delayNext, 0) == 1)
+                using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_delayCancellation, _stopping.Token);
+                _delayedCaptureStarted.TrySetResult();
+                await _editAdmitted.Task.WaitAsync(cancellation.Token).ConfigureAwait(false);
+                // A controlled slow dependency exposes the edit/read overlap.
+                // This is not a wait for readiness or an extended permission.
+                await Task.Delay(_delayMode == OwnedCaptureDelay.Expired ? 600 : 200, cancellation.Token).ConfigureAwait(false);
+                if (_delayMode == OwnedCaptureDelay.Refused)
                 {
-                    delayed = true;
-                    using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_delayCancellation, _stopping.Token);
-                    Mark("injected-read-held");
-                    _delayedCaptureStarted.TrySetResult();
-                    await _editAdmitted.Task.WaitAsync(cancellation.Token).ConfigureAwait(false);
-                    // A controlled slow dependency exposes the edit/read overlap.
-                    // This is not a wait for readiness or an extended permission.
-                    await Task.Delay(_delayMode == OwnedCaptureDelay.Expired ? 600 : 200, cancellation.Token).ConfigureAwait(false);
-                    Mark("injected-read-released");
-                    if (_delayMode == OwnedCaptureDelay.Refused)
+                    var original = request.OwnedCapture ?? throw new InvalidOperationException("owned-capture-descriptor-missing");
+                    request = request with
                     {
-                        var original = request.OwnedCapture ?? throw new InvalidOperationException("owned-capture-descriptor-missing");
-                        request = request with
+                        OwnedCapture = original with
                         {
-                            OwnedCapture = original with
-                            {
-                                NativeFocusRevision = original.NativeFocusRevision + 1
-                            }
-                        };
-                    }
+                            NativeFocusRevision = original.NativeFocusRevision + 1
+                        }
+                    };
                 }
-                response = await _broker.CallAsync(request, timeout).ConfigureAwait(false);
-                return response;
+                return await _broker.CallAsync(request, timeout).ConfigureAwait(false);
             }
             finally
             {
-                lock (_gate)
-                {
-                    _active--;
-                    Add(new
-                    {
-                        stage = "capture-completed",
-                        sequence,
-                        atMs = WindowsInterruptClock.NowMs,
-                        active = _active,
-                        returned = response is not null,
-                        observed = response?.Status == "observed",
-                        inputEpoch = response?.Snapshot?.InputEpoch,
-                        focusEpoch = response?.Snapshot?.FocusEpoch,
-                        observedAtMs = response?.Snapshot?.ObservedAtMs
-                    });
-                }
-                if (delayed)
-                    _delayedCaptureCompleted.TrySetResult();
+                _delayedCaptureCompleted.TrySetResult();
             }
-        }
-        public void Mark(string stage)
-        {
-            lock (_gate)
-                Add(new
-                {
-                    stage,
-                    atMs = WindowsInterruptClock.NowMs,
-                    active = _active
-                });
-            if (stage == "begin-edit-admitted")
-                _editAdmitted.TrySetResult();
-        }
-        private void Add(object entry)
-        {
-            if (_events.Count == 64)
-            {
-                _events.Dequeue();
-                _dropped++;
-            }
-            _events.Enqueue(entry);
-        }
-        public void Report()
-        {
-            try
-            {
-                lock (_gate)
-                    TestContext.Current.TestOutputHelper?.WriteLine(JsonSerializer.Serialize(new
-                    {
-                        operation = "DEBUG-t12-owned-capture-order",
-                        events = _events.ToArray(),
-                        dropped = _dropped
-                    }));
-            }
-            catch (Exception error) when (error is not OutOfMemoryException) { }
         }
         public void Dispose()
         {
@@ -463,20 +385,6 @@ public sealed partial class OverlayTranslationMenuTests
                             : ["operation", "stage", "sample", "atMs", "inputSequence", "pressSequence", "released", "ageMs", "droppedAtLeast"];
                         Retain(names.Where(name => row.TryGetProperty(name, out _))
                             .ToDictionary(name => name, name => row.GetProperty(name).Clone()));
-                    }
-                    else if (operation.GetString() == "DEBUG-t12-owned-source-epochs")
-                    {
-                        string[] names = ["confirmed", "controllerEditInputEpoch", "controllerEditFocusEpoch",
-                            "controllerEditObservedAtMs", "returnInputEpoch", "returnFocusEpoch", "returnObservedAtMs",
-                            "targetMatches", "requestSourceUserEpoch", "currentSourceUserEpoch"];
-                        var epochs = new Dictionary<string, object> { ["operation"] = "DEBUG-t12-owned-source-epochs" };
-                        if (row.TryGetProperty("atMs", out var at))
-                            epochs["atMs"] = at.Clone();
-                        if (row.TryGetProperty("detail", out var values))
-                            foreach (string name in names)
-                                if (values.TryGetProperty(name, out var value))
-                                    epochs[name] = value.Clone();
-                        Retain(epochs);
                     }
                     else if (operation.GetString() == "owned-editor-admission")
                     {

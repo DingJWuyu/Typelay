@@ -79,7 +79,7 @@ public sealed partial class OverlayTranslationMenuTests
         var overlay = new OverlayWindow(automationTest: true, clientAreaAnimation: () => false);
         ChildProcess? child = null;
         SessionController? controller = null;
-        OwnedConfirmationCaptureObservation? captureObservation = null;
+        OwnedConfirmationDelayedBroker? delayedBroker = null;
         var host = new PracticeHost(info =>
         {
             info.Environment.Remove("TYPELAY_TRACE"); // Keep this bounded parent-hook trace separate from the child.
@@ -118,18 +118,20 @@ public sealed partial class OverlayTranslationMenuTests
                 ? string.Join(" ", Enumerable.Repeat("An expanded translated draft remains local until its fresh source return.", 14))
                 : "Hello";
             var model = new OwnedConfirmationTranslation(translation);
-            var observedBroker = new OwnedConfirmationCaptureObservation();
-            captureObservation = observedBroker;
+            delayedBroker = pendingCapture is null ? null : new OwnedConfirmationDelayedBroker();
             controller = WindowsRuntime.CreateSession(settings, model, overlay, automationTest: true,
-                broker: observedBroker, practice: host);
-            var beginEditing = overlay.BeginEditing;
-            overlay.BeginEditing = token =>
+                broker: delayedBroker, practice: host);
+            if (delayedBroker is { } broker)
             {
-                observedBroker.Mark("begin-edit-called");
-                bool admitted = beginEditing?.Invoke(token) == true;
-                observedBroker.Mark(admitted ? "begin-edit-admitted" : "begin-edit-refused");
-                return admitted;
-            };
+                var beginEditing = overlay.BeginEditing;
+                overlay.BeginEditing = token =>
+                {
+                    bool admitted = beginEditing?.Invoke(token) == true;
+                    if (admitted)
+                        broker.EditAdmitted();
+                    return admitted;
+                };
+            }
             host.Bind(controller);
             await controller.StartAsync().WaitAsync(deadline.Token);
             host.Open(path);
@@ -212,8 +214,8 @@ public sealed partial class OverlayTranslationMenuTests
             {
                 // Hold one naturally scheduled read, not an extra preparatory capture.
                 // Its injected latency consumes the original scenario and edit deadlines.
-                observedBroker.DelayNextCapture(delay, deadline.Token);
-                await observedBroker.DelayedCaptureStarted.WaitAsync(deadline.Token);
+                delayedBroker!.DelayNextCapture(delay, deadline.Token);
+                await delayedBroker!.DelayedCaptureStarted.WaitAsync(deadline.Token);
             }
             using (var action = ActionDeadline())
                 await ClickOwnedConfirmationEditor(editor, overlay, () =>
@@ -225,7 +227,7 @@ public sealed partial class OverlayTranslationMenuTests
             if (readMustRefuse)
             {
                 await Until(() => controller.GetStyleSettingsState().Session is null && !overlay.IsVisible);
-                await observedBroker.DelayedCaptureCompleted.WaitAsync(deadline.Token);
+                await delayedBroker!.DelayedCaptureCompleted.WaitAsync(deadline.Token);
                 // Give the completed read's UI continuation its normal turn before
                 // checking that the retired admission cannot activate late.
                 await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
@@ -480,7 +482,6 @@ public sealed partial class OverlayTranslationMenuTests
         catch (Exception error) { failure = error; }
         finally
         {
-            captureObservation?.Report();
             try
             {
                 finishKeyboardObservation?.Invoke();
@@ -502,7 +503,7 @@ public sealed partial class OverlayTranslationMenuTests
             catch (Exception error) { cleanupErrors.Add(error); }
             try
             {
-                captureObservation?.Dispose();
+                delayedBroker?.Dispose();
             }
             catch (Exception error) { cleanupErrors.Add(error); }
             try
