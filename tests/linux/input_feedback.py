@@ -7537,6 +7537,61 @@ class InputFeedbackTests(unittest.TestCase):
         self.assertEqual(frames[0]["id"], 0)
         self.assertIsNotNone(frames[0]["data"]["permit"])
 
+    def test_native_publication_keeps_only_its_original_peers_actual_receipt(self):
+        with patch.dict(os.environ, {"TYPELAY_TRACE": "1"}):
+            publication = asyncio.run(self.publish_acceptance(pause=False))[0]["data"]
+        receipt = {
+            "planId": publication["permit"]["plan"]["id"],
+            "acceptedAtMs": 1001,
+            "receipt": {"status": "Verified", "reason": "None"},
+        }
+        original = self.input.diagnostics()["nativePublications"][0]
+        other = self.connect_peer()
+        self.native_frames(other)
+        other.event("accepted", receipt)
+        self.peer.event("accepted", {**receipt, "planId": str(uuid.uuid4())})
+        self.assertEqual(self.input.diagnostics()["nativePublications"], [original])
+        self.assertEqual(self.host.notices, [])
+        with patch("builtins.print", side_effect=AssertionError("receipt must not log")):
+            self.peer.event("accepted", receipt)
+        expected = {**original, "acceptedAtMs": 1001, "status": "Verified", "reason": "None"}
+        self.assertEqual(self.input.diagnostics()["nativePublications"], [expected])
+        self.assertEqual(self.host.notices[0]["permit"], publication["permit"])
+        self.assertEqual(self.host.notices[0]["target"], publication["lease"]["source"]["target"])
+        self.assertEqual(self.host.notices[0]["completedReceipt"], receipt["receipt"])
+        self.peer.event("accepted", {**receipt, "acceptedAtMs": 1002})
+        self.assertEqual(len(self.host.notices), 1)
+        self.assertEqual(self.input.diagnostics()["nativePublications"], [expected])
+        copied = self.input.diagnostics()["nativePublications"][0]
+        copied["acceptedAtMs"] = 9999
+        self.assertEqual(self.input.diagnostics()["nativePublications"], [expected])
+
+    def test_native_receipt_diagnostics_keep_bounded_scalars_without_changing_settlement(self):
+        for accepted_at, status, reason in (
+            (1001, "OutcomeUnknown", "UnknownOutcome"),
+            (1001, "RejectedBeforeMutation", "EpochChanged"),
+            (True, "PRIVATE" * 1000, {"body": "PRIVATE"}),
+        ):
+            with self.subTest(status=status[:20]):
+                with patch.dict(os.environ, {"TYPELAY_TRACE": "1"}):
+                    publication = asyncio.run(self.publish_acceptance(pause=False))[0]["data"]
+                receipt = {"status": status, "reason": reason}
+                self.peer.event(
+                    "accepted",
+                    {
+                        "planId": publication["permit"]["plan"]["id"],
+                        "acceptedAtMs": accepted_at,
+                        "receipt": receipt,
+                    },
+                )
+                diagnostic = self.input.diagnostics()["nativePublications"][-1]
+                valid = type(accepted_at) is int
+                self.assertEqual(diagnostic["acceptedAtMs"], accepted_at if valid else None)
+                self.assertIsNone(diagnostic["status"])
+                self.assertIsNone(diagnostic["reason"])
+                self.assertEqual(self.host.notices[-1]["permit"], publication["permit"])
+                self.assertEqual(self.host.notices[-1]["completedReceipt"], receipt)
+
     def test_native_publication_metadata_is_bounded_and_status_returns_copies(self):
         with patch.dict(os.environ, {"TYPELAY_TRACE": "1"}):
             for _ in range(193):

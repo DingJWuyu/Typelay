@@ -14,10 +14,113 @@ sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 from desktop_e2e import background_direct_settlement  # noqa: E402
 from qt_cooperative.run import prepare_source_glossary_capture_basis  # noqa: E402
 from qt_desktop import (  # noqa: E402
+    configured_acceptance_settlement,
     displayed_wake_candidate,
     observe_qt_processes,
     settled_overlay_motion,
 )
+
+
+class ConfiguredAcceptanceSettlementTests(unittest.TestCase):
+    # c18d's actual publication/controller identities and times. acceptedAtMs
+    # is supplied through the native receipt boundary tested in input_feedback;
+    # that new diagnostic was not present in the historical c18d artifact.
+    observed = {
+        "planId": "2092a33f-9a0a-493a-9e53-6ad0037571a0",
+        "receivedAtMs": 1182259,
+        "sendStartedAtMs": 1182259,
+        "sendReturnedAtMs": 1182259,
+        "permitUntilMs": 1182359,
+    }
+    accepted = {
+        "planId": "510c0439-4eba-4d02-9c1b-5b4a7ddb6f39",
+        "receivedAtMs": 1182300,
+        "sendStartedAtMs": 1182300,
+        "sendReturnedAtMs": 1182300,
+        "permitUntilMs": 1182398,
+        "acceptedAtMs": 1182307,
+        "status": "Verified",
+        "reason": "None",
+    }
+    verified = {
+        "atMs": 1182316,
+        "operation": "write-Verified-None",
+        "planId": accepted["planId"],
+    }
+
+    def observe(self, rows=None, publications=None):
+        return configured_acceptance_settlement(
+            [self.verified] if rows is None else rows,
+            [self.observed, self.accepted] if publications is None else publications,
+            self.observed,
+            1182299,
+        )
+
+    def test_original_key_can_consume_a_fresh_publication_after_readiness_was_observed(self):
+        self.assertEqual(self.observe(), {"publication": self.accepted, "verified": self.verified})
+
+    def test_the_observed_publication_can_itself_supply_the_original_receipt(self):
+        publication = {
+            **self.observed,
+            "acceptedAtMs": 1182307,
+            "status": "Verified",
+            "reason": "None",
+        }
+        verified = {**self.verified, "planId": publication["planId"]}
+        self.assertEqual(
+            self.observe([verified], [publication]),
+            {"publication": publication, "verified": verified},
+        )
+
+    def test_native_can_accept_before_the_host_records_its_queue_handoff_return(self):
+        publication = {**self.accepted, "sendReturnedAtMs": self.accepted["acceptedAtMs"] + 1}
+        self.assertEqual(
+            self.observe(publications=[self.observed, publication]),
+            {"publication": publication, "verified": self.verified},
+        )
+
+    def test_missing_duplicate_and_unrelated_receipts_cannot_prove_the_original_key(self):
+        for rows in (
+            [],
+            [self.verified, self.verified],
+            [{**self.verified, "operation": "write-OutcomeUnknown-UnknownOutcome"}],
+            [{**self.verified, "planId": self.observed["planId"]}],
+        ):
+            with self.subTest(rows=rows):
+                self.assertIsNone(self.observe(rows=rows))
+        for publications in (
+            [],
+            [self.observed],
+            [self.accepted],
+            [self.observed, self.accepted, self.accepted],
+            [self.observed, self.observed, self.accepted],
+            [self.observed, self.accepted, {**self.accepted, "planId": "another-plan"}],
+        ):
+            with self.subTest(publications=publications):
+                self.assertIsNone(self.observe(publications=publications))
+        for key in self.accepted:
+            missing = dict(self.accepted)
+            del missing[key]
+            with self.subTest(missing=key):
+                self.assertIsNone(self.observe(publications=[self.observed, missing]))
+
+    def test_expired_unissued_and_late_publications_are_not_original_acceptance(self):
+        for changed in (
+            {"acceptedAtMs": self.accepted["permitUntilMs"]},
+            {"permitUntilMs": self.accepted["acceptedAtMs"] + 101},
+            {"acceptedAtMs": 1182298},
+            {"acceptedAtMs": self.verified["atMs"] + 1},
+            {"receivedAtMs": self.observed["receivedAtMs"] - 1},
+            {"sendStartedAtMs": self.accepted["receivedAtMs"] - 1},
+            {"sendStartedAtMs": self.accepted["acceptedAtMs"] + 1},
+            {"sendReturnedAtMs": self.accepted["sendStartedAtMs"] - 1},
+            {"acceptedAtMs": True},
+            {"status": "RejectedBeforeMutation", "reason": "EpochChanged"},
+        ):
+            with self.subTest(changed=changed):
+                self.assertIsNone(
+                    self.observe(publications=[self.observed, {**self.accepted, **changed}])
+                )
 
 
 class QtDirectSettlementTests(unittest.TestCase):

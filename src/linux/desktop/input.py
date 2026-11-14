@@ -4028,6 +4028,25 @@ class Input:
             receipt = value.get("receipt")
             if not isinstance(receipt, dict):
                 receipt = refused(True)
+            for diagnostic in self.publish_diagnostics:
+                if diagnostic["planId"] == value["planId"]:
+                    # This is the original issued peer's completed receipt, not
+                    # readiness sampled before a later publication. Keep only
+                    # bounded scalar metadata; do not log the source snapshot.
+                    accepted_at = value.get("acceptedAtMs")
+                    status, reason = receipt.get("status"), receipt.get("reason")
+                    # Only the successful receipt is needed by this observer.
+                    # Unrecognized outcomes stay unrecognized here; the original
+                    # receipt still reaches the existing settlement unchanged.
+                    verified = status == "Verified" and reason == "None"
+                    diagnostic.update(
+                        acceptedAtMs=accepted_at
+                        if type(accepted_at) is int and 0 <= accepted_at < 2**53
+                        else None,
+                        status="Verified" if verified else None,
+                        reason="None" if verified else None,
+                    )
+                    break
             self.finish_issued(
                 value["planId"],
                 receipt,

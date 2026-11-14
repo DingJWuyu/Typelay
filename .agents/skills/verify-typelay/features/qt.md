@@ -74,7 +74,7 @@ DISPLAY="$TYPELAY_VERIFY_XDISPLAY" timeout --kill-after=10s 240s \
 
 人工稿回源后的首次 Ctrl 接受使用临时 `DEBUG-t11-permit` 记录原计划的发布、撤销、检查失败和未用退休。它只在实际编辑回源后启用，最多记录 96 条元数据。将原生 hook、`qt-manual-acceptance-timing.json` 与 Host 原计划对齐；到达时没有发布许可不等于许可超时。确定原因并完成回归后删除这组临时诊断。
 
-配置 F12 的按需接受必须先观察本次源字段的实际隐藏新帧，再从首次 Ready 之后的新帧取得候选。源正文、选区和变更计数须与唤醒前一致。`qt-configured-f12-timing.json` 保留触发前的候选、编辑器文档身份及本次发布计划；写后核对该计划的唯一 Verified 回执与预存候选，不能用写后正文补填预期值。
+配置 F12 的按需接受必须先观察本次源字段的实际隐藏新帧，再从首次 Ready 之后的新帧取得候选。源正文、选区和变更计数须与唤醒前一致。`qt-configured-f12-timing.json` 保留触发前的候选、编辑器文档身份及发布观察。正常捕获可以在读取 Ready 后发布新计划；写后用原生实际 `acceptedAtMs`、状态和原因关联其同计划发布记录与唯一 Controller Verified。发布必须先于接受，接受仍在原 100ms 许可内，不能用较早的状态读取冻结计划身份。核对预存候选、原字段仅变更一次、另一字段不变、选区、光标与焦点；不能用写后正文补填预期值。
 
 核对人工稿恢复时，同时检查完整来源版本和新计划。过期接受保持零写入；新捕获只能在原生内容、选区、文档、焦点、上下文、字段和完整性版本均相等时恢复稿件，新接受必须是独立动作。合作 probe 的 `sourceObservationVersions` 记录原生捕获及正文、选区、只读和焦点 ABA 的版本变化。共享控制器回归不代替这组原生证据。
 
@@ -90,7 +90,7 @@ DISPLAY="$TYPELAY_VERIFY_XDISPLAY" timeout --kill-after=10s 240s \
 
 若完整 probe 失败，先运行 `tests/linux/qt_cooperative/desktop_admission.py`，参数沿 [Qt 平台说明](../../../../docs/platforms/linux/qt.md#部分-qt-检查不构成发行验收)。仅 `admitted-build-input` 允许独立桌面观察，此时把上方 `--fcitx-cooperative` 改为 `"$fcitx"`。保留 `distributionAcceptance=false`，该观察不改变完整 probe 的失败，也不证明搬迁发行包通过。
 
-每条私有旅程结束后，按 [Cleanup](../SKILL.md#cleanup)检查进程和安装副本清理，确认日志、截图和 JSON 仍在。Actions 使用同一 probe 与桌面 runner，并在独立 `qt-language-options` 步骤执行语言搜索。分别读取步骤 outcome、实际被测提交和小型 Qt artifact，不用工作流总状态替代场景结果。
+每条私有旅程结束后，按 [Cleanup](../SKILL.md#cleanup)检查进程和安装副本清理，确认日志、截图和 JSON 仍在。Actions 使用同一 probe 与桌面 runner，并在独立 `qt-language-options` 步骤执行语言搜索。分别读取步骤 outcome、实际被测提交和小型 Qt artifact，不用工作流总状态替代场景结果。`typelay-linux-qt-desktop-events-*` 单独保存桌面日志和 JSON，原 `typelay-linux-desktop-diagnostics-*` 继续保存截图；事件证据不能替代实际视觉检查。
 
 ## Gotchas
 

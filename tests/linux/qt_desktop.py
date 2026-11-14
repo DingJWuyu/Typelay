@@ -60,6 +60,54 @@ def displayed_wake_candidate(value, source, ready, *, after_ms, source_basis):
     return value if ready() else None
 
 
+def configured_acceptance_settlement(rows, publications, observed, dispatched_at_ms):
+    """Correlate the configured source key with its original native receipt."""
+    outcomes = [row for row in rows if row.get("operation", "").startswith("write-")]
+    if len(outcomes) != 1 or outcomes[0].get("operation") != "write-Verified-None":
+        return None
+    verified = outcomes[0]
+    original = [item for item in publications if item.get("planId") == observed.get("planId")]
+    matching = [item for item in publications if item.get("planId") == verified.get("planId")]
+    if (
+        len(original) != 1
+        or not all(original[0].get(key) == value for key, value in observed.items())
+        or len(matching) != 1
+    ):
+        return None
+    publication = matching[0]
+    times = (
+        observed.get("receivedAtMs"),
+        publication.get("receivedAtMs"),
+        publication.get("sendStartedAtMs"),
+        publication.get("sendReturnedAtMs"),
+        publication.get("acceptedAtMs"),
+        publication.get("permitUntilMs"),
+        verified.get("atMs"),
+        dispatched_at_ms,
+    )
+    if not all(type(value) is int and 0 <= value < 2**53 for value in times):
+        return None
+    observed_at, received, started, returned, accepted, until, settled, dispatched = times
+    accepted_since_ready = [
+        item
+        for item in publications
+        if type(item.get("receivedAtMs")) is int
+        and item["receivedAtMs"] >= observed_at
+        and "acceptedAtMs" in item
+    ]
+    if (
+        accepted_since_ready != [publication]
+        or publication.get("status") != "Verified"
+        or publication.get("reason") != "None"
+        or not observed_at <= received <= started <= accepted <= settled
+        or returned < started
+        or not observed_at <= dispatched <= accepted < until
+        or not 0 < until - accepted <= 100
+    ):
+        return None
+    return {"publication": publication, "verified": verified}
+
+
 def settled_overlay_motion(trace):
     """Read one post-click native trace, not a visited height or IME queue state."""
     if trace and not trace.endswith("\n"):
@@ -2264,9 +2312,29 @@ def run_qt(
                         records = [
                             json.loads(line) for line in trace.readlines() if line.endswith(b"\n")
                         ]
-                    verified = [row for row in records if row["operation"] == "write-Verified-None"]
-                    assert len(verified) == 1 and verified[0]["planId"] == publication["planId"]
-                    acceptance_timing["verified"] = verified[0]
+                    publications = status().get("input", {}).get("nativePublications", [])
+                    outcome = configured_acceptance_settlement(
+                        records, publications, publication, acceptance_timing["xdotoolStartedAtMs"]
+                    )
+                    acceptance_timing.update(nativePublications=publications, settlement=outcome)
+                    assert outcome is not None, (records, publications)
+                    accepted_frame = state()
+                    assert accepted_frame["first"]["text"] == function_candidate
+                    assert accepted_frame["first"]["changes"] == dormant["first"]["changes"] + 1
+                    assert accepted_frame["first"]["focused"]
+                    assert accepted_frame["first"]["selectionLength"] == 0
+                    assert (
+                        accepted_frame["first"]["cursor"]
+                        == len(function_candidate.encode("utf-16-le")) // 2
+                    )
+                    assert accepted_frame["focusTransitions"] == dormant["focusTransitions"]
+                    assert accepted_frame["second"] == function_frame["second"]
+                    assert accepted_frame["first"]["undoAvailable"]
+                    acceptance_timing["acceptedFrame"] = {
+                        name: accepted_frame[name]
+                        for name in ("observedAtMs", "first", "second", "focusTransitions")
+                    }
+                    acceptance_timing["verified"] = outcome["verified"]
                 finally:
                     acceptance_timing["finishedAtMs"] = now_ms()
                     try:
