@@ -66,7 +66,8 @@ internal static partial class ContinuousTranslationCheck
             // The same production objects and composition as WindowsRuntime;
             // the two decorators only retain returned facts at public ports.
             var loop = new AcceptanceLoop();
-            controller = new(settings, model, overlay, monitor, input, loop, host.RetireAutomaticAsync, host.ConfirmRetiredAutomaticAsync);
+            controller = new(settings, model, overlay, monitor, input, loop, host.RetireAutomaticAsync,
+                host.ConfirmRetiredAutomaticAsync, sourceInteraction: overlay);
             loop.Tick += host.PollAcceptance;
             host.Bind(controller);
             controller.OperationFeedback += value => feedbackCode ??= value.Code;
@@ -313,6 +314,21 @@ internal static partial class ContinuousTranslationCheck
         }
         finally
         {
+            foreach (var (scene, dependency, preceding) in new[]
+            {
+                (editorHandoff, "ownedAutomaticPreview", result),
+                (tabReturn, "ownedAutomaticFirstTab", result),
+                (mouseReturn, "ownedTabReturn", tabReturn),
+                (editedAcceptance, "ownedMouseReturn", mouseReturn),
+                (finish, "ownedEditedAcceptance", editedAcceptance)
+            })
+            {
+                if (scene.Stage == "not-started")
+                {
+                    scene.Stage = "dependency-unavailable";
+                    scene.Facts = new { dependency, reason = preceding.Failure, outcome = preceding.Outcome };
+                }
+            }
             var cleanupResult = activeResult;
             Cleanup("owned-controller", () => controller?.Dispose(), cleanupResult.CleanupErrors);
             Cleanup("owned-overlay", () => overlay?.Close(), cleanupResult.CleanupErrors);
