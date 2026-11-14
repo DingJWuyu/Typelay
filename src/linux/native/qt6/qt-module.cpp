@@ -768,7 +768,7 @@ private:
     void tracePermit(const char *phase, const QJsonObject &data = {}, qint64 detail = 0) {
         // DEBUG-t11-permit: one original editor return, bounded metadata only.
         // No capture, provider query, UI action, event iteration or lease change.
-        if (!permitTraceRemaining_) return;
+        if (!onThread() || !permitTraceRemaining_) return;
         --permitTraceRemaining_;
         const auto active = publicationPlan(publication_);
         const auto incoming = publicationPlan(data);
