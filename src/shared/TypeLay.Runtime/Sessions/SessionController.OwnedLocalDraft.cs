@@ -289,14 +289,35 @@ public sealed partial class SessionController
                         ? owner._session.ConfirmDormantRegenerateReturn(intent.Edit, source, now)
                         : owner._session.ConfirmDormantSourceReturn(intent.Edit, source, now)))
                 {
+                    ObserveSourceEpochs(false);
                     owner.StopSession("owned-local-fresh-source-refused");
                     return true;
                 }
                 intent.CoreConfirmed = true;
+                ObserveSourceEpochs(true);
                 intent.Fresh = evidence;
                 owner._sessionShortcuts = ack; // Read-only ACK, no Publish before fresh Bind.
                 lifetime._automaticEditRevision = owner._session.Revision;
                 return true;
+
+                void ObserveSourceEpochs(bool confirmed)
+                {
+                    var initial = owner._debugOwnedEditSource;
+                    var returned = capture.Snapshot;
+                    owner.Trace("DEBUG-t12-owned-source-epochs", detail: new
+                    {
+                        confirmed,
+                        controllerEditInputEpoch = initial?.InputEpoch,
+                        controllerEditFocusEpoch = initial?.FocusEpoch,
+                        controllerEditObservedAtMs = initial?.ObservedAtMs,
+                        returnInputEpoch = returned?.InputEpoch,
+                        returnFocusEpoch = returned?.FocusEpoch,
+                        returnObservedAtMs = returned?.ObservedAtMs,
+                        targetMatches = initial is { } original && returned?.Target == original.Target,
+                        requestSourceUserEpoch = request.SourceUserEpoch,
+                        currentSourceUserEpoch = owner._hook.SourceUserEpoch
+                    }, inspectFocus: false);
+                }
             }
 
             internal bool LocalDraftBindProof(OwnedLocalDraftOperation intent, OwnedPracticeBinding binding) =>

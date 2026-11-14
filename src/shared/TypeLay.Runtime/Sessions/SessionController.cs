@@ -51,6 +51,9 @@ public sealed partial class SessionController : IDisposable
     private readonly string? _tracePath = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
     private string? _lastTrace;
     private int _captureFailureTraceCount;
+    // DEBUG-t12: controller source at the successful synchronous BeginEdit call,
+    // not an inspection of Core's private edit basis. Retains no field text.
+    private (long InputEpoch, long FocusEpoch, long ObservedAtMs, TargetId Target)? _debugOwnedEditSource;
     private string _lastShortcutStatus;
     private Guid _practiceCaptureTraceGeneration;
     private int _practiceCaptureTraceCount;
@@ -1690,6 +1693,7 @@ public sealed partial class SessionController : IDisposable
             return false;
         if (!_session.BeginEdit())
             return false;
+        _debugOwnedEditSource = (source.InputEpoch, source.FocusEpoch, source.ObservedAtMs, source.Target);
         _ownedSource.BeginAutomaticEdit();
         _generation++;
         _editTransitionUntil = _loop.NowMs + 500;

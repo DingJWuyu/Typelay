@@ -68,6 +68,7 @@ public sealed partial class OverlayTranslationMenuTests
         var overlay = new OverlayWindow(automationTest: true, clientAreaAnimation: () => false);
         ChildProcess? child = null;
         SessionController? controller = null;
+        OwnedConfirmationCaptureObservation? captureObservation = null;
         var host = new PracticeHost(info =>
         {
             info.Environment.Remove("TYPELAY_TRACE"); // Keep this bounded parent-hook trace separate from the child.
@@ -105,7 +106,18 @@ public sealed partial class OverlayTranslationMenuTests
                 ? string.Join(" ", Enumerable.Repeat("An expanded translated draft remains local until its fresh source return.", 14))
                 : "Hello";
             var model = new OwnedConfirmationTranslation(translation);
-            controller = WindowsRuntime.CreateSession(settings, model, overlay, automationTest: true, practice: host);
+            var observedBroker = new OwnedConfirmationCaptureObservation();
+            captureObservation = observedBroker;
+            controller = WindowsRuntime.CreateSession(settings, model, overlay, automationTest: true,
+                broker: observedBroker, practice: host);
+            var beginEditing = overlay.BeginEditing;
+            overlay.BeginEditing = token =>
+            {
+                observedBroker.Mark("begin-edit-called");
+                bool admitted = beginEditing?.Invoke(token) == true;
+                observedBroker.Mark(admitted ? "begin-edit-admitted" : "begin-edit-refused");
+                return admitted;
+            };
             host.Bind(controller);
             await controller.StartAsync().WaitAsync(deadline.Token);
             host.Open(path);
@@ -423,6 +435,7 @@ public sealed partial class OverlayTranslationMenuTests
         catch (Exception error) { failure = error; }
         finally
         {
+            captureObservation?.Report();
             try
             {
                 finishKeyboardObservation?.Invoke();
@@ -439,6 +452,11 @@ public sealed partial class OverlayTranslationMenuTests
             try
             {
                 controller?.Dispose();
+            }
+            catch (Exception error) { cleanupErrors.Add(error); }
+            try
+            {
+                captureObservation?.Dispose();
             }
             catch (Exception error) { cleanupErrors.Add(error); }
             try

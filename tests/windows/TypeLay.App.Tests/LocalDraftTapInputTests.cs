@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -49,6 +50,37 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
         var upTimes = new List<uint>();
         int cancellations = 0;
         object? firstCancellation = null;
+        // DEBUG-t12: independent observation of original event HWND identities.
+        // This callback does not repair focus or participate in Hook permission.
+        var foregroundEvents = new List<object>();
+        int foregroundDropped = 0, foregroundErrors = 0;
+        string foregroundStage = "before-activation";
+        Native.WinEventProc observeForeground = (_, _, original, _, _, eventThread, eventTime) =>
+        {
+            try
+            {
+                if (foregroundEvents.Count == 32)
+                {
+                    foregroundDropped++;
+                    return;
+                }
+                long atTimestamp = Stopwatch.GetTimestamp();
+                uint windowThread = Native.GetWindowThreadProcessId(original, out uint process);
+                var className = new StringBuilder(256);
+                int classLength = LocalDraftWindowClass(original, className, className.Capacity);
+                string membership = original == hwnd ? "test-editor" : process != Environment.ProcessId ? "external"
+                    : Application.Current.Windows.Cast<Window>().Any(candidate => new WindowInteropHelper(candidate).Handle == original)
+                        ? "another-current-wpf-window" : "same-process-unlisted";
+                foregroundEvents.Add(new
+                {
+                    stage = foregroundStage, atTimestamp, atMs = WindowsInterruptClock.NowMs, eventTime,
+                    originalHwnd = (long)original, eventThread, windowThread, process, membership,
+                    className = classLength > 0 ? className.ToString() : null
+                });
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { foregroundErrors++; }
+        };
+        nint foregroundObservation = 0;
         KeyEventHandler down = (_, e) =>
         {
             e.Handled = true;
@@ -71,6 +103,8 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
         window.AddHandler(Keyboard.PreviewKeyUpEvent, up, true);
         try
         {
+            if (change is "current" or "unarmed-prefix" or "expired")
+                foregroundObservation = Native.SetWinEventHook(3, 3, 0, observeForeground, 0, 0, 0);
             // Install before the original activation, then consume that exact
             // event only after the product callback stack has fully processed it.
             // No extra activation, queue drain, timestamp inference or retry.
@@ -81,6 +115,7 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
             await Until(() => hook.ShortcutsReady && hook.EditorForegroundDelivered is { IsCompletedSuccessfully: true }
                 && Native.GetForegroundWindow() == hwnd && editor.IsKeyboardFocused);
             Assert.All(new[] { 9, 0x77, 0x10, 0x11, 0x12, 0x5b, 0x5c }, key => Assert.False(Native.GetAsyncKeyState(key) < 0));
+            foregroundStage = "anchor-open";
             hook.BeginLocalDraftAnchor(opening, hwnd, hwnd, id =>
             {
                 if (Interlocked.Increment(ref cancellations) != 1 || change != "unarmed-prefix")
@@ -92,6 +127,7 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                     Volatile.Write(ref firstCancellation, new
                     {
                         observedAtTimestamp,
+                        atMs = WindowsInterruptClock.NowMs,
                         openingMatches = id == opening,
                         foreground = foreground == hwnd ? "overlay" : foreground == 0 ? "none" : "other"
                     });
@@ -102,6 +138,7 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
             Input[] pair = [Edge(tab, false), Edge(tab, true)];
             if (change == "unarmed-prefix")
             {
+                foregroundStage = "unarmed-prefix";
                 Send(pair);
                 await Until(() => upTimes.Count == 1);
                 Assert.Null(captures.Single());
@@ -137,6 +174,7 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                 upTimes.Clear();
             }
             hook.SetLocalDraftEditorFocus(opening, true);
+            foregroundStage = "armed-pair";
             int expectedUps = 1;
             if (change == "retired-before-up")
             {
@@ -168,6 +206,7 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                 Send(sequence);
             }
             await Until(() => upTimes.Count == expectedUps);
+            foregroundStage = "before-claim";
             if (change == "same-time-pairs")
             {
                 Assert.Equal(2, downTimes.Count);
@@ -261,6 +300,22 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
         }
         finally
         {
+            if (foregroundObservation != 0)
+            {
+                Native.UnhookWinEvent(foregroundObservation);
+                GC.KeepAlive(observeForeground);
+                try
+                {
+                    TestContext.Current.TestOutputHelper?.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        operation = "DEBUG-t12-local-foreground-identity", change,
+                        testProcess = Environment.ProcessId, testHwnd = (long)hwnd, timestampFrequency = Stopwatch.Frequency,
+                        events = foregroundEvents, dropped = foregroundDropped, errors = foregroundErrors,
+                        cancelCallbacks = Volatile.Read(ref cancellations), firstCancellation = Volatile.Read(ref firstCancellation)
+                    }));
+                }
+                catch (Exception error) when (error is not OutOfMemoryException) { }
+            }
             window.RemoveHandler(Keyboard.PreviewKeyDownEvent, down);
             window.RemoveHandler(Keyboard.PreviewKeyUpEvent, up);
             hook.EndLocalDraftAnchor(opening);
@@ -286,6 +341,9 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
             Assert.Equal((uint)inputs.Length, sent); // A partial send is never retried.
         }
     });
+
+    [DllImport("user32.dll", EntryPoint = "GetClassNameW", CharSet = CharSet.Unicode)]
+    private static extern int LocalDraftWindowClass(nint hwnd, StringBuilder value, int capacity);
 
     [Fact]
     public Task AReleasedReplaceThatExpiresBeforeClaimDoesNotConsumeTheFirstFreshRetry() => desktop.RunAsync(async () =>

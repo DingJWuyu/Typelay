@@ -6,6 +6,8 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using TypeLay.Runtime;
+using TypeLay.Windows;
+using TypeLay.Windows.Contracts;
 using Xunit;
 using WpfKey = System.Windows.Input.Key;
 
@@ -13,6 +15,84 @@ namespace TypeLay.App.Tests;
 
 public sealed partial class OverlayTranslationMenuTests
 {
+    // DEBUG-t12: observes the existing Broker call boundary without another read,
+    // a new permission, a delay, or a change to the production Broker trace.
+    private sealed class OwnedConfirmationCaptureObservation : IInputBroker
+    {
+        private readonly BrokerClient _broker = new();
+        private readonly object _gate = new();
+        private readonly Queue<object> _events = new();
+        private int _sequence, _active, _dropped;
+        public bool Available => _broker.Available;
+        public int ProcessId => _broker.ProcessId;
+        public Task StartAsync() => _broker.StartAsync();
+        public Task<BrokerResponse> CaptureWakeAsync(BrokerRequest request, Func<bool> stillCurrent) =>
+            _broker.CaptureWakeAsync(request, stillCurrent);
+        public Task<BrokerResponse> CallAsync(BrokerRequest request, TimeSpan? timeout = null) =>
+            request.Op == "capture-owned" ? ObserveCapture(request, timeout) : _broker.CallAsync(request, timeout);
+        private async Task<BrokerResponse> ObserveCapture(BrokerRequest request, TimeSpan? timeout)
+        {
+            int sequence;
+            lock (_gate)
+            {
+                sequence = ++_sequence;
+                _active++;
+                Add(new
+                {
+                    stage = "capture-start", sequence, atMs = WindowsInterruptClock.NowMs, active = _active,
+                    request.SourceUserEpoch, nativeFocusRevision = request.OwnedCapture?.NativeFocusRevision
+                });
+            }
+            BrokerResponse? response = null;
+            try
+            {
+                response = await _broker.CallAsync(request, timeout).ConfigureAwait(false);
+                return response;
+            }
+            finally
+            {
+                lock (_gate)
+                {
+                    _active--;
+                    Add(new
+                    {
+                        stage = "capture-completed", sequence, atMs = WindowsInterruptClock.NowMs, active = _active,
+                        returned = response is not null, observed = response?.Status == "observed",
+                        inputEpoch = response?.Snapshot?.InputEpoch, focusEpoch = response?.Snapshot?.FocusEpoch,
+                        observedAtMs = response?.Snapshot?.ObservedAtMs
+                    });
+                }
+            }
+        }
+        public void Mark(string stage)
+        {
+            lock (_gate)
+                Add(new { stage, atMs = WindowsInterruptClock.NowMs, active = _active });
+        }
+        private void Add(object entry)
+        {
+            if (_events.Count == 64)
+            {
+                _events.Dequeue();
+                _dropped++;
+            }
+            _events.Enqueue(entry);
+        }
+        public void Report()
+        {
+            try
+            {
+                lock (_gate)
+                    TestContext.Current.TestOutputHelper?.WriteLine(JsonSerializer.Serialize(new
+                    {
+                        operation = "DEBUG-t12-owned-capture-order", events = _events.ToArray(), dropped = _dropped
+                    }));
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { }
+        }
+        public void Dispose() => _broker.Dispose();
+    }
+
     private static Action ObserveOwnedKeyboardFlow(OverlayWindow overlay, TextBox editor, Button keep,
         SessionController controller, string draft)
     {
@@ -310,6 +390,20 @@ public sealed partial class OverlayTranslationMenuTests
                             : ["operation", "stage", "sample", "atMs", "inputSequence", "pressSequence", "released", "ageMs", "droppedAtLeast"];
                         Retain(names.Where(name => row.TryGetProperty(name, out _))
                             .ToDictionary(name => name, name => row.GetProperty(name).Clone()));
+                    }
+                    else if (operation.GetString() == "DEBUG-t12-owned-source-epochs")
+                    {
+                        string[] names = ["confirmed", "controllerEditInputEpoch", "controllerEditFocusEpoch",
+                            "controllerEditObservedAtMs", "returnInputEpoch", "returnFocusEpoch", "returnObservedAtMs",
+                            "targetMatches", "requestSourceUserEpoch", "currentSourceUserEpoch"];
+                        var epochs = new Dictionary<string, object> { ["operation"] = "DEBUG-t12-owned-source-epochs" };
+                        if (row.TryGetProperty("atMs", out var at))
+                            epochs["atMs"] = at.Clone();
+                        if (row.TryGetProperty("detail", out var values))
+                            foreach (string name in names)
+                                if (values.TryGetProperty(name, out var value))
+                                    epochs[name] = value.Clone();
+                        Retain(epochs);
                     }
                     else if (operation.GetString() == "owned-editor-admission")
                     {
