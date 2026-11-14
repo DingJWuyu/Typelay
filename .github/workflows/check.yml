@@ -739,6 +739,10 @@ jobs:
         id: test-qt-candidate-observation
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         run: python tests/linux/test_qt_candidate_observation.py -v
+      - name: Verify native Qt source observation projection
+        id: test-qt-source-version
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        run: python tests/linux/test_qt_source_version.py -v
       - name: Verify Linux test_argos_repetition_process
         id: test-argos-repetition-process
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
@@ -1376,6 +1380,7 @@ jobs:
             test-ordinary-desktop-lifecycle
             test-gtk-preview-contract
             test-qt-candidate-observation
+            test-qt-source-version
             test-argos-repetition-process
             test-index-package-diagnostics
             test-private-session-paths

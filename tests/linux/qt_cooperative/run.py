@@ -2257,6 +2257,62 @@ def ordered_controls(
                 assert state()["first"]["text"] == "Original source"
                 result["explicit_revoke_passes_pair"] = True
 
+                def capture_source_version():
+                    description = native.describe()
+                    captured = native.call(
+                        "capture",
+                        {"target": description["target"], "authority": description["authority"]},
+                    )
+                    assert captured and captured["ime"] == "Clear" and captured["focused"]
+                    version = captured.get("sourceVersion")
+                    assert isinstance(version, dict) and version.get("version") == 1
+                    assert all(
+                        type(version.get(name)) is int and 0 < version[name] < 2**63 - 1
+                        for name in (
+                            "content",
+                            "selection",
+                            "document",
+                            "focus",
+                            "context",
+                            "field",
+                            "integrity",
+                        )
+                    )
+                    return captured
+
+                # Separate read-only proof checks after the original refusal.
+                # They do not renew that permit or submit an acceptance key.
+                source_versions = result["sourceObservationVersions"] = {}
+                stable = capture_source_version()
+                source_versions["stable"] = stable["sourceVersion"]
+                assert capture_source_version()["sourceVersion"] == stable["sourceVersion"]
+                for change in ("text-aba", "selection-aba", "read-only-aba", "focus-aba"):
+                    before = capture_source_version()
+                    if change == "text-aba":
+                        fixture("set", field="first", text="Temporary different source")
+                        fixture("set", field="first", text=before["text"])
+                    elif change == "selection-aba":
+                        fixture("select", field="first", start=0, length=1)
+                        selected = before["selection"]
+                        fixture(
+                            "select",
+                            field="first",
+                            start=selected["start"],
+                            length=selected["end"] - selected["start"],
+                        )
+                    elif change == "read-only-aba":
+                        fixture("read-only", field="first", enabled=True)
+                        fixture("read-only", field="first", enabled=False)
+                    else:
+                        fixture("focus", field="second")
+                        fixture("focus", field="first")
+                        wait(settled, "source focus ABA settles without accepting")
+                    after = capture_source_version()
+                    assert after["target"] == before["target"] and after["text"] == before["text"]
+                    assert after["selection"] == before["selection"]
+                    assert after["sourceVersion"] != before["sourceVersion"], change
+                    source_versions[change] = after["sourceVersion"]
+
                 # X11 connection/keycode setup is harness preparation, not a
                 # user's Ctrl-to-F7 interval. Finish it before the 100ms permit;
                 # keep real event delivery, provider retirement and renewal
@@ -3217,7 +3273,7 @@ def ordered_controls(
                     True
                 )
 
-                def editor_view(observation=None):
+                def editor_view(observation=None, translation_actions=None):
                     prepare()
                     publication = publish()
                     target = publication["target"]
@@ -3227,6 +3283,7 @@ def ordered_controls(
                         "Exact manual translation",
                         True,
                         1,
+                        translation_actions,
                         observation=observation,
                     )["editing"]
                     assert native.call(
@@ -3249,7 +3306,23 @@ def ordered_controls(
                         if event.get("event") == "ui" and event["data"].get("operation") == "return"
                     ]
 
-                publication = editor_view()
+                # Keep the same settings/capability baseline throughout this
+                # feedback-only scene. Introducing settingsRevision after Ctrl
+                # would correctly retire the original action's presentation.
+                editor_menu_actions = {
+                    "settingsRevision": 12,
+                    "styleReleased": True,
+                    "canChangeStyle": False,
+                    "canInheritStyle": False,
+                    "applicationStyle": None,
+                    "styleUnavailableReason": "请先完成当前编辑",
+                    "inheritUnavailableReason": "请先完成当前编辑",
+                    "alternativeReleased": True,
+                    "canRequestAlternative": False,
+                    "alternativeUnavailableReason": "请先完成当前编辑",
+                    "feedback": None,
+                }
+                publication = editor_view(translation_actions=editor_menu_actions)
                 initial_returns = len(returns())
                 original_source = state()["first"]
                 controls = state()["keys"].get("controlPress", 0)
@@ -3265,19 +3338,7 @@ def ordered_controls(
                         "Exact manual translation",
                         True,
                         1,
-                        {
-                            "settingsRevision": 12,
-                            "styleReleased": True,
-                            "canChangeStyle": False,
-                            "canInheritStyle": False,
-                            "applicationStyle": None,
-                            "styleUnavailableReason": "请先完成当前编辑",
-                            "inheritUnavailableReason": "请先完成当前编辑",
-                            "alternativeReleased": True,
-                            "canRequestAlternative": False,
-                            "alternativeUnavailableReason": "请先完成当前编辑",
-                            "feedback": "请先完成当前编辑",
-                        },
+                        {**editor_menu_actions, "feedback": "请先完成当前编辑"},
                     )["editing"]
                     run(["xdotool", "keydown", "--delay", "0", "F7"], env=environment)
                     wait(

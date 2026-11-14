@@ -11,12 +11,44 @@ from unittest.mock import Mock, call, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
+from desktop_e2e import background_direct_settlement  # noqa: E402
 from qt_cooperative.run import prepare_source_glossary_capture_basis  # noqa: E402
 from qt_desktop import (  # noqa: E402
     displayed_wake_candidate,
     observe_qt_processes,
     settled_overlay_motion,
 )
+
+
+class QtDirectSettlementTests(unittest.TestCase):
+    def test_source_change_rejection_has_one_original_plan_and_no_success_receipt(self):
+        # Public trace from PR40's Qt post-snapshot source-change scene.
+        plan = "42df515e-d5c0-40a2-aed0-e0fb08e07325"
+        rows = [
+            {"atMs": 1609592, "operation": "direct-write-start", "planId": plan},
+            {
+                "atMs": 1609594,
+                "operation": "write-RejectedBeforeMutation-EpochChanged",
+                "planId": plan,
+            },
+            {
+                "atMs": 1609594,
+                "operation": "direct-write-result",
+                "planId": plan,
+                "detail": {"status": "RejectedBeforeMutation", "reason": "EpochChanged"},
+            },
+        ]
+        self.assertEqual(background_direct_settlement(rows), rows[-1])
+        for index in range(3):
+            changed = copy.deepcopy(rows)
+            changed[index]["planId"] = "different-plan"
+            self.assertIsNone(background_direct_settlement(changed))
+        for extra in (
+            {"operation": "write-Verified-None", "planId": plan},
+            {"operation": "write-OutcomeUnknown-None", "planId": plan},
+            rows[1],
+        ):
+            self.assertIsNone(background_direct_settlement([*rows, extra]))
 
 
 class QtProcessObservationTests(unittest.TestCase):
@@ -101,6 +133,32 @@ class OverlayMotionTraceTests(unittest.TestCase):
 
     def test_completed_native_motion_reports_its_actual_continuation(self):
         self.assertEqual(settled_overlay_motion(self.completed), {"revision": 94, "elapsedMs": 752})
+
+    def test_original_reverse_click_stops_old_motion_before_its_own_settlement(self):
+        # CI run 43563208796 reached the compact frame with this original
+        # single-click trace. The stopped expansion is not the new collapse.
+        reversed_motion = (
+            "tlqt-motion phase=attempt time=924 running=1 revision=81 incoming=-1 from=-1 continuation=-1\n"
+            "tlqt-motion phase=layout-stop time=924 running=1 revision=81 incoming=-1 from=-1 continuation=-1\n"
+            "tlqt-motion phase=started time=0 running=1 revision=81 incoming=-1 from=-1 continuation=-1\n"
+            "tlqt-motion phase=render time=4 running=1 revision=81 incoming=82 from=81 continuation=1\n"
+            "tlqt-motion phase=settled time=528 running=1 revision=82 incoming=-1 from=-1 continuation=-1\n"
+        )
+        self.assertEqual(
+            settled_overlay_motion(reversed_motion), {"revision": 82, "elapsedMs": 528}
+        )
+        for changed in (
+            reversed_motion.replace("phase=layout-stop", "phase=hide-stop"),
+            reversed_motion.replace("layout-stop time=924", "layout-stop time=923"),
+            reversed_motion.replace(
+                "layout-stop time=924 running=1 revision=81",
+                "layout-stop time=924 running=1 revision=80",
+            ),
+            reversed_motion.replace("phase=started time=0", "phase=started time=925"),
+            reversed_motion.replace("phase=settled", "phase=layout-stop"),
+        ):
+            with self.subTest(trace=changed):
+                self.assertIsNone(settled_overlay_motion(changed))
 
     def test_ci_collapse_without_settlement_is_not_a_compact_baseline(self):
         self.assertIsNone(settled_overlay_motion(self.unfinished_collapse))

@@ -80,6 +80,32 @@ def gtk_candidate_observation_current(snapshot, source, not_before_ms):
     return snapshot
 
 
+def background_direct_settlement(rows):
+    """Direct shares the write ledger; correlate its sole terminal receipt by plan."""
+    writes = [
+        row
+        for row in rows
+        if row.get("operation", "").startswith("write-")
+        or row.get("operation") in ("direct-write-start", "direct-write-result")
+    ]
+    if len(writes) != 3:
+        return None
+    start, settlement, result = writes
+    detail = result.get("detail") or {}
+    if (
+        start.get("operation") != "direct-write-start"
+        or result.get("operation") != "direct-write-result"
+        or not start.get("planId")
+        or settlement.get("planId") != start["planId"]
+        or result.get("planId") != start["planId"]
+        or not detail.get("status")
+        or not detail.get("reason")
+        or settlement.get("operation") != f"write-{detail['status']}-{detail['reason']}"
+    ):
+        return None
+    return result
+
+
 def background_direct_rejection_current(report, rows, previous_feedback):
     """Match the new single direct plan's refusal, not a prior status string."""
     direct = [
@@ -4606,6 +4632,7 @@ def run(arguments):
                     trace_checkpoint=trace_checkpoint,
                     new_write_outcomes=new_write_outcomes,
                     verified_write=verified_write,
+                    direct_settlement=background_direct_settlement,
                 )
             )
         if setup_scope:

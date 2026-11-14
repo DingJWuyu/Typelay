@@ -308,9 +308,19 @@ struct Target {
     QPlainTextEdit *plain() const { return qobject_cast<QPlainTextEdit *>(field.data()); }
     QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     quint64 content = 1, input = 1, focus = 1, storage = 0, selection = 1;
+    quint64 integrity = 1;
+    bool sourceVersionExhausted = false;
     TypeLayFcitxQtStateV1 state{};
     bool observed = false, probing = false, mutating = false, quarantined = false;
 };
+
+void advanceSourceRevision(Target *target, quint64 &revision) {
+    // Existing native revisions remain authoritative. Once a version cannot be
+    // represented losslessly by the transport, this optional proof stays off.
+    if (revision >= quint64(std::numeric_limits<qint64>::max()) - 1)
+        target->sourceVersionExhausted = true;
+    ++revision;
+}
 
 // Fixed-size observations for one queued native shortcut. Only the existing
 // terminal trace emits them; no provider inspection or per-tick logging.
@@ -742,6 +752,7 @@ private slots:
             && ordered_->target == target && ordered_->provider == sender()) loseProof();
         else clearPermit();
         if (!target || sender() != target->provider) return;
+        if (unknown || (causes & TlQtBinding)) advanceSourceRevision(target, target->integrity);
         if (causes & TlQtBinding) shortcutAuthority_ = {};
         if (causes & (TlQtInput | TlQtBinding)) invalidate(target, false, false);
         if (causes & TlQtFocus) invalidate(target, false, true);
@@ -841,8 +852,8 @@ private:
         for (const auto &connection : target->documentConnections) disconnect(connection);
         target->documentConnections.clear();
         target->document = plain->document();
-        ++target->documentGeneration;
-        ++target->content;
+        advanceSourceRevision(target, target->documentGeneration);
+        advanceSourceRevision(target, target->content);
         invalidate(target, true, false);
         if (target == overlayTarget_) hideOverlay();
         if (!target->document) return;
@@ -854,25 +865,29 @@ private:
                 target->changePosition = position;
                 target->changeRemoved = removed;
                 target->changeAdded = added;
+                advanceSourceRevision(target, target->integrity);
                 if (!target->mutating) invalidate(target, false, false);
             }));
         target->documentConnections.append(connect(document, &QTextDocument::contentsChanged, this,
             [this, target, generation] {
                 if (target->documentGeneration != generation) return;
                 ++target->storage;
-                ++target->content;
+                advanceSourceRevision(target, target->content);
                 if (!target->mutating) invalidate(target, true, false);
             }));
         target->documentConnections.append(connect(document, &QTextDocument::documentLayoutChanged, this,
             [this, target, generation] {
-                if (target->documentGeneration == generation) invalidate(target, false, false);
+                if (target->documentGeneration == generation) {
+                    advanceSourceRevision(target, target->integrity);
+                    invalidate(target, false, false);
+                }
             }));
         target->documentConnections.append(connect(document, &QObject::destroyed, this,
             [this, target, generation] {
                 if (target->documentGeneration != generation) return;
                 target->document = nullptr;
-                ++target->documentGeneration;
-                ++target->content;
+                advanceSourceRevision(target, target->documentGeneration);
+                advanceSourceRevision(target, target->content);
                 invalidate(target, true, false);
                 if (target == overlayTarget_) hideOverlay();
             }));
@@ -884,13 +899,13 @@ private:
         target->field = widget;
         targets_.insert(widget, target);
         const auto selectionChanged = [this, target] {
-            ++target->selection;
+            advanceSourceRevision(target, target->selection);
             if (!target->mutating) invalidate(target, false, false);
         };
         if (auto *line = target->line()) {
             connect(line, &QLineEdit::textChanged, this, [this, target] {
                 ++target->storage;
-                ++target->content;
+                advanceSourceRevision(target, target->content);
                 if (!target->mutating) invalidate(target, true, false);
             });
             connect(line, &QLineEdit::selectionChanged, this, selectionChanged);
@@ -1023,8 +1038,9 @@ private:
         // The provider may retain this property for a proven Detached field.
         // Absence still grants no capability and is not itself a text edit;
         // only inspect can distinguish focused and sealed background proof.
-        if (!owner) { clearPermit(); return nullptr; }
+        if (!owner) { advanceSourceRevision(target, target->integrity); clearPermit(); return nullptr; }
         if (target->provider != owner) {
+            advanceSourceRevision(target, target->integrity);
             shortcutAuthority_ = {};
             target->provider = owner;
             target->observed = false;
@@ -1074,6 +1090,8 @@ private:
             else clearPermit();
             return false;
         }
+        if (!(state.flags & TlQtKnown) || (state.flags & TlQtComposing))
+            advanceSourceRevision(target, target->integrity);
         if (target->observed && stamp(target->state) != stamp(state)) {
             const auto &before = ordered_ ? ordered_->before : target->state;
             if (ordered_ && ordered_->target == target && ordered_->provider == owner
@@ -1109,6 +1127,7 @@ private:
     QJsonObject authority(Target *target) const {
         QJsonObject result{{"target", target->id}, {"metadataKey", metadataKey(target)},
             {"contentRevision", qint64(target->content)}, {"inputRevision", qint64(target->input)},
+            {"selectionRevision", qint64(target->selection)},
             {"focusRevision", qint64(target->focus)}, {"observedAtMs", now()}};
         if (target->observed) result.insert("contextStamp", stamp(target->state));
         return result;
@@ -1178,6 +1197,20 @@ private:
         result.insert("ime", "Clear");
         result.insert("writeSupported", !target->quarantined && sessionBindings(target).value("sourceReady").toBool());
         result.insert("observedAtMs", now());
+        // Every component belongs to this completed native read. In particular,
+        // raw key submission/replay invalidates input authority without posing
+        // as a text or selection edit. Fresh Clear/local checks above still apply.
+        const QJsonObject sourceVersion{{"version", 1}, {"content", qint64(target->content)},
+            {"selection", qint64(target->selection)}, {"document", qint64(target->documentGeneration + 1)},
+            {"focus", qint64(target->focus)}, {"context", qint64(target->state.contextGeneration)},
+            {"field", qint64(target->state.fieldGeneration)}, {"integrity", qint64(target->integrity)}};
+        bool representable = !target->sourceVersionExhausted;
+        for (const auto *key : {"content", "selection", "document", "focus", "context", "field", "integrity"}) {
+            const auto value = integer(sourceVersion, key);
+            representable = representable && value > 0 && value < std::numeric_limits<qint64>::max();
+        }
+        if (representable) result.insert("sourceVersion", sourceVersion);
+        else target->sourceVersionExhausted = true;
         return result;
     }
     void invalidate(Target *target, bool textChanged, bool focusChanged) {
@@ -1185,7 +1218,7 @@ private:
         if (editorOrdered_ && editorOrdered_->target == target) revokeEditorOrdered();
         cancelShortcut(target, focusChanged ? "NotSourceFocus" : textChanged ? "SourceChanged" : "EpochChanged");
         if (focusChanged) shortcutAuthority_ = {};
-        if (focusChanged) ++target->focus;
+        if (focusChanged) advanceSourceRevision(target, target->focus);
         else ++target->input;
         clearPermit();
         if (target->mutating) return;
@@ -3884,7 +3917,11 @@ private:
                 closeLanguageConfiguration();
                 if (menuView_ && (menuView_->revision != integer(data, "revision", 0)
                     || menuView_->generation != data.value("generation")
-                    || !sameInteraction(presentationIdentity(menuView_->view), identity))) {
+                    || !sameInteraction(presentationIdentity(menuView_->view), identity)
+                    || menuView_->view.value("sourceLanguage") != view.value("sourceLanguage")
+                    || menuView_->view.value("targetLanguage") != view.value("targetLanguage")
+                    || languageChoices(menuView_->view, "source") != languageChoices(view, "source")
+                    || languageChoices(menuView_->view, "target") != languageChoices(view, "target"))) {
                     const QPointer<QWidget> observedMenu = qEnvironmentVariableIsSet("TYPELAY_QT_PROBE")
                         && openedMenu_ == menu_ && menu_ && menu_->isVisible() ? menu_ : nullptr;
                     QJsonObject retirement;
@@ -4187,7 +4224,10 @@ private:
                 && input->replacementStart() == 0 && input->replacementLength() == 0
                 && input->attributes().isEmpty();
             if (empty) clearPermit();
-            else invalidate(target, false, false);
+            else {
+                advanceSourceRevision(target, target->integrity);
+                invalidate(target, false, false);
+            }
         } else if (type == QEvent::KeyPress) {
             const auto *key = static_cast<QKeyEvent *>(event);
             if (ordered_ && ordered_->target == target && key->key() == Qt::Key_Control
@@ -4197,8 +4237,12 @@ private:
             else invalidate(target, false, false);
         } else if (type == QEvent::MouseButtonPress || type == QEvent::Wheel
             || type == QEvent::TouchBegin) invalidate(target, false, false);
-        if (type == QEvent::DynamicPropertyChange) bind(target);
+        if (type == QEvent::DynamicPropertyChange) {
+            advanceSourceRevision(target, target->integrity);
+            bind(target);
+        }
         if (type == QEvent::Hide || type == QEvent::EnabledChange || type == QEvent::ReadOnlyChange) {
+            advanceSourceRevision(target, target->integrity);
             invalidate(target, false, false);
             if (target == overlayTarget_) hideOverlay();
         }

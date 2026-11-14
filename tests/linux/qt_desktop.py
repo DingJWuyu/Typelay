@@ -74,7 +74,16 @@ def settled_overlay_motion(trace):
         if match is None:
             return None
         events.append((match[1], *(int(value) for value in match.groups()[1:])))
-    # The byte checkpoint precedes the single original collapse click. A new
+    # A reverse click may stop the previous expansion before starting its own
+    # motion. Only that immediately paired stop belongs to the old animation.
+    if len(events) >= 3 and events[0][0] == "attempt" and events[0][2] == 1:
+        attempt, stopped = events[:2]
+        if not (
+            stopped[0] == "layout-stop" and stopped[1] >= attempt[1] and stopped[2:] == attempt[2:]
+        ):
+            return None
+        events = [attempt, *events[2:]]
+    # The byte checkpoint precedes the single original collapse click. A later
     # attempt, stop, missing continuation or truncated trace is not settlement.
     if (
         len(events) < 4
@@ -84,7 +93,10 @@ def settled_overlay_motion(trace):
         return None
     attempt, started = events[:2]
     revision = attempt[3]
-    if not (attempt[2:] == (0, revision, -1, -1, -1) and started[2:] == (1, revision, -1, -1, -1)):
+    if not (
+        attempt[2:] in ((0, revision, -1, -1, -1), (1, revision, -1, -1, -1))
+        and started[1:] == (0, 1, revision, -1, -1, -1)
+    ):
         return None
     elapsed = started[1]
     for render in events[2:-1]:
@@ -121,6 +133,7 @@ def run_qt(
     trace_checkpoint,
     new_write_outcomes,
     verified_write,
+    direct_settlement,
 ):
     """Use the caller's running production desktop/model and input callbacks."""
     qt = arguments.qt_cooperative
@@ -1257,20 +1270,48 @@ def run_qt(
                     assert not new_write_outcomes(return_offset)
                 finally:
                     subprocess.run(["xdotool", "keyup", "F7", "Control_L"], check=True, timeout=2)
+                manual_acceptance_timing = {"readinessStartedAtMs": now_ms()}
+
+                def returned_manual_ready():
+                    report = ready_to_accept("EditedTranslationPending")
+                    if report and settled(state()):
+                        manual_acceptance_timing.update(
+                            readyObservedAtMs=now_ms(),
+                            acceptanceRemainingMs=report.get("acceptanceRemainingMs"),
+                            acceptanceHintRemainingMs=report.get("acceptanceHintRemainingMs"),
+                            nativePublications=report.get("input", {}).get(
+                                "nativePublications", []
+                            ),
+                        )
+                        return report
+                    return None
+
                 wait_for(
-                    lambda: ready_to_accept("EditedTranslationPending") and settled(state()),
+                    returned_manual_ready,
                     "new source capture did not publish the returned manual draft",
                 )
                 for name in ("firstF7Press", "firstF7Release"):
                     assert state()["keys"].get(name, 0) == before_return["keys"].get(name, 0)
                 before_write = state()["first"]["changes"]
+                manual_acceptance_timing["checkpointStartedAtMs"] = now_ms()
                 write_offset = trace_checkpoint()
-                send_control_key("F7")
-                wait_for(
-                    lambda: state()["first"]["text"] == manual_draft
-                    and verified_write(write_offset),
-                    "fresh Qt Ctrl+F7 did not accept the exact returned draft",
-                )
+                manual_acceptance_timing["checkpointFinishedAtMs"] = now_ms()
+                try:
+                    manual_acceptance_timing["dispatchStartedAtMs"] = now_ms()
+                    send_control_key("F7")
+                    manual_acceptance_timing["dispatchReturnedAtMs"] = now_ms()
+                    wait_for(
+                        lambda: state()["first"]["text"] == manual_draft
+                        and verified_write(write_offset),
+                        "fresh Qt Ctrl+F7 did not accept the exact returned draft",
+                    )
+                    manual_acceptance_timing["status"] = "passed"
+                finally:
+                    manual_acceptance_timing["finishedAtMs"] = now_ms()
+                    manual_acceptance_timing.setdefault("status", "failed")
+                    (arguments.output / "qt-manual-acceptance-timing.json").write_text(
+                        json.dumps(manual_acceptance_timing, indent=2) + "\n"
+                    )
                 assert state()["first"]["changes"] == before_write + 1
                 assert len(new_write_outcomes(write_offset)) == 1
                 key("ctrl+z")
@@ -2521,7 +2562,21 @@ def run_qt(
                 assert after["first"]["changes"] == before["first"]["changes"] + 1
                 assert after["second"]["text"] == other
                 assert after["second"]["changes"] == before["second"]["changes"]
-                assert not new_write_outcomes(before_write)
+                with (arguments.output / "controller.jsonl").open("rb") as trace:
+                    trace.seek(before_write)
+                    records = trace.read()
+                rows = [
+                    json.loads(line) for line in records[: records.rfind(b"\n") + 1].splitlines()
+                ]
+                rejected = direct_settlement(rows)
+                assert rejected is not None and rejected["detail"] == {
+                    "status": "RejectedBeforeMutation",
+                    "reason": "EpochChanged",
+                }, rows
+                (arguments.output / "qt-direct-source-change.json").write_text(
+                    json.dumps({"outcome": rejected, "before": before, "after": after}, indent=2)
+                    + "\n"
+                )
                 evidence.append(
                     "Qt6 explicit command safety: real queued input/focus changes cancel without writes "
                     "and report distinct shared refusal messages; "
