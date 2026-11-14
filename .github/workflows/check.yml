@@ -401,55 +401,18 @@ jobs:
       run: |
         dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-continuous artifacts/continuous-translation src/shared/TypeLay.Worker/run_worker.py tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll
         exit $LASTEXITCODE
-    - name: Verify and prepare Chrome for Testing for the cooperative product path
-      if: ${{ matrix.group == 'ordinary' && !cancelled() && steps.windows-build.outcome == 'success' }}
-      id: cooperative-browser-prepare
-      shell: pwsh
-      run: |
-        $ErrorActionPreference = 'Stop'
-        $pin = Get-Content tests/windows/support/chrome-for-testing.json -Raw | ConvertFrom-Json
-        $archive = Join-Path $PWD 'artifacts/browser-download/chrome-win64.zip'
-        New-Item -ItemType Directory -Path (Split-Path $archive) -Force | Out-Null
-        if (-not (Test-Path -LiteralPath $archive)) {
-          Invoke-WebRequest -Uri $pin.archiveUrl -OutFile $archive -TimeoutSec 180
-        }
-        if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $pin.archiveSha256) {
-          throw 'Chrome for Testing archive SHA-256 mismatch.'
-        }
-        Expand-Archive -LiteralPath $archive -DestinationPath artifacts/cooperative-browser
-        $chrome = Join-Path $PWD 'artifacts/cooperative-browser/chrome-win64/chrome.exe'
-        $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($chrome)
-        if ($version.ProductVersion -ne $pin.version -or $version.ProductName -ne 'Google Chrome for Testing') {
-          throw 'Chrome for Testing product/version mismatch.'
-        }
-        "chrome=$chrome" >> $env:GITHUB_OUTPUT
-    - name: Verify cooperative browser input with the shipped app and real model
-      id: windows-browser
-      if: ${{ matrix.group == 'ordinary' && !cancelled() && steps.windows-package.outcome == 'success' && steps.cooperative-browser-prepare.outcome == 'success'
-        }}
-      timeout-minutes: 10
-      shell: pwsh
-      env:
-        TYPELAY_BROWSER_REGISTRATION_E2E: '1'
-        TYPELAY_HOSTED_EMPTY_BROWSER_CONTAINER_E2E: ${{ runner.environment == 'github-hosted' && '1' || '0' }}
-      run: |
-        python eng/windows/observe-browser-profile.py --stage before-browser-cooperation --output artifacts/browser-profile/before-browser-cooperation.json
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-        dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-browser-cooperation artifacts/browser-cooperation artifacts/package/TypeLay '${{ steps.cooperative-browser-prepare.outputs.chrome }}'
-        exit $LASTEXITCODE
     - name: Verify prior model consumers have exited before Notepad
       id: notepad-consumer-exit
-      if: ${{ matrix.group == 'ordinary' && !cancelled() && steps.windows-package.outcome == 'success' && (steps.windows-browser.outcome == 'success' ||
-        steps.windows-browser.outcome == 'failure') }}
+      if: ${{ matrix.group == 'ordinary' && !cancelled() && steps.windows-package.outcome == 'success' && (steps.windows-continuous.outcome == 'success' ||
+        steps.windows-continuous.outcome == 'failure') }}
       shell: pwsh
       env:
         CONTINUOUS_NONCE: ${{ steps.windows-continuous.outputs.consumer_exit_nonce }}
-        BROWSER_NONCE: ${{ steps.windows-browser.outputs.consumer_exit_nonce }}
         WORKFLOW_CANCELLED: ${{ job.status != 'success' && job.status != 'failure' }}
       run: |
         $ErrorActionPreference = 'Stop'
-        # Business failure stays red; neither prior consumer may still be active.
-        python eng/windows/verify-consumer-exit.py --scope before-notepad --continuous-proof artifacts/continuous-translation/consumer-exit.json --browser-proof artifacts/browser-cooperation/consumer-exit.json --continuous-nonce "$env:CONTINUOUS_NONCE" --browser-nonce "$env:BROWSER_NONCE" --run-id "$env:GITHUB_RUN_ID" --run-attempt "$env:GITHUB_RUN_ATTEMPT" --head "$env:GITHUB_SHA" --workflow-cancelled "$env:WORKFLOW_CANCELLED"
+        # Business failure stays red; the prior consumer must have exited.
+        python eng/windows/verify-consumer-exit.py --scope continuous-only --continuous-proof artifacts/continuous-translation/consumer-exit.json --continuous-nonce "$env:CONTINUOUS_NONCE" --run-id "$env:GITHUB_RUN_ID" --run-attempt "$env:GITHUB_RUN_ATTEMPT" --head "$env:GITHUB_SHA" --workflow-cancelled "$env:WORKFLOW_CANCELLED"
         exit $LASTEXITCODE
     - name: Verify real classic Notepad through shipped app Settings
       id: windows-ordinary-notepad
@@ -459,17 +422,16 @@ jobs:
       run: |
         ./dev.ps1 package-e2e -Scenario ordinary-notepad
         exit $LASTEXITCODE
-    - name: Verify all prior model consumers have exited
-      id: hy-consumer-exit
+    - name: Verify both ordinary job model consumers have exited
+      id: ordinary-consumer-exit
       if: ${{ matrix.group == 'ordinary' && !cancelled() && steps.windows-package.outcome == 'success' }}
       shell: pwsh
       env:
         CONTINUOUS_NONCE: ${{ steps.windows-continuous.outputs.consumer_exit_nonce }}
-        BROWSER_NONCE: ${{ steps.windows-browser.outputs.consumer_exit_nonce }}
         NOTEPAD_NONCE: ${{ steps.windows-ordinary-notepad.outputs.consumer_exit_nonce }}
         WORKFLOW_CANCELLED: ${{ job.status != 'success' && job.status != 'failure' }}
       run: |
-        python eng/windows/verify-consumer-exit.py --continuous-proof artifacts/continuous-translation/consumer-exit.json --browser-proof artifacts/browser-cooperation/consumer-exit.json --notepad-proof artifacts/ordinary-notepad/consumer-exit.json --continuous-nonce "$env:CONTINUOUS_NONCE" --browser-nonce "$env:BROWSER_NONCE" --notepad-nonce "$env:NOTEPAD_NONCE" --run-id "$env:GITHUB_RUN_ID" --run-attempt "$env:GITHUB_RUN_ATTEMPT" --head "$env:GITHUB_SHA" --workflow-cancelled "$env:WORKFLOW_CANCELLED"
+        python eng/windows/verify-consumer-exit.py --scope ordinary --continuous-proof artifacts/continuous-translation/consumer-exit.json --notepad-proof artifacts/ordinary-notepad/consumer-exit.json --continuous-nonce "$env:CONTINUOUS_NONCE" --notepad-nonce "$env:NOTEPAD_NONCE" --run-id "$env:GITHUB_RUN_ID" --run-attempt "$env:GITHUB_RUN_ATTEMPT" --head "$env:GITHUB_SHA" --workflow-cancelled "$env:WORKFLOW_CANCELLED"
         exit $LASTEXITCODE
     - name: Verify the isolated Hy job's prior consumer has exited
       id: hy-isolated-exit
@@ -507,11 +469,8 @@ jobs:
           artifacts/ci/
           artifacts/continuous-translation/*.json
           artifacts/continuous-translation/trace*.jsonl
-          artifacts/browser-cooperation/*.json
-          artifacts/browser-cooperation/trace*.jsonl
           artifacts/ordinary-notepad/*.json
           artifacts/ordinary-notepad/trace*.jsonl
-          artifacts/browser-profile/*.json
           artifacts/hy-results/*.json
           artifacts/hy-results/*.stderr
           artifacts/hy-production/*.json
@@ -566,13 +525,15 @@ jobs:
       run: |
         python -m pip install -r eng/requirements.txt
         exit $LASTEXITCODE
-    - name: Prepare and verify official Index model and CPU closure
+    - name: Prepare fixed Index inputs and Hy CPU runtime for the shared product package
       timeout-minutes: 10
       shell: pwsh
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
         python eng/ci/fixed.py restore index --wait-for-job fcitx-build
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        python eng/windows/hy/prepare_runtime.py --cache artifacts/hy-cpu-download --output artifacts/hy-runtime
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         python eng/windows/index/prepare_runtime.py --cache artifacts/index-runtime-download --output artifacts/index-runtime
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -582,8 +543,11 @@ jobs:
       id: index-package
       timeout-minutes: 10
       shell: pwsh
+      env:
+        TYPELAY_BROWSER_REGISTRATION_E2E: '1'
+        TYPELAY_HY_WINDOWS_CPU_RUNTIME: artifacts/hy-runtime
       run: |
-        ./dev.ps1 pack -IndexRuntime artifacts/index-runtime
+        ./dev.ps1 pack -IndexRuntime artifacts/index-runtime -HyRuntime artifacts/hy-runtime
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         dotnet build tests/windows/fixtures/TypeLay.DesktopFixture -c Release -warnaserror
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -594,14 +558,64 @@ jobs:
       run: |
         ./dev.ps1 package-e2e -Scenario index-windows
         exit $LASTEXITCODE
-    - name: Preserve only structured Index verification
+    - name: Verify and prepare Chrome for Testing for the cooperative product path
+      if: ${{ !cancelled() && steps.index-package.outcome == 'success' }}
+      id: cooperative-browser-prepare
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $pin = Get-Content tests/windows/support/chrome-for-testing.json -Raw | ConvertFrom-Json
+        $archive = Join-Path $PWD 'artifacts/browser-download/chrome-win64.zip'
+        New-Item -ItemType Directory -Path (Split-Path $archive) -Force | Out-Null
+        if (-not (Test-Path -LiteralPath $archive)) {
+          Invoke-WebRequest -Uri $pin.archiveUrl -OutFile $archive -TimeoutSec 180
+        }
+        if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $pin.archiveSha256) {
+          throw 'Chrome for Testing archive SHA-256 mismatch.'
+        }
+        Expand-Archive -LiteralPath $archive -DestinationPath artifacts/cooperative-browser
+        $chrome = Join-Path $PWD 'artifacts/cooperative-browser/chrome-win64/chrome.exe'
+        $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($chrome)
+        if ($version.ProductVersion -ne $pin.version -or $version.ProductName -ne 'Google Chrome for Testing') {
+          throw 'Chrome for Testing product/version mismatch.'
+        }
+        "chrome=$chrome" >> $env:GITHUB_OUTPUT
+    - name: Verify cooperative browser input with the shipped app and real model
+      id: windows-browser
+      if: ${{ !cancelled() && steps.index-lifecycle.outcome == 'success' && steps.cooperative-browser-prepare.outcome == 'success'
+        }}
+      timeout-minutes: 10
+      shell: pwsh
+      env:
+        TYPELAY_BROWSER_REGISTRATION_E2E: '1'
+        TYPELAY_HOSTED_EMPTY_BROWSER_CONTAINER_E2E: ${{ runner.environment == 'github-hosted' && '1' || '0' }}
+      run: |
+        python eng/windows/observe-browser-profile.py --stage before-browser-cooperation --output artifacts/browser-profile/before-browser-cooperation.json
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-browser-cooperation artifacts/browser-cooperation artifacts/package/TypeLay '${{ steps.cooperative-browser-prepare.outputs.chrome }}'
+        exit $LASTEXITCODE
+    - name: Preserve Index lifecycle and same-package browser evidence
       if: always()
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:
-        name: typelay-index-windows-${{ github.sha }}
+        name: typelay-index-windows-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
         path: |
           artifacts/index-production/result.json
+          artifacts/browser-cooperation/*.json
+          artifacts/browser-cooperation/trace*.jsonl
+          artifacts/browser-cooperation/*.png
+          artifacts/browser-profile/*.json
+          artifacts/TypeLay-Windows-preview.zip.sha256
           artifacts/ci/
+        if-no-files-found: warn
+        retention-days: 14
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      if: inputs.upload_packages
+      with:
+        name: windows-index-package-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          artifacts/TypeLay-Windows-preview.zip
+          artifacts/TypeLay-Windows-preview.zip.sha256
         if-no-files-found: warn
         retention-days: 14
     needs: fonts

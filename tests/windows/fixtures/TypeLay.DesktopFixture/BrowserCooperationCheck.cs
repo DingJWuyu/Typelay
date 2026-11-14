@@ -144,7 +144,30 @@ internal static partial class BrowserCooperationCheck
         {
             get; set;
         }
+        public PageState? ActualFieldState
+        {
+            get; set;
+        }
+        public string? ActualTranslation
+        {
+            get; set;
+        }
+        public CommandReadinessObservation? FirstCommandReadiness
+        {
+            get; set;
+        }
+        public CommandReadinessObservation? LastCommandReadiness
+        {
+            get; set;
+        }
+        public int CommandReadinessSamples
+        {
+            get; set;
+        }
     }
+    private sealed record CommandReadinessObservation(int ReadyTextCount, int VisibleReadyTextCount,
+        int NotReadyTextCount, bool? SettingsContainsText, bool? ScrollViewportPresent,
+        bool? ScrollViewportVisible, bool? ScrollViewportContainsText);
     private sealed record SourceRetirementObservation(bool SourceChanged, bool ExactNewSource, int SourceLength,
         bool SourceFocused, bool PageFocused, int SelectionStart, int SelectionEnd, int Replacements, int Submits);
     private sealed record CommandPathEntry(long AtMs, string Stage, string Reason, string Kind,
@@ -161,6 +184,7 @@ internal static partial class BrowserCooperationCheck
         scene.ExactText = state.A == expected;
         scene.SourceFocus = state.Focus == "a" && state.PageFocused;
         scene.NoPreview = state.PreviewMounts == 0;
+        scene.ActualFieldState = state;
         return state.Replacements != 0;
     }
     private static CommandPathEntry[] ReadCommandPath(string trace)
@@ -230,6 +254,10 @@ internal static partial class BrowserCooperationCheck
     {
         var setup = new Scene("setup");
         var automatic = new Scene("automatic-preview-tab");
+        var draft = new Scene("manual-draft-return-independent-tab");
+        var draftObservation = new DraftObservation();
+        var ownerRecovery = new OwnerRecoveryObservation();
+        long ownerRecoveryOffset = 0;
         var glossary = new Scene("browser-editor-glossary-lifetime");
         var regenerate = new Scene("browser-editing-regenerate-confirmation");
         var mode = new Scene("on-demand-settings");
@@ -237,7 +265,7 @@ internal static partial class BrowserCooperationCheck
         var background = new Scene("direct-original-field-after-focus-switch");
         var disconnected = new Scene("removed-connection-before-command");
         var submitCounter = new Scene("submit-counter-positive-control");
-        Scene[] scenes = [setup, automatic, regenerate, glossary, mode, direct, background, disconnected, submitCounter];
+        Scene[] scenes = [setup, automatic, draft, regenerate, glossary, mode, direct, background, disconnected, submitCounter];
         Scene active = setup;
         var cleanupErrors = new List<CleanupError>();
         using var all = new CancellationTokenSource(TimeSpan.FromMinutes(9));
@@ -246,7 +274,10 @@ internal static partial class BrowserCooperationCheck
         string ownerToken = Guid.NewGuid().ToString("N"), ownerFile = Path.Combine(data, "browser-fixture-owner");
         string host = Path.Combine(distribution, "app", "TypeLay.BrowserHost.exe");
         bool ownData = false, registrationAttempted = false, registrationAbsent = true;
+        bool ownedDataRemoved = false;
         bool modelPreviewObserved = false;
+        var indexPreparation = new IndexPreparation();
+        var preparationLifetime = new BrowserFixtureProcess();
         var appLifetime = new BrowserFixtureProcess();
         var browserLifetime = new BrowserFixtureProcess();
         string connectionFile = Path.Combine(distribution, "browser", "chromium", "connection.json");
@@ -309,7 +340,7 @@ internal static partial class BrowserCooperationCheck
         }
         try
         {
-            await Phase(setup, "exclusive-data-and-reused-model", 120, async ct =>
+            await Phase(setup, "exclusive-data-and-default-index", 120, async ct =>
             {
                 Require(Environment.GetEnvironmentVariable("TYPELAY_BROWSER_REGISTRATION_E2E") == "1", "explicit-registration-e2e-required");
                 Require(File.Exists(chrome) && FileVersionInfo.GetVersionInfo(chrome).ProductName == "Google Chrome for Testing", "official-cft-required");
@@ -324,7 +355,12 @@ internal static partial class BrowserCooperationCheck
                 Require(CreateDirectoryW(data, 0), "user-data-already-exists");
                 ownData = true;
                 await File.WriteAllTextAsync(ownerFile, ownerToken, ct);
-                await CopyModelAsync(directory, data, ct);
+                await PrepareIndexAsync(directory, distribution, data, setup, indexPreparation, preparationLifetime, ct);
+                var installation = new ModelInstallationStore(data, Path.Combine(distribution, "worker", "run_worker.py"))
+                    .ReadInstallationState();
+                Require(installation.CurrentPackages.Count == 1
+                    && installation.CurrentPackages[0].Package.Id == "index-translate-2b-q4-k-m"
+                    && installation.CurrentPackages[0].Directions.Count == 14, "browser-default-index-required");
                 await File.WriteAllTextAsync(Path.Combine(data, "settings.json"), JsonSerializer.Serialize(new UserSettings(
                     Source: "zh", Target: "en", Theme: "light", UiLanguage: "zh-CN", OnboardingComplete: false, ExperimentalWriteback: false)), ct);
                 setup.Stage = "check-shipped-extension";
@@ -439,7 +475,9 @@ internal static partial class BrowserCooperationCheck
                 await PrepareInputAsync(cdp!, windows!, "", "", selectSource: false, ct);
                 var preview = await WaitPreviewAsync(cdp!, ct);
                 reference = preview.Text;
+                automatic.ActualTranslation = reference;
                 Require(reference.Length > 0 && reference != Source, "real-translation-not-observed");
+                await ConfirmAppIndexGenerationAsync(distribution, data, indexPreparation, ct);
                 modelPreviewObserved = true;
                 automatic.Stage = "single-tab";
                 // Read only the rendered public hint. Never consult the private lease/ACK.
@@ -450,6 +488,11 @@ internal static partial class BrowserCooperationCheck
                 var state = await WaitStateAsync(cdp!, s => ObserveDom(s, automatic, reference), ct);
                 CheckReplacement(state, automatic, reference, sourceFocus: true);
                 Require(await WaitTraceAsync(trace, "browser-accept-Verified", 0, ct) > 0, "tab-receipt-unconfirmed");
+            });
+            await Phase(draft, "preview-before-manual-edit", 90, async ct =>
+            {
+                await PrepareInputAsync(cdp!, windows!, "", "", selectSource: false, ct);
+                await cdp!.VerifyDraftAsync(draft, draftObservation, directory, trace, cleanupErrors, ct);
             });
             await Phase(regenerate, "editing-confirmation-real-controls", 90, async ct =>
             {
@@ -550,19 +593,23 @@ internal static partial class BrowserCooperationCheck
                 }
                 finally { mode.OverlayMenuObservation = cdp!.LastOverlayMenuObservation; }
                 commandSettings = await SetOnDemandAsync(app!.Process, data, ct);
+                ownerRecoveryOffset = TraceLength(trace);
+                await cdp.ArmOwnerRejectionAsync(distribution, extensionId!, ownerRecovery, ct);
                 await FocusPageAsync(cdp, windows!, ct);
             });
             await Phase(direct, "wait-public-command-ready", 30, async ct =>
             {
                 var sourceBounds = await FocusCommandFieldAsync(cdp!, windows!, commandSettings!, ct,
                     observeLayout: observation => direct.SourceLayout = observation);
+                direct.Stage = "observe-injected-initial-owner-rejection";
+                await WaitRejectedOwnerAsync(cdp!, trace, ownerRecoveryOffset, ownerRecovery, ct);
                 direct.Stage = "prepare-final-selection";
                 await PrepareInputAsync(cdp!, windows!, "Keep [", "] unchanged", selectSource: true, ct);
                 Record("final-selection-complete", direct);
                 // Read the same public current-field readiness after typing and
                 // selection, not before preparation can outlive its observation.
                 direct.Stage = "wait-public-command-ready";
-                await WaitPublicCommandReadyAsync(commandSettings!, windows!, sourceBounds, ct);
+                await WaitPublicCommandReadyAsync(commandSettings!, windows!, sourceBounds, direct, ct);
                 direct.Stage = "single-f10-selection";
                 SendChord([0x11, 0x10, 0x79], cleanupErrors);
                 direct.ShortcutPresses = 1;
@@ -571,6 +618,8 @@ internal static partial class BrowserCooperationCheck
                 CheckReplacement(state, direct, "Keep [" + reference + "] unchanged", sourceFocus: true, caret: 6 + reference.Length);
                 direct.NoPreview = state.PreviewMounts == 0;
                 Require(direct.NoPreview && !(await cdp!.PreviewAsync(ct)).Visible, "direct-opened-preview");
+                await VerifyOwnerRecoveryAsync(cdp!, trace, ownerRecoveryOffset, ownerRecovery, ct);
+                await cdp!.RemoveOwnerInjectionAsync(ownerRecovery, ct);
             });
             await Phase(background, "wait-public-command-ready", 30, async ct =>
             {
@@ -580,7 +629,7 @@ internal static partial class BrowserCooperationCheck
                 await PrepareInputAsync(cdp!, windows!, "", "", selectSource: false, ct);
                 Record("final-text-complete", background);
                 background.Stage = "wait-public-command-ready";
-                await WaitPublicCommandReadyAsync(commandSettings!, windows!, sourceBounds, ct);
+                await WaitPublicCommandReadyAsync(commandSettings!, windows!, sourceBounds, background, ct);
                 background.Stage = "single-f10-full-text";
                 long offset = TraceLength(trace);
                 SendChord([0x11, 0x10, 0x79], cleanupErrors);
@@ -689,7 +738,15 @@ internal static partial class BrowserCooperationCheck
                 }
                 catch (Exception error) when (error is not OutOfMemoryException) { cleanupErrors.Add(new(resource, error.GetType().Name)); }
             }
-            await Clean("cdp", () => { cdp?.Dispose(); return Task.CompletedTask; });
+            await Clean("cdp", async () =>
+            {
+                try
+                {
+                    if (cdp is not null && !all.IsCancellationRequested)
+                        await cdp.RemoveOwnerInjectionAsync(ownerRecovery, all.Token);
+                }
+                finally { cdp?.Dispose(); } // Closing this owned session also removes its debugger breakpoints.
+            });
             await Clean("browser-process-family", () => browserLifetime.StopAsync(async child =>
             {
                 if (windows is not null && browser is not null)
@@ -703,6 +760,11 @@ internal static partial class BrowserCooperationCheck
             await Clean("app-process-family", () => appLifetime.StopAsync(async child =>
             {
                 using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await child.TerminateAndWaitAsync(limit.Token);
+            }));
+            await Clean("index-preparation-worker", () => preparationLifetime.StopAsync(async child =>
+            {
+                using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(7));
                 await child.TerminateAndWaitAsync(limit.Token);
             }));
             await Clean("loopback-page", async () => { if (server is not null) await server.DisposeAsync(); });
@@ -729,16 +791,17 @@ internal static partial class BrowserCooperationCheck
                     Require(!status.RootElement.GetProperty("registered").GetBoolean(), "registration-cleanup-unconfirmed");
                     registrationAbsent = true;
                 });
-            if (ownData && registrationAbsent && appLifetime.ExitConfirmed)
+            if (ownData && registrationAbsent && appLifetime.ExitConfirmed && preparationLifetime.ExitConfirmed)
                 await Clean("owned-user-data", () =>
             {
                 Require(File.ReadAllText(ownerFile) == ownerToken, "data-ownership-lost");
                 CheckTree(data);
                 Directory.Delete(data, true);
+                ownedDataRemoved = true;
                 return Task.CompletedTask;
             });
-            if (ownData && (!registrationAbsent || !appLifetime.ExitConfirmed))
-                cleanupErrors.Add(new("owned-user-data-preserved", !registrationAbsent ? "RegistrationAbsenceUnconfirmed" : "AppExitUnconfirmed"));
+            if (ownData && (!registrationAbsent || !appLifetime.ExitConfirmed || !preparationLifetime.ExitConfirmed))
+                cleanupErrors.Add(new("owned-user-data-preserved", !registrationAbsent ? "RegistrationAbsenceUnconfirmed" : "ModelConsumerExitUnconfirmed"));
             if (ownProfile)
                 await Clean("owned-browser-profile", () =>
                 {
@@ -775,7 +838,13 @@ internal static partial class BrowserCooperationCheck
             stage = first?.Stage ?? (passed ? "complete" : "cleanup"),
             failure = first?.Failure ?? (passed ? "none" : "cleanup-failed"),
             scenes,
+            draftObservation,
+            ownerRecovery,
             cleanupErrors,
+            ownedDataRemoved,
+            appExitConfirmed = appLifetime.ExitConfirmed,
+            browserExitConfirmed = browserLifetime.ExitConfirmed,
+            preparationWorkerExitConfirmed = preparationLifetime.ExitConfirmed,
             commandPathRead,
             commandPath,
             elapsedMs = elapsed.ElapsedMilliseconds,
@@ -799,9 +868,17 @@ internal static partial class BrowserCooperationCheck
             settingsIdentityDiscovered,
             preexistingEmptyHostedContainerPreserved = hostedContainer is not null,
             releaseConnectionUnmodified,
-            modelSource = "same-run-verified-installation",
+            modelSource = "formal-default-index-prepared-in-final-browser-data",
+            indexPreparation,
+            testedCommit = Environment.GetEnvironmentVariable("GITHUB_SHA"),
+            runId = Environment.GetEnvironmentVariable("GITHUB_RUN_ID"),
+            runAttempt = Environment.GetEnvironmentVariable("GITHUB_RUN_ATTEMPT"),
+            cpu = Environment.GetEnvironmentVariable("PROCESSOR_IDENTIFIER"),
+            logicalProcessors = Environment.ProcessorCount,
+            syntheticSource = Source,
+            syntheticOtherField = Other,
             realModelPreviewObserved = modelPreviewObserved,
-            noModelDownloads = true,
+            modelPreparation = "formal-installer-with-digest-verified-fixed-cache",
             uiConnectCancelled,
             uiConnectConfirmed,
             uiRemoveConfirmed,

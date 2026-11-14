@@ -40,29 +40,50 @@ def prepare(output):
     output.mkdir(parents=True, exist_ok=True)
     if any(path.is_symlink() for path in (output, *output.parents)):
         raise ValueError("linked-cache")
-    deadline = time.monotonic() + 600
+    started = time.monotonic()
+    deadline = started + 600
     opener = urllib.request.build_opener(OfficialRedirect())
+
+    def report(kind, stage, size=0):
+        print(
+            json.dumps(
+                {
+                    "event": "index_asset_stage",
+                    "asset": kind,
+                    "stage": stage,
+                    "bytes": size,
+                    "elapsedMs": round((time.monotonic() - started) * 1000),
+                }
+            ),
+            flush=True,
+        )
+
     for kind in ("model", "model_license"):
         record = lock[kind]
         target = output / record["file"]
         if target.is_symlink() or target.name != record["file"]:
             raise ValueError("linked-or-invalid-cache")
         if target.exists():
+            report(kind, "cache-verification")
             with target.open("rb") as stream:
                 if (
                     target.stat().st_size != record["bytes"]
                     or hashlib.file_digest(stream, "sha256").hexdigest() != record["sha256"]
                 ):
                     raise ValueError("fixed-cache-integrity")
+            report(kind, "verified-cache", record["bytes"])
             continue
         if not official_url(record["url"]):
             raise ValueError("download-origin")
         with tempfile.TemporaryDirectory(prefix=".index-model-", dir=output) as directory:
             pending = Path(directory) / "asset"
+            report(kind, "request")
             with opener.open(record["url"], timeout=60) as response, pending.open("xb") as stream:
                 if response.status != 200 or not official_url(response.url):
                     raise ValueError("download-origin")
+                report(kind, "response")
                 checksum, size = hashlib.sha256(), 0
+                progress_step = 0
                 while block := response.read(1024 * 1024):
                     if time.monotonic() >= deadline:
                         raise TimeoutError("model-prepare-deadline")
@@ -71,11 +92,16 @@ def prepare(output):
                         raise ValueError("model-download-size")
                     checksum.update(block)
                     stream.write(block)
+                    step = min(16, size * 16 // record["bytes"])
+                    if step > progress_step:
+                        progress_step = step
+                        report(kind, "download-progress", size)
             if size != record["bytes"] or checksum.hexdigest() != record["sha256"]:
                 raise ValueError("model-download-integrity")
             if target.exists() or target.is_symlink():
                 raise ValueError("concurrent-cache-change")
             pending.rename(target)
+            report(kind, "verified-download", size)
     print(json.dumps({"package": lock["package_id"], "version": lock["version"], "verified": True}))
 
 

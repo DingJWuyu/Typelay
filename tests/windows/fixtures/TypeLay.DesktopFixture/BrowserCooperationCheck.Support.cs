@@ -181,7 +181,8 @@ internal static partial class BrowserCooperationCheck
         Require(state.PageFocused && state.Focus == "a", "source-focus-precondition");
         return field;
     }
-    private static async Task WaitPublicCommandReadyAsync(AutomationElement settings, BrowserWindows windows, System.Windows.Rect source, CancellationToken ct)
+    private static async Task WaitPublicCommandReadyAsync(AutomationElement settings, BrowserWindows windows,
+        System.Windows.Rect source, Scene scene, CancellationToken ct)
     {
         // The existing settings page remains visible beside the source. Read its
         // actual status text after final typing/selection, never an internal ACK.
@@ -210,23 +211,40 @@ internal static partial class BrowserCooperationCheck
                             Y = (int)(source.Top + source.Height / 2)
                         }), 2) == pages[0].Handle,
                         "settings-command-layout-unavailable");
-                    var statuses = settings.FindAll(TreeScope.Descendants, new AndCondition(
-                        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text),
-                        new PropertyCondition(AutomationElement.IsOffscreenProperty, false)))
-                        .Cast<AutomationElement>().Where(item =>
+                    var texts = settings.FindAll(TreeScope.Descendants,
+                        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text))
+                        .Cast<AutomationElement>().Select(item =>
                         {
                             // Pause registration is a separate second line. The
                             // complete browser command cue must still match exactly.
                             string name = item.Current.Name;
                             int end = name.IndexOf('\n');
-                            return (end < 0 ? name : name[..end]) == ready;
+                            return (Item: item, FirstLine: end < 0 ? name : name[..end]);
                         }).ToArray();
+                    var readyTexts = texts.Where(item => item.FirstLine == ready).Select(item => item.Item).ToArray();
+                    var statuses = readyTexts.Where(item => !item.Current.IsOffscreen).ToArray();
+                    int notReady = texts.Count(item => item.FirstLine == "浏览器快捷键尚未就绪，请返回受支持的输入框。");
+                    void Observe(bool? inSettings = null, bool? hasViewport = null, bool? viewportVisible = null, bool? inViewport = null)
+                    {
+                        // Bounded public UI diagnostics, without recording arbitrary UI text.
+                        var observation = new CommandReadinessObservation(readyTexts.Length, statuses.Length,
+                            notReady, inSettings, hasViewport, viewportVisible, inViewport);
+                        scene.FirstCommandReadiness ??= observation;
+                        scene.LastCommandReadiness = observation;
+                        scene.CommandReadinessSamples++;
+                    }
                     Require(statuses.Length <= 1, "public-command-ready-ambiguous");
                     if (statuses.Length == 0)
+                    {
+                        Observe();
                         return false;
+                    }
                     var status = statuses[0];
                     var viewport = SettingsPageActions.ContainingScrollViewport(settings, status, ct);
                     var bounds = status.Current.BoundingRectangle;
+                    Observe(settingsBounds.Contains(bounds), viewport is not null,
+                        viewport is not null && !viewport.Current.IsOffscreen,
+                        viewport is not null && viewport.Current.BoundingRectangle.Contains(bounds));
                     return viewport is not null && !viewport.Current.IsOffscreen && !bounds.IsEmpty
                         && bounds.Width > 0 && bounds.Height > 0 && settingsBounds.Contains(bounds)
                         && viewport.Current.BoundingRectangle.Contains(bounds);
