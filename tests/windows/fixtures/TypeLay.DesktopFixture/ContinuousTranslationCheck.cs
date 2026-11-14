@@ -89,16 +89,14 @@ internal static partial class ContinuousTranslationCheck
             setup.Outcome = "ready";
             setup.Stage = "complete";
 
-            // Each independent user journey owns one 90-second budget. Models
-            // are prepared once; source/controller/overlay ownership stays inside
-            // each existing journey. A failed cleanup still blocks every successor.
-            using (var owned = CancellationTokenSource.CreateLinkedTokenSource(all.Token))
-            {
-                _desktopDeadlineAtMs = WindowsInterruptClock.NowMs + 90_000;
-                owned.CancelAfter(TimeSpan.FromSeconds(90));
-                (ownedFirstTab, ownedEditorHandoff, ownedTabReturn, ownedMouseReturn, ownedEditedAcceptance, ownedFinish)
-                    = await VerifyOwnedFirstTabAsync(directory, model, owned.Token);
-            }
+            // All journeys share the original desktop budget and model. Independent
+            // results let a failed journey preserve the remaining time for successors;
+            // a failed cleanup still blocks every successor.
+            using var desktop = CancellationTokenSource.CreateLinkedTokenSource(all.Token);
+            _desktopDeadlineAtMs = WindowsInterruptClock.NowMs + 90_000;
+            desktop.CancelAfter(TimeSpan.FromSeconds(90));
+            (ownedFirstTab, ownedEditorHandoff, ownedTabReturn, ownedMouseReturn, ownedEditedAcceptance, ownedFinish)
+                = await VerifyOwnedFirstTabAsync(directory, model, desktop.Token);
             async Task<SceneResult> Independent(Func<CancellationToken, Task<SceneResult>> run)
             {
                 if (OwnedCleanupFailed() || new[] { ordinaryControls, continuous, direct, practice, coldPage, newTab }
@@ -106,10 +104,10 @@ internal static partial class ContinuousTranslationCheck
                     return new SceneResult { Stage = "previous-scene-cleanup", Failure = "previous-scene-cleanup-failed" };
                 if (all.IsCancellationRequested)
                     return new SceneResult { Stage = "total-budget", Failure = "total-deadline" };
+                if (desktop.IsCancellationRequested)
+                    return new SceneResult { Stage = "desktop-budget", Failure = "desktop-deadline" };
                 if (!model.Ready)
                     return new SceneResult { Stage = "model-unavailable", Failure = "model-not-ready" };
-                using var desktop = CancellationTokenSource.CreateLinkedTokenSource(all.Token);
-                desktop.CancelAfter(TimeSpan.FromSeconds(90));
                 return await run(desktop.Token);
             }
             ordinaryControls = await Independent(token => VerifyOrdinaryControlsAsync(directory, nativeFixture, model, token));
@@ -161,7 +159,7 @@ internal static partial class ContinuousTranslationCheck
             cleanupErrors,
             modelReady = ready,
             totalBudgetSeconds = 1200,
-            independentJourneyBudgetSeconds = 90,
+            desktopBudgetSeconds = 90,
             modelSetup = setup,
             directionInstallation,
             ownedAutomaticFirstTab = ownedFirstTab,
