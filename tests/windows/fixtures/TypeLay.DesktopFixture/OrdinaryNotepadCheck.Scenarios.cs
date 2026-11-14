@@ -62,6 +62,33 @@ internal static partial class HyPackageCheck
         return matches;
     }
 
+    internal sealed record OrdinaryAcceptanceBoundary(bool AcceptanceCueObserved, bool AcceptanceAttempted, bool AcceptanceVerified);
+    internal sealed record OrdinaryEditDependency(string Dependency, string Reason);
+
+    // Spec #3 leaves only these physical-input branches to #21. Any other
+    // failure, missing prerequisite or incomplete cleanup still fails this check.
+    private static bool OrdinaryNotepadRequiredScenesPassed(Report report) =>
+        !report.OperationDeadlineReached && !report.OperationToken.IsCancellationRequested
+        && report.CleanupErrors.Count == 0 && report.Scenes.Count == 7
+        && report.Scenes.Select(scene => scene.Name).Distinct(StringComparer.Ordinal).Count() == 7
+        && report.Scenes.All(scene => scene.Name switch
+        {
+            "ordinary-app-preflight" or "settings-and-model" or "automatic-preview"
+                or "on-demand-cancel-and-direct" or "ordinary-exit" =>
+                scene is { Outcome: "passed", Stage: "complete", Failure: "none", ErrorType: "none" },
+            "automatic-accept-and-undo" => scene is
+            {
+                Outcome: "not-run", Stage: "trusted-source-input-required", Failure: "none", ErrorType: "none",
+                Facts: OrdinaryAcceptanceBoundary { AcceptanceCueObserved: true, AcceptanceAttempted: false, AcceptanceVerified: false }
+            },
+            "edit-return-and-undo" => scene is
+            {
+                Outcome: "not-run", Stage: "dependency-unavailable", Failure: "none", ErrorType: "none",
+                Facts: OrdinaryEditDependency { Dependency: "automatic-accept-and-undo", Reason: "trusted-source-input-required" }
+            },
+            _ => false
+        });
+
     // This unattended check observes the public cue but cannot supply a trusted
     // source key. Only that known limitation or the explicit read-only capability
     // denial may reach the independent tail; neither claims acceptance passed.
@@ -91,12 +118,7 @@ internal static partial class HyPackageCheck
             var acceptance = report.Scenes.Single(scene => scene.Name == "automatic-accept-and-undo");
             acceptance.Outcome = "not-run";
             acceptance.Stage = "trusted-source-input-required";
-            acceptance.Facts = new
-            {
-                acceptanceCueObserved = true,
-                acceptanceAttempted = false,
-                acceptanceVerified = false
-            };
+            acceptance.Facts = new OrdinaryAcceptanceBoundary(true, false, false);
         }
         catch (Failure error) when (ReferenceEquals(error, publicDenialBeforeInput))
         {
@@ -106,11 +128,8 @@ internal static partial class HyPackageCheck
         }
         var edit = report.Scenes.Single(scene => scene.Name == "edit-return-and-undo");
         edit.Stage = "dependency-unavailable";
-        edit.Facts = new
-        {
-            dependency = "automatic-accept-and-undo",
-            reason = publicDenialBeforeInput?.Code ?? "trusted-source-input-required"
-        };
+        edit.Facts = new OrdinaryEditDependency("automatic-accept-and-undo",
+            publicDenialBeforeInput?.Code ?? "trusted-source-input-required");
         await report.Phase("on-demand-cancel-and-direct", async scene =>
         {
             scene.Stage = "verify-independent-source";

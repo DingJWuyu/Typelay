@@ -69,6 +69,11 @@ internal static partial class HyPackageCheck
             get; set;
         }
         public string Outcome { get; set; } = "not-run";
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? RequiredOutcome
+        {
+            get; private set;
+        }
         public string? ReleaseIdentity
         {
             get; set;
@@ -119,12 +124,21 @@ internal static partial class HyPackageCheck
         }
         public async Task<int> Save(string directory)
         {
-            Outcome = EnglishAcceptance == "catalog-rejected" ? "failed"
-                : Scenes[0].Name.EndsWith("prerequisite", StringComparison.Ordinal) && Scenes[0].Outcome != "passed" ? "not-run"
-                : !OperationDeadlineReached && Scenes.All(scene => scene.Outcome == "passed") && CleanupErrors.Count == 0 ? "passed" : "failed";
+            if (Suite == "ordinary-notepad-shipped-app")
+            {
+                RequiredOutcome = OrdinaryNotepadRequiredScenesPassed(this) ? "passed" : "failed";
+                // The physical-input branches remain unexecuted. A missing or
+                // unexpected scene cannot turn the complete suite green either.
+                Outcome = RequiredOutcome == "passed" ? "not-run" : "failed";
+            }
+            else
+                Outcome = EnglishAcceptance == "catalog-rejected" ? "failed"
+                    : Scenes[0].Name.EndsWith("prerequisite", StringComparison.Ordinal) && Scenes[0].Outcome != "passed" ? "not-run"
+                    : !OperationDeadlineReached && Scenes.All(scene => scene.Outcome == "passed") && CleanupErrors.Count == 0 ? "passed" : "failed";
             await File.WriteAllTextAsync(Path.Combine(directory, "result.json"), JsonSerializer.Serialize(this, Json));
-            Console.WriteLine($"{Suite}: {Outcome}; {string.Join(", ", Scenes.Select(scene => scene.Name + "=" + scene.Outcome))}");
-            return Outcome == "passed" ? 0 : 1;
+            string required = RequiredOutcome is null ? "" : $"; required={RequiredOutcome}";
+            Console.WriteLine($"{Suite}: {Outcome}{required}; {string.Join(", ", Scenes.Select(scene => scene.Name + "=" + scene.Outcome))}");
+            return (RequiredOutcome ?? Outcome) == "passed" ? 0 : 1;
         }
     }
 
