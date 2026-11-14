@@ -42,7 +42,6 @@ public sealed partial class NativeSourceControllerTests
                 string[] lines = Encoding.UTF8.GetString(bytes, 0, count).Split('\n');
                 int outcomes = 0, omitted = 0, captures = 0, omittedCaptures = 0;
                 int scannedLines = 0;
-                bool providerPreparationObserved = false;
                 bool capturedNonNative = false, capturedNonNativeAfterReturn = false, returnObserved = false;
                 for (int index = 0; index < lines.Length; index++)
                 {
@@ -61,12 +60,7 @@ public sealed partial class NativeSourceControllerTests
                     using var entry = JsonDocument.Parse(line);
                     if (!entry.RootElement.TryGetProperty("operation", out var operation))
                         continue;
-                    if (operation.GetString() == "DEBUG-t12-provider-preparation" && !providerPreparationObserved)
-                    {
-                        providerPreparationObserved = true;
-                        TestContext.Current.TestOutputHelper?.WriteLine(_scope + " Broker provider preparation: " + line);
-                    }
-                    else if (operation.GetString() == "return")
+                    if (operation.GetString() == "return")
                     {
                         returnObserved = true;
                         if (outcomes++ < 4)
