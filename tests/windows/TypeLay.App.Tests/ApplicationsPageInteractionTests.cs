@@ -398,7 +398,7 @@ public sealed partial class SettingsRenderingTests
         finally { SetCursorPos(previous.X, previous.Y); }
     }
 
-    private static void RightClickApplicationRow(Window window, FrameworkElement row)
+    private static void RightClickApplicationRow(Window window, FrameworkElement row, Action<object>? observeInput = null)
     {
         row.BringIntoView();
         window.UpdateLayout();
@@ -407,14 +407,52 @@ public sealed partial class SettingsRenderingTests
         Assert.Equal(new WindowInteropHelper(window).Handle, WindowFromPoint(pixel));
         Assert.Equal(0, Native.GetAsyncKeyState(2) & 0x8000);
         Assert.True(SetCursorPos(pixel.X, pixel.Y));
+        object? before = observeInput is null ? null : ReadApplicationNativeInput(window);
         // Actual native right-click routes directly to the confirmation; there is
         // no internal removal callback or intermediate menu invocation here.
         Input[] input = [new() { MouseFlags = 8 }, new() { MouseFlags = 16 }];
         uint sent = SendInput(2, input, Marshal.SizeOf<Input>());
+        observeInput?.Invoke(new { Before = before, Sent = sent, After = ReadApplicationNativeInput(window) });
         if (sent == 1)
             SendInput(1, [input[1]], Marshal.SizeOf<Input>());
         Assert.Equal(2u, sent);
     }
+
+    private static object ReadApplicationNativeInput(Window owner)
+    {
+        nint handle = new WindowInteropHelper(owner).Handle;
+        uint thread = TypeLay.Platform.Windows.NativeMethods.GetWindowThreadProcessId(handle, out uint process);
+        var gui = new TypeLay.Platform.Windows.NativeMethods.GuiThreadInfo
+        {
+            Size = (uint)Marshal.SizeOf<TypeLay.Platform.Windows.NativeMethods.GuiThreadInfo>()
+        };
+        bool read = thread != 0 && TypeLay.Platform.Windows.NativeMethods.GetGUIThreadInfo(thread, ref gui);
+        bool cursor = Native.GetCursorPos(out var point);
+        return new
+        {
+            At = Environment.TickCount64,
+            Owner = handle.ToInt64(),
+            Thread = thread,
+            Process = process,
+            Enabled = ApplicationNativeIsWindowEnabled(handle),
+            Foreground = Native.GetForegroundWindow().ToInt64(),
+            GuiRead = read,
+            gui.Flags,
+            Active = gui.Active.ToInt64(),
+            Focus = gui.Focus.ToInt64(),
+            Capture = gui.Capture.ToInt64(),
+            MenuOwner = gui.MenuOwner.ToInt64(),
+            CursorRead = cursor,
+            point.X,
+            point.Y,
+            CursorWindow = cursor ? WindowFromPoint(new NativePoint { X = point.X, Y = point.Y }).ToInt64() : 0,
+            RightHeld = (Native.GetAsyncKeyState(2) & 0x8000) != 0
+        };
+    }
+
+    [DllImport("user32.dll", EntryPoint = "IsWindowEnabled")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ApplicationNativeIsWindowEnabled(nint window);
 
     private static void ApplicationDialogAction(SettingsWindow owner, Action open, string id, Action<Window> interact) =>
         ApplicationDialogActionAsync(owner, open, id, (dialog, ct) =>
@@ -502,6 +540,7 @@ public sealed partial class SettingsRenderingTests
                     OwnerEnabled = owner.IsEnabled,
                     Foreground = Native.GetForegroundWindow().ToInt64(),
                     Owner = new WindowInteropHelper(owner).Handle.ToInt64(),
+                    NativeInput = observeNativeInput ? ReadApplicationNativeInput(owner) : null,
                     Owned = owner.OwnedWindows.Cast<Window>().Take(4).Select(window => new
                     {
                         Id = AutomationProperties.GetAutomationId(window),

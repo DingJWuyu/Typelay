@@ -450,11 +450,25 @@ public sealed partial class SettingsRenderingTests
         var row = ApplicationElement(owner, "ApplicationRow_" + application);
         Assert.Null(row.ContextMenu);
         Assert.True(Native.GetCursorPos(out var previous));
+        object? nativeInput = null;
         try
         {
-            ApplicationDialogActionAsync(owner, () => RightClickApplicationRow(owner, row), "ApplicationRemovalConfirmation", interact, awaitEntrance, observeNativeInput);
+            ApplicationDialogActionAsync(owner, () => RightClickApplicationRow(owner, row,
+                observeNativeInput ? value => nativeInput = value : null), "ApplicationRemovalConfirmation", interact, awaitEntrance, observeNativeInput);
         }
-        finally { SetCursorPos(previous.X, previous.Y); }
+        finally
+        {
+            SetCursorPos(previous.X, previous.Y);
+            if (observeNativeInput)
+            {
+                try
+                {
+                    TestContext.Current.TestOutputHelper?.WriteLine("[DEBUG-t12-input] Application right-click: "
+                        + System.Text.Json.JsonSerializer.Serialize(nativeInput));
+                }
+                catch (Exception error) when (error is not OutOfMemoryException) { }
+            }
+        }
     }
 
     private sealed record ApplicationSheetPaint(long Timestamp, TimeSpan? LastObservedRenderingTime,
