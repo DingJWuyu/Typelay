@@ -1524,8 +1524,10 @@ jobs:
           import shutil, subprocess
           from pathlib import Path
           from eng.linux.build import package_worker
+          from eng.linux.uv.prepare import prepare as prepare_uv
           package = Path('artifacts/index-package').absolute()
           package_worker(package, index_runtime=Path('artifacts/index-runtime').absolute())
+          prepare_uv(Path('artifacts/linux/uv-download'), package / 'support/uv')
           shutil.copytree('src/linux/desktop', package / 'desktop', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
           (package / 'native').mkdir()
           subprocess.run(['gcc', '-O2', '-Wall', '-Wextra', '-Werror', 'src/linux/native/supervise.c', '-o', str(package / 'native/typelay-supervise')], check=True)

@@ -51,12 +51,17 @@ def prepare(cache, output, *, offline=False):
     with tempfile.TemporaryDirectory(prefix=".private-uv-", dir=output.parent) as directory:
         staging = Path(directory) / "support/uv"
         staging.mkdir(parents=True)
-        with tarfile.open(archive, "r:gz") as package:
-            member = package.getmember("uv-x86_64-unknown-linux-gnu/uv")
-            if not member.isfile() or member.size != PIN["files"]["uv"]["bytes"]:
+        with tarfile.open(archive, "r|gz") as package:
+            for member in package:
+                if member.name != "uv-x86_64-unknown-linux-gnu/uv":
+                    continue
+                if not member.isfile() or member.size != PIN["files"]["uv"]["bytes"]:
+                    raise ValueError("private-uv-archive-member")
+                with package.extractfile(member) as source, (staging / "uv").open("xb") as target:
+                    shutil.copyfileobj(source, target)
+                break
+            else:
                 raise ValueError("private-uv-archive-member")
-            with package.extractfile(member) as source, (staging / "uv").open("xb") as target:
-                shutil.copyfileobj(source, target)
         (staging / "uv").chmod(0o755)
         for name in ("LICENSE-MIT", "LICENSE-APACHE"):
             shutil.copyfile(Path(__file__).with_name(name), staging / name)

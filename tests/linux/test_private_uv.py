@@ -6,9 +6,12 @@ import io
 import json
 import os
 import shutil
+import signal
+import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -23,7 +26,15 @@ from eng.linux.uv import prepare as package_uv  # noqa: E402
 
 
 class PrivateUvInstallationTests(unittest.TestCase):
-    def install_failure(self, *, damage=None, failing_step="python-install", hostile_path=False):
+    def install_failure(
+        self,
+        *,
+        damage=None,
+        failing_step="python-install",
+        hostile_path=False,
+        process_behavior=None,
+        output_size=None,
+    ):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             home = base / "搬迁 包"
@@ -31,6 +42,7 @@ class PrivateUvInstallationTests(unittest.TestCase):
             tool = home / "support/uv/uv"
             tool.parent.mkdir(parents=True)
             marker = base / "private-called"
+            terminated = base / "terminated"
             tool.write_text(
                 f"#!{sys.executable}\n"
                 "import os, sys\nfrom pathlib import Path\n"
@@ -43,13 +55,28 @@ class PrivateUvInstallationTests(unittest.TestCase):
                 "python = Path(os.environ['UV_PYTHON_INSTALL_DIR']) / 'bin/python3.13'\n"
                 "if step == 'python-install':\n"
                 " python.parent.mkdir(parents=True); python.write_bytes(b'controlled runtime')\n"
-                "elif step == 'python-find': print(python)\n"
+                "elif step == 'python-find':\n"
+                f" size = {output_size!r}\n"
+                " sys.stdout.write(str(python) if size is None else str(python).ljust(size))\n"
                 "elif step == 'venv':\n"
                 " entry = Path(args[1]) / 'bin/python'\n"
                 " entry.parent.mkdir(parents=True); entry.symlink_to(python)\n"
                 "elif step == 'pip-compile':\n"
                 " Path(args[args.index('--output-file') + 1]).write_text('controlled lock')\n"
             )
+            if process_behavior == "launch":
+                tool.write_text("#!/missing-private-token/python\n")
+            elif process_behavior in ("terminate", "kill"):
+                tool.write_text(
+                    f"#!{sys.executable}\n"
+                    "import os, signal\nfrom pathlib import Path\n"
+                    "def terminated(signum, frame):\n"
+                    f" Path({str(terminated)!r}).touch()\n"
+                    + (" raise SystemExit(0)\n" if process_behavior == "terminate" else "")
+                    + "signal.signal(signal.SIGTERM, terminated)\n"
+                    f"Path({str(marker)!r}).write_text(str(os.getpid()))\n"
+                    "while True: signal.pause()\n"
+                )
             tool.chmod(0o700)
             pin = {
                 **private_uv.PIN,
@@ -98,14 +125,58 @@ class PrivateUvInstallationTests(unittest.TestCase):
             shell = base / ".profile"
             shell.write_text("User shell settings stay unchanged.\n")
             output = io.StringIO()
+            processes = []
+            real_process = subprocess.Popen
+
+            def await_marker(path):
+                deadline = time.monotonic() + 5
+                while not path.exists():
+                    if time.monotonic() >= deadline:
+                        self.fail("controlled tool did not reach its signal boundary")
+                    time.sleep(0.005)
+
+            class ExpiredBudgetProcess(real_process):
+                """Run real tools while explicitly expiring their two independent budgets."""
+
+                cleanup_budget_expired = False
+
+                def communicate(self, input=None, timeout=None):
+                    processes.append(self)
+                    await_marker(marker)
+                    return super().communicate(input=input, timeout=0)
+
+                def wait(self, timeout=None):
+                    if (
+                        timeout == 5
+                        and process_behavior == "kill"
+                        and not self.cleanup_budget_expired
+                    ):
+                        await_marker(terminated)
+                        self.cleanup_budget_expired = True
+                        return super().wait(timeout=0)
+                    return super().wait(timeout=timeout)
+
             with (
                 patch.object(private_uv, "PIN", pin),
                 patch.dict(os.environ, {"PATH": str(path)}),
                 contextlib.redirect_stdout(output),
+                contextlib.ExitStack() as stack,
             ):
+                if process_behavior in ("terminate", "kill"):
+                    stack.enter_context(patch.object(subprocess, "Popen", ExpiredBudgetProcess))
                 result = setup.install(home, base / "data", base / "cache")
             self.assertEqual(result, 1)
-            self.assertEqual(marker.exists(), damage is None, output.getvalue())
+            self.assertEqual(
+                marker.exists(), damage is None and process_behavior != "launch", output.getvalue()
+            )
+            if process_behavior in ("terminate", "kill"):
+                self.assertTrue(terminated.exists())
+                self.assertEqual(len(processes), 1)
+                self.assertEqual(
+                    processes[0].returncode, -signal.SIGKILL if process_behavior == "kill" else 0
+                )
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(int(marker.read_text()), 0)
             self.assertFalse(external_marker.exists())
             if hostile_path:
                 self.assertEqual(external.read_bytes(), external_before)
@@ -177,8 +248,77 @@ class PrivateUvInstallationTests(unittest.TestCase):
                 record = {"category": "runtime", "stage": "runtime", **fields}
                 self.assertIsNone(setup.failure_code(setup.FAILURE_PREFIX + json.dumps(record)))
 
+    def test_launch_failure_is_redacted_and_preserves_previous_generation(self):
+        failure = self.install_failure(process_behavior="launch", hostile_path=True)
+        self.assertEqual(failure["runtimeStep"], "python-install")
+        self.assertEqual(failure["runtimeReason"], "launch")
+        self.assertEqual(failure["errno"], 2)
+
+    def test_timeout_reaps_tools_after_termination_or_kill_and_preserves_previous_generation(self):
+        for behavior in ("terminate", "kill"):
+            with self.subTest(behavior=behavior):
+                failure = self.install_failure(process_behavior=behavior)
+                self.assertEqual(failure["runtimeStep"], "python-install")
+                self.assertEqual(failure["runtimeReason"], "timeout")
+                self.assertNotIn("exitCode", failure)
+
+    def test_python_find_output_limit_preserves_previous_generation_at_both_sides(self):
+        for size in (16383, 16384, 16385):
+            with self.subTest(size=size):
+                failure = self.install_failure(failing_step="venv", output_size=size)
+                self.assertEqual(
+                    failure["runtimeStep"], "python-find" if size > 16384 else "venv-create"
+                )
+                self.assertEqual(failure["runtimeReason"], "output" if size > 16384 else "exit")
+
 
 class PrivateUvPackagingTests(unittest.TestCase):
+    def test_missing_linked_wrong_size_and_changed_members_leave_no_package(self):
+        for invalid in ("missing", "symlink", "hardlink", "directory", "size", "hash"):
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)
+                cache = base / "cache"
+                cache.mkdir()
+                archive = cache / "uv-0.13.8-x86_64-unknown-linux-gnu.tar.gz"
+                payload = b"controlled executable bytes"
+                with tarfile.open(archive, "w:gz") as bundle:
+                    entry = tarfile.TarInfo(
+                        "uv-x86_64-unknown-linux-gnu/" + ("uvx" if invalid == "missing" else "uv")
+                    )
+                    entry.size = len(payload)
+                    if invalid in ("symlink", "hardlink", "directory"):
+                        entry.type = {
+                            "symlink": tarfile.SYMTYPE,
+                            "hardlink": tarfile.LNKTYPE,
+                            "directory": tarfile.DIRTYPE,
+                        }[invalid]
+                        entry.linkname = "outside-archive"
+                        entry.size = 0
+                    bundle.addfile(entry, io.BytesIO(payload))
+                pin = {
+                    **private_uv.PIN,
+                    "bytes": archive.stat().st_size,
+                    "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+                    "files": {
+                        **private_uv.PIN["files"],
+                        "uv": {
+                            "bytes": len(payload) + (invalid == "size"),
+                            "sha256": "0" * 64
+                            if invalid == "hash"
+                            else hashlib.sha256(payload).hexdigest(),
+                        },
+                    },
+                }
+                with patch.object(private_uv, "PIN", pin), patch.object(package_uv, "PIN", pin):
+                    output = base / "package/support/uv"
+                    expected = (
+                        private_uv.PreparationError if invalid == "hash" else (ValueError, KeyError)
+                    )
+                    with self.assertRaises(expected):
+                        package_uv.prepare(cache, output, offline=True)
+                    self.assertFalse(output.exists())
+                    self.assertEqual(list(output.parent.iterdir()), [])
+
     def test_only_verified_tool_and_original_licenses_are_packaged(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
