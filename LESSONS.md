@@ -48,3 +48,11 @@
 沿用 Seen 计数，并补充新案例和日期。
 
 ## Lessons
+
+### 同包验收核对实际消费字节
+
+- **Rule**：要求同一发行包的旅程，应消费一次构建的同一包，并核对包摘要和共同消费文件的摘要。
+- **Kind**：judgement。
+- **Why**：T13 的生命周期与浏览器分别打包。两份结果虽来自同一提交，ZIP 与 Index 原生库摘要仍不同，不能满足同包串联要求。
+- **Evidence**：[#17 的负责人验收要求](https://github.com/DingJWuyu/Typelay/issues/17#issuecomment-6868644052)；`5c0bf79d` 的两份 Windows 结果记录了不同的 `packageSha256` 和 `typelay_index.dll` 摘要。
+- **Seen**：1，2026-11-14。

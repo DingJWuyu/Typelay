@@ -29,14 +29,16 @@ public sealed class EditorDraftTextTests
     [Fact]
     public void EveryUtf16UnitSurvivesTheDraftProjectionWithoutRepairOrReplacement()
     {
-        for (int unit = 0; unit <= ushort.MaxValue; unit++)
+        const int batchSize = 4096;
+        for (int first = 0; first <= ushort.MaxValue; first += batchSize)
         {
+            int[] units = Enumerable.Range(first, batchSize).ToArray();
             var value = JsonSerializer.SerializeToElement(new
             {
-                utf16 = new[] { unit }
+                utf16 = units
             });
             Assert.True(EditorDraftText.TryRead(value, out string text));
-            Assert.Equal(new string((char)unit, 1), text);
+            Assert.Equal(new string(units.Select(unit => (char)unit).ToArray()), text);
         }
     }
 

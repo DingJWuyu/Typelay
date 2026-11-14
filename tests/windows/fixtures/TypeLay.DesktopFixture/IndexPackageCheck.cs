@@ -105,26 +105,10 @@ internal static class IndexPackageCheck
         }
         try
         {
-            foreach (var assembly in new[] { typeof(ModelClient).Assembly, typeof(ModelInstaller).Assembly,
-                typeof(TypeLay.Core.Session).Assembly, typeof(TypeLay.Protocol.Wire).Assembly,
-                typeof(TypeLay.Windows.Contracts.BrowserHostHello).Assembly })
-            {
-                using var actual = File.OpenRead(assembly.Location);
-                using var expected = File.OpenRead(Path.Combine(distribution, "app", Path.GetFileName(assembly.Location)));
-                byte[] hash = SHA256.HashData(actual);
-                Require(hash.SequenceEqual(SHA256.HashData(expected)), "release-assembly-mismatch");
-                payloadHashes["app/" + Path.GetFileName(assembly.Location)] = Convert.ToHexString(hash).ToLowerInvariant();
-            }
-            using (var archive = File.OpenRead(Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(distribution))!, "TypeLay-Windows-preview.zip")))
-                packageSha256 = Convert.ToHexString(await SHA256.HashDataAsync(archive, ct)).ToLowerInvariant();
-            Require(WindowsIndexPayload.CanPrepare(worker), "index-payload-unavailable");
-            using (var manifest = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(distribution, "worker/native/index/production-adapter.json"), ct)))
-                nativeIdentity = manifest.RootElement.Clone();
-            foreach (string path in Directory.EnumerateFiles(Path.Combine(distribution, "worker"), "*", SearchOption.AllDirectories))
-            {
-                using var content = File.OpenRead(path);
-                payloadHashes[Path.GetRelativePath(distribution, path).Replace('\\', '/')] = Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant();
-            }
+            var identity = await IndexPackageIdentity.CaptureAsync(distribution, ct);
+            payloadHashes = identity.PayloadHashes;
+            packageSha256 = identity.PackageSha256;
+            nativeIdentity = identity.NativeIdentity;
             Passed();
             await SeedCache(data, distribution, cache, ct);
             ModelClient NewClient() => new(store.InitialPaths(), (info, plan) =>

@@ -3,7 +3,6 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using TypeLay.App;
 using TypeLay.Runtime;
-using TypeLay.Windows.Contracts;
 using TypeLay.Windows.Testing;
 
 internal static partial class BrowserCooperationCheck
@@ -42,7 +41,10 @@ internal static partial class BrowserCooperationCheck
         {
             get; set;
         }
-        public Dictionary<string, string> PayloadHashes { get; } = [];
+        public Dictionary<string, string> PayloadHashes
+        {
+            get; set;
+        } = [];
         public bool WorkerExitConfirmed
         {
             get; set;
@@ -60,30 +62,13 @@ internal static partial class BrowserCooperationCheck
         Scene scene, IndexPreparation evidence, BrowserFixtureProcess owner, CancellationToken ct)
     {
         scene.Stage = "verify-index-package-identity";
-        foreach (var assembly in new[] { typeof(ModelClient).Assembly, typeof(ModelInstaller).Assembly,
-            typeof(TypeLay.Core.Session).Assembly, typeof(TypeLay.Protocol.Wire).Assembly, typeof(BrowserHostHello).Assembly })
-        {
-            string relative = "app/" + Path.GetFileName(assembly.Location);
-            using var actual = File.OpenRead(assembly.Location);
-            using var shipped = File.OpenRead(Path.Combine(distribution, relative));
-            byte[] hash = await SHA256.HashDataAsync(actual, ct);
-            Require(hash.SequenceEqual(await SHA256.HashDataAsync(shipped, ct)), "release-assembly-mismatch");
-            evidence.PayloadHashes[relative] = Convert.ToHexString(hash).ToLowerInvariant();
-        }
-        foreach (string path in Directory.EnumerateFiles(Path.Combine(distribution, "worker"), "*", SearchOption.AllDirectories)
-            .Concat(Directory.EnumerateFiles(Path.Combine(distribution, "browser", "chromium"), "*", SearchOption.AllDirectories))
-            .Append(Path.Combine(distribution, "app", "TypeLay.BrowserHost.dll")))
-        {
-            using var content = File.OpenRead(path);
-            evidence.PayloadHashes[Path.GetRelativePath(distribution, path).Replace('\\', '/')]
-                = Convert.ToHexString(await SHA256.HashDataAsync(content, ct)).ToLowerInvariant();
-        }
-        using (var archive = File.OpenRead(Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(distribution))!, "TypeLay-Windows-preview.zip")))
-            evidence.PackageSha256 = Convert.ToHexString(await SHA256.HashDataAsync(archive, ct)).ToLowerInvariant();
+        var identity = await IndexPackageIdentity.CaptureAsync(distribution, ct,
+            Directory.EnumerateFiles(Path.Combine(distribution, "browser", "chromium"), "*", SearchOption.AllDirectories)
+                .Append(Path.Combine(distribution, "app", "TypeLay.BrowserHost.dll")));
+        evidence.PayloadHashes = identity.PayloadHashes;
+        evidence.PackageSha256 = identity.PackageSha256;
+        evidence.NativeIdentity = identity.NativeIdentity;
         string worker = Path.Combine(distribution, "worker", "run_worker.py");
-        Require(WindowsIndexPayload.CanPrepare(worker), "index-payload-unavailable");
-        using (var manifest = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(distribution, "worker/native/index/production-adapter.json"), ct)))
-            evidence.NativeIdentity = manifest.RootElement.Clone();
         scene.Stage = "verify-fixed-index-cache";
         await IndexPackageCheck.SeedCache(data, distribution,
             Path.Combine(Path.GetDirectoryName(directory)!, "index-model-download"), ct);

@@ -141,7 +141,8 @@ jobs:
     needs: scope
     if: ${{ !cancelled() && needs.scope.outputs.selected == 'success' && needs.scope.outputs.windows == 'true' }}
     runs-on: windows-latest
-    timeout-minutes: 85
+    # The added 11-minute Index lifecycle keeps every existing scene deadline.
+    timeout-minutes: 96
     steps:
       - name: Record the Windows check budget start
         shell: pwsh
@@ -289,7 +290,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $elapsed = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [long]$env:TYPELAY_WINDOWS_CHECK_START
           python eng/windows/admit-package-chain.py --elapsed-seconds $elapsed --report artifacts/hy-results/admission.json
-          if ($LASTEXITCODE -ne 0) { throw 'Insufficient 85-minute job budget for the bounded ordinary-app and Hy chain.' }
+          if ($LASTEXITCODE -ne 0) { throw 'Insufficient 96-minute job budget for the bounded Index, ordinary-app and Hy chain.' }
           $pin = Get-Content src/shared/TypeLay.Worker/native/hy/assets.lock.json -Raw | ConvertFrom-Json
           "cache-key=typelay-hy-win-$($pin.model.sha256)-$($pin.runtime_archive.sha256)" >> $env:GITHUB_OUTPUT
       - name: Restore the fixed Hy model and CPU archive cache
@@ -326,9 +327,17 @@ jobs:
           TYPELAY_BROWSER_REGISTRATION_E2E: "1"
           TYPELAY_HY_WINDOWS_CPU_RUNTIME: artifacts/hy-runtime
         run: ./dev.ps1 pack -HyRuntime artifacts/hy-runtime
+      - name: Verify the same shipped Index package lifecycle before browser use
+        id: windows-index
+        if: ${{ !cancelled() && steps.windows-package.outcome == 'success' }}
+        timeout-minutes: 11
+        shell: pwsh
+        run: |
+          ./dev.ps1 package-e2e -Scenario index-windows
+          exit $LASTEXITCODE
       - name: Verify cooperative browser input with the shipped app and real model
         id: windows-browser
-        if: ${{ !cancelled() && steps.windows-package.outcome == 'success' && steps.cooperative-browser-prepare.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.windows-index.outcome == 'success' && steps.cooperative-browser-prepare.outcome == 'success' }}
         timeout-minutes: 10
         shell: pwsh
         env:
@@ -350,6 +359,7 @@ jobs:
         with:
           name: typelay-windows-browser-diagnostics-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            artifacts/index-production/result.json
             artifacts/browser-cooperation/result.json
             artifacts/browser-cooperation/consumer-exit.json
             artifacts/browser-cooperation/trace*.jsonl
@@ -438,6 +448,7 @@ jobs:
             artifacts/continuous-translation/result.json
             artifacts/continuous-translation/consumer-exit.json
             artifacts/continuous-translation/trace*.jsonl
+            artifacts/index-production/result.json
             artifacts/browser-cooperation/result.json
             artifacts/browser-cooperation/consumer-exit.json
             artifacts/browser-cooperation/trace*.jsonl
@@ -462,6 +473,7 @@ jobs:
             windows-continuous
             cooperative-browser-prepare
             windows-package
+            windows-index
             windows-browser
             notepad-consumer-exit
             windows-ordinary-notepad

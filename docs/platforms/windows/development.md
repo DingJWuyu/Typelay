@@ -66,6 +66,8 @@ python eng/windows/index/prepare_runtime.py --cache artifacts/index-runtime-down
 
 独立 `index-windows` CI 使用实际发行包，通过 DesktopFixture 的 `--verify-index-production` 调用正式 ModelInstaller、ModelClient 与 ModelChildProcess。它验证载荷身份、默认准备与激活、连续推理、冷启、失败及取消保留旧代、Repair、Argos 安装、离线切换、移除和自有进程退出。
 
+主 Windows job 也在打包后调用同一生命周期入口，成功退出后再启动合作浏览器。两个入口消费同一次构建的发行包。浏览器诊断 artifact 保留两份 `result.json`，供核对包摘要与共同消费文件摘要。独立 job 的包不作为这条同包验收的证据。
+
 生命周期上限为 600 秒，清理上限为 7 秒。下载、构建分别有界，不重试模型。模型来自固定官方来源，不进入 GitHub cache 或上传 artifact；只上传结构化结果。未执行阶段保留 `not-run`。这个非 UI 检查不能替代设置、普通源、IME 或语言质量验收。
 
 ## Hy 生产载荷候选构建

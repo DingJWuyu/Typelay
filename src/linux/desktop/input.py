@@ -4266,17 +4266,9 @@ class Input:
                 and event.get("generation") == action["token"]["commandGeneration"]
             ):
                 if operation == "draft":
-                    text = (
-                        value
-                        if _browser_draft(value)
-                        else value.get("text")
-                        if (
-                            isinstance(value, dict)
-                            and set(value) == {"actionId", "text"}
-                            and value["actionId"] == action["actionId"]
-                        )
-                        else None
-                    )
+                    text = value
+                    if isinstance(value, dict) and set(value) == {"actionId", "text"}:
+                        text = value["text"] if value["actionId"] == action["actionId"] else None
                     if _browser_draft(text):
                         owner["draft"] = text
                         if actual is None:
