@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -151,7 +152,8 @@ def run(arguments):
                     check=True,
                     timeout=5,
                 )
-            observed = now_ms()
+            # Fixture observations use GLib's CLOCK_MONOTONIC, excluding suspend.
+            observed = time.monotonic_ns() // 1_000_000
             wait_for(
                 lambda: state().get("observedAtMs", 0) >= observed,
                 "typed text observation did not advance",
@@ -234,7 +236,7 @@ def run(arguments):
             "candidate click did not open editor",
         )
         key("ctrl+a")
-        observed = now_ms()
+        observed = time.monotonic_ns() // 1_000_000
         wait_for(
             lambda: state().get("observedAtMs", 0) >= observed,
             "editor selection observation did not advance",
@@ -285,8 +287,8 @@ def run(arguments):
         # capture/render refreshes, which must preserve the manual candidate.
         refreshed = wait_for(
             lambda: value
-            if (value := status())["input"]["captureCounts"].get("supported", 0) > captures
-            and ready("EditedTranslationPending")
+            if (value := ready("EditedTranslationPending"))
+            and value["input"]["captureCounts"].get("supported", 0) > captures
             and state()["candidate"]["text"] == draft
             else None,
             "fresh source capture did not retain the returned manual draft",
@@ -628,9 +630,9 @@ def run(arguments):
                 )
                 wait_for(
                     lambda: state().get("focus") == excluded["name"]
-                    and status().get("input", {}).get("captureStatus")
+                    and (value := status()).get("input", {}).get("captureStatus")
                     in ("excluded-or-sensitive", "no-native-field")
-                    and not status().get("acceptanceReady"),
+                    and not value.get("acceptanceReady"),
                     "unsupported TextView was not refused",
                 )
             result["cases"]["unsupported"] = {
