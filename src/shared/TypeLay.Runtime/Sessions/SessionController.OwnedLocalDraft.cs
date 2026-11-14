@@ -289,6 +289,46 @@ public sealed partial class SessionController
                         ? owner._session.ConfirmDormantRegenerateReturn(intent.Edit, source, now)
                         : owner._session.ConfirmDormantSourceReturn(intent.Edit, source, now)))
                 {
+                    // [DEBUG-t12-local-return] The guard has already refused.
+                    // These later reads describe that boundary, not a second
+                    // authorization check or an atomic record of its cause.
+                    try
+                    {
+                        var observedSource = capture.Snapshot;
+                        var observedEvidence = capture.OwnedSource;
+                        var observedAck = capture.SessionShortcuts;
+                        owner.Trace("DEBUG-t12-local-return", detail: new
+                        {
+                            bindingPresent = binding is not null,
+                            coreConfirmed = intent.CoreConfirmed,
+                            configurationMatches = configuration == intent.Configuration,
+                            windowMatches = windowEpoch == intent.WindowEpoch,
+                            requestMatches = request.PracticeRead == binding,
+                            sourcePresent = observedSource is not null,
+                            sourceUsable = observedSource?.IsUsable,
+                            sourceFocus = capture.Focus == FocusMember.Source,
+                            evidencePresent = observedEvidence is not null,
+                            contextAdvanced = observedEvidence?.ContextAdvanced,
+                            evidenceMatches = observedEvidence?.Binding == binding,
+                            targetMatches = observedSource?.Target == binding?.Target,
+                            nativeFocusMatches = observedSource?.FocusEpoch == binding?.NativeFocusRevision,
+                            evidenceTimeMatches = observedSource?.ObservedAtMs == observedEvidence?.ObservedAtMs,
+                            sourceAgeMs = observedSource is null ? (long?)null : now - observedSource.ObservedAtMs,
+                            receiptAgeMs = intent.Receipt is null ? (long?)null : now - intent.Receipt.ObservedAtMs,
+                            sourceAfterReceipt = observedSource?.ObservedAtMs >= intent.Receipt?.ObservedAtMs,
+                            captureUserEpoch = capture.UserEpoch,
+                            postUserEpoch = owner._hook.UserEpoch,
+                            captureForegroundEpoch = capture.ForegroundEpoch,
+                            postForegroundEpoch = owner._hook.ForegroundEpoch,
+                            acknowledgementPresent = observedAck is not null,
+                            sourceReady = observedAck?.SourceReady,
+                            acknowledgementTargetMatches = observedAck?.Target == binding?.Target,
+                            acknowledgementGenerationMatches = observedAck?.Generation == binding?.CommandGeneration,
+                            acknowledgementBindingsMatch = observedAck?.Bindings == owner.CurrentSessionBindings,
+                            replacesDraft = intent.Return?.ReplacesDraft
+                        }, inspectFocus: false);
+                    }
+                    catch (Exception error) when (error is not OutOfMemoryException) { }
                     owner.StopSession("owned-local-fresh-source-refused");
                     return true;
                 }

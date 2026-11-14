@@ -311,6 +311,20 @@ public sealed partial class OverlayTranslationMenuTests
                         Retain(names.Where(name => row.TryGetProperty(name, out _))
                             .ToDictionary(name => name, name => row.GetProperty(name).Clone()));
                     }
+                    else if (operation.GetString() == "DEBUG-t12-local-return"
+                        && row.TryGetProperty("detail", out var localReturnDetail))
+                    {
+                        // Temporary fixed scalar projection, with no text or identities.
+                        string[] names = ["bindingPresent", "coreConfirmed", "configurationMatches", "windowMatches", "requestMatches",
+                            "sourcePresent", "sourceUsable", "sourceFocus", "evidencePresent", "contextAdvanced", "evidenceMatches",
+                            "targetMatches", "nativeFocusMatches", "evidenceTimeMatches", "sourceAgeMs", "receiptAgeMs", "sourceAfterReceipt",
+                            "captureUserEpoch", "postUserEpoch", "captureForegroundEpoch", "postForegroundEpoch", "acknowledgementPresent",
+                            "sourceReady", "acknowledgementTargetMatches", "acknowledgementGenerationMatches", "acknowledgementBindingsMatch", "replacesDraft"];
+                        var observation = names.Where(name => localReturnDetail.TryGetProperty(name, out _))
+                            .ToDictionary(name => name, name => localReturnDetail.GetProperty(name).Clone());
+                        observation["operation"] = operation.Clone();
+                        Retain(observation);
+                    }
                     else if (operation.GetString() == "owned-editor-admission")
                     {
                         // Existing first-refusal diagnostics, not a fresh probe.

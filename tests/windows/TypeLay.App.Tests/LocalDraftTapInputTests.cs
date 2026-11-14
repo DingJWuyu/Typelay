@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -40,7 +41,19 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
         var editor = new TextBox { Text = "Synthetic local draft", AcceptsTab = true };
         var window = new Window { Content = editor, Width = 420, Height = 160 };
         nint hwnd = new WindowInteropHelper(window).EnsureHandle();
-        using var hook = new KeyboardHook(allowInjectedInput: true, editorHwnd: hwnd, observeEditorForegroundDelivery: true);
+        // [DEBUG-t12-draft] Capture the original LL path for both observed failures.
+        bool observeRetirement = change is "unarmed-prefix" or "expired";
+        string trace = Path.Combine(Path.GetTempPath(), "TypeLay.LocalDraft." + Guid.NewGuid().ToString("N") + ".jsonl");
+        string? previousTrace = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
+        KeyboardHook hook;
+        try
+        {
+            if (observeRetirement)
+                Environment.SetEnvironmentVariable("TYPELAY_TRACE", trace);
+            hook = new KeyboardHook(allowInjectedInput: true, editorHwnd: hwnd, observeEditorForegroundDelivery: true);
+        }
+        finally { Environment.SetEnvironmentVariable("TYPELAY_TRACE", previousTrace); }
+        using var ownedHook = hook;
         hook.ConfigureShortcuts(false, "Ctrl+Shift+F9", "Ctrl+Shift+F10", SessionShortcutBindings.Default, true);
         Guid opening = Guid.NewGuid();
         var held = new HashSet<ushort>();
@@ -266,6 +279,15 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
             hook.EndLocalDraftAnchor(opening);
             foreach (ushort scan in held.ToArray())
                 Assert.Equal(1u, SendInput(1, [Edge(scan, true)], Marshal.SizeOf<Input>()));
+            if (observeRetirement)
+            {
+                hook.TryRead(out _); // Flush only after every original assertion and input.
+                if (File.Exists(trace))
+                {
+                    TestContext.Current.TestOutputHelper?.WriteLine("[DEBUG-t12-draft] " + File.ReadAllText(trace));
+                    File.Delete(trace);
+                }
+            }
         }
         async Task Until(Func<bool> condition)
         {
