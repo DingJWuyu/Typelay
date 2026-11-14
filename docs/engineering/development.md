@@ -101,7 +101,7 @@ CI 使用以下并行分工，各组保留现役测试命令、断言和产品�
 | Job | 执行范围 |
 | --- | --- |
 | `fonts`、`fcitx-build` | 按输入哈希准备跨分支固定产物。 |
-| `shared` | Python lint、格式、Linux 输入反馈、共享 .NET 和 worker 回归。 |
+| `shared` | Python lint、格式、Linux 输入反馈、宿主离线隔离、共享 .NET 和 worker 回归。 |
 | `windows-contracts`，4 个分片 | 完整 Windows solution 测试。前三片分配耗时较长的 App 类，第四片自动接收其余类和项目。两项归档正文超时测试仍单独执行一次；物理 Tab 交接包消费同片的原合同结果。 |
 | `windows-tools` | 构建、格式、worker 与受控 native adapter。 |
 | `windows-desktop` | continuous、浏览器、Notepad 与 Hy 保留原来的模型依赖和退出证明。 |
