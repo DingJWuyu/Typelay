@@ -2099,26 +2099,49 @@ def ordered_controls(
                 result["queued_fn_original_deadline_passes_pair"] = True
             else:
                 before = state()["first"]["changes"]
-                publication = publish()
-                chord(repeat=True)
-                wait(
-                    lambda: state().get("first", {}).get("text") == "Translated result"
-                    and settled(),
-                    "rapid Ctrl Fn writes once after actual original Ctrl retirement",
-                )
-                native.describe()  # Drain actual protocol outcomes.
-                accepted = [event for event in native.events if event.get("event") == "accepted"]
-                assert len(accepted) == 1 and accepted[0]["data"]["receipt"]["status"] == "Verified"
-                assert state()["first"]["changes"] == before + 1
-                assert not state()["keys"].get("firstF7Press") and not state()["keys"].get(
-                    "firstF7Release"
-                )
-                assert (
-                    state()["keys"].get("controlPress", 0) > 0
-                    and state()["keys"].get("controlRelease", 0) > 0
-                )
-                fixture("undo", field="first")
-                assert state()["first"]["text"] == "Original source"
+                rapid = {"status": "failed", "publicationStartedAtMs": now_ms()}
+                try:
+                    publication = publish()
+                    rapid["publicationReturnedAtMs"] = now_ms()
+                    rapid["publication"] = publication
+                    rapid["dispatchStartedAtMs"] = now_ms()
+                    chord(repeat=True)
+                    rapid["dispatchReturnedAtMs"] = now_ms()
+                    wait(
+                        lambda: state().get("first", {}).get("text") == "Translated result"
+                        and settled(),
+                        "rapid Ctrl Fn writes once after actual original Ctrl retirement",
+                    )
+                    native.describe()  # Drain actual protocol outcomes.
+                    accepted = [
+                        event for event in native.events if event.get("event") == "accepted"
+                    ]
+                    assert (
+                        len(accepted) == 1
+                        and accepted[0]["data"]["receipt"]["status"] == "Verified"
+                    )
+                    assert state()["first"]["changes"] == before + 1
+                    assert not state()["keys"].get("firstF7Press") and not state()["keys"].get(
+                        "firstF7Release"
+                    )
+                    assert (
+                        state()["keys"].get("controlPress", 0) > 0
+                        and state()["keys"].get("controlRelease", 0) > 0
+                    )
+                    fixture("undo", field="first")
+                    assert state()["first"]["text"] == "Original source"
+                    rapid["status"] = "passed"
+                finally:
+                    # Observe only after the original batch and assertion. No
+                    # extra input, RPC, publication or wait repairs a rejection.
+                    try:
+                        rapid["fixture"] = state()
+                        rapid["recentNativeEvents"] = native.events[-16:]
+                        (out / "rapid-control-result.json").write_text(
+                            json.dumps(rapid, indent=2) + "\n"
+                        )
+                    except Exception:
+                        pass  # Keep the original assertion and process cleanup.
                 result["rapid_accept_repeat_ctrl_first_release_and_undo"] = True
 
                 releases = state()["keys"].get("controlRelease", 0)

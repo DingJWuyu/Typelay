@@ -982,6 +982,29 @@ jobs:
             artifacts/linux/qt-cooperative/*.log
           if-no-files-found: error
           retention-days: 14
+      - name: Exercise Qt language search independently of ordered acceptance
+        id: qt-language-options
+        # A prior ordered-input failure must not hide this independent entry.
+        # A fresh build keeps the original probe's async admission evidence intact.
+        if: ${{ !cancelled() && steps.fcitx.outputs.core-ready == 'true' && (steps.qt.outcome == 'success' || steps.qt.outcome == 'failure') && hashFiles('artifacts/linux/qt-cooperative/fcitx5-qt.tar.gz') != '' }}
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir artifacts/linux/qt-language-options
+          cp artifacts/linux/qt-cooperative/fcitx5-qt.tar.gz artifacts/linux/qt-language-options/fcitx5-qt.tar.gz
+          python tests/linux/qt_cooperative/run.py --fcitx-root artifacts/linux/fcitx-cooperative-5.1.22 --verify-fcitx-build --language-options-only --out artifacts/linux/qt-language-options 2>&1 | tee artifacts/linux/qt-language-options.log
+      - name: Preserve independent Qt language search evidence
+        if: ${{ !cancelled() && (steps.qt-language-options.outcome == 'success' || steps.qt-language-options.outcome == 'failure') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: typelay-linux-qt-language-options-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/linux/qt-language-options.log
+            artifacts/linux/qt-language-options/*.json
+            artifacts/linux/qt-language-options/*.log
+            artifacts/linux/qt-language-options/*.png
+          if-no-files-found: warn
+          retention-days: 14
       - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         if: ${{ !cancelled() && (steps.fcitx.outcome == 'success' || steps.fcitx.outcome == 'failure') && steps.fcitx-cache.outputs.cache-hit != 'true' }}
         with:
@@ -1367,6 +1390,7 @@ jobs:
             fcitx-client
             fcitx
             qt
+            qt-language-options
             fcitx-package
             complete-package
             models
@@ -1392,6 +1416,10 @@ jobs:
             artifacts/linux/qt-cooperative-probe.log
             artifacts/linux/qt-cooperative/*.json
             artifacts/linux/qt-cooperative/*.log
+            artifacts/linux/qt-language-options.log
+            artifacts/linux/qt-language-options/*.json
+            artifacts/linux/qt-language-options/*.log
+            artifacts/linux/qt-language-options/*.png
             artifacts/linux/fcitx-cooperative-5.1.22/*.json
             artifacts/linux/fcitx-cooperative-5.1.22/*.log
             artifacts/linux/fcitx-cooperative-5.1.22/gtk*-glossary-session/*.json

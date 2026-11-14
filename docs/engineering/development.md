@@ -114,6 +114,8 @@ Python 开发工具进入 [eng/requirements.txt](../../eng/requirements.txt)。�
 
 各 job 的 Summary 和 `artifacts/ci/<job>.json` 逐项记录 `passed`、`failed` 或 `not-run`。[ci_report.py](../../eng/shared/ci_report.py) 读取 Actions 的原始步骤 outcome；跳过、取消或缺少执行记录都记为 `not-run`。所选必过项没有全部通过时，报告步骤返回失败。报告不会把 `continue-on-error` 后的 conclusion 当作通过依据。runner 被强制终止、job 未启动或检出失败时可能无法生成报告，此时以 Actions 的失败、取消或 skipped 状态确认未完成，不能补记通过。
 
+Linux 的 Qt 语言搜索另用 `qt-language-options` 步骤运行。完整 probe 的有序按键失败不会遮住语言搜索，两个步骤都属于必过项。独立步骤复制本轮固定源码归档，在新目录经同一配方构建，保留原 probe 的异步资格证据。原归档或 Fcitx 前提缺失时，独立步骤记为 `not-run`。搜索日志、状态与截图保存在单独的 `typelay-linux-qt-language-options-*` artifact；具体运行和证据边界见 [Qt 功能地图](../../.agents/skills/verify-typelay/features/qt.md)。
+
 当前没有负责人批准的历史失败例外，全部产品检查保留在必过 job 中。获批例外须在相应变更中放入独立的非必需 job，保留原始失败结果。本工作流不配置合并保护。CI 触发与结果呈现可以独立验收；产品红项仍阻塞对应产品规格的完成。
 
 共享 CI 还执行仓库 Python lint、格式检查和 Linux 输入反馈合同。`shared-check` 本身不包含全部 CI 步骤。选择器的行为回归已纳入共享检查，单独维护选择器时可运行 `python -m unittest discover -s tests/shared -v`。
