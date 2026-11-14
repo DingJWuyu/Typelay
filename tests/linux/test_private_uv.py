@@ -34,6 +34,7 @@ class PrivateUvInstallationTests(unittest.TestCase):
         hostile_path=False,
         process_behavior=None,
         output_size=None,
+        source_environment=None,
     ):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -45,8 +46,9 @@ class PrivateUvInstallationTests(unittest.TestCase):
             terminated = base / "terminated"
             tool.write_text(
                 f"#!{sys.executable}\n"
-                "import os, sys\nfrom pathlib import Path\n"
+                "import json, os, sys\nfrom pathlib import Path\n"
                 f"Path({str(marker)!r}).write_text('called')\n"
+                f"Path({str(base / 'tool-environment.json')!r}).write_text(json.dumps(dict(os.environ)))\n"
                 "args = sys.argv[1:]\n"
                 "step = args[0] if args[0] == 'venv' else '-'.join(args[:2])\n"
                 f"if step == {failing_step!r}:\n"
@@ -158,7 +160,7 @@ class PrivateUvInstallationTests(unittest.TestCase):
 
             with (
                 patch.object(private_uv, "PIN", pin),
-                patch.dict(os.environ, {"PATH": str(path)}),
+                patch.dict(os.environ, {"PATH": str(path), **(source_environment or {})}),
                 contextlib.redirect_stdout(output),
                 contextlib.ExitStack() as stack,
             ):
@@ -178,6 +180,19 @@ class PrivateUvInstallationTests(unittest.TestCase):
                 with self.assertRaises(ProcessLookupError):
                     os.kill(int(marker.read_text()), 0)
             self.assertFalse(external_marker.exists())
+            if source_environment:
+                observed = json.loads((base / "tool-environment.json").read_text())
+                self.assertEqual(observed["UV_OFFLINE"], "1")
+                self.assertEqual(
+                    observed["UV_PYTHON_INSTALL_MIRROR"],
+                    source_environment["UV_PYTHON_INSTALL_MIRROR"],
+                )
+                self.assertEqual(observed["UV_CACHE_DIR"], str(base / "cache/components/uv"))
+                self.assertTrue(
+                    Path(observed["UV_PYTHON_INSTALL_DIR"]).is_relative_to(base / "data")
+                )
+                self.assertNotIn("UV_INDEX_URL", observed)
+                self.assertNotIn("PIP_INDEX_URL", observed)
             if hostile_path:
                 self.assertEqual(external.read_bytes(), external_before)
             self.assertEqual(shell.read_text(), "User shell settings stay unchanged.\n")
@@ -207,6 +222,18 @@ class PrivateUvInstallationTests(unittest.TestCase):
                 self.assertEqual(failure["runtimeStep"], "python-install")
                 self.assertEqual(failure["runtimeReason"], "exit")
                 self.assertEqual(failure["exitCode"], 42)
+
+    def test_installer_keeps_offline_and_python_byte_source_but_owns_installation_paths(self):
+        self.install_failure(
+            source_environment={
+                "UV_OFFLINE": "1",
+                "UV_PYTHON_INSTALL_MIRROR": "file:///local-python-archives",
+                "UV_CACHE_DIR": "/foreign-cache",
+                "UV_PYTHON_INSTALL_DIR": "/foreign-runtime",
+                "UV_INDEX_URL": "https://untrusted.invalid",
+                "PIP_INDEX_URL": "https://untrusted.invalid",
+            }
+        )
 
     def test_missing_corrupt_untrusted_and_unexecutable_tools_never_replace_previous_generation(
         self,

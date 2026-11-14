@@ -18,7 +18,7 @@
 
 ## Driving it with private niri
 
-Preconditions: 应用和输入法都位于本次私有会话，合作包预检通过。受管入口和高级手动入口用不同运行，不能同时占用一个 Fcitx 总线名称。
+Preconditions: 应用和输入法都位于本次私有会话，合作包预检通过。所有模型安装都消费私有会话已复制的下载缓存，默认离线，缺项时报告失败。受管入口和高级手动入口用不同运行，不能同时占用一个 Fcitx 总线名称。
 
 - **手动 GTK。** Launch 的 `gtk-preview.py` 先运行合作包 `preflight`，再启动 `daemon`，最后通过 `launch` 打开 TypeLay 与 `gtk3-demo`。观察真实字段 `sourceSupported=true`、`nativePeers=1` 及译文。该路径证明高级手动接入。
 - **应用页。** 另开全新私有会话，执行 `"$TYPELAY_VERIFY_PACKAGE/typelay" --settings`，通过 `select_settings_page(pid, "应用")` 选择实际页面。在私有会话没有原输入法的前提下，沿界面确认没有原输入法，再选择已注册应用并打开。观察连接状态与该应用实际输入框，结束连接后检查自有进程和回执。这里不预先运行手动 daemon。
