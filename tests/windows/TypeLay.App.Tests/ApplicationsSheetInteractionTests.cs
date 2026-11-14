@@ -316,7 +316,7 @@ public sealed partial class SettingsRenderingTests
             ct.ThrowIfCancellationRequested();
             Assert.False(dialog.IsVisible);
             Assert.Null(old.Visual);
-        }, awaitEntrance: false, observeNativeInput: retirement == "hide");
+        }, awaitEntrance: false);
         Assert.Equal(before, File.ReadAllText(scene.Path));
         scene.Window.ShowPage("apps");
         ApplicationRemovalDialogAsync(scene.Window, "writer", async (dialog, ct) =>
@@ -450,25 +450,11 @@ public sealed partial class SettingsRenderingTests
         var row = ApplicationElement(owner, "ApplicationRow_" + application);
         Assert.Null(row.ContextMenu);
         Assert.True(Native.GetCursorPos(out var previous));
-        object? nativeInput = null;
         try
         {
-            ApplicationDialogActionAsync(owner, () => RightClickApplicationRow(owner, row,
-                observeNativeInput ? value => nativeInput = value : null), "ApplicationRemovalConfirmation", interact, awaitEntrance, observeNativeInput);
+            ApplicationDialogActionAsync(owner, () => RightClickApplicationRow(owner, row), "ApplicationRemovalConfirmation", interact, awaitEntrance, observeNativeInput, inputTarget: row);
         }
-        finally
-        {
-            SetCursorPos(previous.X, previous.Y);
-            if (observeNativeInput)
-            {
-                try
-                {
-                    TestContext.Current.TestOutputHelper?.WriteLine("[DEBUG-t12-input] Application right-click: "
-                        + System.Text.Json.JsonSerializer.Serialize(nativeInput));
-                }
-                catch (Exception error) when (error is not OutOfMemoryException) { }
-            }
-        }
+        finally { SetCursorPos(previous.X, previous.Y); }
     }
 
     private sealed record ApplicationSheetPaint(long Timestamp, TimeSpan? LastObservedRenderingTime,

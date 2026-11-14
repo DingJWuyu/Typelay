@@ -7,7 +7,6 @@ using System.Windows.Automation.Peers;
 using System.Windows.Automation.Provider;
 using System.Windows.Controls;
 using System.Windows.Input;
-using System.Windows.Interop;
 using System.Windows.Media;
 using TypeLay.Core;
 using TypeLay.Runtime;
@@ -114,102 +113,12 @@ public sealed partial class NativeSourceControllerTests
             Assert.False(editor.IsReadOnly);
             editor.AppendText(" - manual draft");
             Assert.True(editor.CanUndo);
-            var initialNativeKeys = new List<object>(4);
-            var initialRoutedKeys = new List<object>(4);
-            object InputObservation()
-            {
-                uint thread = N.GetWindowThreadProcessId(overlay.Handle, out uint process);
-                var gui = new N.GuiThreadInfo { Size = (uint)Marshal.SizeOf<N.GuiThreadInfo>() };
-                bool read = thread != 0 && N.GetGUIThreadInfo(thread, ref gui);
-                var focus = N.Focused();
-                return new
-                {
-                    At = Environment.TickCount64,
-                    Overlay = overlay.Handle.ToInt64(),
-                    Thread = thread,
-                    Process = process,
-                    GuiRead = read,
-                    gui.Flags,
-                    Active = gui.Active.ToInt64(),
-                    Focus = gui.Focus.ToInt64(),
-                    Capture = gui.Capture.ToInt64(),
-                    Foreground = Native.GetForegroundWindow().ToInt64(),
-                    SourceFocused = focus == (native.Root, native.A),
-                    editor.IsKeyboardFocused,
-                    editor.IsReadOnly,
-                    Status = AutomationProperties.GetItemStatus(editor),
-                    Modifiers = Keyboard.Modifiers.ToString(),
-                    TabHeld = Keyboard.IsKeyDown(System.Windows.Input.Key.Tab),
-                    Returns = Volatile.Read(ref returns),
-                    ReturnStatus = Volatile.Read(ref returnStatus),
-                    SourceTabDowns = N.GetProp(native.Root, "TypeLay.Test.SourceTabDown.v1").ToInt64(),
-                    SourceTabUps = N.GetProp(native.Root, "TypeLay.Test.SourceTabUp.v1").ToInt64()
-                };
-            }
-            HwndSource? initialSource = HwndSource.FromHwnd(overlay.Handle);
-            HwndSourceHook initialHook = (nint hwnd, int message, nint wParam, nint lParam, ref bool handled) =>
-            {
-                if (message is 0x0100 or 0x0101 && wParam == 9 && initialNativeKeys.Count < 4)
-                    initialNativeKeys.Add(new
-                    {
-                        At = Environment.TickCount64,
-                        Message = message,
-                        Flags = lParam.ToInt64(),
-                        Handled = handled
-                    });
-                return 0;
-            };
-            KeyEventHandler initialKey = (_, e) =>
-            {
-                if (e.Key == System.Windows.Input.Key.Tab && initialRoutedKeys.Count < 4)
-                    initialRoutedKeys.Add(new
-                    {
-                        At = Environment.TickCount64,
-                        Event = e.RoutedEvent.Name,
-                        e.Handled,
-                        e.IsRepeat,
-                        Modifiers = Keyboard.Modifiers.ToString(),
-                        editor.IsKeyboardFocused,
-                        editor.IsReadOnly
-                    });
-            };
-            object? beforeInitialTab = null, afterInitialTab = null;
-            bool initialReturned = false;
-            initialSource?.AddHook(initialHook);
-            editor.AddHandler(Keyboard.PreviewKeyDownEvent, initialKey, true);
-            editor.AddHandler(Keyboard.PreviewKeyUpEvent, initialKey, true);
-            try
-            {
-                beforeInitialTab = InputObservation();
-                Tab(false);
-                initialTabHeld = true;
-                Tab(true);
-                initialTabHeld = false;
-                afterInitialTab = InputObservation();
-                await Until(() => N.Focused() == (native.Root, native.A) && editor.IsReadOnly
-                    && AutomationProperties.GetItemStatus(editor) == UiTheme.L("当前译文", "Current translation"), native.Token);
-                initialReturned = true;
-            }
-            finally
-            {
-                initialSource?.RemoveHook(initialHook);
-                editor.RemoveHandler(Keyboard.PreviewKeyDownEvent, initialKey);
-                editor.RemoveHandler(Keyboard.PreviewKeyUpEvent, initialKey);
-                try
-                {
-                    TestContext.Current.TestOutputHelper?.WriteLine("[DEBUG-t12-input] Source initial Tab: " + JsonSerializer.Serialize(new
-                    {
-                        Before = beforeInitialTab,
-                        After = afterInitialTab,
-                        Final = InputObservation(),
-                        Returned = initialReturned,
-                        NativeObserverAttached = initialSource is not null,
-                        NativeKeys = initialNativeKeys,
-                        RoutedKeys = initialRoutedKeys
-                    }));
-                }
-                catch (Exception error) when (error is not OutOfMemoryException) { }
-            }
+            Tab(false);
+            initialTabHeld = true;
+            Tab(true);
+            initialTabHeld = false;
+            await Until(() => N.Focused() == (native.Root, native.A) && editor.IsReadOnly
+                && AutomationProperties.GetItemStatus(editor) == UiTheme.L("当前译文", "Current translation"), native.Token);
             double scale = VisualTreeHelper.GetDpi(overlay).DpiScaleX;
             int compactWidth = (int)(324 * scale), sheetWidth = (int)(364 * scale);
             (int Left, int Right, int Width, int Top, int Bottom) Bounds()

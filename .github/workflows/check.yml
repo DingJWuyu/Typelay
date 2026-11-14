@@ -446,6 +446,16 @@ jobs:
             hy-packages
             physical-tab-package
         run: python eng/shared/ci_report.py
+      - name: Preserve small Windows package identity and check results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: typelay-windows-package-identity-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/ci/
+            artifacts/TypeLay-Windows-preview.zip.sha256
+          if-no-files-found: warn
+          retention-days: 14
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
