@@ -1564,6 +1564,7 @@ def install_packages(home, data, cache, request):
                 key: value
                 for key, value in os.environ.items()
                 if not key.startswith(("UV_", "PIP_", "PYTHON"))
+                or key in ("UV_OFFLINE", "UV_PYTHON_INSTALL_MIRROR")
             }
             environment.update(
                 UV_PYTHON_INSTALL_DIR=str(version / "runtime/python"),
@@ -1863,6 +1864,7 @@ def install(home, data, cache, requested_directions=None, repair=False):
         key: value
         for key, value in os.environ.items()
         if not key.startswith(("UV_", "PIP_", "PYTHON"))
+        or key in ("UV_OFFLINE", "UV_PYTHON_INSTALL_MIRROR")
     }
     environment.update(
         {

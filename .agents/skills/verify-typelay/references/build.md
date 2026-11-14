@@ -2,6 +2,14 @@
 
 本页只准备工具、包和下载缓存，不在用户桌面启动应用。所有命令从仓库根目录执行。生产构建规则仍由 [Linux 开发指南](../../../../docs/platforms/linux/development.md)和 `eng/linux/` 维护。
 
+## 网络预算与本机缓存
+
+先按任务授权检查网络预算。没有下载授权时，仅使用已存在的工具、SDK、字体、运行库与下载缓存；下方任何 curl、安装或首次构建步骤缺少本地字节时，停止并报告，不能自行下载。构建也可放进 `unshare --user --map-current-user --net`，以防工具隐式联网。
+
+私有会话默认从 Git common directory 所属主检出的 `artifacts/` 复制下载缓存。在当前机器上，uv 位于 `/home/liam_t/项目/Typelay/artifacts/install-cache/uv`，Index 位于 `/home/liam_t/项目/Typelay/artifacts/index-model-download`。其他位置通过外层 `--install-cache` 与 `--model-cache` 指定。缓存无需复制进每个工作树，更不能复制已安装 venv。
+
+uv 不把 CPython 原始归档放入 wheels 缓存。已有原始归档应按上游 `<release>/<filename>` 布局放入 `artifacts/install-cache/python/`，私有会话会将其作为正式 uv 的本地文件镜像。只有 wheels 与模型仍不足以证明离线安装可行；运行正式安装器检查，缺少原始 Python 下载字节时保留失败。网络规则、opt-in 和证据见 [SKILL.md](../SKILL.md#network-and-caches)。
+
 ## 找到依赖
 
 系统依赖以 `.github/workflows/check.yml` 的 Linux 安装步骤和 `docs/platforms/linux/fcitx.md` 的固定版本预检为准。GTK 旅程还需要 `gtk3-demos`、`xorg-server-xvfb`、`xdotool`、`xorg-xauth`、`grim`、`at-spi2-core`。先只读检查：
@@ -69,8 +77,8 @@ test -r "$(pkg-config --variable=pkgdatadir wayland-protocols)/stable/xdg-shell/
 ## 创建本工作树的工程环境
 
 ```bash
-uv venv artifacts/build-tools
-uv pip install --python artifacts/build-tools/bin/python \
+uv venv --offline artifacts/build-tools
+uv pip install --offline --python artifacts/build-tools/bin/python \
   -r eng/requirements.txt ninja==1.13.2
 export PATH="$PWD/artifacts/build-tools/bin:$PATH"
 ```
@@ -121,7 +129,7 @@ CPU 10 是这台机器已成功完整构建的环境绕法，使用前以 `tasks
 
 ## 明确准备模型缓存
 
-首次准备需要约 1.22 GiB 的 Index 权重下载，安装器还会准备私有 Python、依赖、候选代和缓存。确认本次任务允许模型准备后执行；本技能的完整预览证明需要该步骤。
+仅当本机没有固定缓存、且负责人明确授权模型下载时，才执行本节命令。首次准备需要约 1.22 GiB 的 Index 权重下载，安装器还会准备私有 Python、依赖、候选代和缓存。确认本次任务允许模型准备后执行；本技能的完整预览证明需要该步骤。
 
 ```bash
 artifacts/build-tools/bin/python eng/shared/prepare_index_model.py \

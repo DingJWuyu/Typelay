@@ -370,7 +370,8 @@ def run(arguments):
             / model["id"]
             / model["version"]
         )
-        shutil.copytree(arguments.model_cache, cache)
+        if arguments.model_cache.resolve() != cache.resolve():
+            shutil.copytree(arguments.model_cache, cache, dirs_exist_ok=True)
         with (output / "model-install.log").open("w") as log:
             subprocess.run(
                 [app, "--install-models"],

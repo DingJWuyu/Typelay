@@ -32,7 +32,7 @@ Preconditions: 对本次合成字段有明确写回验收意图，实验选项�
     --package "$TYPELAY_VERIFY_PACKAGE" \
     --fcitx-cooperative "$TYPELAY_VERIFY_COOPERATIVE" \
     --native "$PWD/artifacts/linux/native" \
-    --model-cache "$PWD/artifacts/index-model-download" \
+    --model-cache "$TYPELAY_VERIFY_MODEL_CACHE" \
     --output "$TYPELAY_VERIFY_OUTPUT/gtk-index"
   ```
 
@@ -60,7 +60,7 @@ Preconditions: 对本次合成字段有明确写回验收意图，实验选项�
   -- bash -c 'exec /usr/bin/python3 tests/linux/native_e2e.py \
     --inside --desktop --desktop-scope browser-index \
     --package "$TYPELAY_VERIFY_PACKAGE" --native "$PWD/artifacts/linux/native" \
-    --index-cache "$PWD/artifacts/index-model-download" --chromium /usr/bin/chromium \
+    --index-cache "$TYPELAY_VERIFY_MODEL_CACHE" --chromium /usr/bin/chromium \
     --output "$TYPELAY_VERIFY_OUTPUT/browser-index"'
 ```
 
