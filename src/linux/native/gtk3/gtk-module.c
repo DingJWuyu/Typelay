@@ -676,17 +676,7 @@ static void ordered_begin(GdkEvent *event) {
     }
     ordered_unref(ticket);
 }
-static void normalize_ordered_publication(JsonObject *value) {
-    JsonObject *basis = tl_object(value, "authority"), *stamp = tl_object(basis, "contextStamp");
-    JsonObject *permit = tl_object(value, "permit"), *plan = tl_object(permit, "plan");
-    JsonObject *expected = tl_object(plan, "expected"), *source = tl_object(tl_object(value, "lease"), "source");
-    if (basis) json_object_remove_member(basis, "observedAtMs");
-    if (stamp) json_object_remove_member(stamp, "epoch");
-    if (permit) { json_object_remove_member(permit, "observedAtMs"); json_object_remove_member(permit, "expiresAtMs"); }
-    if (plan) json_object_remove_member(plan, "id");
-    if (expected) json_object_remove_member(expected, "observedAtMs");
-    if (source) json_object_remove_member(source, "observedAtMs");
-}
+#include "../common/ordered-publication.h"
 static gboolean same_ordered_publication(JsonObject *next) {
     if (!ordered || ordered->revoked || !next) return FALSE;
     JsonNode *old = json_node_new(JSON_NODE_OBJECT), *next_node = json_node_new(JSON_NODE_OBJECT);

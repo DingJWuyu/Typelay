@@ -22,6 +22,7 @@ static gint64 connected_before_map_at_us;
 static JsonObject *first_insert_context, *first_delete_context;
 #include "gtk_reentry.inc"
 
+static guint control_down, control_up;
 static guint function_down[24], function_up[24], tab_down, tab_up;
 static JsonObject *focus_transitions[16];
 static guint focus_sequence;
@@ -50,6 +51,10 @@ static gboolean observe_key(GtkEventControllerLegacy *controller, GdkEvent *even
     GdkEventType type = gdk_event_get_event_type(event);
     if (type != GDK_KEY_PRESS && type != GDK_KEY_RELEASE) return FALSE;
     guint keyval = gdk_key_event_get_keyval(event);
+    if (keyval == GDK_KEY_Control_L || keyval == GDK_KEY_Control_R) {
+        if (type == GDK_KEY_PRESS) control_down++;
+        else control_up++;
+    }
     if (keyval == GDK_KEY_Tab || keyval == GDK_KEY_ISO_Left_Tab) {
         if (type == GDK_KEY_PRESS) tab_down++;
         else tab_up++;
@@ -1601,6 +1606,11 @@ static gboolean report_state(gpointer unused) {
         json_builder_add_value(builder, transition);
     }
     json_builder_end_array(builder);
+    json_builder_set_member_name(builder, "controlKeys");
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "down"); json_builder_add_int_value(builder, control_down);
+    json_builder_set_member_name(builder, "up"); json_builder_add_int_value(builder, control_up);
+    json_builder_end_object(builder);
     json_builder_set_member_name(builder, "functionKeys");
     json_builder_begin_array(builder);
     for (guint index = 0; index < G_N_ELEMENTS(function_down); index++) {
