@@ -16,6 +16,10 @@ internal static partial class BrowserCooperationCheck
         {
             get; set;
         }
+        public JsonElement? InputObservation
+        {
+            get; set;
+        }
         public PageState? Before
         {
             get; set;
@@ -56,6 +60,7 @@ internal static partial class BrowserCooperationCheck
             await CaptureAsync(Path.Combine(directory, "draft-preview.png"), ct);
             string? editor = await PreviewObjectAsync(ct);
             Require(editor is not null, "draft-preview-missing");
+            string inputProbe = "__typelayDraftInput_" + Guid.NewGuid().ToString("N");
             try
             {
                 async Task<JsonElement> Editor()
@@ -85,10 +90,24 @@ internal static partial class BrowserCooperationCheck
                     await Task.Delay(20, ct);
                 }
                 scene.Stage = "type-exact-manual-draft";
+                await PageCallAsync("Runtime.callFunctionOn", new
+                {
+                    objectId = editor,
+                    arguments = new[] { new { value = inputProbe } },
+                    functionDeclaration = "function(key){const s={events:0,invalidEvents:0,firstInvalidLength:null,lastInvalidLength:null,lastLength:null,lastWellFormed:null};const observe=()=>{s.events++;s.lastLength=this.value.length;s.lastWellFormed=this.value.isWellFormed();if(!s.lastWellFormed){s.invalidEvents++;s.firstInvalidLength??=s.lastLength;s.lastInvalidLength=s.lastLength;}};this[key]={s,observe};this.addEventListener('input',observe,true);}"
+                }, ct);
                 SendChord([0x11, 0x41], cleanupErrors);
                 BrowserWindows.TypeText(observation.Draft);
                 while ((await Editor()).GetProperty("text").GetString() != observation.Draft)
                     await Task.Delay(20, ct);
+                var input = await PageCallAsync("Runtime.callFunctionOn", new
+                {
+                    objectId = editor,
+                    returnByValue = true,
+                    arguments = new[] { new { value = inputProbe } },
+                    functionDeclaration = "function(key){return this[key]?.s||null;}"
+                }, ct);
+                observation.InputObservation = input.GetProperty("result").GetProperty("value").Clone();
                 var edited = await StateAsync("", ct);
                 Require(edited.A == Source && edited.B == Other && edited.Replacements == 0 && edited.Submits == 0,
                     "editing-mutated-source");
@@ -135,7 +154,16 @@ internal static partial class BrowserCooperationCheck
                 CheckReplacement(observation.Accepted, scene, observation.Draft, sourceFocus: true);
                 await CaptureAsync(Path.Combine(directory, "draft-accepted.png"), ct);
             }
-            finally { await PageCallAsync("Runtime.releaseObject", new { objectId = editor }, ct); }
+            finally
+            {
+                await PageCallAsync("Runtime.callFunctionOn", new
+                {
+                    objectId = editor,
+                    arguments = new[] { new { value = inputProbe } },
+                    functionDeclaration = "function(key){const p=this[key];if(p){this.removeEventListener('input',p.observe,true);delete this[key];}}"
+                }, ct);
+                await PageCallAsync("Runtime.releaseObject", new { objectId = editor }, ct);
+            }
         }
     }
 }

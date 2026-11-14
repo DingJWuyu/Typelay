@@ -344,6 +344,19 @@ jobs:
           }
           dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-browser-cooperation artifacts/browser-cooperation artifacts/package/TypeLay '${{ steps.cooperative-browser-prepare.outputs.chrome }}'
           exit $LASTEXITCODE
+      - name: Preserve browser diagnostics before the remaining desktop chain
+        if: ${{ !cancelled() && (steps.windows-browser.outcome == 'success' || steps.windows-browser.outcome == 'failure') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: typelay-windows-browser-diagnostics-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/browser-cooperation/result.json
+            artifacts/browser-cooperation/consumer-exit.json
+            artifacts/browser-cooperation/trace*.jsonl
+            artifacts/browser-cooperation/index-*.json
+            artifacts/browser-cooperation/*.png
+          if-no-files-found: warn
+          retention-days: 14
       - name: Verify prior model consumers have exited before Notepad
         id: notepad-consumer-exit
         if: ${{ !cancelled() && steps.windows-package.outcome == 'success' && (steps.windows-browser.outcome == 'success' || steps.windows-browser.outcome == 'failure') }}

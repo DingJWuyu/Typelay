@@ -383,6 +383,7 @@ internal static partial class BrowserCooperationCheck
                     await File.WriteAllTextAsync(profileOwnerFile, ownerToken, ct);
                 }
                 var chromeStart = StartInfo(chrome);
+                chromeStart.Environment["TYPELAY_TRACE"] = Path.Combine(directory, "trace-browser-host.jsonl");
                 foreach (string argument in new[] { "--user-data-dir=" + profile, "--no-first-run", "--no-default-browser-check",
                     "--disable-search-engine-choice-screen", "--remote-debugging-port=0", "--load-extension=" + extension,
                     "--disable-extensions-except=" + extension, "--new-window", "about:blank" })

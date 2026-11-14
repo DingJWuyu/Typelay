@@ -117,26 +117,68 @@ internal static class Program
 
     private static async Task ForwardAsync(Stream input, Stream output, BrowserPeerIdentity peer, bool fromApp, CancellationToken ct)
     {
-        while (!ct.IsCancellationRequested)
+        string stage = "read";
+        int forwarded = 0;
+        try
         {
-            JsonObject frame;
-            try
+            while (!ct.IsCancellationRequested)
             {
-                frame = await Wire.ReadAsync<JsonObject>(input, ct);
-            }
-            catch (EndOfStreamException) { return; }
-            if (!peer.Alive || frame["event"]?.GetValue<string>() is "hello" or "welcome")
-                throw new InvalidDataException("native-connection");
-            if (fromApp)
-                frame["clock"] = new JsonObject
+                JsonObject frame;
+                stage = "read";
+                try
                 {
-                    ["boottimeMs"] = WindowsInterruptClock.NowMs,
-                    ["wallTimeMs"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                    frame = await Wire.ReadAsync<JsonObject>(input, ct);
+                }
+                catch (EndOfStreamException) { return; }
+                stage = "validate";
+                if (!peer.Alive || frame["event"]?.GetValue<string>() is "hello" or "welcome")
+                    throw new InvalidDataException("native-connection");
+                if (fromApp)
+                    frame["clock"] = new JsonObject
+                    {
+                        ["boottimeMs"] = WindowsInterruptClock.NowMs,
+                        ["wallTimeMs"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                    };
+                else
+                    frame.Remove("clock");
+                // One in-flight frame per direction provides bounded backpressure without queues.
+                stage = "write";
+                await Wire.WriteAsync(output, frame, ct);
+                forwarded++;
+            }
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            // DEBUG-t13: at most one failure per direction, with no message or page data.
+            string? trace = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
+            if (!string.IsNullOrWhiteSpace(trace))
+            {
+                string category = error switch
+                {
+                    JsonException => "json",
+                    InvalidDataException => "invalid-data",
+                    IOException => "io",
+                    ObjectDisposedException => "disposed",
+                    InvalidOperationException => "invalid-operation",
+                    OperationCanceledException => "cancelled",
+                    _ => "other"
                 };
-            else
-                frame.Remove("clock");
-            // One in-flight frame per direction provides bounded backpressure without queues.
-            await Wire.WriteAsync(output, frame, ct);
+                try
+                {
+                    File.AppendAllText(trace, JsonSerializer.Serialize(new
+                    {
+                        operation = "DEBUG-t13-browser-host-forward-failed",
+                        atMs = WindowsInterruptClock.NowMs,
+                        direction = fromApp ? "app-to-browser" : "browser-to-app",
+                        stage,
+                        category,
+                        forwarded,
+                        cancelled = ct.IsCancellationRequested
+                    }, Wire.Json) + Environment.NewLine);
+                }
+                catch (Exception diagnosticError) when (diagnosticError is not OutOfMemoryException) { }
+            }
+            throw;
         }
     }
 
