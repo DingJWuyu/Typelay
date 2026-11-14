@@ -1,15 +1,13 @@
 """Real Tiptap transaction/undo/reentrancy experiment for the richtext adapter.
 
-Run npm ci --ignore-scripts in a disposable copy of tests/linux/fixtures/editor,
-then pass that directory through --dependencies. No user browser is opened.
+Build tests/linux/fixtures/editor/entry.js with its locked npm dependencies,
+then pass the prepared bundle through --editor-bundle. No user browser is opened.
 This is not extension bridge, physical IME, or complete desktop acceptance.
 """
 
 import argparse
 import json
 import os
-import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,7 +17,6 @@ from playwright.sync_api import sync_playwright
 from support.browser_process import chromium_context
 
 ROOT = Path(__file__).resolve().parents[2]
-FIXTURE = ROOT / "tests/linux/fixtures/editor"
 ADAPTER = ROOT / "src/shared/browser/editor-adapter.js"
 BRIDGE = ROOT / "src/shared/browser/editor-bridge.js"
 CONTENT = ROOT / "src/shared/browser/content.js"
@@ -30,7 +27,7 @@ NEW_SOURCE = "<p>NEW Before <strong>hello world</strong> after <em>untouched</em
 
 class EditorProbe(unittest.TestCase):
     executable = "/usr/bin/chromium"
-    dependencies = ROOT / "artifacts/prototypes/editor"
+    bundle = None
 
     @classmethod
     def setUpClass(cls):
@@ -39,23 +36,6 @@ class EditorProbe(unittest.TestCase):
         cls.addClassCleanup(cls.temporary.cleanup)
         cls.addClassCleanup(cls.playwright.stop)
         cls.home = Path(cls.temporary.name)
-        # Resolve imports relative to the copied fixture, not repository or user
-        # node_modules. The lockfile and npm ci own dependency verification.
-        entry = cls.dependencies / "entry.js"
-        shutil.copy2(FIXTURE / "entry.js", entry)
-        cls.bundle = cls.dependencies / "fixture.js"
-        subprocess.run(
-            [
-                "node",
-                str(cls.dependencies / "node_modules/esbuild/bin/esbuild"),
-                str(entry),
-                "--bundle",
-                "--format=iife",
-                f"--outfile={cls.bundle}",
-            ],
-            check=True,
-            timeout=30,
-        )
 
     def setUp(self):
         home = self.home / self._testMethodName
@@ -552,8 +532,8 @@ class EditorProbe(unittest.TestCase):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--chromium", default=EditorProbe.executable)
-    parser.add_argument("--dependencies", type=Path, required=True)
+    parser.add_argument("--editor-bundle", type=Path, required=True)
     args, remaining = parser.parse_known_args()
     EditorProbe.executable = args.chromium
-    EditorProbe.dependencies = args.dependencies.resolve()
+    EditorProbe.bundle = args.editor_bundle.resolve(strict=True)
     unittest.main(argv=[__file__, *remaining])

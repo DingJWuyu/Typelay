@@ -94,7 +94,7 @@ Python 开发工具进入 [eng/requirements.txt](../../eng/requirements.txt)。�
 
 ## 判断 CI 实际检查了什么
 
-主工作流是 [check.yml](../../.github/workflows/check.yml)。它自动检查所有目标分支的 PR，包括指向 `hitl` 的 PR 和指向下层工作分支的堆叠 PR。PR 创建、更新提交、重新打开、转为待审或修改目标分支时都会触发。`hitl`、`trunk` 和 `work/**` 的 push 也会触发。触发器不授予修改分支的权限。
+主工作流是 [check.yml](../../.github/workflows/check.yml)。它自动检查所有目标分支的 PR，包括指向 `hitl` 的 PR 和指向下层工作分支的堆叠 PR。PR 创建、更新提交、重新打开、转为待审或修改目标分支时都会触发。仅修改标题或正文时，各 job 跳过，也不取消正在运行的代码检查。`hitl`、`trunk` 和 `work/**` 的 push 也会触发。触发器不授予修改分支的权限。
 
 [ci_scope.py](../../eng/shared/ci_scope.py) 根据事件和提交证据选择检查范围。PR 和 `hitl` push 始终保留共享、Windows 和 Linux 检查。PR 使用 Actions 默认检出的测试合并提交。每次运行的 Summary 和 `typelay-ci-source-*` artifact 记录事件、PR head、base、实际被测提交、run ID 和 attempt。审查时核对这三个提交身份，不把 PR head 当作测试合并提交。
 
@@ -106,7 +106,7 @@ Python 开发工具进入 [eng/requirements.txt](../../eng/requirements.txt)。�
 - `index-windows` 和 `index-linux` 独立检查正式 Index 安装器与宿主生命周期。它们不替代既有输入、Hy 或 GUI 检查；`quality-only` 也不执行这些 Index job。
 - `quality-only` 必须同时显式选择质量采集。它用于固定响应采集，不构成产品验收。只有执行这类任务时才读[翻译质量采集指南](translation-quality.md#linux-模型包生命周期中的显式质量采集)。
 
-共享、Windows、Linux 和两端 Index job 各自运行，不等待其它平台检查通过。job 内的独立检查也继续执行。例如，Python lint 失败不阻断共享行为检查；Linux 字体回归失败不阻断主包构建。需要实际包、模型或前序进程退出证明的场景仍等待这些前提。
+共享、Windows、Linux 和两端 Index job 各自运行，不等待其它平台检查通过。选择器成功后，源码证据上传失败仍保留为失败，但不阻断已选定的平台 job。job 内的独立检查也继续执行。例如，Python lint 失败不阻断共享行为检查；Linux 主包构建失败不阻断 HTTP 下载和 VS Code 事务检查。需要实际包、模型或前序进程退出证明的场景仍等待这些前提。Notepad 退出证明单独记录，证明失败时场景显示 `not-run`。
 
 各 job 的 Summary 和 `artifacts/ci/<job>.json` 逐项记录 `passed`、`failed` 或 `not-run`。[ci_report.py](../../eng/shared/ci_report.py) 读取 Actions 的原始步骤 outcome；跳过、取消或缺少执行记录都记为 `not-run`。所选必过项没有全部通过时，报告步骤返回失败。报告不会把 `continue-on-error` 后的 conclusion 当作通过依据。runner 被强制终止、job 未启动或检出失败时可能无法生成报告，此时以 Actions 的失败、取消或 skipped 状态确认未完成，不能补记通过。
 
