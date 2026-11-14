@@ -1322,6 +1322,7 @@ jobs:
             test-ui-fonts
             test-build-bundle
             setup-e2e
+            private-uv
             test-desktop-session
             test-startup-diagnostics
             test-desktop-scope-results
@@ -1344,6 +1345,7 @@ jobs:
             test-qt-candidate-observation
             test-argos-repetition-process
             test-index-package-diagnostics
+            test-private-session-paths
             test-translation-quality-capture
             test-vscode-notifications
             build
