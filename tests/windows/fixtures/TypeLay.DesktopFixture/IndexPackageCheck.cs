@@ -10,7 +10,7 @@ using TypeLay.Runtime;
 internal static class IndexPackageCheck
 {
     private const string Id = "index-translate-2b-q4-k-m";
-    private const string Profile = "index-v1-3b99612f3676f5ac8ef34c81e99bf8874a5ba5271207a15d39e947c9d42ef87d";
+    private const string Profile = "index-v1-d1ba1b7b9a3e78434e49767a43586a097ce40ef7607d170f1097cfae67c95180";
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
     private sealed class Owned(IChildProcess owner, ModelLoadPlan plan) : IChildProcess
     {

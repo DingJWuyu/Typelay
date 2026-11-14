@@ -110,6 +110,12 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--package", type=Path)
     parser.add_argument("--cooperative", type=Path)
+    parser.add_argument(
+        "--package-filesystem",
+        choices=("normal", "tmpfs"),
+        default="normal",
+        help="copy the package beside evidence; tmpfs is an explicit diagnostic comparison",
+    )
     parser.add_argument("--timeout", type=int, default=1200)
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -138,9 +144,10 @@ def main():
         runtime_parent = Path(f"/run/user/{os.getuid()}")
         assert runtime_parent.is_dir() and runtime_parent.stat().st_uid == os.getuid()
         runtime = Path(tempfile.mkdtemp(prefix="typelay-verify-", dir=runtime_parent))
-        fs = subprocess.check_output(["stat", "-f", "-c", "%T", runtime], text=True).strip()
-        assert fs == "tmpfs", "Index workaround requires executable tmpfs"
-        package = runtime / "package"
+        package = (runtime if args.package_filesystem == "tmpfs" else scratch) / "package"
+        if args.package_filesystem == "tmpfs":
+            fs = subprocess.check_output(["stat", "-f", "-c", "%T", runtime], text=True).strip()
+            assert fs == "tmpfs", "diagnostic package path requires executable tmpfs"
         shutil.copytree(args.package.resolve(), package)
         # Keep tool paths, but inherit no desktop, input method, model or Python state.
         env = {key: os.environ[key] for key in ("PATH", "LD_LIBRARY_PATH") if key in os.environ}

@@ -130,4 +130,4 @@ artifacts/build-tools/bin/python eng/shared/prepare_index_model.py \
 
 该入口按仓库固定摘要下载权重和许可证。可以复用相同内容的下载缓存；实际模型必须由 Launch 在新的最终数据路径安装，不能复制其它工作树的 `components/current` 或虚拟环境。
 
-回到 [Launch](../SKILL.md#launch)运行。Btrfs 的绕法由私有会话脚本执行，原因和判据见[模型 Gotchas](../features/models.md#gotchas)。
+回到 [Launch](../SKILL.md#launch)运行。主包与模型默认留在正常文件系统，tmpfs 对照的范围见[模型 Gotchas](../features/models.md#gotchas)。

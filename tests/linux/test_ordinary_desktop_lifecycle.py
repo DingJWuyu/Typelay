@@ -610,7 +610,7 @@ class IndexProtocolFailureDiagnosticsTests(unittest.TestCase):
         self.assertEqual(1, status)
         self.assertEqual("failed", report["stages"]["install-argos"])
         self.assertEqual("not-run", report["stages"]["select-index"])
-        self.assertEqual("ConnectionResetError: Connection lost", report["failure"])
+        self.assertEqual("ConnectionResetError", report["failure"])
         self.assertEqual(
             {
                 "protocolPhase": "send",
@@ -639,7 +639,7 @@ class IndexProtocolFailureDiagnosticsTests(unittest.TestCase):
 
         status, report, codes = self.run_probe(exercise)
         self.assertEqual(1, status)
-        self.assertEqual("ConnectionResetError: Connection lost", report["failure"])
+        self.assertEqual("ConnectionResetError", report["failure"])
         self.assertEqual(
             {
                 "protocolPhase": "send",
@@ -661,7 +661,7 @@ class IndexProtocolFailureDiagnosticsTests(unittest.TestCase):
 
         status, report, codes = self.run_probe(exercise)
         self.assertEqual(1, status)
-        self.assertTrue(report["failure"].startswith("IncompleteReadError:"))
+        self.assertEqual("IncompleteReadError", report["failure"])
         self.assertEqual(
             {
                 "protocolPhase": "receive",

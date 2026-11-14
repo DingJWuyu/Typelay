@@ -26,7 +26,7 @@ proof="$PWD/artifacts/verification/gtk-$(date +%Y%m%d-%H%M%S)"
   --cache "$PWD/artifacts/index-model-download"
 ```
 
-`private-session.py` 把完整主包复制到新建的可执行 tmpfs，绕过当前 Btrfs 加载校验问题。它不会修改包文件或模型校验。`gtk-preview.py` 从空数据目录调用正式 `typelay --install-models`，在最终路径安装私有 Python 和模型，再启动合作输入与设置。安装会访问 Astral/PyPI；显式准备的模型缓存仍须通过正式摘要验证。不得搬迁已经安装的 Python 虚拟环境。
+`private-session.py` 把完整主包复制到输出目录的 `scratch/package`。输出目录使用正常文件系统，Btrfs 也必须通过正式加载校验。`gtk-preview.py` 从空数据目录调用正式 `typelay --install-models`，在最终路径安装私有 Python 和模型，再启动合作输入与设置。安装会访问 Astral/PyPI；显式准备的模型缓存仍须通过正式摘要验证。不得搬迁已经安装的 Python 虚拟环境。
 
 可用状态要求 `doctor-ready.json` 中 `session.modelReady=true`，设置窗口可操作。普通 GTK 字段接入后，还需观察 `sourceSupported=true`、实际源文和可见译文。仅 socket 存在、进程存活或 doctor 退出码为零，都不算就绪。单次流程默认限时 1200 秒，安装限时 600 秒，翻译限时 90 秒；超时保留失败原件并停止本次自有进程。
 
@@ -78,7 +78,7 @@ Windows 无法在这台机器驱动。按[Windows 证据](references/windows.md)
 
 ## Cleanup
 
-旅程结束时先请求 `typelay --quit`，再请求本次合作 Fcitx 退出。外层脚本作为 subreaper 回收自己的后代，包括 D-Bus 激活进程；它不按进程名称结束程序。成功后删除该次 HOME、XDG 和 tmpfs 包。失败或超时同样停止进程，但保留目录和证据，先排查再重跑。
+旅程结束时先请求 `typelay --quit`，再请求本次合作 Fcitx 退出。外层脚本作为 subreaper 回收自己的后代，包括 D-Bus 激活进程；它不按进程名称结束程序。成功后删除该次 HOME、XDG 和包副本。失败或超时同样停止进程，但保留目录和证据，先排查再重跑。
 
 脚本返回后检查 `cleanup.json` 的 `remainingPids=[]`。成功时还要求 `scratchRemoved=true`、`runtimeRemoved=true`。随后确认 `translation.png`、`translation.json`、`result.json` 仍存在，这一步是技能证明的一部分。
 
