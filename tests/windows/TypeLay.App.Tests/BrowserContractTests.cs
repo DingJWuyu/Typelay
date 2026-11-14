@@ -121,10 +121,10 @@ public sealed class BrowserContractTests
     private const string Document = "10000000-0000-0000-0000-000000000001";
     private static BrowserRoute Route => new(Extension, "chrome-document-1", Document, 1, 2, 0, "https:");
     private static JsonElement Authority(long input = 1, long focus = 2, long content = 3,
-        string metadata = "approved", string token = "10000000-0000-0000-0000-000000000003", long observed = 100) =>
+        string metadata = "approved", string token = "10000000-0000-0000-0000-000000000003", long observed = 100, string? target = null) =>
         JsonSerializer.SerializeToElement(new
         {
-            target = Document + ":1",
+            target = target ?? Document + ":1",
             metadataKey = metadata,
             contentRevision = content,
             inputRevision = input,
@@ -625,9 +625,12 @@ public sealed class BrowserContractTests
         Assert.False(budget.GeneralAvailable);
         Assert.True(budget.OwnersAvailable);
         Assert.True(budget.CommandsAvailable);
-        Exhaust("browser-owner", "owner", 64);
+        Assert.True(budget.TryTake("browser-owner-source-refresh", out var sourceRefreshExhausted));
+        Assert.Null(sourceRefreshExhausted);
+        records++;
+        Exhaust("browser-owner", "owner", 63);
         Assert.False(budget.OwnersAvailable);
-        foreach (string operation in new[] { "browser-page-owner", "browser-tray" })
+        foreach (string operation in new[] { "browser-owner-source-refresh", "browser-page-owner", "browser-tray" })
             Assert.False(budget.TryTake(operation, out _));
         Exhaust("browser-command-path", "command", 32);
         Assert.False(budget.CommandsAvailable);
@@ -679,6 +682,136 @@ public sealed class BrowserContractTests
         Assert.False(BrowserInput.SameAuthority(original, Authority(metadata: "changed")));
         Assert.False(BrowserInput.SameAuthority(original, Authority(token: "invalid")));
         Assert.False(BrowserInput.SameAuthority(original, default));
+    }
+    [Fact]
+    public void RejectedCommandPreparationNeedsANewSourceVersionAndIsConsumedOnce()
+    {
+        var recovery = new BrowserCommandRecovery();
+        var original = new BrowserCommandSource(Guid.NewGuid(), Route, 17, 4, Guid.NewGuid(), Authority());
+        var observedAgain = original with
+        {
+            Authority = Authority(token: "10000000-0000-0000-0000-000000000004", observed: 120)
+        };
+        recovery.Remember(original);
+        Assert.False(recovery.TryTakeChangedSource(observedAgain, out _));
+        Assert.False(recovery.TryTakeChangedSource(observedAgain, out _));
+        var changed = observedAgain with
+        {
+            Authority = Authority(input: 2, content: 4, token: "10000000-0000-0000-0000-000000000004", observed: 120)
+        };
+        Assert.True(recovery.TryTakeChangedSource(changed, out var consumed));
+        Assert.Equal(original, consumed);
+        Assert.False(recovery.TryTakeChangedSource(changed, out _));
+        recovery.Remember(changed);
+        Assert.False(recovery.TryTakeChangedSource(changed with
+        {
+            Authority = Authority(input: 2, content: 4, token: "10000000-0000-0000-0000-000000000005", observed: 130)
+        }, out _));
+        recovery.Clear();
+        Assert.False(recovery.TryTakeChangedSource(changed with
+        {
+            Authority = Authority(input: 3, content: 5, token: "10000000-0000-0000-0000-000000000005", observed: 130)
+        }, out _));
+    }
+    [Fact]
+    public void ANewCommandSourceCannotBorrowAnotherRejectedBindingOrRegressItsWatermarks()
+    {
+        var recovery = new BrowserCommandRecovery();
+        var original = new BrowserCommandSource(Guid.NewGuid(), Route, 17, 4, Guid.NewGuid(), Authority());
+        var changed = original with
+        {
+            Authority = Authority(input: 2, content: 4, token: "10000000-0000-0000-0000-000000000004", observed: 120)
+        };
+        foreach (var invalid in new[]
+        {
+            changed with
+            {
+                ConnectionId = Guid.NewGuid()
+            },
+            changed with
+            {
+                Route = Route with
+                {
+                    DocumentId = "other-document"
+                }
+            },
+            changed with
+            {
+                Route = Route with
+                {
+                    DocumentToken = Guid.NewGuid().ToString()
+                }
+            },
+            changed with
+            {
+                Root = 18
+            },
+            changed with
+            {
+                WindowEpoch = 5
+            },
+            changed with
+            {
+                Generation = Guid.NewGuid()
+            },
+            changed with
+            {
+                Authority = default
+            },
+            changed with
+            {
+                Authority = Authority(input: 2, token: "invalid")
+            },
+            changed with
+            {
+                Authority = Authority(input: 2, token: "10000000-0000-0000-0000-000000000004", target: Document + ":2")
+            },
+            changed with
+            {
+                Authority = Authority(input: 2, content: 4)
+            },
+            changed with
+            {
+                Authority = Authority(input: 0, token: "10000000-0000-0000-0000-000000000004")
+            },
+            changed with
+            {
+                Authority = Authority(input: 2, focus: 1, token: "10000000-0000-0000-0000-000000000004")
+            },
+            changed with
+            {
+                Authority = Authority(input: 2, content: 2, token: "10000000-0000-0000-0000-000000000004")
+            },
+            changed with
+            {
+                Authority = Authority(input: 2, observed: 99, token: "10000000-0000-0000-0000-000000000004")
+            }
+        })
+        {
+            recovery.Remember(original);
+            Assert.False(recovery.TryTakeChangedSource(invalid, out _));
+            Assert.True(recovery.TryTakeChangedSource(changed, out _));
+        }
+        recovery.Remember(original with
+        {
+            Authority = default
+        });
+        Assert.False(recovery.TryTakeChangedSource(changed, out _));
+    }
+    [Theory]
+    [InlineData(2, 2, 3, "approved")]
+    [InlineData(1, 3, 3, "approved")]
+    [InlineData(1, 2, 4, "approved")]
+    [InlineData(1, 2, 3, "changed")]
+    public void EachRealSourceChangeCanRequestANewPreparation(long input, long focus, long content, string metadata)
+    {
+        var recovery = new BrowserCommandRecovery();
+        var original = new BrowserCommandSource(Guid.NewGuid(), Route, 17, 4, Guid.NewGuid(), Authority());
+        recovery.Remember(original);
+        Assert.True(recovery.TryTakeChangedSource(original with
+        {
+            Authority = Authority(input, focus, content, metadata, "10000000-0000-0000-0000-000000000004", 120)
+        }, out _));
     }
     [Fact(Timeout = 5000)]
     public async Task BrowserPolicyRefreshCanReadTheNextMetadataWhileThePreviousApprovalIsPending()

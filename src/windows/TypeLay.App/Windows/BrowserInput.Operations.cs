@@ -191,6 +191,27 @@ internal sealed partial class BrowserInput
             return;
         }
         TraceObservation(ObservationStage.Shortcut, ObservationReason.Ready);
+        long now = WindowsInterruptClock.NowMs;
+        if (_commandsEnabled && _sessionEnabled && !_registrationDeferred && _restorationAttempted
+            && CommandRegistrationAllowed(now) && ReferenceEquals(record, _current)
+            && lease.Source.IsUsable && lease.Source.Ime == ImeState.Clear
+            && record!.Epochs == _hook.BrowserEpochs && now - record.ObservedAtMs is >= 0 and <= Limits.ObservationMaxAgeMs
+            && _commandRecovery.TryTakeChangedSource(new(record.Peer.ConnectionId, record.Route, record.Root,
+                record.Epochs.Window, _hook.CommandGeneration, record.Authority), out var previous))
+        {
+            Trace("browser-owner-source-refresh", new
+            {
+                previousToken = String(previous!.Authority, "token"),
+                currentToken = String(record.Authority, "token"),
+                previousContent = Number(previous.Authority, "contentRevision"),
+                currentContent = Number(record.Authority, "contentRevision"),
+                previousInput = Number(previous.Authority, "inputRevision"),
+                currentInput = Number(record.Authority, "inputRevision"),
+                previousFocus = Number(previous.Authority, "focusRevision"),
+                currentFocus = Number(record.Authority, "focusRevision")
+            });
+            RequestCommandOwnerRefresh();
+        }
     }
     private sealed class CommandOwner(BrowserPeer peer, BrowserRoute route, nint root, long windowEpoch, Guid generation, long startedAt, string[] excluded)
     {
@@ -219,6 +240,7 @@ internal sealed partial class BrowserInput
     }
     private sealed record BrowserCommandKey(uint Keyval, int Modifiers);
     private CommandOwner? _commandOwner;
+    private readonly BrowserCommandRecovery _commandRecovery = new();
     private readonly List<CommandOwner> _retiredCommandOwners = new();
     private bool _commandsEnabled, _ownerRefreshRequested = true, _registrationDeferred, _restorationAttempted;
     private string[]? _commandExcluded;
@@ -293,6 +315,7 @@ internal sealed partial class BrowserInput
     internal void BeforeConfigure()
     {
         RetireCommandOwner();
+        _commandRecovery.Clear();
         _commandExcluded = null;
         _ownerRefreshRequested = true;
         _restorationAttempted = false;
@@ -300,6 +323,7 @@ internal sealed partial class BrowserInput
     private void RequestCommandOwnerRefresh()
     {
         RetireCommandOwner();
+        _commandRecovery.Clear();
         _ownerRefreshRequested = true;
         _restorationAttempted = false;
     }
@@ -627,6 +651,17 @@ internal sealed partial class BrowserInput
             reason = OwnerReason.Ready;
         if (reason != OwnerReason.Ready)
         {
+            // Only a matched initial rejection can remember its preparation.
+            // Unknown ACKs and held-key recovery keep their existing paths.
+            if (reason == OwnerReason.PageNotActive && state == "rejected" && !releaseRejected
+                && !owner.EverActive && owner.Preparation is { } preparation
+                && sequence > 0 && sequence == owner.PendingGrant
+                && now - owner.LastGrantAt is >= 0 and <= 200 && now <= owner.EstablishUntil
+                && owner.Grants.TryGetValue(sequence, out long rejectedGrantExpiry)
+                && Number(data, "expiresAtMs") == rejectedGrantExpiry && now <= rejectedGrantExpiry
+                && OwnerForeground(owner))
+                _commandRecovery.Remember(new(owner.Peer.ConnectionId, owner.Route, owner.Root,
+                    owner.WindowEpoch, owner.Generation, preparation.Data.GetProperty("authority")));
             RetireCommandOwner(reason);
             // The matched initial activation was consumed by the page. Retire it;
             // only a fresh owner may be prepared after real key release.

@@ -29,6 +29,7 @@ Preconditions: 对本次合成字段有明确写回验收意图，实验选项�
 - **Windows 合作浏览器。** 本机只按 [Windows 证据](../references/windows.md)读取 Actions。对应入口覆盖默认 Index、人工稿两次独立 Tab 和原字段直接替换，不能用 Linux 旅程替代。
 - **浏览器草稿传输。** 在私有会话运行 `tests/linux/browser_e2e.py`，检查暂时不完整的 UTF-16 编辑仍逐次传递，补齐 emoji 后保留完整稿。结合共享 Protocol 与 Core 回归，检查非法载荷被拒、非法最终稿不能写入。该受控 DOM 契约不替代 Windows 的真实 Index 旅程。
 - **窄浏览器浮层。** 同一 DOM 契约在 180、320 和 520 像素宽度、亮色与暗色下保存编辑截图。检查“编辑中”完整显示在一行，语言、操作与回源提示均在浮层内；Windows 仍须核对真实人工稿场景截图。
+- **浏览器命令恢复。** DOM 契约保留相同样式写入使原准备失效的负例，以及新源版本、新 owner 与新 ACK 的独立正例。Windows 需在实际 Direct 旅程中核对原准备拒绝、`browser-owner-source-refresh` 的版本变化和新 owner 的 ACK，再观察公开就绪提示与原单次快捷键。同版本反复捕获、旧 ACK 和原生注册恢复本身均不授予恢复资格。
 
 ## Gotchas
 

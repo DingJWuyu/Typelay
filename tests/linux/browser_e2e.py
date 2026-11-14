@@ -943,6 +943,72 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.page.evaluate("fixturePassedCommandKeys"), ["keydown", "keyup"])
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
 
+    def test_source_command_rejected_by_identical_layout_needs_a_new_owner_and_source(self):
+        self.type_source()
+        rejected = self.page.evaluate("""async () => {
+          fixtureCommand({id: 8900, op: 'configure-shortcuts', data: {
+            generation: 'style-owner', enabled: true, sessionEnabled: true,
+            accept: 'Tab', exit: 'Esc', shortcutDispatch: 'source-local',
+            wake: {keyval: 65478, modifiers: 0}, direct: {keyval: 65479, modifiers: 0}}});
+          const layout = () => {
+            document.body.style.cssText = 'margin:0;padding:8px;box-sizing:border-box;font:20px sans-serif;width:182px';
+            for (const f of [source, other]) {
+              f.style.boxSizing='border-box';f.style.width='100%';f.style.margin='8px 0';f.style.padding='8px';
+            }
+          };
+          layout(); await Promise.resolve();
+          const prepared = fixtureCommand({id: 8901, op: 'prepare-command-owner',
+            data: {ownerId: 'old-owner', generation: 'style-owner', traceOwner: true}});
+          const before = [document.body.getAttribute('style'), source.getAttribute('style')];
+          layout(); await Promise.resolve();
+          const stamp = fixtureHostClock().boottimeMs;
+          window.rejectedOwner = {ownerId: 'old-owner', generation: 'style-owner',
+            documentToken: prepared.target.split(':')[0], target: prepared.target,
+            authority: prepared.authority, grantSequence: 1, expiresAtMs: stamp + 800,
+            releasedAtMs: stamp, traceOwner: true};
+          fixtureCommand({id: 8902, op: 'activate-command-owner', data: rejectedOwner});
+          const ack = fixtureMessages.filter(item => item.event === 'command-owner').at(-1).data;
+          fixtureCommand({id: 8903, op: 'deactivate-command-owner', data: rejectedOwner});
+          return {before, after: [document.body.getAttribute('style'), source.getAttribute('style')],
+            prepared: prepared.authority, ack};
+        }""")
+        self.assertEqual(rejected["before"], rejected["after"])
+        self.assertEqual(rejected["ack"]["state"], "rejected")
+        self.assertEqual(rejected["ack"]["diagnostic"]["firstReason"], "Calibration")
+        self.assertEqual(rejected["ack"]["diagnostic"]["lastClockReason"], "authorityMissing")
+        self.page.keyboard.insert_text(" changed")
+        renewed = self.page.evaluate("""() => {
+          const prepared = fixtureCommand({id: 8904, op: 'prepare-command-owner',
+            data: {ownerId: 'new-owner', generation: rejectedOwner.generation}});
+          const stamp = fixtureHostClock().boottimeMs;
+          fixtureCommand({id: 8905, op: 'activate-command-owner', data: {...rejectedOwner,
+            ownerId: 'new-owner', authority: prepared.authority, expiresAtMs: stamp + 800,
+            releasedAtMs: stamp}});
+          const ack = fixtureMessages.filter(item => item.event === 'command-owner').at(-1).data;
+          fixtureCommand({id: 8906, op: 'activate-command-owner', data: rejectedOwner});
+          return {prepared: prepared.authority, ack,
+            late: fixtureMessages.filter(item => item.event === 'command-owner').at(-1).data};
+        }""")
+        self.assertEqual(renewed["ack"]["state"], "active")
+        self.assertEqual(renewed["ack"]["ownerId"], "new-owner")
+        self.assertNotEqual(renewed["prepared"]["token"], rejected["prepared"]["token"])
+        self.assertGreater(
+            renewed["prepared"]["inputRevision"], rejected["prepared"]["inputRevision"]
+        )
+        self.assertGreater(
+            renewed["prepared"]["contentRevision"], rejected["prepared"]["contentRevision"]
+        )
+        self.assertEqual(
+            renewed["prepared"]["focusRevision"], rejected["prepared"]["focusRevision"]
+        )
+        self.assertEqual(renewed["late"]["state"], "rejected")
+        self.page.keyboard.press("F10")
+        commands = self.source_commands()
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(commands[0]["data"]["ownerId"], "new-owner")
+        self.assertEqual(commands[0]["data"]["native"]["text"], "Hello changed")
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello changed")
+
     def test_source_command_requires_new_policy_after_focus_change(self):
         self.type_source()
         self.activate_source_command_owner(trace_command=True)
