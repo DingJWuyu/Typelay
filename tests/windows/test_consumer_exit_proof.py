@@ -67,6 +67,22 @@ class ConsumerExitProofTests(unittest.TestCase):
         self.run_validator(0)
         self.run_validator(0, self.command + ["--scope", "all"])
 
+    def test_isolated_hy_job_requires_its_exact_continuous_exit(self):
+        command = self.command[:2]
+        for name, value in zip(self.command[2::2], self.command[3::2]):
+            if not name.startswith(("--browser-", "--notepad-")):
+                command.extend((name, value))
+        command += ["--scope", "continuous-only"]
+        for path, _ in self.proofs[1:]:
+            path.unlink()
+        self.run_validator(0, command)
+        path, proof = self.proofs[0]
+        proof["rootKernelSignaled"] = False
+        path.write_text(json.dumps(proof), encoding="utf-8")
+        self.run_validator(1, command)
+        path.unlink()
+        self.run_validator(1, command)
+
     def test_before_notepad_accepts_failed_but_exited_prior_consumers(self):
         self.proofs[2][0].unlink()
         for path, proof in self.proofs[:2]:

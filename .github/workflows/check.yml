@@ -1,1574 +1,1189 @@
 name: TypeLay checks
-on:
+'on':
   push:
-    branches: [hitl, trunk, "work/**"]
-  pull_request:
-    # Stack layers can target any lower branch. A rebased head gets fresh evidence.
-    types: [opened, synchronize, reopened, ready_for_review]
+    branches-ignore:
+    - main
+    - trunk
   workflow_dispatch:
     inputs:
-      check_mode:
-        description: Full checks or quality capture only (not product acceptance)
-        type: choice
-        required: false
-        default: full
-        options:
-          - full
-          - quality-only
-      collect_translation_quality:
-        description: Collect eight paired Linux responses once (diagnostic flags select their fixed sets)
+      upload_packages:
+        description: Upload distribution packages for final acceptance
         type: boolean
-        required: false
-        default: false
-      hy_decode_comparison:
-        description: "Compare only Hy ordinary greedy/sampled: 16 requests, 600 seconds, existing cache only"
-        type: boolean
-        required: false
-        default: false
-      fixed_model_diagnostics:
-        description: Collect only fixed Argos boundary 32 and Hy ordinary 8 diagnostics (no quality verdict)
-        type: boolean
-        required: false
         default: false
 permissions:
   contents: read
 concurrency:
-  group: typelay-checks-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.check_mode == 'quality-only' && 'quality-only' || 'full' }}
+  group: typelay-checks-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  scope:
-    name: ${{ github.event_name == 'pull_request' && 'PR' || github.event_name == 'push' && github.ref == 'refs/heads/hitl' && 'hitl push' || github.event_name == 'push' && 'branch push' || 'manual' }} / scope
+  fonts:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: typelay-fixed-fonts
+      cancel-in-progress: false
     outputs:
-      selected: ${{ steps.select.outcome }}
-      windows: ${{ steps.select.outputs.windows }}
-      linux: ${{ steps.select.outputs.linux }}
-      quality_only: ${{ steps.select.outputs.quality_only }}
-      collect_quality: ${{ steps.select.outputs.collect_quality }}
-      hy_decode_comparison: ${{ steps.select.outputs.hy_decode_comparison }}
-      fixed_model_diagnostics: ${{ steps.select.outputs.fixed_model_diagnostics }}
+      tag: ${{ steps.key.outputs.tag }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - name: Select checks from the actual platform branch changes
-        id: select
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          HY_DECODE_COMPARISON: ${{ inputs.hy_decode_comparison }}
-          FIXED_MODEL_DIAGNOSTICS: ${{ inputs.fixed_model_diagnostics }}
-          CHECK_MODE: ${{ inputs.check_mode || 'full' }}
-          COLLECT_TRANSLATION_QUALITY: ${{ inputs.collect_translation_quality }}
-          BRANCH: ${{ github.ref_name }}
-          BEFORE: ${{ github.event.before }}
-          AFTER: ${{ github.event.after }}
-          CREATED: ${{ github.event.created }}
-          FORCED: ${{ github.event.forced }}
-          CI_EVIDENCE_PATH: artifacts/ci/source.json
-        run: |
-          python eng/shared/ci_scope.py
-      - name: Preserve event and tested-source identity
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: typelay-ci-source-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: artifacts/ci/source.json
-          if-no-files-found: error
-          retention-days: 14
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Hash fixed font inputs
+      run: echo "tag=$(python eng/ci/fixed.py key fonts)" >> "$GITHUB_OUTPUT"
+      id: key
+    - name: Restore fixed UI font build
+      run: python eng/ci/fixed.py restore fonts --tag "$TAG"
+      id: restore
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TAG: ${{ steps.key.outputs.tag }}
+    - name: Build UI fonts once per input hash
+      run: |-
+        python -m pip install -r eng/requirements.txt
+        python eng/fonts/prepare.py
+      if: steps.restore.outputs.hit != 'true'
+    - name: Verify UI font bytes
+      run: python eng/fonts/prepare.py --verify
+    - name: Publish fixed UI font build
+      run: python eng/ci/fixed.py publish fonts --tag "$TAG"
+      if: steps.restore.outputs.hit != 'true'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TAG: ${{ steps.key.outputs.tag }}
+  fcitx-build:
+    runs-on: ubuntu-latest
+    container: &linux-container
+      image: archlinux:base-devel
+      options: --shm-size=1g
+    permissions:
+      contents: write
+    concurrency:
+      group: typelay-fixed-fcitx
+      cancel-in-progress: false
+    steps:
+    - name: Install checkout prerequisite
+      run: pacman -Sy --noconfirm git
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - uses: ./.github/actions/linux-tools
+      with:
+        desktop: 'false'
+        producer: 'true'
+    - &tested-source
+      name: Record tested commit
+      run: |
+        python - <<'PY_SOURCE'
+        import json, os, subprocess
+        from pathlib import Path
+        event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+        source = {
+            "tested_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+            "event": os.environ["GITHUB_EVENT_NAME"],
+            "ref": os.environ["GITHUB_REF"],
+            "created": event.get("created"),
+            "before": event.get("before"),
+            "run_id": os.environ["GITHUB_RUN_ID"],
+            "attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+        }
+        Path("artifacts/ci").mkdir(parents=True, exist_ok=True)
+        Path("artifacts/ci/source.json").write_text(json.dumps(source, indent=2), encoding="utf-8")
+        PY_SOURCE
+      shell: bash
+    - name: Hash fixed Hy download identities
+      run: echo "tag=$(python eng/ci/fixed.py key hy)" >> "$GITHUB_OUTPUT"
+      id: hy-key
+    - name: Find fixed Hy downloads
+      run: python eng/ci/fixed.py lookup hy --tag "$TAG"
+      id: hy-cache
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TAG: ${{ steps.hy-key.outputs.tag }}
+    - name: Prepare fixed Hy downloads without installing or running a model
+      if: steps.hy-cache.outputs.hit != 'true'
+      run: python eng/windows/hy/prepare_assets.py --artifacts "$PWD/artifacts" --budget-seconds 590 --assets-only
+    - name: Publish fixed Hy downloads
+      if: steps.hy-cache.outputs.hit != 'true'
+      run: python eng/ci/fixed.py publish hy --tag "$TAG"
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TAG: ${{ steps.hy-key.outputs.tag }}
+    - name: Find fixed Index downloads
+      run: python eng/ci/fixed.py lookup index
+      id: index-cache
+      env:
+        GH_TOKEN: ${{ github.token }}
+    - name: Prepare fixed Index downloads
+      if: steps.index-cache.outputs.hit != 'true'
+      run: python eng/shared/prepare_index_model.py --output artifacts/index-model-download
+    - name: Publish fixed Index downloads
+      if: steps.index-cache.outputs.hit != 'true'
+      run: python eng/ci/fixed.py publish index
+      env:
+        GH_TOKEN: ${{ github.token }}
+    - name: Hash pinned third-party sources and toolchain
+      run: echo "tag=$(python eng/ci/fixed.py key fcitx)" >> "$GITHUB_OUTPUT"
+      id: key
+    - name: Find fixed Fcitx build
+      run: python eng/ci/fixed.py lookup fcitx --tag "$TAG"
+      id: restore
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TAG: ${{ steps.key.outputs.tag }}
+    - name: Build pinned third-party Fcitx dependencies
+      run: python eng/linux/cooperative/third_party.py
+      if: steps.restore.outputs.hit != 'true'
+    - name: Publish fixed Fcitx build
+      run: python eng/ci/fixed.py publish fcitx --tag "$TAG"
+      if: steps.restore.outputs.hit != 'true'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TAG: ${{ steps.key.outputs.tag }}
   shared:
-    name: ${{ github.event_name == 'pull_request' && 'PR' || github.event_name == 'push' && github.ref == 'refs/heads/hitl' && 'hitl push' || github.event_name == 'push' && 'branch push' || 'manual' }} / shared
+    name: shared
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        id: checkout
-        with:
-          persist-credentials: false
-      - name: Archive the exact build source
-        run: |
-          mkdir -p artifacts
-          git archive --format=tar --prefix=typelay/ HEAD > artifacts/TypeLay-source.tar
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        with:
-          global-json-file: global.json
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        id: python
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        with:
-          python-version: '3.13'
-      - name: Install repository Python tools
-        id: python-tools
-        if: ${{ !cancelled() && steps.python.outcome == 'success' }}
-        run: python -m pip install -r eng/requirements.txt
-      - name: Check repository Python lint
-        id: python-lint
-        if: ${{ !cancelled() && steps.python-tools.outcome == 'success' }}
-        run: python -m ruff check .
-      - name: Check repository Python formatting
-        id: python-format
-        if: ${{ !cancelled() && steps.python-tools.outcome == 'success' }}
-        run: python -m ruff format --check --diff .
-      - name: Verify Linux input feedback contracts
-        id: input-feedback
-        if: ${{ !cancelled() && steps.python.outcome == 'success' }}
-        run: python tests/linux/input_feedback.py -v
-      - name: Verify offline verification isolation and cache ownership
-        id: verification-resources
-        if: ${{ !cancelled() && steps.python.outcome == 'success' }}
-        # Permit unprivileged namespaces only for this test, then restore the
-        # disposable runner policy. The test itself still runs as the runner user.
-        run: |
-          namespace_policy=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)
-          trap 'sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns="$namespace_policy"' EXIT
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          python tests/linux/test_verification_resources.py -v
-      - name: Verify shared behavior without Windows
-        id: shared-behavior
-        if: ${{ !cancelled() && steps.python.outcome == 'success' }}
-        shell: pwsh
-        run: ./dev.ps1 shared-check
-      - name: Report required checks, including not-run prerequisites
-        if: always()
-        env:
-          CI_STEPS: ${{ toJSON(steps) }}
-          CI_REQUIRED_STEPS: python-lint python-format input-feedback verification-resources shared-behavior
-        run: python eng/shared/ci_report.py
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
-        with:
-          name: typelay-shared-${{ github.sha }}
-          path: |
-            artifacts/shared-test-results/
-            artifacts/TypeLay-source.tar
-            artifacts/ci/
-          if-no-files-found: warn
-          retention-days: 14
-  check:
-    name: ${{ github.event_name == 'pull_request' && 'PR' || github.event_name == 'push' && github.ref == 'refs/heads/hitl' && 'hitl push' || github.event_name == 'push' && 'branch push' || 'manual' }} / check
-    needs: scope
-    if: ${{ !cancelled() && needs.scope.outputs.selected == 'success' && needs.scope.outputs.windows == 'true' }}
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      id: checkout
+      with:
+        persist-credentials: false
+    - *tested-source
+    - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+      if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+      with:
+        global-json-file: global.json
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      id: python
+      if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+      with:
+        python-version: '3.13'
+    - name: Install repository Python tools
+      id: python-tools
+      if: ${{ !cancelled() && steps.python.outcome == 'success' }}
+      run: python -m pip install -r eng/requirements.txt
+    - name: Check repository Python lint
+      id: python-lint
+      if: ${{ !cancelled() && steps.python-tools.outcome == 'success' }}
+      run: python -m ruff check .
+    - name: Check repository Python formatting
+      id: python-format
+      if: ${{ !cancelled() && steps.python-tools.outcome == 'success' }}
+      run: python -m ruff format --check --diff .
+    - name: Verify Linux input feedback contracts
+      id: input-feedback
+      if: ${{ !cancelled() && steps.python.outcome == 'success' }}
+      run: python tests/linux/input_feedback.py -v
+    - name: Verify offline verification isolation and cache ownership
+      id: verification-resources
+      if: ${{ !cancelled() && steps.python.outcome == 'success' }}
+      # Preserve #37's host-only namespace test and restore the runner policy.
+      run: |
+        namespace_policy=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)
+        trap 'sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns="$namespace_policy"' EXIT
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        python tests/linux/test_verification_resources.py -v
+    - name: Verify shared behavior without Windows
+      id: shared-behavior
+      if: ${{ !cancelled() && steps.python.outcome == 'success' }}
+      shell: pwsh
+      run: ./dev.ps1 shared-check
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      if: always()
+      with:
+        name: shared-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |-
+          artifacts/shared-test-results/
+          artifacts/ci/
+        if-no-files-found: warn
+        retention-days: 14
+  windows-contracts:
+    name: Windows contracts / ${{ matrix.shard }}
+    needs: fonts
     runs-on: windows-latest
-    timeout-minutes: 85
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+        - 1
+        - 2
+        - 3
+        - 4
     steps:
-      - name: Record the Windows check budget start
-        shell: pwsh
-        run: '"TYPELAY_WINDOWS_CHECK_START=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" >> $env:GITHUB_ENV'
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        id: checkout
-        with:
-          persist-credentials: false
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
-        id: dotnet
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        with:
-          global-json-file: global.json
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        id: python
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        with:
-          python-version: '3.13'
-      - name: Observe standard Chrome profile before Windows tests
-        shell: pwsh
-        run: python eng/windows/observe-browser-profile.py --stage before-tests --output artifacts/browser-profile/before-tests.json
-      - name: Install developer tooling
-        id: windows-tools
-        if: ${{ !cancelled() && steps.python.outcome == 'success' }}
-        shell: pwsh
-        run: |
-          python -m pip install -r eng/requirements.txt
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          'C:\Program Files\LLVM\bin' >> $env:GITHUB_PATH
-      - name: Build the Windows workspace
-        id: windows-build
-        if: ${{ !cancelled() && steps.windows-tools.outcome == 'success' && steps.dotnet.outcome == 'success' }}
-        shell: pwsh
-        run: ./dev.ps1 build
-      - name: Verify the Windows contract runner
-        id: windows-contract-runner
-        if: ${{ !cancelled() && steps.windows-tools.outcome == 'success' }}
-        shell: pwsh
-        run: python -m unittest discover -s tests/windows -p test_contract_runner.py -v
-      - name: Verify Windows behavior and contracts
-        id: windows-contracts
-        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-        shell: pwsh
-        env:
-          TYPELAY_TRACE: ${{ github.workspace }}/artifacts/controller-trace.jsonl
-        run: python eng/windows/test_contracts.py --configuration Release --results-directory artifacts/test-results
-      - name: Preserve early Windows contract and rendering evidence
-        if: ${{ !cancelled() && (steps.windows-contracts.outcome == 'success' || steps.windows-contracts.outcome == 'failure') }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: typelay-windows-contracts-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            artifacts/test-results/*.trx
-            artifacts/test-results/contracts-*/*/*.trx
-            artifacts/test-results/contracts-*/result.json
-            artifacts/test-results/rendering/
-          if-no-files-found: error
-          retention-days: 14
-      - name: Observe standard Chrome profile after behavior tests
-        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-        shell: pwsh
-        run: python eng/windows/observe-browser-profile.py --stage after-behavior-tests --output artifacts/browser-profile/after-behavior-tests.json
-      - name: Verify Windows workspace formatting
-        id: windows-format
-        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-        shell: pwsh
-        run: dotnet format TypeLay.slnx --verify-no-changes --no-restore
-      - name: Verify worker behavior on Windows
-        id: windows-worker
-        if: ${{ !cancelled() && steps.windows-tools.outcome == 'success' }}
-        shell: pwsh
-        env:
-          PYTHONPATH: ${{ github.workspace }}/src/shared/TypeLay.Worker
-        run: |
-          python -m unittest discover -s tests/shared/worker -v
-          exit $LASTEXITCODE
-      - name: Verify the controlled native adapter
-        id: windows-native
-        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-        shell: pwsh
-        run: ./dev.ps1 native-e2e
-      - name: Verify continuous translation with the real local model
-        id: windows-continuous
-        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-        timeout-minutes: 25
-        shell: pwsh
-        run: |
-          dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-continuous artifacts/continuous-translation src/shared/TypeLay.Worker/run_worker.py tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll
-          exit $LASTEXITCODE
-      - name: Preserve early Windows continuous translation failure evidence
-        if: ${{ !cancelled() && steps.windows-continuous.outcome == 'failure' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: typelay-windows-continuous-failure-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            artifacts/continuous-translation/result.json
-            artifacts/continuous-translation/consumer-exit.json
-          if-no-files-found: error
-          retention-days: 14
-      - name: Observe standard Chrome profile after continuous translation
-        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-        shell: pwsh
-        run: python eng/windows/observe-browser-profile.py --stage after-continuous --output artifacts/browser-profile/after-continuous.json
-      - name: Restore the pinned cooperative-browser test archive
-        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-        id: cooperative-browser-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: artifacts/browser-download/chrome-win64.zip
-          key: typelay-cft-win64-${{ hashFiles('tests/windows/support/chrome-for-testing.json') }}
-      - name: Verify and prepare Chrome for Testing for the cooperative product path
-        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-        id: cooperative-browser-prepare
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $pin = Get-Content tests/windows/support/chrome-for-testing.json -Raw | ConvertFrom-Json
-          $archive = Join-Path $PWD 'artifacts/browser-download/chrome-win64.zip'
-          New-Item -ItemType Directory -Path (Split-Path $archive) -Force | Out-Null
-          if (-not (Test-Path -LiteralPath $archive)) {
-            Invoke-WebRequest -Uri $pin.archiveUrl -OutFile $archive -TimeoutSec 180
-          }
-          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $pin.archiveSha256) {
-            throw 'Chrome for Testing archive SHA-256 mismatch.'
-          }
-          Expand-Archive -LiteralPath $archive -DestinationPath artifacts/cooperative-browser
-          $chrome = Join-Path $PWD 'artifacts/cooperative-browser/chrome-win64/chrome.exe'
-          $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($chrome)
-          if ($version.ProductVersion -ne $pin.version -or $version.ProductName -ne 'Google Chrome for Testing') {
-            throw 'Chrome for Testing product/version mismatch.'
-          }
-          "chrome=$chrome" >> $env:GITHUB_OUTPUT
-      - name: Cache the verified cooperative-browser archive
-        if: ${{ !cancelled() && steps.cooperative-browser-prepare.outcome == 'success' && steps.cooperative-browser-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: artifacts/browser-download/chrome-win64.zip
-          key: ${{ steps.cooperative-browser-cache.outputs.cache-primary-key }}
-      # Prepare fixed assets before the sole production package; inference stays serialized.
-      - name: Admit the bounded production Hy package chain
-        id: hy-admission
-        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $elapsed = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [long]$env:TYPELAY_WINDOWS_CHECK_START
-          python eng/windows/admit-package-chain.py --elapsed-seconds $elapsed --report artifacts/hy-results/admission.json
-          if ($LASTEXITCODE -ne 0) { throw 'Insufficient 85-minute job budget for the bounded ordinary-app and Hy chain.' }
-          $pin = Get-Content src/shared/TypeLay.Worker/native/hy/assets.lock.json -Raw | ConvertFrom-Json
-          "cache-key=typelay-hy-win-$($pin.model.sha256)-$($pin.runtime_archive.sha256)" >> $env:GITHUB_OUTPUT
-      - name: Restore the fixed Hy model and CPU archive cache
-        id: hy-cache
-        if: ${{ !cancelled() && steps.hy-admission.outcome == 'success' }}
-        timeout-minutes: 2
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: artifacts/hy-download/
-          key: ${{ steps.hy-admission.outputs.cache-key }}
-      - name: Prepare fixed Hy assets without an audit adapter
-        id: hy-prepare
-        if: ${{ !cancelled() && steps.hy-admission.outcome == 'success' && steps.hy-cache.outcome == 'success' }}
-        timeout-minutes: 10
-        shell: pwsh
-        run: ./dev.ps1 hy-product-prepare
-      - name: Save only verified Hy download assets to cache
-        if: ${{ !cancelled() && steps.hy-prepare.outcome == 'success' && steps.hy-cache.outputs.cache-hit != 'true' }}
-        timeout-minutes: 2
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: artifacts/hy-download/
-          key: ${{ steps.hy-cache.outputs.cache-primary-key }}
-      - name: Package and test the relocated distribution
-        id: windows-package
-        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' && steps.hy-prepare.outcome == 'success' }}
-        shell: pwsh
-        env:
-          TYPELAY_BROWSER_REGISTRATION_E2E: "1"
-          TYPELAY_HY_WINDOWS_CPU_RUNTIME: artifacts/hy-runtime
-        run: ./dev.ps1 pack -HyRuntime artifacts/hy-runtime
-      - name: Verify cooperative browser input with the shipped app and real model
-        id: windows-browser
-        if: ${{ !cancelled() && steps.windows-package.outcome == 'success' && steps.cooperative-browser-prepare.outcome == 'success' }}
-        timeout-minutes: 10
-        shell: pwsh
-        env:
-          TYPELAY_BROWSER_REGISTRATION_E2E: "1"
-          # Only this fresh GitHub-hosted VM may use a verified empty standard container.
-          TYPELAY_HOSTED_EMPTY_BROWSER_CONTAINER_E2E: ${{ runner.environment == 'github-hosted' && '1' || '0' }}
-        run: |
-          python eng/windows/observe-browser-profile.py --stage before-browser-cooperation --output artifacts/browser-profile/before-browser-cooperation.json
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-browser-cooperation artifacts/browser-cooperation artifacts/package/TypeLay '${{ steps.cooperative-browser-prepare.outputs.chrome }}'
-          exit $LASTEXITCODE
-      - name: Verify prior model consumers have exited before Notepad
-        id: notepad-consumer-exit
-        if: ${{ !cancelled() && steps.windows-package.outcome == 'success' && (steps.windows-browser.outcome == 'success' || steps.windows-browser.outcome == 'failure') }}
-        shell: pwsh
-        env:
-          CONTINUOUS_NONCE: ${{ steps.windows-continuous.outputs.consumer_exit_nonce }}
-          BROWSER_NONCE: ${{ steps.windows-browser.outputs.consumer_exit_nonce }}
-          WORKFLOW_CANCELLED: ${{ job.status != 'success' && job.status != 'failure' }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          # Business failure stays red; neither prior consumer may still be active.
-          python eng/windows/verify-consumer-exit.py --scope before-notepad --continuous-proof artifacts/continuous-translation/consumer-exit.json --browser-proof artifacts/browser-cooperation/consumer-exit.json --continuous-nonce "$env:CONTINUOUS_NONCE" --browser-nonce "$env:BROWSER_NONCE" --run-id "$env:GITHUB_RUN_ID" --run-attempt "$env:GITHUB_RUN_ATTEMPT" --head "$env:GITHUB_SHA" --workflow-cancelled "$env:WORKFLOW_CANCELLED"
-          exit $LASTEXITCODE
-      - name: Verify real classic Notepad through shipped app Settings
-        id: windows-ordinary-notepad
-        if: ${{ !cancelled() && steps.notepad-consumer-exit.outcome == 'success' }}
-        timeout-minutes: 10
-        shell: pwsh
-        run: |
-          ./dev.ps1 package-e2e -Scenario ordinary-notepad
-          exit $LASTEXITCODE
-      # Scene failure stays red; only independently verified owner exit admits Hy.
-      - name: Verify all prior model consumers have exited
-        id: hy-consumer-exit
-        if: ${{ !cancelled() && steps.windows-package.outcome == 'success' }}
-        shell: pwsh
-        env:
-          CONTINUOUS_NONCE: ${{ steps.windows-continuous.outputs.consumer_exit_nonce }}
-          BROWSER_NONCE: ${{ steps.windows-browser.outputs.consumer_exit_nonce }}
-          NOTEPAD_NONCE: ${{ steps.windows-ordinary-notepad.outputs.consumer_exit_nonce }}
-          WORKFLOW_CANCELLED: ${{ job.status != 'success' && job.status != 'failure' }}
-        run: |
-          python eng/windows/verify-consumer-exit.py --continuous-proof artifacts/continuous-translation/consumer-exit.json --browser-proof artifacts/browser-cooperation/consumer-exit.json --notepad-proof artifacts/ordinary-notepad/consumer-exit.json --continuous-nonce "$env:CONTINUOUS_NONCE" --browser-nonce "$env:BROWSER_NONCE" --notepad-nonce "$env:NOTEPAD_NONCE" --run-id "$env:GITHUB_RUN_ID" --run-attempt "$env:GITHUB_RUN_ATTEMPT" --head "$env:GITHUB_SHA" --workflow-cancelled "$env:WORKFLOW_CANCELLED"
-          exit $LASTEXITCODE
-      - name: Verify the shipped Hy ABI5 worker and production process owner
-        id: hy-production
-        if: ${{ !cancelled() && steps.windows-package.outcome == 'success' && steps.hy-consumer-exit.outcome == 'success' }}
-        timeout-minutes: 6
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          ./dev.ps1 package-e2e -Scenario hy-production
-          exit $LASTEXITCODE
-      - name: Verify Hy install select preview and remove through Settings
-        id: hy-packages
-        if: ${{ !cancelled() && steps.hy-production.outcome == 'success' }}
-        timeout-minutes: 16
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          ./dev.ps1 package-e2e -Scenario hy-packages
-          exit $LASTEXITCODE
-      # Uses two minutes of the existing seven-minute cache/artifact tail, after
-      # all prior desktop chains. It does not replace their failures or proofs.
-      - name: Package and smoke the isolated physical Tab handoff
-        id: physical-tab-package
-        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-        timeout-minutes: 2
-        shell: pwsh
-        run: python eng/windows/package-physical-tab.py
-      - name: Upload the isolated physical Tab validation package
-        if: ${{ !cancelled() && steps.physical-tab-package.outcome == 'success' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: typelay-windows-physical-tab-${{ github.sha }}
-          path: |
-            artifacts/TypeLay-Windows-physical-Tab-validation.zip
-            artifacts/TypeLay-Windows-physical-Tab-validation.zip.sha256
-          if-no-files-found: error
-          retention-days: 14
-      # Keep existing synthetic desktop diagnostics separate from the full package.
-      # These results do not certify physical input or replace the full artifact.
-      - name: Preserve small Windows desktop diagnostics
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: typelay-windows-desktop-diagnostics-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            artifacts/continuous-translation/result.json
-            artifacts/continuous-translation/consumer-exit.json
-            artifacts/continuous-translation/trace*.jsonl
-            artifacts/browser-cooperation/result.json
-            artifacts/browser-cooperation/consumer-exit.json
-            artifacts/browser-cooperation/trace*.jsonl
-            artifacts/ordinary-notepad/result.json
-            artifacts/ordinary-notepad/consumer-exit.json
-            artifacts/ordinary-notepad/trace*.jsonl
-          if-no-files-found: warn
-          retention-days: 14
-      - name: Report required checks, including not-run prerequisites
-        if: always()
-        env:
-          CI_STEPS: ${{ toJSON(steps) }}
-          CI_REQUIRED_STEPS: >-
-            windows-build
-            windows-contract-runner
-            windows-contracts
-            windows-format
-            windows-worker
-            windows-native
-            windows-continuous
-            cooperative-browser-prepare
-            windows-package
-            windows-browser
-            notepad-consumer-exit
-            windows-ordinary-notepad
-            hy-consumer-exit
-            hy-production
-            hy-packages
-            physical-tab-package
-        run: python eng/shared/ci_report.py
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
-        with:
-          name: typelay-windows-${{ github.sha }}
-          path: |
-            artifacts/ci/
-            artifacts/test-results/
-            artifacts/controller-trace.jsonl*
-            artifacts/continuous-translation/data/setup-self-check.json
-            artifacts/browser-profile/*.json
-            artifacts/hy-results/*.json
-            artifacts/hy-results/*.stderr
-            artifacts/hy-production/*.json
-            artifacts/hy-packages/*.json
-            artifacts/hy-packages/first-miss-taskbar.png
-            artifacts/hy-packages/trace.jsonl
-            artifacts/hy-packages/trace.jsonl.overlay.jsonl
-            artifacts/hy-packages/trace.jsonl.broker.jsonl
-            artifacts/hy-packages/trace-cold.jsonl
-            artifacts/hy-packages/trace-cold.jsonl.overlay.jsonl
-            artifacts/hy-packages/trace-cold.jsonl.broker.jsonl
-            artifacts/TypeLay-Windows-preview.zip
-            artifacts/TypeLay-Windows-preview.zip.sha256
-            artifacts/physical-tab-package/*.json
-            artifacts/physical-tab-package/*.trx
-            artifacts/physical-tab-package/*.log
-            artifacts/physical-tab-package/*.stderr
-            artifacts/physical-tab-package/*.txt
-          if-no-files-found: warn
-          retention-days: 14
-  linux:
-    name: ${{ github.event_name == 'pull_request' && 'PR' || github.event_name == 'push' && github.ref == 'refs/heads/hitl' && 'hitl push' || github.event_name == 'push' && 'branch push' || 'manual' }} / ${{ github.event_name == 'workflow_dispatch' && inputs.check_mode == 'quality-only' && 'Linux quality capture (not product acceptance)' || 'linux' }}
-    needs: scope
-    if: ${{ !cancelled() && needs.scope.outputs.selected == 'success' && needs.scope.outputs.linux == 'true' }}
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+      with:
+        global-json-file: global.json
+    - uses: ./.github/actions/fonts
+      with:
+        tag: ${{ needs.fonts.outputs.tag }}
+        token: ${{ github.token }}
+    - name: Install pinned developer tools
+      run: |-
+        python -m pip install -r eng/requirements.txt
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        'C:\Program Files\LLVM\bin' >> $env:GITHUB_PATH
+      shell: pwsh
+    - *tested-source
+    - name: Build the Windows workspace
+      id: windows-build
+      shell: pwsh
+      run: ./dev.ps1 build
+    - name: Verify Windows behavior and contracts
+      id: windows-contracts
+      if: success()
+      shell: pwsh
+      env:
+        TYPELAY_TRACE: ${{ github.workspace }}/artifacts/controller-trace.jsonl
+      run: python eng/windows/test_contracts.py --shard ${{ matrix.shard }} --configuration Release --results-directory artifacts/test-results
+    - name: Package and smoke the isolated physical Tab handoff
+      id: physical-tab-package
+      if: ${{ !cancelled() && matrix.shard == 2 && steps.windows-build.outcome == 'success' }}
+      timeout-minutes: 2
+      shell: pwsh
+      run: python eng/windows/package-physical-tab.py
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      if: always()
+      with:
+        name: windows-contracts-${{ matrix.shard }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |-
+          artifacts/test-results/
+          artifacts/ci/
+          artifacts/physical-tab-package/
+        if-no-files-found: warn
+        retention-days: 14
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      if: inputs.upload_packages && matrix.shard == 2
+      with:
+        name: windows-physical-tab-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |-
+          artifacts/TypeLay-Windows-physical-Tab-validation.zip
+          artifacts/TypeLay-Windows-physical-Tab-validation.zip.sha256
+        if-no-files-found: warn
+        retention-days: 14
+  windows-tools:
+    needs: fonts
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+      with:
+        global-json-file: global.json
+    - uses: ./.github/actions/fonts
+      with:
+        tag: ${{ needs.fonts.outputs.tag }}
+        token: ${{ github.token }}
+    - name: Install pinned developer tools
+      run: |-
+        python -m pip install -r eng/requirements.txt
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        'C:\Program Files\LLVM\bin' >> $env:GITHUB_PATH
+      shell: pwsh
+    - *tested-source
+    - name: Build the Windows workspace
+      id: windows-build
+      shell: pwsh
+      run: ./dev.ps1 build
+    - name: Verify the Windows contract runner
+      id: windows-contract-runner
+      if: ${{ !cancelled() }}
+      shell: pwsh
+      run: python -m unittest discover -s tests/windows -p test_contract_runner.py -v
+    - name: Verify Windows workspace formatting
+      id: windows-format
+      if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+      shell: pwsh
+      run: dotnet format TypeLay.slnx --verify-no-changes --no-restore
+    - name: Verify worker behavior on Windows
+      id: windows-worker
+      if: ${{ !cancelled() }}
+      shell: pwsh
+      env:
+        PYTHONPATH: ${{ github.workspace }}/src/shared/TypeLay.Worker
+      run: |
+        python -m unittest discover -s tests/shared/worker -v
+        exit $LASTEXITCODE
+    - name: Verify the controlled native adapter
+      id: windows-native
+      if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+      shell: pwsh
+      run: ./dev.ps1 native-e2e
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      if: always()
+      with:
+        name: windows-tools-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |-
+          artifacts/ci/
+          artifacts/physical-tab*/
+        if-no-files-found: warn
+        retention-days: 14
+  windows-desktop:
+    name: Windows desktop / ${{ matrix.group }}
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [ordinary, hy]
+    needs: fonts
+    permissions:
+      contents: read
+      actions: read
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+      with:
+        global-json-file: global.json
+    - uses: ./.github/actions/fonts
+      with:
+        tag: ${{ needs.fonts.outputs.tag }}
+        token: ${{ github.token }}
+    - name: Install pinned developer tools
+      run: |-
+        python -m pip install -r eng/requirements.txt
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        'C:\Program Files\LLVM\bin' >> $env:GITHUB_PATH
+      shell: pwsh
+    - *tested-source
+    - name: Build the desktop and native fixtures
+      id: windows-build
+      shell: pwsh
+      run: |
+        dotnet build tests/windows/fixtures/TypeLay.DesktopFixture -c Release -p:RestoreLockedMode=true -warnaserror
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        dotnet build tests/windows/fixtures/TypeLay.NativeFixture -c Release -p:RestoreLockedMode=true -warnaserror
+        exit $LASTEXITCODE
+    - name: Prepare fixed Hy assets without an audit adapter
+      id: hy-prepare
+      if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+      timeout-minutes: 10
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        python eng/ci/fixed.py restore hy --wait-for-job fcitx-build
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        ./dev.ps1 hy-product-prepare
+    - name: Package and test the relocated distribution
+      id: windows-package
+      if: ${{ !cancelled() && steps.windows-build.outcome == 'success' && steps.hy-prepare.outcome == 'success' }}
+      shell: pwsh
+      env:
+        TYPELAY_BROWSER_REGISTRATION_E2E: '1'
+        TYPELAY_HY_WINDOWS_CPU_RUNTIME: artifacts/hy-runtime
+      run: ./dev.ps1 pack -HyRuntime artifacts/hy-runtime
+    - name: Verify continuous translation with the real local model
+      id: windows-continuous
+      if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+      timeout-minutes: 25
+      shell: pwsh
+      run: |
+        dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-continuous artifacts/continuous-translation src/shared/TypeLay.Worker/run_worker.py tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll
+        exit $LASTEXITCODE
+    - name: Verify and prepare Chrome for Testing for the cooperative product path
+      if: ${{ matrix.group == 'ordinary' && !cancelled() && steps.windows-build.outcome == 'success' }}
+      id: cooperative-browser-prepare
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $pin = Get-Content tests/windows/support/chrome-for-testing.json -Raw | ConvertFrom-Json
+        $archive = Join-Path $PWD 'artifacts/browser-download/chrome-win64.zip'
+        New-Item -ItemType Directory -Path (Split-Path $archive) -Force | Out-Null
+        if (-not (Test-Path -LiteralPath $archive)) {
+          Invoke-WebRequest -Uri $pin.archiveUrl -OutFile $archive -TimeoutSec 180
+        }
+        if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $pin.archiveSha256) {
+          throw 'Chrome for Testing archive SHA-256 mismatch.'
+        }
+        Expand-Archive -LiteralPath $archive -DestinationPath artifacts/cooperative-browser
+        $chrome = Join-Path $PWD 'artifacts/cooperative-browser/chrome-win64/chrome.exe'
+        $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($chrome)
+        if ($version.ProductVersion -ne $pin.version -or $version.ProductName -ne 'Google Chrome for Testing') {
+          throw 'Chrome for Testing product/version mismatch.'
+        }
+        "chrome=$chrome" >> $env:GITHUB_OUTPUT
+    - name: Verify cooperative browser input with the shipped app and real model
+      id: windows-browser
+      if: ${{ matrix.group == 'ordinary' && !cancelled() && steps.windows-package.outcome == 'success' && steps.cooperative-browser-prepare.outcome == 'success'
+        }}
+      timeout-minutes: 10
+      shell: pwsh
+      env:
+        TYPELAY_BROWSER_REGISTRATION_E2E: '1'
+        TYPELAY_HOSTED_EMPTY_BROWSER_CONTAINER_E2E: ${{ runner.environment == 'github-hosted' && '1' || '0' }}
+      run: |
+        python eng/windows/observe-browser-profile.py --stage before-browser-cooperation --output artifacts/browser-profile/before-browser-cooperation.json
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-browser-cooperation artifacts/browser-cooperation artifacts/package/TypeLay '${{ steps.cooperative-browser-prepare.outputs.chrome }}'
+        exit $LASTEXITCODE
+    - name: Verify prior model consumers have exited before Notepad
+      id: notepad-consumer-exit
+      if: ${{ matrix.group == 'ordinary' && !cancelled() && steps.windows-package.outcome == 'success' && (steps.windows-browser.outcome == 'success' ||
+        steps.windows-browser.outcome == 'failure') }}
+      shell: pwsh
+      env:
+        CONTINUOUS_NONCE: ${{ steps.windows-continuous.outputs.consumer_exit_nonce }}
+        BROWSER_NONCE: ${{ steps.windows-browser.outputs.consumer_exit_nonce }}
+        WORKFLOW_CANCELLED: ${{ job.status != 'success' && job.status != 'failure' }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        # Business failure stays red; neither prior consumer may still be active.
+        python eng/windows/verify-consumer-exit.py --scope before-notepad --continuous-proof artifacts/continuous-translation/consumer-exit.json --browser-proof artifacts/browser-cooperation/consumer-exit.json --continuous-nonce "$env:CONTINUOUS_NONCE" --browser-nonce "$env:BROWSER_NONCE" --run-id "$env:GITHUB_RUN_ID" --run-attempt "$env:GITHUB_RUN_ATTEMPT" --head "$env:GITHUB_SHA" --workflow-cancelled "$env:WORKFLOW_CANCELLED"
+        exit $LASTEXITCODE
+    - name: Verify real classic Notepad through shipped app Settings
+      id: windows-ordinary-notepad
+      if: ${{ matrix.group == 'ordinary' && !cancelled() && steps.notepad-consumer-exit.outcome == 'success' }}
+      timeout-minutes: 10
+      shell: pwsh
+      run: |
+        ./dev.ps1 package-e2e -Scenario ordinary-notepad
+        exit $LASTEXITCODE
+    - name: Verify all prior model consumers have exited
+      id: hy-consumer-exit
+      if: ${{ matrix.group == 'ordinary' && !cancelled() && steps.windows-package.outcome == 'success' }}
+      shell: pwsh
+      env:
+        CONTINUOUS_NONCE: ${{ steps.windows-continuous.outputs.consumer_exit_nonce }}
+        BROWSER_NONCE: ${{ steps.windows-browser.outputs.consumer_exit_nonce }}
+        NOTEPAD_NONCE: ${{ steps.windows-ordinary-notepad.outputs.consumer_exit_nonce }}
+        WORKFLOW_CANCELLED: ${{ job.status != 'success' && job.status != 'failure' }}
+      run: |
+        python eng/windows/verify-consumer-exit.py --continuous-proof artifacts/continuous-translation/consumer-exit.json --browser-proof artifacts/browser-cooperation/consumer-exit.json --notepad-proof artifacts/ordinary-notepad/consumer-exit.json --continuous-nonce "$env:CONTINUOUS_NONCE" --browser-nonce "$env:BROWSER_NONCE" --notepad-nonce "$env:NOTEPAD_NONCE" --run-id "$env:GITHUB_RUN_ID" --run-attempt "$env:GITHUB_RUN_ATTEMPT" --head "$env:GITHUB_SHA" --workflow-cancelled "$env:WORKFLOW_CANCELLED"
+        exit $LASTEXITCODE
+    - name: Verify the isolated Hy job's prior consumer has exited
+      id: hy-isolated-exit
+      if: ${{ matrix.group == 'hy' && !cancelled() && steps.windows-package.outcome == 'success' }}
+      shell: pwsh
+      env:
+        CONTINUOUS_NONCE: ${{ steps.windows-continuous.outputs.consumer_exit_nonce }}
+        WORKFLOW_CANCELLED: ${{ job.status != 'success' && job.status != 'failure' }}
+      run: |
+        python eng/windows/verify-consumer-exit.py --scope continuous-only --continuous-proof artifacts/continuous-translation/consumer-exit.json --continuous-nonce "$env:CONTINUOUS_NONCE" --run-id "$env:GITHUB_RUN_ID" --run-attempt "$env:GITHUB_RUN_ATTEMPT" --head "$env:GITHUB_SHA" --workflow-cancelled "$env:WORKFLOW_CANCELLED"
+        exit $LASTEXITCODE
+    - name: Verify the shipped Hy ABI5 worker and production process owner
+      id: hy-production
+      if: ${{ matrix.group == 'hy' && !cancelled() && steps.windows-package.outcome == 'success' && steps.hy-isolated-exit.outcome == 'success' }}
+      timeout-minutes: 6
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        ./dev.ps1 package-e2e -Scenario hy-production
+        exit $LASTEXITCODE
+    - name: Verify Hy install select preview and remove through Settings
+      id: hy-packages
+      if: ${{ matrix.group == 'hy' && !cancelled() && steps.windows-package.outcome == 'success' && steps.hy-production.outcome == 'success' }}
+      timeout-minutes: 16
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        ./dev.ps1 package-e2e -Scenario hy-packages
+        exit $LASTEXITCODE
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      if: always()
+      with:
+        name: windows-desktop-${{ matrix.group }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |-
+          artifacts/ci/
+          artifacts/continuous-translation/*.json
+          artifacts/continuous-translation/trace*.jsonl
+          artifacts/browser-cooperation/*.json
+          artifacts/browser-cooperation/trace*.jsonl
+          artifacts/ordinary-notepad/*.json
+          artifacts/ordinary-notepad/trace*.jsonl
+          artifacts/browser-profile/*.json
+          artifacts/hy-results/*.json
+          artifacts/hy-results/*.stderr
+          artifacts/hy-production/*.json
+          artifacts/hy-packages/*.json
+          artifacts/hy-packages/*.png
+          artifacts/hy-packages/trace*.jsonl
+        if-no-files-found: warn
+        retention-days: 14
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      if: inputs.upload_packages && matrix.group == 'hy'
+      with:
+        name: windows-package-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |-
+          artifacts/TypeLay-Windows-preview.zip
+          artifacts/TypeLay-Windows-preview.zip.sha256
+        if-no-files-found: warn
+        retention-days: 14
+  index-windows:
+    name: Index / windows
+    permissions:
+      contents: read
+      actions: read
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - *tested-source
+    - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+      with:
+        global-json-file: global.json
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: '3.13'
+    - uses: ./.github/actions/fonts
+      with:
+        tag: ${{ needs.fonts.outputs.tag }}
+        token: ${{ github.token }}
+    - name: Install pinned build dependencies
+      shell: pwsh
+      run: |
+        python -m pip install -r eng/requirements.txt
+        exit $LASTEXITCODE
+    - name: Prepare and verify official Index model and CPU closure
+      timeout-minutes: 10
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        python eng/ci/fixed.py restore index --wait-for-job fcitx-build
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        python eng/windows/index/prepare_runtime.py --cache artifacts/index-runtime-download --output artifacts/index-runtime
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        python eng/shared/prepare_index_model.py --output artifacts/index-model-download
+        exit $LASTEXITCODE
+    - name: Build the actual distribution and production fixture
+      id: index-package
+      timeout-minutes: 10
+      shell: pwsh
+      run: |
+        ./dev.ps1 pack -IndexRuntime artifacts/index-runtime
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        dotnet build tests/windows/fixtures/TypeLay.DesktopFixture -c Release -warnaserror
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    - name: Verify Index default install, real inference and owned package transitions
+      id: index-lifecycle
+      timeout-minutes: 11
+      shell: pwsh
+      run: |
+        ./dev.ps1 package-e2e -Scenario index-windows
+        exit $LASTEXITCODE
+    - name: Preserve only structured Index verification
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: typelay-index-windows-${{ github.sha }}
+        path: |
+          artifacts/index-production/result.json
+          artifacts/ci/
+        if-no-files-found: warn
+        retention-days: 14
+    needs: fonts
+  index-linux:
+    name: Index / linux
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-latest
-    container:
-      image: archlinux:base-devel
-      # Electron's font service exceeds Docker's default 64 MiB /dev/shm.
-      options: --shm-size=1g
-    timeout-minutes: ${{ needs.scope.outputs.collect_quality == 'true' && 70 || 45 }}
-    env:
-      FIXED_MODEL_DIAGNOSTICS: ${{ needs.scope.outputs.fixed_model_diagnostics }}
-      HY_DECODE_COMPARISON: ${{ needs.scope.outputs.hy_decode_comparison }}
-      # Explicit ordinary quality capture now means the fixed eight-request paired set.
-      TYPELAY_COMBINATION_ONLY: ${{ needs.scope.outputs.collect_quality == 'true' && needs.scope.outputs.fixed_model_diagnostics != 'true' && needs.scope.outputs.hy_decode_comparison != 'true' }}
-      TYPELAY_COLLECT_TRANSLATION_QUALITY: ${{ needs.scope.outputs.collect_quality == 'true' }}
-      TYPELAY_LINUX_CHECK_SECONDS: ${{ needs.scope.outputs.collect_quality == 'true' && 4200 || 2700 }}
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - *tested-source
+    - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+      with:
+        global-json-file: global.json
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: '3.13'
+    - name: Install explicit setup dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y python3-gi libglib2.0-bin
+        python -m pip install uv==0.13.4
+    - name: Prepare and verify official Index model and CPU closure
+      timeout-minutes: 10
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        python eng/ci/fixed.py restore index --wait-for-job fcitx-build
+        python eng/linux/index/prepare_runtime.py --cache artifacts/index-runtime-download --output artifacts/index-runtime
+        python eng/shared/prepare_index_model.py --output artifacts/index-model-download
+    - name: Build the actual Linux host and worker payload
+      id: index-package
+      timeout-minutes: 10
+      run: |
+        dotnet publish src/linux/TypeLay.Linux -c Release -r linux-x64 --self-contained true -o artifacts/index-package/app -warnaserror
+        python - <<'PY'
+        import shutil, subprocess
+        from pathlib import Path
+        from eng.linux.build import package_worker
+        from eng.linux.uv.prepare import prepare as prepare_uv
+        package = Path('artifacts/index-package').absolute()
+        package_worker(package, index_runtime=Path('artifacts/index-runtime').absolute())
+        prepare_uv(Path('artifacts/linux/uv-download'), package / 'support/uv')
+        shutil.copytree('src/linux/desktop', package / 'desktop', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+        (package / 'native').mkdir()
+        subprocess.run(['gcc', '-O2', '-Wall', '-Wextra', '-Werror', 'src/linux/native/supervise.c', '-o', str(package / 'native/typelay-supervise')], check=True)
+        PY
+    - name: Verify Index default preparation, actual host and package transitions
+      id: index-lifecycle
+      timeout-minutes: 11
+      run: |
+        /usr/bin/python3 tests/linux/index_package_e2e.py --package artifacts/index-package --cache artifacts/index-model-download --output artifacts/index-production
+    - name: Preserve only structured Index verification
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: typelay-index-linux-${{ github.sha }}
+        path: |
+          artifacts/index-production/result.json
+          artifacts/ci/
+        if-no-files-found: warn
+        retention-days: 14
+  linux:
+    name: Linux / ${{ matrix.group }}
+    needs: fonts
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-latest
+    container: *linux-container
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        group:
+        - contracts
+        - browser
+        - settings
+    env: &linux-sdk
       TYPELAY_EXPECT_QT_VERSION: 6.11.2
-      CCACHE_DIR: ${{ github.workspace }}/artifacts/ccache
-      CCACHE_BASEDIR: ${{ github.workspace }}
-      CCACHE_COMPILERCHECK: content
-      CCACHE_MAXSIZE: 512MiB
       GTK4_PACKAGE_SHA256: 7386543a425d523b76f08a8269b530dcbebc45a53a68cfdef5251e8238d60dc9
       GTK4_SIGNATURE_SHA256: 894fd81f845eb49137d73056f62b27f2d194d2990ebe6dfdc956cd678db76048
       QT_PACKAGE_SHA256: 257c5ef6180119d5b4365bdfe2a2ad051694b5dff390eac8e736dd78b8107b21
       QT_SIGNATURE_SHA256: abf939ab10c2d7f28af81e5230c72e2acbd803fe43590fda331f474ec871dcfb
       LIBIME_PACKAGE_SHA256: adacfc6243df2544665a1d4cc8f2bf2ee6d4966fc2c5f2a37a3ff579134b6c67
       CHINESE_PACKAGE_SHA256: cc03b9d1d0bb921d88130e4ef17a4162a1037f6dbb0a165f6a73b83236f06ec4
-    steps:
-      - name: Mark explicit quality-only scope
-        if: needs.scope.outputs.quality_only == 'true'
-        run: echo 'Quality-only capture skips Windows and unrelated product scenes; this run is not full product acceptance.' >> "$GITHUB_STEP_SUMMARY"
-      - name: Record the Linux check budget start
-        run: echo "TYPELAY_LINUX_CHECK_START=$(date +%s)" >> "$GITHUB_ENV"
-      - name: Install target desktop build dependencies
-        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 gtk4 gimp at-spi2-core json-glib python python-gobject libayatana-appindicator niri mesa uv grim noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus chromium python-playwright firefox geckodriver code nodejs npm fcitx5 fcitx5-gtk fcitx5-chinese-addons boost libime patch fmt glib2-devel nlohmann-json expat xkeyboard-config iso-codes extra-cmake-modules gettext wayland-protocols plasma-wayland-protocols ccache opencc procps-ng zstd qt6-base libxkbcommon libxcb
-      - name: Restore the fixed GTK4 package
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        id: gtk4-package-cache
-        with:
-          path: |
-            /tmp/typelay-target-sdk/gtk4.pkg.tar.zst
-            /tmp/typelay-target-sdk/gtk4.pkg.tar.zst.sig
-          key: arch-gtk4-x86_64-${{ env.GTK4_PACKAGE_SHA256 }}-${{ env.GTK4_SIGNATURE_SHA256 }}
-      - name: Match the target GTK4 upstream release
-        id: gtk4-sdk
-        run: |
-          mkdir -p /tmp/typelay-target-sdk
-          cd /tmp/typelay-target-sdk
-          package='gtk4-1%3A4.22.5-1-x86_64.pkg.tar.zst'
-          if [ '${{ steps.gtk4-package-cache.outputs.cache-hit }}' != true ]; then
-            curl --fail --location "https://archive.archlinux.org/packages/g/gtk4/$package" -o gtk4.pkg.tar.zst
-            curl --fail --location "https://archive.archlinux.org/packages/g/gtk4/$package.sig" -o gtk4.pkg.tar.zst.sig
-          fi
-          echo "$GTK4_PACKAGE_SHA256  gtk4.pkg.tar.zst" | sha256sum -c -
-          echo "$GTK4_SIGNATURE_SHA256  gtk4.pkg.tar.zst.sig" | sha256sum -c -
-          pacman -U --noconfirm ./gtk4.pkg.tar.zst
-          test "$(pkg-config --modversion gtk4)" = 4.22.5
-      - name: Save the verified GTK4 package
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        if: ${{ !cancelled() && steps.gtk4-sdk.outcome == 'success' && steps.gtk4-package-cache.outputs.cache-hit != 'true' }}
-        with:
-          path: |
-            /tmp/typelay-target-sdk/gtk4.pkg.tar.zst
-            /tmp/typelay-target-sdk/gtk4.pkg.tar.zst.sig
-          key: ${{ steps.gtk4-package-cache.outputs.cache-primary-key }}
-      - name: Restore the fixed Qt package
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        id: qt-package-cache
-        with:
-          path: |
-            /tmp/typelay-target-sdk/qt6-base-6.11.2-3-x86_64.pkg.tar.zst
-            /tmp/typelay-target-sdk/qt6-base-6.11.2-3-x86_64.pkg.tar.zst.sig
-          key: arch-qt-x86_64-${{ env.QT_PACKAGE_SHA256 }}-${{ env.QT_SIGNATURE_SHA256 }}
-      - name: Match the target Qt upstream ABI
-        id: qt-sdk
-        run: |
-          mkdir -p /tmp/typelay-target-sdk
-          cd /tmp/typelay-target-sdk
-          package='qt6-base-6.11.2-3-x86_64.pkg.tar.zst'
-          if [ '${{ steps.qt-package-cache.outputs.cache-hit }}' != true ]; then
-            curl --fail --location "https://archive.archlinux.org/packages/q/qt6-base/$package" -o "$package"
-            curl --fail --location "https://archive.archlinux.org/packages/q/qt6-base/$package.sig" -o "$package.sig"
-          fi
-          echo "$QT_PACKAGE_SHA256  qt6-base-6.11.2-3-x86_64.pkg.tar.zst" | sha256sum -c -
-          echo "$QT_SIGNATURE_SHA256  qt6-base-6.11.2-3-x86_64.pkg.tar.zst.sig" | sha256sum -c -
-          pacman -U --noconfirm "./$package"
-          test "$(pkg-config --modversion Qt6Core)" = 6.11.2
-          test -f /usr/lib/qt6/plugins/platforms/libqwayland.so
-      - name: Save the verified Qt package
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        if: ${{ !cancelled() && steps.qt-sdk.outcome == 'success' && steps.qt-package-cache.outputs.cache-hit != 'true' }}
-        with:
-          path: |
-            /tmp/typelay-target-sdk/qt6-base-6.11.2-3-x86_64.pkg.tar.zst
-            /tmp/typelay-target-sdk/qt6-base-6.11.2-3-x86_64.pkg.tar.zst.sig
-          key: ${{ steps.qt-package-cache.outputs.cache-primary-key }}
-      - name: Initialize the disposable container D-Bus identity
-        run: dbus-uuidgen --ensure=/etc/machine-id
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        id: checkout
-        with:
-          persist-credentials: false
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
-        id: dotnet
-        with:
-          global-json-file: global.json
-      - name: Identify the native build environment
-        id: native-sdk
-        run: echo "digest=$(pacman -Q | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        id: fcitx-cache
-        with:
-          path: artifacts/ccache
-          key: fcitx-ccache-${{ steps.native-sdk.outputs.digest }}-${{ hashFiles('eng/linux/cooperative/inputs.py', 'eng/linux/cooperative/fcitx.py', 'eng/linux/cooperative/patches/fcitx5.patch', 'eng/linux/cooperative/patches/fcitx5-chinese-addons.patch', 'eng/linux/cooperative/patches/fcitx5-gtk.patch') }}
-          # ccache validates compiler content, flags and source/header hashes;
-          # added unrelated SDK packages must not discard usable compile entries.
-          restore-keys: |
-            fcitx-ccache-${{ steps.native-sdk.outputs.digest }}-
-            fcitx-ccache-
-      - name: Restore the fixed Linux Hy CPU archive
-        id: hy-cpu-cache
-        timeout-minutes: 2
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: artifacts/linux/hy-cpu-download/
-          key: typelay-hy-linux-cpu-${{ hashFiles('eng/linux/hy/runtime-archive.lock.json', 'src/shared/TypeLay.Worker/native/hy/cpu-runtime.lock.json') }}
-      - name: Verify Linux Hy preparation contracts
-        id: hy-preparation-contracts
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_hy_preparation.py -v
-      - name: Prepare the fixed official Linux Hy CPU closure
-        id: hy-cpu
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        timeout-minutes: 3
-        run: |
-          python eng/linux/hy/prepare_runtime.py --cache artifacts/linux/hy-cpu-download --output artifacts/linux/hy-cpu-runtime
-      - name: Verify Linux Hy runtime contracts
-        id: hy-runtime-contracts
-        if: ${{ !cancelled() && steps.hy-cpu.outcome == 'success' }}
-        run: TYPELAY_HY_CPU_RUNTIME="$PWD/artifacts/linux/hy-cpu-runtime" python tests/linux/test_hy_runtime.py -v
-      - name: Save only the verified Linux Hy CPU archive
-        if: ${{ !cancelled() && steps.hy-cpu.outcome == 'success' && steps.hy-cpu-cache.outputs.cache-hit != 'true' }}
-        timeout-minutes: 2
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: artifacts/linux/hy-cpu-download/
-          key: ${{ steps.hy-cpu-cache.outputs.cache-primary-key }}
-      - name: Prepare fixed UI fonts for the Linux package
-        id: fonts
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: |
-          # Trust only this disposable Actions checkout.
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          uv venv artifacts/font-tools
-          uv pip install --python artifacts/font-tools/bin/python -r eng/requirements.txt
-          artifacts/font-tools/bin/python eng/fonts/prepare.py
-      - name: Verify Linux test_ui_fonts
-        id: test-ui-fonts
-        if: ${{ !cancelled() && steps.fonts.outcome == 'success' }}
-        run: TYPELAY_UI_FONT_ROOT="$PWD/artifacts/ui-fonts" python tests/linux/test_ui_fonts.py -v
-      - name: Verify Linux test_build_bundle
-        id: test-build-bundle
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_build_bundle.py -v
-      - name: Verify Linux setup_e2e
-        id: setup-e2e
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/setup_e2e.py -v
-      - name: Verify Linux private uv preparation
-        id: private-uv
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_private_uv.py -v
-      - name: Verify Linux test_desktop_session
-        id: test-desktop-session
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_desktop_session.py -v
-      - name: Verify Linux test_startup_diagnostics
-        id: test-startup-diagnostics
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_startup_diagnostics.py -v
-      - name: Verify Linux test_desktop_scope_results
-        id: test-desktop-scope-results
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_desktop_scope_results.py -v
-      - name: Verify Linux test_desktop_acceptance_observation
-        id: test-desktop-acceptance-observation
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_desktop_acceptance_observation.py -v
-      - name: Verify Linux test_session_key_settings
-        id: test-session-key-settings
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_session_key_settings.py -v
-      - name: Verify Linux test_setup_scope_data
-        id: test-setup-scope-data
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_setup_scope_data.py -v
-      - name: Verify Linux test_practice_session
-        id: test-practice-session
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_practice_session.py -v
-      - name: Verify Linux test_fcitx_session_source
-        id: test-fcitx-session-source
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_fcitx_session_source.py -v
-      - name: Verify Linux test_fcitx_cooperative_session
-        id: test-fcitx-cooperative-session
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python -m unittest discover -s tests/linux -p test_fcitx_cooperative_session.py -v
-      - name: Verify Linux test_input_notifications
-        id: test-input-notifications
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_input_notifications.py -v
-      - name: Verify Linux test_gtk_geometry
-        id: test-gtk-geometry
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_gtk_geometry.py -v
-      - name: Verify Linux test_gtk_accessibility_bounds
-        id: test-gtk-accessibility-bounds
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_gtk_accessibility_bounds.py -v
-      - name: Verify Linux test_gtk_settings_scroll
-        id: test-gtk-settings-scroll
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_gtk_settings_scroll.py -v
-      - name: Verify Linux test_gtk_settings_focus
-        id: test-gtk-settings-focus
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_gtk_settings_focus.py -v
-      - name: Verify Linux test_gtk_settings_combo
-        id: test-gtk-settings-combo
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_gtk_settings_combo.py -v
-      - name: Verify Linux test_gtk_shortcut_input
-        id: test-gtk-shortcut-input
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_gtk_shortcut_input.py -v
-      - name: Verify Linux test_settings_capture
-        id: test-settings-capture
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_settings_capture.py -v
-      - name: Verify Linux test_ordinary_desktop_lifecycle
-        id: test-ordinary-desktop-lifecycle
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_ordinary_desktop_lifecycle.py -v
-      - name: Verify Linux test_gtk_preview_contract
-        id: test-gtk-preview-contract
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_gtk_preview_contract.py -v
-      - name: Verify Linux test_qt_candidate_observation
-        id: test-qt-candidate-observation
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_qt_candidate_observation.py -v
-      - name: Verify Linux test_argos_repetition_process
-        id: test-argos-repetition-process
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_argos_repetition_process.py -v
-      - name: Verify Linux test_index_package_diagnostics
-        id: test-index-package-diagnostics
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_index_package_diagnostics.py -v
-      - name: Verify Linux test_private_session_paths
-        id: test-private-session-paths
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_private_session_paths.py -v
-      - name: Verify Linux test_translation_quality_capture
-        id: test-translation-quality-capture
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_translation_quality_capture.py -v
-      - name: Verify Linux test_vscode_notifications
-        id: test-vscode-notifications
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_vscode_notifications.py -v
-      - name: Build the relocatable Linux client
-        id: build
-        if: ${{ !cancelled() && steps.fonts.outcome == 'success' && steps.dotnet.outcome == 'success' && steps.hy-cpu.outcome == 'success' }}
-        run: python eng/linux/build.py --with-test-fixture --hy-runtime artifacts/linux/hy-cpu-runtime
-      - name: Verify resumable model downloads over isolated HTTP
-        id: model-downloads
-        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.checkout.outcome == 'success' }}
-        run: |
-          mkdir -p artifacts/linux/installation-progress
-          python tests/linux/setup_e2e.py --http --progress-output artifacts/linux/installation-progress/records.json -v
-      - name: Verify supervised model preparation
-        id: model-supervisor
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: python tests/linux/setup_e2e.py --supervisor artifacts/linux/package/native/typelay-supervise -v
-      - name: Start the disposable X11 display
-        id: display
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: |
-          Xvfb :99 -screen 0 1280x960x24 -nolisten tcp &
-      - name: Verify nonblocking IPC
-        id: wire
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/wire.py -v
-      - name: Verify Linux host protocol
-        id: host-protocol
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: python tests/linux/session_host_protocol.py --host artifacts/linux/package/app/TypeLay.Linux -v
-      - name: Verify GTK settings feedback
-        id: settings-feedback
-        if: ${{ !cancelled() && steps.display.outcome == 'success' }}
-        run: DISPLAY=:99 GDK_BACKEND=x11 dbus-run-session -- python tests/linux/test_settings_feedback.py -v
-      - name: Verify GTK unknown-IME refusal
-        id: gtk-refusal
-        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.display.outcome == 'success' }}
-        run: DISPLAY=:99 python tests/linux/native_e2e.py --gtk-refusal --native artifacts/linux/native --output artifacts/linux/nested
-      - name: Verify tray controls without downloading models
-        id: tray
-        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.build.outcome == 'success' && steps.display.outcome == 'success' }}
-        run: |
-          export DISPLAY=:99
-          GDK_BACKEND=x11 dbus-run-session -- python tests/linux/tray_e2e.py --package artifacts/linux/package
-      - name: Verify prototype tray panel without downloading models
-        id: tray-panel
-        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.build.outcome == 'success' && steps.display.outcome == 'success' }}
-        timeout-minutes: 1
-        run: |
-          export DISPLAY=:99
-          mkdir -p artifacts/linux/tray-panel
-          GDK_BACKEND=x11 dbus-run-session -- python tests/linux/tray_e2e.py --package artifacts/linux/package --panel-only --output artifacts/linux/tray-panel > artifacts/linux/tray-panel/inside.log 2>&1
-      - name: Verify real download progress across three native surfaces
-        id: download-progress
-        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.build.outcome == 'success' && steps.display.outcome == 'success' && steps.model-downloads.outcome == 'success' }}
-        timeout-minutes: 1
-        run: |
-          export DISPLAY=:99
-          GDK_BACKEND=x11 dbus-run-session -- python tests/linux/tray_e2e.py --package artifacts/linux/package --progress-only --progress-records artifacts/linux/installation-progress/records.json --output artifacts/linux/installation-progress > artifacts/linux/installation-progress/inside.log 2>&1
-      - name: Verify explicit quit confirmation without downloading models
-        id: quit-ui
-        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.build.outcome == 'success' && steps.display.outcome == 'success' }}
-        timeout-minutes: 1
-        run: |
-          export DISPLAY=:99
-          mkdir -p artifacts/linux/quit-ui
-          GDK_BACKEND=x11 dbus-run-session -- python tests/linux/quit_ui.py --package artifacts/linux/package --complete --output artifacts/linux/quit-ui > artifacts/linux/quit-ui/inside.log 2>&1
-      - name: Verify native shortcut settings without downloading models
-        id: shortcut-settings
-        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.build.outcome == 'success' && steps.display.outcome == 'success' }}
-        run: |
-          export DISPLAY=:99
-          python tests/linux/native_e2e.py --desktop --desktop-scope settings-ui --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/settings-ui
-      - name: Preserve early Linux UI diagnostics
-        timeout-minutes: 2
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        continue-on-error: true
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: typelay-linux-ui-diagnostics-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            artifacts/linux/tray-panel/*.json
-            artifacts/linux/tray-panel/*.png
-            artifacts/linux/tray-panel/*.log
-            artifacts/linux/installation-progress/*.json
-            artifacts/linux/installation-progress/*.png
-            artifacts/linux/installation-progress/*.log
-            artifacts/linux/quit-ui/*.json
-            artifacts/linux/quit-ui/*.png
-            artifacts/linux/quit-ui/*.log
-            artifacts/linux/settings-ui/*.json
-            artifacts/linux/settings-ui/*.png
-            artifacts/linux/settings-ui/*.log
-          if-no-files-found: warn
-          retention-days: 14
-      - name: Verify ordinary browser fields through the production DOM adapter
-        id: browser-dom
-        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.build.outcome == 'success' && steps.display.outcome == 'success' }}
-        run: |
-          export DISPLAY=:99
-          python tests/linux/browser_e2e.py --chromium /usr/bin/chromium -v
-      - name: Verify browser native messaging and document routing
-        id: browser-native
-        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.build.outcome == 'success' && steps.display.outcome == 'success' }}
-        run: |
-          export DISPLAY=:99
-          python tests/linux/browser_native_e2e.py --package artifacts/linux/package --chromium /usr/bin/chromium -v
-      - name: Probe source-owned VS Code edit transactions
-        id: vscode-transactions
-        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.checkout.outcome == 'success' && steps.display.outcome == 'success' }}
-        run: |
-          export DISPLAY=:99
-          set -- /usr/lib/electron*/electron
-          test "$#" -eq 1
-          python tests/linux/vscode_e2e.py --code "$1" --app /usr/lib/code
-      - name: Prepare the rich-editor browser fixture
-        id: editor-fixture
-        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.checkout.outcome == 'success' }}
-        run: |
-          mkdir -p artifacts/editor-probe
-          cp tests/linux/fixtures/editor/package*.json artifacts/editor-probe/
-          npm ci --prefix artifacts/editor-probe --ignore-scripts --no-audit --no-fund
-          cp tests/linux/fixtures/editor/entry.js artifacts/editor-probe/
-          timeout 30s node artifacts/editor-probe/node_modules/esbuild/bin/esbuild artifacts/editor-probe/entry.js --bundle --format=iife --outfile=artifacts/editor-probe/fixture.js
-      - name: Probe real rich-editor transaction reentrancy
-        id: editor-transactions
-        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.editor-fixture.outcome == 'success' && steps.display.outcome == 'success' }}
-        run: |
-          export DISPLAY=:99
-          python tests/linux/editor_probe.py --editor-bundle artifacts/editor-probe/fixture.js --chromium /usr/bin/chromium -v
-      - name: Verify Firefox temporary extension and native messaging
-        id: firefox-native
-        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.build.outcome == 'success' && steps.display.outcome == 'success' && steps.editor-fixture.outcome == 'success' }}
-        run: |
-          export DISPLAY=:99
-          python tests/linux/firefox_native_e2e.py --package artifacts/linux/package --firefox /usr/bin/firefox --geckodriver /usr/bin/geckodriver --editor-bundle artifacts/editor-probe/fixture.js -v
-      - name: Probe real Fcitx client requests and candidate selection
-        id: fcitx-client
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: python tests/linux/fcitx_probe.py
-      - name: Verify isolated Fcitx and GTK cooperative transactions
-        id: fcitx
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: python tests/linux/fcitx_cooperative/run.py --core-version 5.1.22 --core-ready-output "$GITHUB_OUTPUT"
-      - name: Collect bounded early GTK glossary failure evidence
-        if: ${{ !cancelled() && steps.fcitx.outcome == 'failure' }}
-        continue-on-error: true
-        run: |
-          python - <<'PY'
-          import json, os, stat
-          from pathlib import Path
-          source = Path('artifacts/linux/fcitx-cooperative-5.1.22')
-          output = Path('artifacts/early-gtk4-glossary')
-          output.mkdir(parents=True, exist_ok=False)
-          names = ('gtk3-glossary-result.json', 'gtk4-glossary-result.json',
-                   'gtk3-glossary-startup.json', 'gtk4-glossary-startup.json',
-                   'gtk3-glossary-session/cleanup.json', 'gtk4-glossary-session/cleanup.json',
-                   'gtk3-glossary-clicks.json', 'gtk4-glossary-clicks.json',
-                   'gtk3-glossary.log', 'gtk4-glossary.log',
-                   'gtk4-glossary-state.json', 'gtk4-glossary-niri.log')
-          limit = 512 * 1024
-          remaining = 6 * limit  # Preserve the original six-file aggregate ceiling.
-          evidence = []
-          for name in names:
-              item = {'name': name}
-              try:
-                  path = source / name
-                  info = path.lstat()
-                  item['bytes'] = info.st_size
-                  if not stat.S_ISREG(info.st_mode):
-                      item['omitted'] = 'not-regular-file'
-                  elif info.st_size > limit:
-                      item['omitted'] = 'size-limit'
-                  elif info.st_size > remaining:
-                      item['omitted'] = 'total-size-limit'
-                  else:
-                      parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-                      try:
-                          descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
-                          with os.fdopen(descriptor, 'rb') as stream:
-                              data = stream.read(limit + 1)
-                      finally:
-                          os.close(parent)
-                      if len(data) > limit:
-                          item['omitted'] = 'size-limit'
-                      elif len(data) > remaining:
-                          item['omitted'] = 'total-size-limit'
-                      else:
-                          (output / name).parent.mkdir(parents=True, exist_ok=True)
-                          (output / name).write_bytes(data)
-                          remaining -= len(data)
-                          item['copiedBytes'] = len(data)
-              except OSError as error:
-                  item['omitted'] = type(error).__name__
-              evidence.append(item)
-          (output / 'manifest.json').write_text(json.dumps(evidence, indent=2) + '\n')
-          PY
-      - name: Preserve early GTK glossary failure evidence
-        if: ${{ !cancelled() && steps.fcitx.outcome == 'failure' }}
-        continue-on-error: true
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: typelay-linux-gtk4-glossary-failure-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: artifacts/early-gtk4-glossary/
-          if-no-files-found: warn
-          retention-days: 7
-      - name: Probe original Fcitx Qt input delivery boundaries
-        id: qt
-        # Later GTK glossary failures remain red but do not invalidate the
-        # current core session. The Qt runner rechecks build/test identity.
-        if: ${{ !cancelled() && steps.fcitx.outputs.core-ready == 'true' }}
-        shell: bash
-        run: |
-          set -o pipefail
-          python tests/linux/qt_cooperative/run.py --fcitx-root artifacts/linux/fcitx-cooperative-5.1.22 --verify-fcitx-build 2>&1 | tee artifacts/linux/qt-cooperative-probe.log
-      - name: Preserve early Qt probe failure evidence
-        if: ${{ !cancelled() && steps.qt.outcome == 'failure' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: typelay-linux-qt-probe-failure-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            artifacts/linux/qt-cooperative-probe.log
-            artifacts/linux/qt-cooperative/*.json
-            artifacts/linux/qt-cooperative/*.log
-          if-no-files-found: error
-          retention-days: 14
-      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        if: ${{ !cancelled() && (steps.fcitx.outcome == 'success' || steps.fcitx.outcome == 'failure') && steps.fcitx-cache.outputs.cache-hit != 'true' }}
-        with:
-          path: artifacts/ccache
-          key: ${{ steps.fcitx-cache.outputs.cache-primary-key }}
-      - name: Restore the fixed target input method packages
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        if: ${{ !cancelled() && (steps.fcitx.outcome == 'success' || steps.fcitx.outcome == 'failure') }}
-        id: ime-package-cache
-        with:
-          path: artifacts/linux/target-packages
-          key: arch-ime-x86_64-${{ env.LIBIME_PACKAGE_SHA256 }}-${{ env.CHINESE_PACKAGE_SHA256 }}
-      - name: Package and relocate the optional Fcitx cooperation runtime
-        id: fcitx-package
-        # pack.py requires matching successful-build inputs. A later isolated
-        # fixture failure stays red but must not hide the independent real
-        # default-session deployment result for those same built components.
-        if: ${{ !cancelled() && (steps.fcitx.outcome == 'success' || steps.fcitx.outcome == 'failure') }}
-        env:
-          QT_PROBE_OUTCOME: ${{ steps.qt.outcome }}
-        run: |
-          set --
-          if [ "$QT_PROBE_OUTCOME" = success ]; then
-            set -- --qt-output artifacts/linux/qt-cooperative
-          else
-            echo "Qt probe did not pass; preserve its failure and collect independent GTK evidence."
-          fi
-          python packaging/linux/fcitx-cooperative/pack.py --build-output artifacts/linux/fcitx-cooperative-5.1.22 "$@" --output artifacts/TypeLay-Fcitx-cooperative.tar.gz
-          mkdir -p "artifacts/linux/relocated 输入法"
-          tar -xzf artifacts/TypeLay-Fcitx-cooperative.tar.gz -C "artifacts/linux/relocated 输入法"
-          # Match the user's profile-writing versions in this disposable container.
-          # Keep normal package signatures and dependency validation enabled.
-          mkdir -p artifacts/linux/target-packages
-          cd artifacts/linux/target-packages
-          if [ '${{ steps.ime-package-cache.outputs.cache-hit }}' != true ]; then
-            curl --fail --location --output libime.pkg.tar.zst https://archive.archlinux.org/packages/l/libime/libime-1.1.16-1-x86_64.pkg.tar.zst
-            curl --fail --location --output libime.pkg.tar.zst.sig https://archive.archlinux.org/packages/l/libime/libime-1.1.16-1-x86_64.pkg.tar.zst.sig
-            curl --fail --location --output chinese.pkg.tar.zst https://archive.archlinux.org/packages/f/fcitx5-chinese-addons/fcitx5-chinese-addons-5.1.14-1-x86_64.pkg.tar.zst
-            curl --fail --location --output chinese.pkg.tar.zst.sig https://archive.archlinux.org/packages/f/fcitx5-chinese-addons/fcitx5-chinese-addons-5.1.14-1-x86_64.pkg.tar.zst.sig
-          fi
-          printf '%s\n' "$LIBIME_PACKAGE_SHA256  libime.pkg.tar.zst" "$CHINESE_PACKAGE_SHA256  chinese.pkg.tar.zst" | sha256sum --check
-          test -s libime.pkg.tar.zst.sig
-          test -s chinese.pkg.tar.zst.sig
-          pacman -U --noconfirm libime.pkg.tar.zst chinese.pkg.tar.zst
-          test "$(pacman -Q libime)" = 'libime 1.1.16-1'
-          test "$(pacman -Q fcitx5-chinese-addons)" = 'fcitx5-chinese-addons 5.1.14-1'
-          echo 'packages-verified=true' >> "$GITHUB_OUTPUT"
-          cd ../../..
-          python "artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative/fcitx-cooperative.py" preflight
-      - name: Save the verified target input method packages
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        if: ${{ !cancelled() && steps.fcitx-package.outputs.packages-verified == 'true' && steps.ime-package-cache.outputs.cache-hit != 'true' }}
-        with:
-          path: artifacts/linux/target-packages
-          key: ${{ steps.ime-package-cache.outputs.cache-primary-key }}
-      - name: Reclaim completed private build intermediates
-        # The installed runtime is packed, relocated and checked. Keep all source,
-        # runtime, cache and diagnostic siblings of these completed build trees.
-        if: ${{ !cancelled() && steps.fcitx-package.outcome == 'success' }}
-        timeout-minutes: 1
-        run: |
-          python - <<'PY_STORAGE'
-          import os
-          import shutil
-          import stat
-          from contextlib import ExitStack
-
-          names = ("core-build", "libime-build", "fcitx5-chinese-addons-build")
-          flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-          if not shutil.rmtree.avoids_symlink_attacks:
-              raise RuntimeError("fd-based build cleanup is required")
-          with ExitStack() as resources:
-              parent = os.open(".", flags)
-              resources.callback(os.close, parent)
-              for part in ("artifacts", "linux", "fcitx-cooperative-5.1.22"):
-                  parent = os.open(part, flags, dir_fd=parent)
-                  resources.callback(os.close, parent)
-              # Validate every fixed target before removing any; do not resolve links.
-              for name in names:
-                  if not stat.S_ISDIR(os.stat(name, dir_fd=parent, follow_symlinks=False).st_mode):
-                      raise RuntimeError(f"build cleanup requires a regular directory: {name}")
-
-              for name in names:
-                  shutil.rmtree(name, dir_fd=parent)
-          PY_STORAGE
-      - name: Attach the matching desktop components to the main distribution
-        id: complete-package
-        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.fcitx-package.outcome == 'success' && steps.qt.outcome == 'success' }}
-        run: |
-          python eng/linux/build.py --finalize --cooperation-package artifacts/TypeLay-Fcitx-cooperative.tar.gz
-          TYPELAY_REQUIRE_HY_RUNTIME=1 TYPELAY_REQUIRE_DESKTOP_COMPONENT=1 TYPELAY_LINUX_PACKAGE="$PWD/artifacts/TypeLay-Linux-preview-x86_64.tar.gz" python tests/linux/distribution_e2e.py -v
-      - name: Install and verify actual local translation components
-        id: models
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: |
-          export XDG_CONFIG_HOME="$PWD/artifacts/linux/model-install-config"
-          export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
-          export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
-          export XDG_RUNTIME_DIR="$PWD/artifacts/linux/model-install-runtime"
-          mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR"
-          chmod 700 "$XDG_RUNTIME_DIR"
-          artifacts/linux/package/typelay --install-models argos
-      # Independent scopes preserve both original contracts even when one fails.
-      # Settings allows 360s, tutorial 240s; the Linux job/admission budgets stay fixed.
-      - name: Verify settings with the real local model
-        id: settings
-        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.display.outcome == 'success' }}
-        run: |
-          export DISPLAY=:99
-          export XDG_CONFIG_HOME="$PWD/artifacts/linux/setup-settings-config"
-          export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
-          export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
-          python tests/linux/native_e2e.py --desktop --desktop-scope setup-settings --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/setup-settings
-      - name: Verify first-run tutorial with the real local model
-        id: tutorial
-        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.display.outcome == 'success' }}
-        run: |
-          export DISPLAY=:99
-          export XDG_CONFIG_HOME="$PWD/artifacts/linux/setup-tutorial-config"
-          export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
-          export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
-          python tests/linux/native_e2e.py --desktop --desktop-scope setup-tutorial --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/setup-tutorial
-      - name: Exercise ordinary GIMP comments through shipped Settings
-        id: gimp
-        # Settings installs from the finalized main distribution, not the
-        # independently packaged runtime. A missing prerequisite is not a GIMP run.
-        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.complete-package.outcome == 'success' && steps.display.outcome == 'success' }}
-        timeout-minutes: 6
-        run: |
-          export DISPLAY=:99
-          export XDG_CONFIG_HOME="$PWD/artifacts/linux/ordinary-gimp-config"
-          export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
-          export XDG_CACHE_HOME="$PWD/artifacts/linux/ordinary-gimp-cache"
-          python tests/linux/native_e2e.py --desktop --desktop-scope ordinary-gimp --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/ordinary-gimp
-      - name: Exercise the production desktop and real browser input
-        id: browser-desktop
-        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.display.outcome == 'success' && steps.editor-fixture.outcome == 'success' }}
-        run: |
-          export DISPLAY=:99
-          export XDG_CONFIG_HOME="$PWD/artifacts/linux/desktop-config"
-          export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
-          export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
-          python tests/linux/native_e2e.py --desktop --desktop-scope browser --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/desktop --editor-bundle artifacts/editor-probe/fixture.js
-      - name: Exercise relocated Fcitx and cooperative GTK with the real local model
-        id: gtk-desktop
-        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.fcitx-package.outcome == 'success' && steps.display.outcome == 'success' }}
-        run: |
-          export DISPLAY=:99
-          export XDG_CONFIG_HOME="$PWD/artifacts/linux/gtk-desktop-config"
-          export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
-          export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
-          python tests/linux/native_e2e.py --desktop --desktop-scope gtk --gtk-session-bindings --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/gtk-desktop --fcitx-cooperative "artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative"
-      - name: Exercise cooperative GTK4 Entry with the real local model
-        id: gtk4-desktop
-        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.fcitx-package.outcome == 'success' && steps.display.outcome == 'success' }}
-        run: |
-          export DISPLAY=:99
-          export XDG_CONFIG_HOME="$PWD/artifacts/linux/gtk4-desktop-config"
-          export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
-          export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
-          python tests/linux/native_e2e.py --desktop --desktop-scope gtk4 --gtk-session-bindings --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/gtk4-desktop --fcitx-cooperative "artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative"
-      - name: Exercise Qt6 widgets with explicit bundle or build provenance
-        id: qt-desktop
-        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.models.outcome == 'success' && (steps.qt.outcome == 'success' || steps.qt.outcome == 'failure') && steps.fcitx-package.outcome == 'success' && steps.display.outcome == 'success' }}
-        env:
-          QT_PROBE_OUTCOME: ${{ steps.qt.outcome }}
-        run: |
-          export DISPLAY=:99
-          export XDG_CONFIG_HOME="$PWD/artifacts/linux/qt-desktop-config"
-          export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
-          export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
-          case "$QT_PROBE_OUTCOME" in
-            success)
-              fcitx_root="artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative"
-              ;;
-            failure)
-              fcitx_root=artifacts/linux/fcitx-cooperative-5.1.22
-              python tests/linux/qt_cooperative/desktop_admission.py --probe-outcome "$QT_PROBE_OUTCOME" --fcitx-root "$fcitx_root" --qt-output artifacts/linux/qt-cooperative --output artifacts/linux/qt-desktop/qt-desktop-admission.json
-              echo 'Qt probe remains failed. Qt desktop uses explicit unbundled build inputs, not distribution acceptance.' >> "$GITHUB_STEP_SUMMARY"
-              ;;
-            *) echo 'Qt desktop not run: probe outcome is neither success nor failure.'; exit 1 ;;
-          esac
-          python tests/linux/native_e2e.py --desktop --desktop-scope qt --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/qt-desktop --fcitx-cooperative "$fcitx_root" --qt-cooperative artifacts/linux/qt-cooperative
-      - name: Verify installed VS Code command with the real local model
-        id: vscode-model
-        if: ${{ needs.scope.outputs.quality_only != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.display.outcome == 'success' }}
-        run: |
-          export DISPLAY=:99
-          set -- /usr/lib/electron*/electron
-          test "$#" -eq 1
-          python tests/linux/vscode_e2e.py --code "$1" --app /usr/lib/code --vsix "$PWD/artifacts/linux/package/vscode/typelay-editor.vsix" --code-cli /usr/bin/code --host "$PWD/artifacts/linux/package/typelay" --model-data "$PWD/artifacts/linux/desktop-data/typelay" --output artifacts/linux/vscode-model
-      # All existing Argos/browser/native consumers finish before this single
-      # model-package lifecycle. The original model and product deadlines stay fixed.
-      - name: Admit the bounded formal Hy package lifecycle
-        id: hy-admission
-        if: ${{ !cancelled() && steps.models.outcome == 'success' && steps.complete-package.outcome == 'success' }}
-        env:
-          PYTHONDONTWRITEBYTECODE: ${{ needs.scope.outputs.collect_quality == 'true' && '1' || '' }}
-        run: |
-          mkdir -p artifacts/linux/hy-package
-          set --
-          if [ "$TYPELAY_COLLECT_TRANSLATION_QUALITY" = true ]; then
-            set -- --collect-translation-quality
-            if [ "$TYPELAY_COMBINATION_ONLY" = true ]; then
-              set -- "$@" --combination-only
-            fi
-          fi
-          remaining=$((TYPELAY_LINUX_CHECK_SECONDS - $(date +%s) + TYPELAY_LINUX_CHECK_START))
-          python tests/linux/hy_package_e2e.py --check-budget --package artifacts/linux/package --data artifacts/linux/desktop-data --remaining-seconds "$remaining" "$@" > artifacts/linux/hy-package/admission.json
-      - name: Restore the independently pinned Linux Hy model cache
-        id: hy-model-cache
-        if: ${{ !cancelled() && steps.hy-admission.outcome == 'success' }}
-        timeout-minutes: 2
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: artifacts/linux/hy-model-cache/typelay/components/hy-mt2-1-8b-q4-k-m/
-          key: typelay-hy-linux-model-${{ hashFiles('src/shared/TypeLay.Worker/native/hy/model.lock.json') }}
-      - name: Prepare and verify fixed Hy test data separately from the desktop
-        id: hy-model-prepare
-        if: ${{ !cancelled() && steps.hy-model-cache.outcome == 'success' }}
-        timeout-minutes: 3
-        env:
-          PYTHONDONTWRITEBYTECODE: ${{ needs.scope.outputs.collect_quality == 'true' && '1' || '' }}
-        run: |
-          set --
-          if [ "$FIXED_MODEL_DIAGNOSTICS" = true ] || [ "$TYPELAY_COMBINATION_ONLY" = true ] || [ "$HY_DECODE_COMPARISON" = true ]; then
-            set -- --cache-only
-          fi
-          if [ "$HY_DECODE_COMPARISON" = true ]; then
-            set +e
-            PYTHONPATH=src/shared/TypeLay.Worker python tests/shared/worker/ordinary_quality.py --decode-comparison --validate-only --output artifacts/linux/quality-plan/ordinary-quality.json
-            plan_status=$?
-            set -e
-            test "$plan_status" -eq 2
-            python -c 'import json,pathlib; reports=[json.loads(p.read_text()) for p in pathlib.Path("artifacts/linux/quality-plan").glob("*.json")]; assert len(reports)==2 and all(r["status"]=="not-run" and r["workerStarts"]==0 for r in reports)'
-          fi
-          python tests/linux/hy_package_e2e.py --prepare-cache --package artifacts/linux/package --cache artifacts/linux/hy-model-cache "$@" > artifacts/linux/hy-package/cache-verification.json
-      - name: Save only fully verified Hy test model data
-        if: ${{ !cancelled() && steps.hy-model-prepare.outcome == 'success' && steps.hy-model-cache.outputs.cache-hit != 'true' }}
-        timeout-minutes: 2
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: artifacts/linux/hy-model-cache/typelay/components/hy-mt2-1-8b-q4-k-m/
-          key: ${{ steps.hy-model-cache.outputs.cache-primary-key }}
-      - name: Exercise formal Python and real GTK Hy install select return and remove
-        id: hy-packages
-        if: ${{ !cancelled() && steps.hy-model-prepare.outcome == 'success' && steps.display.outcome == 'success' }}
-        timeout-minutes: ${{ needs.scope.outputs.collect_quality == 'true' && 36 || 5 }}
-        env:
-          HY_DECODE_COMPARISON: ${{ needs.scope.outputs.hy_decode_comparison }}
-        run: |
-          export DISPLAY=:99
-          export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
-          export XDG_CACHE_HOME="$PWD/artifacts/linux/hy-model-cache"
-          set --
-          output=artifacts/linux/hy-package
-          if [ "$TYPELAY_COLLECT_TRANSLATION_QUALITY" = true ]; then
-            set -- --collect-translation-quality
-            if [ "$TYPELAY_COMBINATION_ONLY" = true ]; then
-              set -- "$@" --combination-only
-            fi
-            output=artifacts/linux/quality-capture
-          fi
-          if [ "$FIXED_MODEL_DIAGNOSTICS" = true ]; then
-            set -- "$@" --fixed-model-diagnostics
-          fi
-          if [ "$HY_DECODE_COMPARISON" = true ]; then
-            set -- "$@" --hy-decode-comparison
-          fi
-          python tests/linux/native_e2e.py --desktop --desktop-scope model-packages --package artifacts/linux/package --native artifacts/linux/native --output "$output" "$@"
-          if [ "$TYPELAY_COLLECT_TRANSLATION_QUALITY" = true ]; then
-            printf '%s\n' 'Fixed translation responses collected: quality remains not-reviewed. This is not language-quality acceptance.' >> "$GITHUB_STEP_SUMMARY"
-          fi
-      # Keep fixed synthetic desktop diagnostics separate from large offline packages.
-      - name: Preserve small Linux desktop diagnostics
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: typelay-linux-desktop-diagnostics-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            artifacts/linux/*/niri.kdl
-            artifacts/linux/*/inside.failed
-            artifacts/linux/*/inside-exit.json.tmp
-            artifacts/linux/qt-desktop/qt-motion-expand/frame-*.png
-            artifacts/linux/qt-desktop/qt-motion-chinese-draft/frame-*.png
-            artifacts/linux/fcitx-probe/client.log
-            artifacts/linux/fcitx-probe/field.json
-            artifacts/linux/fcitx-probe/versions.json
-            artifacts/linux/fcitx-probe/framework.log
-            artifacts/linux/fcitx-cooperative-5.1.22/result.json
-            artifacts/linux/fcitx-cooperative-5.1.22/gtk3-glossary-result.json
-            artifacts/linux/fcitx-cooperative-5.1.22/gtk4-glossary-result.json
-            artifacts/linux/fcitx-cooperative-5.1.22/gtk3-glossary-session/result.json
-            artifacts/linux/fcitx-cooperative-5.1.22/gtk4-glossary-session/result.json
-            artifacts/linux/ordinary-gimp/ordinary-gimp-result.json
-            artifacts/linux/ordinary-gimp/failure-status.json
-            artifacts/linux/ordinary-gimp/ordinary-gimp-before-cleanup.png
-            artifacts/linux/ordinary-gimp/failure.png
-            artifacts/linux/nested/*.json
-            artifacts/linux/nested/*.jsonl
-            artifacts/linux/nested/*.png
-            artifacts/linux/nested/*.log
-            artifacts/linux/desktop/*.json
-            artifacts/linux/desktop/*.jsonl
-            artifacts/linux/desktop/*.png
-            artifacts/linux/desktop/*.log
-            artifacts/linux/gtk-desktop/*.json
-            artifacts/linux/gtk-desktop/*.jsonl
-            artifacts/linux/gtk-desktop/*.png
-            artifacts/linux/gtk-desktop/*.log
-            artifacts/linux/gtk4-desktop/*.json
-            artifacts/linux/gtk4-desktop/*.jsonl
-            artifacts/linux/gtk4-desktop/*.png
-            artifacts/linux/gtk4-desktop/*.log
-            artifacts/linux/qt-desktop/*.json
-            artifacts/linux/qt-desktop/*.jsonl
-            artifacts/linux/qt-desktop/*.png
-            artifacts/linux/qt-desktop/*.log
-            artifacts/linux/installation-progress/*.json
-            artifacts/linux/installation-progress/*.png
-            artifacts/linux/installation-progress/*.log
-            artifacts/linux/quit-ui/*.json
-            artifacts/linux/quit-ui/*.png
-            artifacts/linux/quit-ui/*.log
-            artifacts/linux/tray-panel/*.json
-            artifacts/linux/tray-panel/*.png
-            artifacts/linux/tray-panel/*.log
-            artifacts/linux/settings-ui/*.json
-            artifacts/linux/settings-ui/*.png
-            artifacts/linux/settings-ui/*.log
-            artifacts/linux/setup-settings/*.json
-            artifacts/linux/setup-settings/*.jsonl
-            artifacts/linux/setup-settings/*.png
-            artifacts/linux/setup-settings/*.log
-            artifacts/linux/setup-tutorial/*.json
-            artifacts/linux/setup-tutorial/*.jsonl
-            artifacts/linux/setup-tutorial/*.png
-            artifacts/linux/setup-tutorial/*.log
-          if-no-files-found: warn
-          retention-days: 14
-      - name: Report required checks, including not-run prerequisites
-        if: always()
-        env:
-          CI_STEPS: ${{ toJSON(steps) }}
-          CI_REQUIRED_STEPS: >-
-            hy-preparation-contracts
-            hy-runtime-contracts
-            test-ui-fonts
-            test-build-bundle
-            setup-e2e
-            private-uv
-            test-desktop-session
-            test-startup-diagnostics
-            test-desktop-scope-results
-            test-desktop-acceptance-observation
-            test-session-key-settings
-            test-setup-scope-data
-            test-practice-session
-            test-fcitx-session-source
-            test-fcitx-cooperative-session
-            test-input-notifications
-            test-gtk-geometry
-            test-gtk-accessibility-bounds
-            test-gtk-settings-scroll
-            test-gtk-settings-focus
-            test-gtk-settings-combo
-            test-gtk-shortcut-input
-            test-settings-capture
-            test-ordinary-desktop-lifecycle
-            test-gtk-preview-contract
-            test-qt-candidate-observation
-            test-argos-repetition-process
-            test-index-package-diagnostics
-            test-private-session-paths
-            test-translation-quality-capture
-            test-vscode-notifications
-            build
-            model-supervisor
-            wire
-            host-protocol
-            settings-feedback
-            gtk-refusal
-            fcitx-client
-            fcitx
-            qt
-            fcitx-package
-            complete-package
-            models
-            hy-packages
-            ${{ needs.scope.outputs.quality_only != 'true' && 'model-downloads tray tray-panel download-progress quit-ui shortcut-settings browser-dom browser-native vscode-transactions editor-transactions firefox-native settings tutorial gimp browser-desktop gtk-desktop gtk4-desktop qt-desktop vscode-model' || '' }}
-        run: python eng/shared/ci_report.py
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
-        with:
-          name: typelay-linux-${{ github.sha }}
-          path: |
-            artifacts/ci/
-            artifacts/linux/ordinary-gimp/*.json
-            artifacts/linux/ordinary-gimp/controller.jsonl
-            artifacts/linux/ordinary-gimp/*.png
-            artifacts/linux/ordinary-gimp/*.log
-            artifacts/linux/firefox-native/
-            artifacts/linux/browser-native/
-            artifacts/linux/vscode/
-            artifacts/linux/vscode-model/
-            artifacts/linux/editor-probe/
-            artifacts/linux/fcitx-probe/
-            artifacts/linux/qt-cooperative-probe.log
-            artifacts/linux/qt-cooperative/*.json
-            artifacts/linux/qt-cooperative/*.log
-            artifacts/linux/fcitx-cooperative-5.1.22/*.json
-            artifacts/linux/fcitx-cooperative-5.1.22/*.log
-            artifacts/linux/fcitx-cooperative-5.1.22/gtk*-glossary-session/*.json
-            artifacts/linux/fcitx-cooperative-5.1.22/gtk*-glossary-session/*.log
-            ${{ steps.complete-package.outcome != 'success' && 'artifacts/TypeLay-Fcitx-cooperative.tar.gz' || '' }}
-            artifacts/linux/desktop-data/typelay/components/*/self-check.json
-            artifacts/linux/hy-package/*.json
-            artifacts/linux/hy-package/*.log
-            artifacts/linux/hy-package/*.png
-            artifacts/linux/quality-plan/*.json
-            artifacts/linux/quality-capture/*.json
-            artifacts/linux/quality-capture/*.log
-            artifacts/linux/quality-capture/*.png
-            artifacts/linux/quality-capture/ordinary-hy-decode/build.json
-            artifacts/linux/quality-capture/ordinary-hy-decode/build.log
-            artifacts/linux/native/libtypelay-gtk3.so
-            artifacts/linux/native/typelay-supervise
-            artifacts/TypeLay-Linux-preview-x86_64.tar.gz
-            artifacts/TypeLay-Linux-preview-x86_64.tar.gz.sha256
-          if-no-files-found: warn
-          retention-days: 14
-# Passing this job does not certify physical Tab, Chinese IME, visual parity or safe universal writeback.
-
-  index-windows:
-    name: ${{ github.event_name == 'pull_request' && 'PR' || github.event_name == 'push' && github.ref == 'refs/heads/hitl' && 'hitl push' || github.event_name == 'push' && 'branch push' || 'manual' }} / Windows Index package lifecycle (not desktop acceptance)
-    needs: scope
-    if: ${{ !cancelled() && needs.scope.outputs.selected == 'success' && needs.scope.outputs.windows == 'true' }}
-    runs-on: windows-latest
-    timeout-minutes: 30
-    steps:
-      - name: Record independent job budget
-        shell: pwsh
-        run: '"TYPELAY_INDEX_CHECK_START=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" >> $env:GITHUB_ENV'
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
-        with:
-          global-json-file: global.json
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.13'
-      - name: Install pinned build dependencies
-        shell: pwsh
-        run: |
-          python -m pip install -r eng/requirements.txt
-          exit $LASTEXITCODE
-      - name: Restore only the pinned CPU runtime archive
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          # Model weights are ephemeral downloads, never persisted to a GitHub cache.
-          path: artifacts/index-runtime-download/
-          key: index-win-${{ hashFiles('eng/windows/index/runtime-archive.lock.json', 'src/shared/TypeLay.Worker/native/index/model.lock.json') }}
-      - name: Prepare and verify official Index model and CPU closure
-        timeout-minutes: 10
-        shell: pwsh
-        run: |
-          python eng/windows/index/prepare_runtime.py --cache artifacts/index-runtime-download --output artifacts/index-runtime
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python eng/shared/prepare_index_model.py --output artifacts/index-model-download
-          exit $LASTEXITCODE
-      - name: Build the actual distribution and production fixture
-        id: index-package
-        timeout-minutes: 10
-        shell: pwsh
-        run: |
-          ./dev.ps1 pack -IndexRuntime artifacts/index-runtime
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          dotnet build tests/windows/fixtures/TypeLay.DesktopFixture -c Release -warnaserror
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Verify Index default install, real inference and owned package transitions
-        id: index-lifecycle
-        timeout-minutes: 11
-        shell: pwsh
-        run: |
-          $elapsed = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [long]$env:TYPELAY_INDEX_CHECK_START
-          if ($elapsed -gt 1140) {
-            New-Item -ItemType Directory -Force artifacts/index-production | Out-Null
-            '{"suite":"index-windows-production-package-lifecycle","lifecycle":"not-run","reason":"insufficient-job-budget"}' | Set-Content artifacts/index-production/result.json
-            exit 1
-          }
-          ./dev.ps1 package-e2e -Scenario index-windows
-          exit $LASTEXITCODE
-      - name: Report required checks, including not-run prerequisites
-        if: always()
-        env:
-          CI_STEPS: ${{ toJSON(steps) }}
-          CI_REQUIRED_STEPS: >-
-            index-package
-            index-lifecycle
-        run: python eng/shared/ci_report.py
-      - name: Preserve only structured Index verification
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: typelay-index-windows-${{ github.sha }}
-          path: |
-            artifacts/index-production/result.json
-            artifacts/ci/
-          if-no-files-found: warn
-          retention-days: 14
-  index-linux:
-    name: ${{ github.event_name == 'pull_request' && 'PR' || github.event_name == 'push' && github.ref == 'refs/heads/hitl' && 'hitl push' || github.event_name == 'push' && 'branch push' || 'manual' }} / Linux Index package lifecycle (not desktop acceptance)
-    needs: scope
-    if: ${{ !cancelled() && needs.scope.outputs.selected == 'success' && needs.scope.outputs.linux == 'true' && needs.scope.outputs.quality_only != 'true' }}
+    steps: &linux-steps
+    - name: Install checkout prerequisite
+      run: pacman -Sy --noconfirm git
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - uses: ./.github/actions/linux-tools
+    - *tested-source
+    - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+      with:
+        global-json-file: global.json
+    - uses: ./.github/actions/fonts
+      with:
+        tag: ${{ needs.fonts.outputs.tag }}
+        token: ${{ github.token }}
+    - name: Prepare the fixed official Linux Hy CPU closure
+      id: hy-cpu
+      timeout-minutes: 3
+      run: |
+        python eng/linux/hy/prepare_runtime.py --cache artifacts/linux/hy-cpu-download --output artifacts/linux/hy-cpu-runtime
+      if: ${{ !cancelled() }}
+    - name: Build the relocatable Linux client
+      id: build
+      shell: bash
+      env:
+        CI_LINUX_GROUP: ${{ matrix.group }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        if [ "$CI_LINUX_GROUP" = native ]; then
+          python eng/ci/fixed.py restore fcitx --wait-for-job fcitx-build
+          python eng/linux/cooperative/fcitx.py --reuse-third-party &
+          gtk_pid=$!
+          python eng/linux/cooperative/qt.py &
+          qt_pid=$!
+        fi
+        status=0
+        python eng/linux/build.py --with-test-fixture --hy-runtime artifacts/linux/hy-cpu-runtime --compression-level 1 || status=1
+        if [ "$CI_LINUX_GROUP" = native ]; then
+          wait "$gtk_pid" || status=1
+          wait "$qt_pid" || status=1
+        fi
+        exit "$status"
+      if: ${{ !cancelled() && steps.hy-cpu.outcome == 'success' }}
+    - name: Start the disposable X11 display
+      id: display
+      run: |
+        Xvfb :99 -screen 0 1280x960x24 -nolisten tcp &
+      if: ${{ !cancelled() }}
+    - name: Install and verify actual local translation components
+      id: models
+      if: ${{ !cancelled() && matrix.group != 'contracts' && steps.build.outcome == 'success' }}
+      run: |
+        export XDG_CONFIG_HOME="$PWD/artifacts/linux/model-install-config"
+        export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
+        export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
+        export XDG_RUNTIME_DIR="$PWD/artifacts/linux/model-install-runtime"
+        mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR"
+        chmod 700 "$XDG_RUNTIME_DIR"
+        artifacts/linux/package/typelay --install-models argos
+    - name: Verify Linux Hy preparation contracts
+      id: hy-preparation-contracts
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_hy_preparation.py -v
+    - name: Verify Linux Hy runtime contracts
+      id: hy-runtime-contracts
+      if: ${{ matrix.group == 'contracts' && !cancelled() && steps.hy-cpu.outcome == 'success' }}
+      run: TYPELAY_HY_CPU_RUNTIME="$PWD/artifacts/linux/hy-cpu-runtime" python tests/linux/test_hy_runtime.py -v
+    - name: Verify Linux test_ui_fonts
+      id: test-ui-fonts
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: TYPELAY_UI_FONT_ROOT="$PWD/artifacts/ui-fonts" python tests/linux/test_ui_fonts.py -v
+    - name: Verify Linux test_build_bundle
+      id: test-build-bundle
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_build_bundle.py -v
+    - name: Verify Linux setup_e2e
+      id: setup-e2e
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/setup_e2e.py -v
+    - name: Verify Linux private uv preparation
+      id: private-uv
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_private_uv.py -v
+    - name: Verify Linux test_desktop_session
+      id: test-desktop-session
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_desktop_session.py -v
+    - name: Verify Linux test_startup_diagnostics
+      id: test-startup-diagnostics
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_startup_diagnostics.py -v
+    - name: Verify Linux test_desktop_scope_results
+      id: test-desktop-scope-results
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_desktop_scope_results.py -v
+    - name: Verify Linux test_desktop_acceptance_observation
+      id: test-desktop-acceptance-observation
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_desktop_acceptance_observation.py -v
+    - name: Verify Linux test_session_key_settings
+      id: test-session-key-settings
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_session_key_settings.py -v
+    - name: Verify Linux test_setup_scope_data
+      id: test-setup-scope-data
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_setup_scope_data.py -v
+    - name: Verify Linux test_practice_session
+      id: test-practice-session
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_practice_session.py -v
+    - name: Verify Linux test_fcitx_session_source
+      id: test-fcitx-session-source
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_fcitx_session_source.py -v
+    - name: Verify Linux test_fcitx_cooperative_session
+      id: test-fcitx-cooperative-session
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python -m unittest discover -s tests/linux -p test_fcitx_cooperative_session.py -v
+    - name: Verify Linux test_input_notifications
+      id: test-input-notifications
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_input_notifications.py -v
+    - name: Verify Linux test_gtk_geometry
+      id: test-gtk-geometry
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_gtk_geometry.py -v
+    - name: Verify Linux test_gtk_accessibility_bounds
+      id: test-gtk-accessibility-bounds
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_gtk_accessibility_bounds.py -v
+    - name: Verify Linux test_gtk_settings_scroll
+      id: test-gtk-settings-scroll
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_gtk_settings_scroll.py -v
+    - name: Verify Linux test_gtk_settings_focus
+      id: test-gtk-settings-focus
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_gtk_settings_focus.py -v
+    - name: Verify Linux test_gtk_settings_combo
+      id: test-gtk-settings-combo
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_gtk_settings_combo.py -v
+    - name: Verify Linux test_gtk_shortcut_input
+      id: test-gtk-shortcut-input
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_gtk_shortcut_input.py -v
+    - name: Verify Linux test_settings_capture
+      id: test-settings-capture
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_settings_capture.py -v
+    - name: Verify Linux test_ordinary_desktop_lifecycle
+      id: test-ordinary-desktop-lifecycle
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_ordinary_desktop_lifecycle.py -v
+    - name: Verify Linux test_gtk_preview_contract
+      id: test-gtk-preview-contract
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_gtk_preview_contract.py -v
+    - name: Verify Linux test_qt_candidate_observation
+      id: test-qt-candidate-observation
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_qt_candidate_observation.py -v
+    - name: Verify Linux test_argos_repetition_process
+      id: test-argos-repetition-process
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_argos_repetition_process.py -v
+    - name: Verify Linux test_index_package_diagnostics
+      id: test-index-package-diagnostics
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_index_package_diagnostics.py -v
+    - name: Verify Linux test_private_session_paths
+      id: test-private-session-paths
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_private_session_paths.py -v
+    - name: Verify Linux test_translation_quality_capture
+      id: test-translation-quality-capture
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_translation_quality_capture.py -v
+    - name: Verify Linux test_vscode_notifications
+      id: test-vscode-notifications
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_vscode_notifications.py -v
+    - name: Verify resumable model downloads over isolated HTTP
+      id: model-downloads
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: |
+        mkdir -p artifacts/linux/installation-progress
+        python tests/linux/setup_e2e.py --http --progress-output artifacts/linux/installation-progress/records.json -v
+    - name: Verify supervised model preparation
+      id: model-supervisor
+      if: ${{ matrix.group == 'contracts' && !cancelled() && steps.build.outcome == 'success' }}
+      run: python tests/linux/setup_e2e.py --supervisor artifacts/linux/package/native/typelay-supervise -v
+    - name: Verify nonblocking IPC
+      id: wire
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/wire.py -v
+    - name: Verify Linux host protocol
+      id: host-protocol
+      if: ${{ matrix.group == 'contracts' && !cancelled() && steps.build.outcome == 'success' }}
+      run: python tests/linux/session_host_protocol.py --host artifacts/linux/package/app/TypeLay.Linux -v
+    - name: Verify GTK settings feedback
+      id: settings-feedback
+      if: ${{ matrix.group == 'contracts' && !cancelled() && steps.display.outcome == 'success' }}
+      run: DISPLAY=:99 GDK_BACKEND=x11 dbus-run-session -- python tests/linux/test_settings_feedback.py -v
+    - name: Verify GTK unknown-IME refusal
+      id: gtk-refusal
+      if: ${{ matrix.group == 'contracts' && !cancelled() && steps.build.outcome == 'success' && steps.display.outcome ==
+        'success' }}
+      run: DISPLAY=:99 python tests/linux/native_e2e.py --gtk-refusal --native artifacts/linux/native --output artifacts/linux/nested
+    - name: Verify tray controls without downloading models
+      id: tray
+      if: ${{ matrix.group == 'contracts' && !cancelled() && steps.build.outcome == 'success' && steps.display.outcome ==
+        'success' }}
+      run: |
+        export DISPLAY=:99
+        GDK_BACKEND=x11 dbus-run-session -- python tests/linux/tray_e2e.py --package artifacts/linux/package
+    - name: Verify prototype tray panel without downloading models
+      id: tray-panel
+      if: ${{ matrix.group == 'contracts' && !cancelled() && steps.build.outcome == 'success' && steps.display.outcome ==
+        'success' }}
+      timeout-minutes: 1
+      run: |
+        export DISPLAY=:99
+        mkdir -p artifacts/linux/tray-panel
+        GDK_BACKEND=x11 dbus-run-session -- python tests/linux/tray_e2e.py --package artifacts/linux/package --panel-only --output artifacts/linux/tray-panel > artifacts/linux/tray-panel/inside.log 2>&1
+    - name: Verify real download progress across three native surfaces
+      id: download-progress
+      if: ${{ matrix.group == 'contracts' && !cancelled() && steps.build.outcome == 'success' && steps.display.outcome ==
+        'success' && steps.model-downloads.outcome == 'success' }}
+      timeout-minutes: 1
+      run: |
+        export DISPLAY=:99
+        GDK_BACKEND=x11 dbus-run-session -- python tests/linux/tray_e2e.py --package artifacts/linux/package --progress-only --progress-records artifacts/linux/installation-progress/records.json --output artifacts/linux/installation-progress > artifacts/linux/installation-progress/inside.log 2>&1
+    - name: Verify explicit quit confirmation without downloading models
+      id: quit-ui
+      if: ${{ matrix.group == 'contracts' && !cancelled() && steps.build.outcome == 'success' && steps.display.outcome ==
+        'success' }}
+      timeout-minutes: 1
+      run: |
+        export DISPLAY=:99
+        mkdir -p artifacts/linux/quit-ui
+        GDK_BACKEND=x11 dbus-run-session -- python tests/linux/quit_ui.py --package artifacts/linux/package --complete --output artifacts/linux/quit-ui > artifacts/linux/quit-ui/inside.log 2>&1
+    - name: Verify native shortcut settings without downloading models
+      id: shortcut-settings
+      if: ${{ matrix.group == 'contracts' && !cancelled() && steps.build.outcome == 'success' && steps.display.outcome ==
+        'success' }}
+      run: |
+        export DISPLAY=:99
+        python tests/linux/native_e2e.py --desktop --desktop-scope settings-ui --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/settings-ui
+    - name: Verify ordinary browser fields through the production DOM adapter
+      id: browser-dom
+      if: ${{ matrix.group == 'browser' && !cancelled() && steps.build.outcome == 'success' && steps.display.outcome == 'success'
+        }}
+      run: |
+        export DISPLAY=:99
+        python tests/linux/browser_e2e.py --chromium /usr/bin/chromium -v
+    - name: Verify browser native messaging and document routing
+      id: browser-native
+      if: ${{ matrix.group == 'browser' && !cancelled() && steps.build.outcome == 'success' && steps.display.outcome == 'success'
+        }}
+      run: |
+        export DISPLAY=:99
+        python tests/linux/browser_native_e2e.py --package artifacts/linux/package --chromium /usr/bin/chromium -v
+    - name: Probe source-owned VS Code edit transactions
+      id: vscode-transactions
+      if: ${{ matrix.group == 'browser' && !cancelled() && steps.display.outcome == 'success' }}
+      run: |
+        export DISPLAY=:99
+        set -- /usr/lib/electron*/electron
+        test "$#" -eq 1
+        python tests/linux/vscode_e2e.py --code "$1" --app /usr/lib/code
+    - name: Prepare the rich-editor browser fixture
+      id: editor-fixture
+      if: ${{ matrix.group == 'browser' && !cancelled() }}
+      run: |
+        mkdir -p artifacts/editor-probe
+        cp tests/linux/fixtures/editor/package*.json artifacts/editor-probe/
+        npm ci --prefix artifacts/editor-probe --ignore-scripts --no-audit --no-fund
+        cp tests/linux/fixtures/editor/entry.js artifacts/editor-probe/
+        timeout 30s node artifacts/editor-probe/node_modules/esbuild/bin/esbuild artifacts/editor-probe/entry.js --bundle --format=iife --outfile=artifacts/editor-probe/fixture.js
+    - name: Probe real rich-editor transaction reentrancy
+      id: editor-transactions
+      if: ${{ matrix.group == 'browser' && !cancelled() && steps.editor-fixture.outcome == 'success' && steps.display.outcome
+        == 'success' }}
+      run: |
+        export DISPLAY=:99
+        python tests/linux/editor_probe.py --editor-bundle artifacts/editor-probe/fixture.js --chromium /usr/bin/chromium -v
+    - name: Verify Firefox temporary extension and native messaging
+      id: firefox-native
+      if: ${{ matrix.group == 'browser' && !cancelled() && steps.build.outcome == 'success' && steps.display.outcome == 'success'
+        && steps.editor-fixture.outcome == 'success' }}
+      run: |
+        export DISPLAY=:99
+        python tests/linux/firefox_native_e2e.py --package artifacts/linux/package --firefox /usr/bin/firefox --geckodriver /usr/bin/geckodriver --editor-bundle artifacts/editor-probe/fixture.js -v
+    - name: Probe real Fcitx client requests and candidate selection
+      id: fcitx-client
+      if: ${{ matrix.group == 'native' && !cancelled() }}
+      run: python tests/linux/fcitx_probe.py
+    - name: Verify isolated Fcitx and GTK cooperative transactions
+      id: fcitx
+      if: ${{ matrix.group == 'native' && !cancelled() && steps.build.outcome == 'success' }}
+      run: python tests/linux/fcitx_cooperative/run.py --reuse-build --core-version 5.1.22 --core-ready-output "$GITHUB_OUTPUT"
+    - name: Probe original Fcitx Qt input delivery boundaries
+      id: qt
+      if: ${{ matrix.group == 'native' && !cancelled() && steps.fcitx.outputs.core-ready == 'true' }}
+      shell: bash
+      run: |
+        set -o pipefail
+        python tests/linux/qt_cooperative/run.py --reuse-build --fcitx-root artifacts/linux/fcitx-cooperative-5.1.22 --verify-fcitx-build 2>&1 | tee artifacts/linux/qt-cooperative-probe.log
+    - name: Package and relocate the optional Fcitx cooperation runtime
+      id: fcitx-package
+      if: ${{ matrix.group == 'native' && !cancelled() && (steps.fcitx.outcome == 'success' || steps.fcitx.outcome == 'failure')
+        }}
+      env:
+        QT_PROBE_OUTCOME: ${{ steps.qt.outcome }}
+      run: |
+        set --
+        if [ "$QT_PROBE_OUTCOME" = success ]; then
+          set -- --qt-output artifacts/linux/qt-cooperative
+        else
+          echo "Qt probe did not pass; preserve its failure and collect independent GTK evidence."
+        fi
+        python packaging/linux/fcitx-cooperative/pack.py --build-output artifacts/linux/fcitx-cooperative-5.1.22 "$@" --output artifacts/TypeLay-Fcitx-cooperative.tar.gz --compression-level 1
+        mkdir -p "artifacts/linux/relocated 输入法"
+        tar -xzf artifacts/TypeLay-Fcitx-cooperative.tar.gz -C "artifacts/linux/relocated 输入法"
+        # Match the user's profile-writing versions in this disposable container.
+        # Keep normal package signatures and dependency validation enabled.
+        mkdir -p artifacts/linux/target-packages
+        cd artifacts/linux/target-packages
+        curl --fail --location --output libime.pkg.tar.zst https://archive.archlinux.org/packages/l/libime/libime-1.1.16-1-x86_64.pkg.tar.zst
+        curl --fail --location --output libime.pkg.tar.zst.sig https://archive.archlinux.org/packages/l/libime/libime-1.1.16-1-x86_64.pkg.tar.zst.sig
+        curl --fail --location --output chinese.pkg.tar.zst https://archive.archlinux.org/packages/f/fcitx5-chinese-addons/fcitx5-chinese-addons-5.1.14-1-x86_64.pkg.tar.zst
+        curl --fail --location --output chinese.pkg.tar.zst.sig https://archive.archlinux.org/packages/f/fcitx5-chinese-addons/fcitx5-chinese-addons-5.1.14-1-x86_64.pkg.tar.zst.sig
+        printf '%s\n' "$LIBIME_PACKAGE_SHA256  libime.pkg.tar.zst" "$CHINESE_PACKAGE_SHA256  chinese.pkg.tar.zst" | sha256sum --check
+        test -s libime.pkg.tar.zst.sig
+        test -s chinese.pkg.tar.zst.sig
+        pacman -U --noconfirm libime.pkg.tar.zst chinese.pkg.tar.zst
+        test "$(pacman -Q libime)" = 'libime 1.1.16-1'
+        test "$(pacman -Q fcitx5-chinese-addons)" = 'fcitx5-chinese-addons 5.1.14-1'
+        echo 'packages-verified=true' >> "$GITHUB_OUTPUT"
+        cd ../../..
+        python "artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative/fcitx-cooperative.py" preflight
+    - name: Attach the matching desktop components to the main distribution
+      id: complete-package
+      if: ${{ matrix.group == 'native' && !cancelled() && steps.build.outcome == 'success' && steps.fcitx-package.outcome
+        == 'success' && steps.qt.outcome == 'success' }}
+      run: |
+        python eng/linux/build.py --finalize --cooperation-package artifacts/TypeLay-Fcitx-cooperative.tar.gz --compression-level 1
+        TYPELAY_REQUIRE_HY_RUNTIME=1 TYPELAY_REQUIRE_DESKTOP_COMPONENT=1 TYPELAY_LINUX_PACKAGE="$PWD/artifacts/TypeLay-Linux-preview-x86_64.tar.gz" python tests/linux/distribution_e2e.py -v
+    - name: Verify settings with the real local model
+      id: settings
+      if: ${{ matrix.group == 'settings' && !cancelled() && steps.models.outcome == 'success' && steps.display.outcome ==
+        'success' }}
+      run: |
+        export DISPLAY=:99
+        export XDG_CONFIG_HOME="$PWD/artifacts/linux/setup-settings-config"
+        export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
+        export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
+        python tests/linux/native_e2e.py --desktop --desktop-scope setup-settings --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/setup-settings
+    - name: Verify first-run tutorial with the real local model
+      id: tutorial
+      if: ${{ matrix.group == 'settings' && !cancelled() && steps.models.outcome == 'success' && steps.display.outcome ==
+        'success' }}
+      run: |
+        export DISPLAY=:99
+        export XDG_CONFIG_HOME="$PWD/artifacts/linux/setup-tutorial-config"
+        export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
+        export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
+        python tests/linux/native_e2e.py --desktop --desktop-scope setup-tutorial --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/setup-tutorial
+    - name: Exercise ordinary GIMP comments through shipped Settings
+      id: gimp
+      if: ${{ matrix.group == 'native' && !cancelled() && steps.models.outcome == 'success' && steps.complete-package.outcome
+        == 'success' && steps.display.outcome == 'success' }}
+      timeout-minutes: 6
+      run: |
+        export DISPLAY=:99
+        export XDG_CONFIG_HOME="$PWD/artifacts/linux/ordinary-gimp-config"
+        export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
+        export XDG_CACHE_HOME="$PWD/artifacts/linux/ordinary-gimp-cache"
+        python tests/linux/native_e2e.py --desktop --desktop-scope ordinary-gimp --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/ordinary-gimp
+    - name: Exercise the production desktop and real browser input
+      id: browser-desktop
+      if: ${{ matrix.group == 'browser' && !cancelled() && steps.models.outcome == 'success' && steps.display.outcome == 'success'
+        && steps.editor-fixture.outcome == 'success' }}
+      run: |
+        export DISPLAY=:99
+        export XDG_CONFIG_HOME="$PWD/artifacts/linux/desktop-config"
+        export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
+        export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
+        python tests/linux/native_e2e.py --desktop --desktop-scope browser --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/desktop --editor-bundle artifacts/editor-probe/fixture.js
+    - name: Exercise relocated Fcitx and cooperative GTK with the real local model
+      id: gtk-desktop
+      if: ${{ matrix.group == 'native' && !cancelled() && steps.models.outcome == 'success' && steps.fcitx-package.outcome
+        == 'success' && steps.display.outcome == 'success' }}
+      run: |
+        export DISPLAY=:99
+        export XDG_CONFIG_HOME="$PWD/artifacts/linux/gtk-desktop-config"
+        export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
+        export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
+        python tests/linux/native_e2e.py --desktop --desktop-scope gtk --gtk-session-bindings --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/gtk-desktop --fcitx-cooperative "artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative"
+    - name: Exercise cooperative GTK4 Entry with the real local model
+      id: gtk4-desktop
+      if: ${{ matrix.group == 'native' && !cancelled() && steps.models.outcome == 'success' && steps.fcitx-package.outcome
+        == 'success' && steps.display.outcome == 'success' }}
+      run: |
+        export DISPLAY=:99
+        export XDG_CONFIG_HOME="$PWD/artifacts/linux/gtk4-desktop-config"
+        export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
+        export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
+        python tests/linux/native_e2e.py --desktop --desktop-scope gtk4 --gtk-session-bindings --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/gtk4-desktop --fcitx-cooperative "artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative"
+    - name: Exercise Qt6 widgets with explicit bundle or build provenance
+      id: qt-desktop
+      if: ${{ matrix.group == 'native' && !cancelled() && steps.models.outcome == 'success' && (steps.qt.outcome == 'success'
+        || steps.qt.outcome == 'failure') && steps.fcitx-package.outcome == 'success' && steps.display.outcome == 'success'
+        }}
+      env:
+        QT_PROBE_OUTCOME: ${{ steps.qt.outcome }}
+      run: |
+        export DISPLAY=:99
+        export XDG_CONFIG_HOME="$PWD/artifacts/linux/qt-desktop-config"
+        export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
+        export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
+        case "$QT_PROBE_OUTCOME" in
+          success)
+            fcitx_root="artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative"
+            ;;
+          failure)
+            fcitx_root=artifacts/linux/fcitx-cooperative-5.1.22
+            python tests/linux/qt_cooperative/desktop_admission.py --probe-outcome "$QT_PROBE_OUTCOME" --fcitx-root "$fcitx_root" --qt-output artifacts/linux/qt-cooperative --output artifacts/linux/qt-desktop/qt-desktop-admission.json
+            echo 'Qt probe remains failed. Qt desktop uses explicit unbundled build inputs, not distribution acceptance.' >> "$GITHUB_STEP_SUMMARY"
+            ;;
+          *) echo 'Qt desktop not run: probe outcome is neither success nor failure.'; exit 1 ;;
+        esac
+        python tests/linux/native_e2e.py --desktop --desktop-scope qt --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/qt-desktop --fcitx-cooperative "$fcitx_root" --qt-cooperative artifacts/linux/qt-cooperative
+    - name: Verify installed VS Code command with the real local model
+      id: vscode-model
+      if: ${{ matrix.group == 'browser' && !cancelled() && steps.models.outcome == 'success' && steps.display.outcome == 'success'
+        }}
+      run: |
+        export DISPLAY=:99
+        set -- /usr/lib/electron*/electron
+        test "$#" -eq 1
+        python tests/linux/vscode_e2e.py --code "$1" --app /usr/lib/code --vsix "$PWD/artifacts/linux/package/vscode/typelay-editor.vsix" --code-cli /usr/bin/code --host "$PWD/artifacts/linux/package/typelay" --model-data "$PWD/artifacts/linux/desktop-data/typelay" --output artifacts/linux/vscode-model
+    - name: Prepare and verify fixed Hy test data separately from the desktop
+      id: hy-model-prepare
+      if: ${{ matrix.group == 'settings' && !cancelled() && steps.models.outcome == 'success' }}
+      timeout-minutes: 3
+      run: |
+        mkdir -p artifacts/linux/hy-package
+        python tests/linux/hy_package_e2e.py --prepare-cache --package artifacts/linux/package --cache artifacts/linux/hy-model-cache > artifacts/linux/hy-package/cache-verification.json
+    - name: Exercise formal Python and real GTK Hy install select return and remove
+      id: hy-packages
+      if: ${{ matrix.group == 'settings' && !cancelled() && steps.hy-model-prepare.outcome == 'success' && steps.display.outcome
+        == 'success' }}
+      timeout-minutes: 5
+      run: |
+        export DISPLAY=:99
+        export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
+        export XDG_CACHE_HOME="$PWD/artifacts/linux/hy-model-cache"
+        python tests/linux/native_e2e.py --desktop --desktop-scope model-packages --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/hy-package
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      if: always()
+      with:
+        name: linux-${{ matrix.group }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |-
+          artifacts/ci/
+          artifacts/linux/*.json
+          artifacts/linux/*.log
+          artifacts/linux/ordinary-gimp/
+          artifacts/linux/browser-native/
+          artifacts/linux/firefox-native/
+          artifacts/linux/vscode/
+          artifacts/linux/vscode-model/
+          artifacts/linux/editor-probe/
+          artifacts/linux/fcitx-probe/
+          artifacts/linux/hy-package/
+          artifacts/linux/setup-settings/
+          artifacts/linux/setup-tutorial/
+          artifacts/linux/desktop/
+          artifacts/linux/gtk-desktop/
+          artifacts/linux/gtk4-desktop/
+          artifacts/linux/qt-desktop/
+          artifacts/linux/qt-cooperative/*.json
+          artifacts/linux/qt-cooperative/*.log
+          artifacts/linux/fcitx-cooperative-5.1.22/*.json
+          artifacts/linux/fcitx-cooperative-5.1.22/*.log
+          artifacts/linux/fcitx-cooperative-5.1.22/gtk*-glossary-session/*.json
+          artifacts/linux/fcitx-cooperative-5.1.22/gtk*-glossary-session/*.log
+          artifacts/linux/desktop-data/typelay/components/*/self-check.json
+        if-no-files-found: warn
+        retention-days: 14
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      if: inputs.upload_packages && matrix.group == 'native'
+      with:
+        name: linux-package-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |-
+          artifacts/TypeLay-Linux-preview-x86_64.tar.gz
+          artifacts/TypeLay-Fcitx-cooperative.tar.gz
+        if-no-files-found: warn
+        retention-days: 14
+  linux-native:
+    name: Linux / ${{ matrix.group }}
+    needs: fonts
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - name: Record independent job budget
-        run: echo "TYPELAY_INDEX_CHECK_START=$(date +%s)" >> "$GITHUB_ENV"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
-        with:
-          global-json-file: global.json
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.13'
-      - name: Install explicit setup dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3-gi libglib2.0-bin
-          python -m pip install uv==0.13.4
-      - name: Restore only the pinned CPU runtime archive
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          # Model weights are ephemeral downloads, never persisted to a GitHub cache.
-          path: artifacts/index-runtime-download/
-          key: index-linux-${{ hashFiles('eng/linux/index/runtime-archive.lock.json', 'src/shared/TypeLay.Worker/native/index/model.lock.json') }}
-      - name: Prepare and verify official Index model and CPU closure
-        timeout-minutes: 10
-        run: |
-          python eng/linux/index/prepare_runtime.py --cache artifacts/index-runtime-download --output artifacts/index-runtime
-          python eng/shared/prepare_index_model.py --output artifacts/index-model-download
-      - name: Build the actual Linux host and worker payload
-        id: index-package
-        timeout-minutes: 10
-        run: |
-          dotnet publish src/linux/TypeLay.Linux -c Release -r linux-x64 --self-contained true -o artifacts/index-package/app -warnaserror
-          python - <<'PY'
-          import shutil, subprocess
-          from pathlib import Path
-          from eng.linux.build import package_worker
-          from eng.linux.uv.prepare import prepare as prepare_uv
-          package = Path('artifacts/index-package').absolute()
-          package_worker(package, index_runtime=Path('artifacts/index-runtime').absolute())
-          prepare_uv(Path('artifacts/linux/uv-download'), package / 'support/uv')
-          shutil.copytree('src/linux/desktop', package / 'desktop', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
-          (package / 'native').mkdir()
-          subprocess.run(['gcc', '-O2', '-Wall', '-Wextra', '-Werror', 'src/linux/native/supervise.c', '-o', str(package / 'native/typelay-supervise')], check=True)
-          PY
-      - name: Verify Index default preparation, actual host and package transitions
-        id: index-lifecycle
-        timeout-minutes: 11
-        run: |
-          if [ "$(( $(date +%s) - TYPELAY_INDEX_CHECK_START ))" -gt 1140 ]; then
-            mkdir -p artifacts/index-production
-            printf '%s\n' '{"scope":"linux-index-production-package-lifecycle","lifecycle":"not-run","reason":"insufficient-job-budget"}' > artifacts/index-production/result.json
-            exit 1
-          fi
-          /usr/bin/python3 tests/linux/index_package_e2e.py --package artifacts/index-package --cache artifacts/index-model-download --output artifacts/index-production
-      - name: Report required checks, including not-run prerequisites
-        if: always()
-        env:
-          CI_STEPS: ${{ toJSON(steps) }}
-          CI_REQUIRED_STEPS: >-
-            index-package
-            index-lifecycle
-        run: python eng/shared/ci_report.py
-      - name: Preserve only structured Index verification
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: typelay-index-linux-${{ github.sha }}
-          path: |
-            artifacts/index-production/result.json
-            artifacts/ci/
-          if-no-files-found: warn
-          retention-days: 14
+    container: *linux-container
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        group:
+        - native
+    env: *linux-sdk
+    steps: *linux-steps

@@ -1,0 +1,94 @@
+name: Linux tools
+description: Install the existing target SDK and desktop dependencies in the disposable CI container.
+inputs:
+  desktop:
+    description: Install the browsers, editors and desktop scenario tools
+    default: 'true'
+  producer:
+    description: Publish the complete pinned package cache when it is missing
+    default: 'false'
+runs:
+  using: composite
+  steps:
+  - name: Pin the native toolchain and runtime repositories
+    run: |
+      snapshot=$(cat eng/ci/arch-snapshot)
+      printf 'Server = https://archive.archlinux.org/repos/%s/$repo/os/$arch\n' "$snapshot" > /etc/pacman.d/mirrorlist
+      sed -i -E '/^#?ParallelDownloads[[:space:]]*=/d' /etc/pacman.conf
+      sed -i '/^\[options\]/a ParallelDownloads = 8' /etc/pacman.conf
+      mkdir -p "$GITHUB_WORKSPACE/artifacts/linux-tools-cache"
+      sed -i '/^CacheDir[[:space:]]*=/d' /etc/pacman.conf
+      sed -i "/^\[options\]/a CacheDir = $GITHUB_WORKSPACE/artifacts/linux-tools-cache" /etc/pacman.conf
+    shell: bash
+  - name: Bootstrap the fixed download transport
+    run: pacman -Syyuu --needed --noconfirm python github-cli
+    shell: bash
+  - name: Restore pinned native and desktop packages
+    id: packages
+    run: |
+      if [ "$PRODUCER" = true ]; then
+        python eng/ci/fixed.py restore linux-tools
+      else
+        python eng/ci/fixed.py restore linux-tools --wait-for-job fcitx-build
+      fi
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PRODUCER: ${{ inputs.producer }}
+    shell: bash
+  - name: Install target native SDK
+    run: pacman -Su --needed --noconfirm git cmake ninja pkgconf gtk3 gtk4 json-glib python
+      curl icu openssl zlib libxkbcommon-x11 dbus fcitx5 fcitx5-gtk fcitx5-chinese-addons boost libime
+      patch fmt glib2-devel nlohmann-json expat xkeyboard-config iso-codes extra-cmake-modules gettext wayland-protocols plasma-wayland-protocols
+      github-cli opencc procps-ng zstd qt6-base libxkbcommon libxcb
+    shell: bash
+  - name: Install desktop scenario tools
+    if: inputs.desktop == 'true' || (inputs.producer == 'true' && steps.packages.outputs.hit != 'true')
+    run: pacman -S --needed --noconfirm gimp at-spi2-core python-gobject libayatana-appindicator
+      niri mesa uv grim noto-fonts-cjk xdg-desktop-portal-gtk xorg-server-xvfb xdotool
+      chromium python-playwright firefox geckodriver code nodejs npm
+    shell: bash
+  - name: Publish pinned native and desktop packages
+    if: inputs.producer == 'true' && steps.packages.outputs.hit != 'true'
+    run: python eng/ci/fixed.py publish linux-tools
+    env:
+      GH_TOKEN: ${{ github.token }}
+    shell: bash
+  - name: Match the target GTK4 upstream release
+    id: gtk4-sdk
+    run: |
+      mkdir -p /tmp/typelay-target-sdk
+      cd /tmp/typelay-target-sdk
+      package='gtk4-1%3A4.22.5-1-x86_64.pkg.tar.zst'
+      curl --fail --location "https://archive.archlinux.org/packages/g/gtk4/$package" -o gtk4.pkg.tar.zst
+      curl --fail --location "https://archive.archlinux.org/packages/g/gtk4/$package.sig" -o gtk4.pkg.tar.zst.sig
+      echo "$GTK4_PACKAGE_SHA256  gtk4.pkg.tar.zst" | sha256sum -c -
+      echo "$GTK4_SIGNATURE_SHA256  gtk4.pkg.tar.zst.sig" | sha256sum -c -
+      pacman -U --noconfirm ./gtk4.pkg.tar.zst
+      test "$(pkg-config --modversion gtk4)" = 4.22.5
+    env:
+      GTK4_PACKAGE_SHA256: 7386543a425d523b76f08a8269b530dcbebc45a53a68cfdef5251e8238d60dc9
+      GTK4_SIGNATURE_SHA256: 894fd81f845eb49137d73056f62b27f2d194d2990ebe6dfdc956cd678db76048
+    shell: bash
+  - name: Match the target Qt upstream ABI
+    id: qt-sdk
+    run: |
+      mkdir -p /tmp/typelay-target-sdk
+      cd /tmp/typelay-target-sdk
+      package='qt6-base-6.11.2-3-x86_64.pkg.tar.zst'
+      curl --fail --location "https://archive.archlinux.org/packages/q/qt6-base/$package" -o "$package"
+      curl --fail --location "https://archive.archlinux.org/packages/q/qt6-base/$package.sig" -o "$package.sig"
+      echo "$QT_PACKAGE_SHA256  qt6-base-6.11.2-3-x86_64.pkg.tar.zst" | sha256sum -c -
+      echo "$QT_SIGNATURE_SHA256  qt6-base-6.11.2-3-x86_64.pkg.tar.zst.sig" | sha256sum -c -
+      pacman -U --noconfirm "./$package"
+      test "$(pkg-config --modversion Qt6Core)" = 6.11.2
+      test -f /usr/lib/qt6/plugins/platforms/libqwayland.so
+    env:
+      QT_PACKAGE_SHA256: 257c5ef6180119d5b4365bdfe2a2ad051694b5dff390eac8e736dd78b8107b21
+      QT_SIGNATURE_SHA256: abf939ab10c2d7f28af81e5230c72e2acbd803fe43590fda331f474ec871dcfb
+    shell: bash
+  - name: Initialize the disposable container D-Bus identity
+    run: dbus-uuidgen --ensure=/etc/machine-id
+    shell: bash
+  - name: Trust the disposable checkout
+    run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+    shell: bash

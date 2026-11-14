@@ -1,0 +1,25 @@
+name: Verified UI fonts
+description: Restore the shared immutable UI font build and check the pinned bytes.
+inputs:
+  tag:
+    required: true
+    description: Content hash release tag
+  token:
+    required: true
+    description: Read-only repository token
+runs:
+  using: composite
+  steps:
+  - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+    if: runner.os == 'Windows'
+    with:
+      python-version: '3.13'
+  - name: Restore fixed UI fonts
+    run: python eng/ci/fixed.py restore fonts --tag "$FONT_TAG"
+    env:
+      GH_TOKEN: ${{ inputs.token }}
+      FONT_TAG: ${{ inputs.tag }}
+    shell: bash
+  - name: Verify fixed UI fonts
+    run: python eng/fonts/prepare.py --verify
+    shell: bash

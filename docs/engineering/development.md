@@ -94,31 +94,47 @@ Python 开发工具进入 [eng/requirements.txt](../../eng/requirements.txt)。�
 
 ## 判断 CI 实际检查了什么
 
-主工作流是 [check.yml](../../.github/workflows/check.yml)。它自动检查所有目标分支的 PR，包括指向 `hitl` 的 PR 和指向下层工作分支的堆叠 PR。PR 创建、更新提交、重新打开或转为待审时都会触发。标题、正文或目标分支编辑不触发工作流，避免产生同名的 skipped 检查。`hitl`、`trunk` 和 `work/**` 的 push 也会触发。触发器不授予修改分支的权限。
+主工作流是 [check.yml](../../.github/workflows/check.yml)。每次向工作分支或 `hitl` 推送都会执行完整检查。`main`、`trunk` 不触发该工作流。仓库内 PR 直接展示 head 提交的 push 检查，避免同一提交再跑一次 PR 合并提交。堆叠 PR 的 base 变化后，需要 rebase 并推送新 head，才能取得新基底上的证据。
 
-堆叠 PR 调整目标分支后，按[任务跟踪约定](../agents/issue-tracker.md#stacked-prs)同步栈。rebase 后推送新 head 会通过 `synchronize` 产生新证据。只改 base 而未更新 head 时，没有新的被测合并提交证据；审查仍须核对 artifact 中的 base 和 `tested_commit`。
+CI 使用以下并行分工，各组保留现役测试命令、断言和产品期限。
 
-检查名按事件隔离。PR 使用固定的 `PR /` 前缀，`hitl` push 使用 `hitl push /`，其它 push 使用 `branch push /`，手动运行使用 `manual /`。工作分支收缩范围或手动质量采集不能产生 PR 的检查名。以后配置 PR 必需检查时，应从实际执行成功的 `PR /` 名称中选择，并包含 `PR / scope`。选择器失败时，下游 job 可能跳过；GitHub 会将 skipped 视为满足必需检查，不能单靠这些下游状态判断完整执行。
+| Job | 执行范围 |
+| --- | --- |
+| `fonts`、`fcitx-build` | 按输入哈希准备跨分支固定产物。 |
+| `shared` | Python lint、格式、Linux 输入反馈、宿主离线隔离、共享 .NET 和 worker 回归。 |
+| `windows-contracts`，4 个分片 | 完整 Windows solution 测试。前三片分配耗时较长的 App 类，第四片自动接收其余类和项目。两项归档正文超时测试仍单独执行一次；物理 Tab 交接包消费同片的原合同结果。 |
+| `windows-tools` | 构建、格式、worker 与受控 native adapter。 |
+| `windows-desktop`，2 个分片 | 普通组执行 continuous、浏览器和 Notepad，保留三项退出校验。Hy 组在自己的 runner 重新执行 continuous，核验该消费者退出后，再执行 Hy。 |
+| `index-windows`、`index-linux` | 正式 Index 安装、真实推理及包生命周期。 |
+| `linux`，3 个分片，加 `linux-native` | 合同与无模型界面、浏览器与编辑器、合作输入与原生桌面、设置教程与 Hy 生命周期。 |
 
-[ci_scope.py](../../eng/shared/ci_scope.py) 根据事件和提交证据选择检查范围。PR 和 `hitl` push 始终保留共享、Windows 和 Linux 检查。PR 使用 Actions 默认检出的测试合并提交。每次运行的 Summary 和 `typelay-ci-source-*` artifact 记录事件、PR head、base、实际被测提交、run ID 和 attempt。审查时核对这三个提交身份，不把 PR head 当作测试合并提交。
+每轮最多有 16 个 job，字体准备后最多并行 15 个，低于免费 runner 的 20 个并发上限。不同 runner 不共享桌面、模型安装代或消费者进程。每个 Windows 桌面组各自完成正式 Argos 安装与 continuous。Hy 只消费自己 runner 中该次调用的安装和内核退出证明；普通组仍校验 continuous、浏览器与 Notepad 的全部原始退出证明。完整 solution 构建留在合同与工具组，桌面组只构建它实际消费的 fixture。job 内独立检查在失败后继续，依赖失败的场景保持 skipped。Actions 原始 step 和 job 状态就是结果；失败、取消和 skipped 都不能表述为通过。当前没有负责人批准的历史失败例外。以后获批的例外仍须放在独立非必需 job，保留真实失败。
 
-工作流触发后，检查范围由现役选择器确定。完整检查覆盖共享、Windows 和 Linux；符合条件的工作分支 push 可以按本次 push 触及的全部路径缩减平台范围。选择器会计入撤销、重命名和合并父提交；提交身份不完整、未知或共享路径、跨平台变更和空变更会保留双端检查。
+各结果 artifact 都带 SHA、run ID 和 attempt。`artifacts/ci/source.json` 记录实际 `git rev-parse HEAD`。push 测试的是 head，不是 GitHub 临时合并提交。墙钟时间统一按 `max(必过 job.completed_at) - run.created_at` 计算，包含排队、准备和诊断上传。
 
-查看结果时，区分以下情形：
+### 固定产物的复用与更新
 
-- 仅文档的有效工作分支 push 只运行共享检查；只涉及单个平台的变更保留共享与该平台检查。共享测试修改也保留双端检查。
-- `index-windows` 和 `index-linux` 独立检查正式 Index 安装器与宿主生命周期。它们不替代既有输入、Hy 或 GUI 检查；`quality-only` 也不执行这些 Index job。
-- `quality-only` 必须同时显式选择质量采集。它用于固定响应采集，不构成产品验收。只有执行这类任务时才读[翻译质量采集指南](translation-quality.md#linux-模型包生命周期中的显式质量采集)。
+[fixed.py](../../eng/ci/fixed.py) 将固定构建保存为 GitHub prerelease。tag 为 `ci-fonts-<SHA256>`、`ci-fcitx-<SHA256>`、`ci-hy-<SHA256>`、`ci-index-<SHA256>` 或 `ci-linux-tools-<SHA256>`，所有分支都能读取。字体的输入包含生成器、字体锁和固定工具版本。`ci-fcitx` 只保存第三方 Fcitx、LibIME、中文附加组件及对应的固定源码和数据。它的键包含 [third_party.py](../../eng/linux/cooperative/third_party.py) 中的源码和数据校验值、第三方补丁、构建配方及 [Arch 快照日期](../../eng/ci/arch-snapshot)。TypeLay 自身的 GTK4、Qt6 和公共头文件不进入第三方键。
 
-共享、Windows、Linux 和两端 Index job 各自运行，不等待其它平台检查通过。选择器成功后，源码证据上传失败仍保留为失败，但不阻断已选定的平台 job。job 内的独立检查也继续执行。例如，Python lint 失败不阻断共享行为检查；Linux 主包构建失败不阻断 HTTP 下载和 VS Code 事务检查。需要实际包、模型或前序进程退出证明的场景仍等待这些前提。Notepad 退出证明单独记录，证明失败时场景显示 `not-run`。
+Linux 的原始 pacman 包也通过 release 复用，键只包含快照日期和工具安装配方。现有生产者在新键首次运行时准备全部 SDK 与桌面软件包，消费者每轮仍执行原有完整包列表、签名与依赖校验，不复用已安装的系统目录。Python 和 GitHub CLI 从固定仓库引导后，才读取该原始包缓存。
 
-各 job 的 Summary 和 `artifacts/ci/<job>.json` 逐项记录 `passed`、`failed` 或 `not-run`。[ci_report.py](../../eng/shared/ci_report.py) 读取 Actions 的原始步骤 outcome；跳过、取消或缺少执行记录都记为 `not-run`。所选必过项没有全部通过时，报告步骤返回失败。报告不会把 `continue-on-error` 后的 conclusion 当作通过依据。runner 被强制终止、job 未启动或检出失败时可能无法生成报告，此时以 Actions 的失败、取消或 skipped 状态确认未完成，不能补记通过。
+Linux 生产者和消费 runner 都将 pacman 仓库固定到该日期，并用 `-Syyuu` 同步全部已安装软件包，包含滚动容器中较新的包的降级。GTK4 和 Qt 的目标 ABI 包仍保留原 SHA-256 校验。普通上游更新不改变工具链；升级时主动修改快照日期，并在 Actions 验证依赖、目标 ABI 和完整场景。修改第三方源码 pin、数据、补丁或构建配方也会生成新键。新键第一次构建可以超过 10 分钟，PR 应记录触发变更和完整耗时；普通 TypeLay 原生源码改动仍须满足 10 分钟。
 
-当前没有负责人批准的历史失败例外，全部产品检查保留在必过 job 中。获批例外须在相应变更中放入独立的非必需 job，保留原始失败结果。本工作流不配置合并保护。CI 触发与结果呈现可以独立验收；产品红项仍阻塞对应产品规格的完成。
+输入没有变化时，CI 下载已有产物；输入变化或产物不存在时，CI 自动构建并发布新 tag。写入 job 按产物类型串行，避免分支同时重复构建。`fcitx-build` 同时负责第三方原生依赖、Hy 和 Index 固定下载，命中时只查询，不重新下载或构建。消费 runner 同时准备桌面环境与当前应用，在使用固定字节前才等待发布；生产者失败会使等待明确失败。发布先创建 draft，上传完成后才公开。只有这两个 job 需要 `contents: write`，其余 job 只读。该机制不依赖默认分支缓存，不修改仓库设置。
 
-共享 CI 还执行仓库 Python lint、格式检查和 Linux 输入反馈合同。`shared-check` 本身不包含全部 CI 步骤。选择器的行为回归已纳入共享检查，单独维护选择器时可运行 `python -m unittest discover -s tests/shared -v`。
+下载时先核对 GitHub asset SHA-256，再校验第三方输入、已安装文件和上游源码补丁。消费 runner 每次重新编译当前提交的 TypeLay GTK/Qt 模块及接入它们的 Fcitx GTK/Qt 插件，随后执行原有生产构建记录和 ABI 校验。测试 fixture 也重新编译，全部场景重新执行。固定构建不携带 TypeLay 模块或测试成功记录，旧结果不能授予当前提交通过资格。
 
-CI artifact 按提交 SHA 命名。上传范围由工作流明确列出，避免上传整个 `artifacts/`。Index 模型只下载到临时 runner，模型文件不进入其 cache 或 artifact；CPU archive 可缓存，结果只保留结构化阶段与身份信息。日志属于实际执行的提交，不能将旧头结果写成当前头通过。
+Hy 的键只包含生成锁中模型、许可证和运行库压缩包的固定下载记录，不包含当前产品源码记录。它复用原始下载文件，不保存安装后的模型、运行库目录或验收结果。Windows 消费 runner 仍执行原有准备入口，对每个文件重新检查完整大小与哈希、提取并校验运行库，再执行模型安装和产品场景。Index 的模型和许可证也以各自锁定的下载记录为键，Linux 和 Windows 均复用原始下载，并执行原准备入口的完整校验。传输复用同一 release 机制，不增加 job 或重试。
+
+普通 push 只上传 TRX、JSON、日志和截图。最终验收需要安装包时，在目标提交手动运行工作流，并设置 `upload_packages=true`。安装包仍在每轮构建和搬迁验证，只是平时不上载。
+
+CI 的主 Linux 包与合作包均使用 `--compression-level 1`，减少压缩耗时；包内文件、来源校验和搬迁验收保持一致。单独运行打包入口时，默认仍使用等级 9。原生组同时构建当前应用、GTK 合作模块和 Qt 模块，等待三者结束并检查每个退出状态后，才执行依赖这些产物的场景；原始 Fcitx 客户端探针不依赖这些构建，保留独立结果。
+
+```sh
+gh workflow run check.yml --repo DingJWuyu/Typelay --ref <工作分支> -f upload_packages=true
+```
+
+手动运行也执行完整检查；它不能替代两次自动 push 的时限验收。模型权重只在固定下载 release 和临时 runner 中复用，不进入结果 artifact。CI 不再提供质量采集开关，显式模型研究按[翻译质量采集指南](translation-quality.md)独立执行。
 
 ## 结束条件
 

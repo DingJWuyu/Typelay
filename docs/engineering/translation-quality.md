@@ -125,18 +125,7 @@ fixture 的非采集预算仍为 240 秒。默认组合模式工作窗口为 847
 
 ### 从 CI 显式发起
 
-已有授权且 workflow 可调度时，选择 `quality-only` 与 `collect_translation_quality=true`，才会运行非验收采集：
-
-```sh
-gh workflow run check.yml --repo DingJWuyu/Typelay --ref work/linux-usability \
-  -f check_mode=quality-only -f collect_translation_quality=true
-```
-
-仅设置采集布尔值而保持 `full`，仍执行完整检查。`quality-only` 保留共享检查、同 SHA 的 Linux 构建、完整包组装、合作组件探针、正式安装与所选采集；它跳过 Windows、独立 Index job 和无关桌面场景。跳过项必须记为未运行。
-
-需要解码对照时，再设置 `hy_decode_comparison=true`；需要固定诊断时，改设 `fixed_model_diagnostics=true`。两项不能共选。解码对照先生成 A/B 计划，再验证现有缓存；计划不证明实际运行。
-
-同分支的 `full` 和 `quality-only` 使用两个固定并发组，每组会取消本组旧 run。编排者必须确认上一轮质量试验已终态，再发下一轮；不能靠新增参数绕开同组限制。实际跨组执行情况以 GitHub run 为准。
+常规 CI 只执行必过验证，不提供质量采集开关。已有授权的研究使用上文的现役采集入口独立执行，并保留对应提交、模型和实际输出。采集结果不构成完整产品验收。
 
 ### 核对完成与退出
 

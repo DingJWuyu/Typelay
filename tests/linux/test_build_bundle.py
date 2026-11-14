@@ -1,5 +1,6 @@
 """Exercise main-package finalization with real files and cooperation archives."""
 
+import gzip
 import hashlib
 import importlib.util
 import io
@@ -107,6 +108,31 @@ class PackageReadmeTests(unittest.TestCase):
                 self.assertNotIn("](..", readme)
 
 
+class FcitxArchiveTests(unittest.TestCase):
+    def test_fast_compression_preserves_the_complete_normalized_package(self):
+        spec = importlib.util.spec_from_file_location(
+            "typelay_pack_compression_test", ROOT / "packaging/linux/fcitx-cooperative/pack.py"
+        )
+        pack = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pack)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle = root / "TypeLay-Fcitx-cooperative"
+            bundle.mkdir()
+            (bundle / "LICENSE").write_text("license and corresponding source\n" * 100)
+            executable = bundle / "fcitx5"
+            executable.write_bytes(b"inert executable payload\n" * 200)
+            executable.chmod(0o755)
+            (bundle / "launcher").symlink_to("fcitx5")
+            normal = root / "normal.tar.gz"
+            fast = root / "fast.tar.gz"
+            pack.write_archive(bundle, normal)
+            pack.write_archive(bundle, fast, compression_level=1)
+            self.assertEqual(
+                gzip.decompress(normal.read_bytes()), gzip.decompress(fast.read_bytes())
+            )
+
+
 class BuildSafetyTests(unittest.TestCase):
     """The real CLI must reject destructive paths before preparing or compiling.
 
@@ -124,6 +150,7 @@ class BuildSafetyTests(unittest.TestCase):
         for relative in (
             "eng/linux/build.py",
             "eng/linux/cooperative/inputs.py",
+            "eng/linux/cooperative/third_party.py",
             "eng/linux/index/prepare_runtime.py",
             "eng/fonts/prepare.py",
             "eng/index_profile.py",
@@ -1172,7 +1199,7 @@ class MainBundleTests(unittest.TestCase):
                 entry.size = len(data)
                 package.addfile(entry, io.BytesIO(data))
 
-    def finalize(self):
+    def finalize(self, *arguments, env=None):
         return subprocess.run(
             [
                 sys.executable,
@@ -1182,12 +1209,24 @@ class MainBundleTests(unittest.TestCase):
                 str(self.package),
                 "--cooperation-package",
                 str(self.archive),
+                *arguments,
             ],
             cwd=self.repository,
             text=True,
             capture_output=True,
+            env=env,
             timeout=30,
         )
+
+    def test_fast_main_archive_preserves_the_complete_finalized_package(self):
+        self.write_archive()
+        environment = os.environ | {"SOURCE_DATE_EPOCH": "1"}
+        normal = self.finalize(env=environment)
+        self.assertEqual(normal.returncode, 0, normal.stderr)
+        expected = gzip.decompress(self.output.read_bytes())
+        fast = self.finalize("--compression-level", "1", env=environment)
+        self.assertEqual(fast.returncode, 0, fast.stderr)
+        self.assertEqual(gzip.decompress(self.output.read_bytes()), expected)
 
     def test_current_regression_inputs_survive_finalization(self):
         self.metadata["testInputs"] = {"files": inputs.hashes(inputs.FCITX_TEST_INPUTS)}

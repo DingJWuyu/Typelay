@@ -14,6 +14,38 @@ METHOD = (
     "DownloadTimeoutAlsoBoundsAnArchiveBodyAfterHeadersAndPartialBytes"
 )
 CANCELED = {-2, -15, 130, -1073741510, 0xC000013A}
+# Balanced using the sample run's TRX class durations. The fourth partition is
+# the complement, so adding a test class never silently removes it from CI.
+GROUPS = (
+    ("SetupRenderingTests", "OwnedPracticeQueueTests"),
+    (
+        "NativeSourceControllerTests",
+        "ModelInstallerTests",
+        "ModelInstallationStoreTests",
+        "LanguagePickerInteractionTests",
+    ),
+    (
+        "SettingsRenderingTests",
+        "NativeSourceGlossaryTests",
+        "OverlayTranslationMenuTests",
+        "ProductionForegroundWriteTests",
+    ),
+)
+
+
+def includes_class(shard, name):
+    return name in GROUPS[shard - 1] if shard < 4 else not any(name in group for group in GROUPS)
+
+
+def partition_filter(shard):
+    if shard is None:
+        return f"FullyQualifiedName!={METHOD}"
+    names = GROUPS[shard - 1] if shard < 4 else sum(GROUPS, ())
+    operator, joiner = ("~", "|") if shard < 4 else ("!~", "&")
+    classes = joiner.join(
+        f"FullyQualifiedName{operator}TypeLay.App.Tests.{name}." for name in names
+    )
+    return f"({classes})&FullyQualifiedName!={METHOD}"
 
 
 def results(directory):
@@ -29,6 +61,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--configuration", choices=("Debug", "Release"), default="Release")
     parser.add_argument("--results-directory", type=Path, default=Path("artifacts/test-results"))
+    parser.add_argument("--shard", type=int, choices=range(1, 5))
     args = parser.parse_args()
     results_root = (ROOT / args.results_directory).resolve()
     results_root.mkdir(parents=True, exist_ok=True)
@@ -59,7 +92,7 @@ def main():
                 "TypeLay.slnx",
                 *common,
                 "--filter",
-                f"FullyQualifiedName!={METHOD}",
+                partition_filter(args.shard),
                 "--results-directory",
                 str(primary),
             ],
@@ -72,6 +105,12 @@ def main():
             return 130
         if first != 0:
             failures.append("main-exit")
+        if args.shard is not None and not includes_class(args.shard, "ModelInstallerTests"):
+            ordinary_results = results(primary)
+            report["mainResults"] = len(ordinary_results)
+            if not ordinary_results or any(r.get("outcome") == "Failed" for r in ordinary_results):
+                failures.append("main-results-missing-or-not-passed")
+            return 1 if failures else 0
         # This is the only execution of these two cases, not a failed-test retry.
         second = subprocess.run(
             [

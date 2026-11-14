@@ -1,0 +1,238 @@
+"""Release transport failures must not become cache misses or unverified extraction."""
+
+import hashlib
+import io
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+SHIM = """import json,os,shutil,sys
+from pathlib import Path
+if sys.argv[1] == "api":
+    mode = os.environ["FIXED_CASE"]
+    if sys.argv[2].endswith('/jobs?per_page=100'):
+        print(json.dumps({'jobs': [{'name': 'fcitx-build', 'conclusion':
+            'failure' if mode == 'producer-failed' else None}]}))
+        sys.exit(0)
+    if mode in ('wait-valid', 'wait-draft'):
+        attempt = Path(os.environ["FIXED_METADATA"]).with_suffix('.attempt')
+        if not attempt.exists():
+            attempt.touch()
+            if mode == 'wait-draft':
+                print(json.dumps({'draft': True, 'assets': []}))
+                sys.exit(0)
+            mode = 'missing'
+    if mode == 'producer-failed': mode = 'missing'
+    if mode in ("missing", "denied"):
+        print("HTTP " + ("404" if mode == "missing" else "403"), file=sys.stderr)
+        sys.exit(1)
+    print(Path(os.environ["FIXED_METADATA"]).read_text())
+else:
+    shutil.copyfile(os.environ["FIXED_ARCHIVE"], Path(sys.argv[sys.argv.index("--dir") + 1]) / os.environ["FIXED_NAME"])
+"""
+
+
+class FixedBuildTransportTests(unittest.TestCase):
+    def run_transport(self, mode, action="restore", wait=False, kind="fonts"):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = root / "eng/ci/fixed.py"
+            script.parent.mkdir(parents=True)
+            shutil.copyfile(ROOT / "eng/ci/fixed.py", script)
+            data = b"synthetic fixed product"
+            name = "fonts.tar.gz" if kind == "fonts" else f"{kind}.tar"
+            folder = {
+                "fonts": "ui-fonts",
+                "hy": "hy-download",
+                "index": "index-model-download",
+                "linux-tools": "linux-tools-cache",
+            }[kind]
+            payload = f"artifacts/{folder}/test.bin"
+            archive = root / name
+            with tarfile.open(archive, "w:gz" if kind == "fonts" else "w") as output:
+                info = tarfile.TarInfo(payload)
+                info.size = len(data)
+                output.addfile(info, io.BytesIO(data))
+            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+            metadata = root / "release.json"
+            metadata.write_text(
+                json.dumps(
+                    {
+                        "assets": [
+                            {
+                                "name": name,
+                                "digest": "sha256:" + ("0" * 64 if mode == "corrupt" else digest),
+                            }
+                        ]
+                    }
+                )
+            )
+            port = root / "gh-port.py"
+            port.write_text(SHIM)
+            shim = root / ("gh.cmd" if sys.platform == "win32" else "gh")
+            shim.write_text(
+                f'@echo off\n"{sys.executable}" "{port}" %*\nexit /b %errorlevel%\n'
+                if sys.platform == "win32"
+                else f"#!{sys.executable}\n" + SHIM
+            )
+            shim.chmod(0o700)
+            output = root / "output"
+            result = subprocess.run(
+                [sys.executable, str(script), action, kind, "--tag", "ci-test"]
+                + (["--wait-for-job", "fcitx-build"] if wait else []),
+                cwd=root,
+                capture_output=True,
+                text=True,
+                env=os.environ
+                | {
+                    "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                    "GITHUB_REPOSITORY": "test/repo",
+                    "GITHUB_RUN_ID": "123",
+                    "GITHUB_OUTPUT": str(output),
+                    "FIXED_CASE": mode,
+                    "FIXED_METADATA": str(metadata),
+                    "FIXED_ARCHIVE": str(archive),
+                    "FIXED_NAME": name,
+                },
+                timeout=20 if wait else 10,
+            )
+            self.assertEqual(
+                result.returncode == 0,
+                mode not in ("denied", "corrupt", "producer-failed"),
+                result.stderr,
+            )
+            self.assertEqual(
+                (root / payload).exists(),
+                mode in ("valid", "wait-valid", "wait-draft") and action == "restore",
+            )
+            self.assertEqual(
+                output.read_text() if output.exists() else "",
+                "hit=false\n"
+                if mode == "missing"
+                else "hit=true\n"
+                if mode in ("valid", "wait-valid", "wait-draft")
+                else "",
+            )
+            if mode == "producer-failed":
+                self.assertIn("Fixed producer ended", result.stderr)
+            if action == "lookup":
+                self.assertFalse((root / "artifacts/fonts.tar.gz").exists())
+
+    def test_only_404_is_a_cache_miss(self):
+        for mode in ("missing", "denied"):
+            with self.subTest(mode=mode):
+                self.run_transport(mode)
+
+    def test_consumer_can_prepare_while_its_current_producer_is_running(self):
+        for mode in ("wait-valid", "wait-draft"):
+            with self.subTest(mode=mode):
+                self.run_transport(mode, wait=True)
+
+    def test_failed_producer_does_not_leave_a_consumer_waiting(self):
+        self.run_transport("producer-failed", wait=True)
+
+    def test_changed_archive_fails_before_extracting(self):
+        self.run_transport("corrupt")
+
+    def test_verified_archive_is_extracted(self):
+        self.run_transport("valid")
+
+    def test_lookup_does_not_download_existing_builds(self):
+        self.run_transport("valid", "lookup")
+
+    def test_fixed_download_bytes_are_verified_before_becoming_a_local_cache(self):
+        for kind in ("hy", "index", "linux-tools"):
+            for mode in ("valid", "corrupt"):
+                with self.subTest(kind=kind, mode=mode):
+                    self.run_transport(mode, kind=kind)
+
+
+class FixedBuildKeyTests(unittest.TestCase):
+    def check_download_key(self, kind):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = root / "eng/ci/fixed.py"
+            script.parent.mkdir(parents=True)
+            shutil.copyfile(ROOT / "eng/ci/fixed.py", script)
+            filename = "assets.lock.json" if kind == "hy" else "model.lock.json"
+            path = root / "src/shared/TypeLay.Worker/native" / kind / filename
+            path.parent.mkdir(parents=True)
+            lock = {
+                name: {"sha256": "old"} for name in ("model", "model_license", "runtime_archive")
+            }
+            path.write_text(json.dumps(lock))
+
+            def key():
+                return subprocess.check_output(
+                    [sys.executable, str(script), "key", kind], text=True, timeout=10
+                ).strip()
+
+            original = key()
+            lock["source_sha256"] = "different current product implementation"
+            path.write_text(json.dumps(lock))
+            self.assertEqual(key(), original)
+            lock["model"]["sha256"] = "new deliberately pinned download"
+            path.write_text(json.dumps(lock))
+            self.assertNotEqual(key(), original)
+
+    def test_hy_cache_tracks_download_pins_independently_of_product_source_records(self):
+        self.check_download_key("hy")
+
+    def test_index_cache_tracks_download_pins_independently_of_product_source_records(self):
+        self.check_download_key("index")
+
+    def test_native_edits_do_not_rebuild_third_party_dependencies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("eng", "src/linux/native", ".github/actions/linux-tools"):
+                shutil.copytree(
+                    ROOT / name, root / name, ignore=shutil.ignore_patterns("__pycache__")
+                )
+
+            def key(kind="fcitx"):
+                return subprocess.check_output(
+                    [sys.executable, str(root / "eng/ci/fixed.py"), "key", kind],
+                    text=True,
+                    timeout=10,
+                ).strip()
+
+            original = key()
+            original_tools = key("linux-tools")
+            for name in (
+                "src/linux/native/gtk4/CMakeLists.txt",
+                "src/linux/native/qt6/CMakeLists.txt",
+                "src/linux/native/common/overlay-design.h",
+                "eng/linux/cooperative/fcitx.py",
+                "eng/linux/cooperative/qt.py",
+            ):
+                with self.subTest(name=name):
+                    path = root / name
+                    contents = path.read_bytes()
+                    path.write_bytes(contents + b"\n/* native edit */\n")
+                    self.assertEqual(key(), original)
+                    self.assertEqual(key("linux-tools"), original_tools)
+                    path.write_bytes(contents)
+            for name in (
+                "eng/ci/arch-snapshot",
+                "eng/linux/cooperative/patches/fcitx5.patch",
+            ):
+                with self.subTest(pin=name):
+                    path = root / name
+                    contents = path.read_bytes()
+                    path.write_bytes(contents + b"\n# deliberate pin update\n")
+                    self.assertNotEqual(key(), original)
+                    if name == "eng/ci/arch-snapshot":
+                        self.assertNotEqual(key("linux-tools"), original_tools)
+                    path.write_bytes(contents)
+
+            action = root / ".github/actions/linux-tools/action.yml"
+            action.write_bytes(action.read_bytes() + b"\n# deliberate package recipe edit\n")
+            self.assertNotEqual(key("linux-tools"), original_tools)
+            self.assertEqual(key(), original)

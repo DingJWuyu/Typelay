@@ -1,5 +1,6 @@
 """Windows runner CLI contracts; a controlled dotnet command is not a timing test."""
 
+import importlib.util
 import json
 import os
 import shutil
@@ -8,6 +9,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 METHOD = (
@@ -37,6 +40,8 @@ for name in names:
     if (isolated and mode == "isolated-fail") or (not isolated and mode == "main-fail"):
         outcome = "Failed"
     SubElement(results, "UnitTestResult", testName=name, outcome=outcome)
+if not isolated and mode == "manual":
+    SubElement(results, "UnitTestResult", testName="Controlled.ExplicitManual", outcome="NotExecuted")
 ElementTree(root).write(directory / "controlled.trx", encoding="utf-8", xml_declaration=True)
 if not isolated and mode == "main-interrupt":
     os.kill(os.getppid(), signal.SIGINT)
@@ -48,7 +53,31 @@ sys.exit(7 if not isolated and mode == "main-fail" else 9 if isolated and mode =
 
 
 class WindowsContractRunnerTests(unittest.TestCase):
-    def run_case(self, mode):
+    def test_shard_cli_keeps_explicit_manual_cases_and_isolates_timeouts_once(self):
+        filters = [
+            self.run_case("manual", shard).split("&FullyQualifiedName!=", 1)[0]
+            for shard in range(1, 5)
+        ]
+        # These classes have actual TRX evidence; the final class is new and
+        # must be collected by the complement without changing a registry.
+        expected = {
+            "SetupRenderingTests": 1,
+            "NativeSourceControllerTests": 2,
+            "ModelInstallerTests": 2,
+            "SettingsRenderingTests": 3,
+            "SourceKeyboardBoundaryProbe": 4,
+            "FutureRegressionTests": 4,
+        }
+        for name, shard in expected.items():
+            token = f"TypeLay.App.Tests.{name}."
+            selected = [
+                i + 1
+                for i, value in enumerate(filters)
+                if (token in value if i < 3 else token not in value)
+            ]
+            self.assertEqual([shard], selected, name)
+
+    def run_case(self, mode, shard=None):
         with tempfile.TemporaryDirectory(prefix="TypeLay contract runner ") as directory:
             root = Path(directory)
             shim = root / ("dotnet.cmd" if sys.platform == "win32" else "dotnet")
@@ -80,36 +109,66 @@ class WindowsContractRunnerTests(unittest.TestCase):
             self.assertEqual(
                 shim.resolve(), Path(shutil.which("dotnet", path=environment["PATH"])).resolve()
             )
-            execution = subprocess.run(
-                [
-                    sys.executable,
-                    "-B",
-                    str(ROOT / "eng/windows/test_contracts.py"),
-                    "--configuration",
-                    "Debug",
-                    "--results-directory",
-                    str(results),
-                ],
-                env=environment,
-                cwd=ROOT,
-                capture_output=True,
-                text=True,
-                timeout=20,
-            )
-            self.assertEqual(mode == "pass", execution.returncode == 0, execution.stderr)
+            command = [
+                sys.executable,
+                "-B",
+                str(ROOT / "eng/windows/test_contracts.py"),
+                "--configuration",
+                "Debug",
+                "--results-directory",
+                str(results),
+                *(["--shard", str(shard)] if shard else []),
+            ]
+            if shard is None:
+                execution = subprocess.run(
+                    command, env=environment, cwd=ROOT, capture_output=True, text=True, timeout=20
+                )
+            else:
+                spec = importlib.util.spec_from_file_location(
+                    "contracts", ROOT / "eng/windows/test_contracts.py"
+                )
+                runner = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(runner)
+                original_run = subprocess.run
+
+                def dotnet_port(arguments, **kwargs):
+                    # The real port is dotnet.exe. A .cmd stand-in would interpret
+                    # VSTest's | and & as shell operators before Python sees them.
+                    return original_run(
+                        [sys.executable, str(implementation), *arguments[1:]],
+                        env=environment,
+                        **kwargs,
+                    )
+
+                with (
+                    patch.dict(os.environ, environment),
+                    patch.object(sys, "argv", command[2:]),
+                    patch.object(runner.subprocess, "run", side_effect=dotnet_port),
+                ):
+                    execution = SimpleNamespace(returncode=runner.main(), stderr="")
+            passed = mode in ("pass", "manual")
+            self.assertEqual(passed, execution.returncode == 0, execution.stderr)
             invoked = [json.loads(line) for line in calls.read_text().splitlines()]
             canceled = mode in ("main-cancel", "main-interrupt")
-            self.assertEqual(1 if canceled else 2, len(invoked))
+            isolated_required = shard in (None, 2) and not canceled
+            self.assertEqual(2 if isolated_required else 1, len(invoked))
             self.assertEqual("TypeLay.slnx", invoked[0][1])
-            if not canceled:
+            if isolated_required:
                 self.assertEqual(
                     "tests/windows/TypeLay.App.Tests/TypeLay.App.Tests.csproj", invoked[1][1]
                 )
             for arguments, comparison in zip(invoked, ("!=", "=")):
-                self.assertEqual(
-                    "FullyQualifiedName" + comparison + METHOD,
-                    arguments[arguments.index("--filter") + 1],
-                )
+                if shard is None or comparison == "=":
+                    self.assertEqual(
+                        "FullyQualifiedName" + comparison + METHOD,
+                        arguments[arguments.index("--filter") + 1],
+                    )
+                else:
+                    self.assertTrue(
+                        arguments[arguments.index("--filter") + 1].endswith(
+                            "&FullyQualifiedName!=" + METHOD
+                        )
+                    )
                 self.assertEqual("Debug", arguments[arguments.index("-c") + 1])
                 self.assertIn("--no-build", arguments)
                 self.assertIn("--no-restore", arguments)
@@ -131,12 +190,13 @@ class WindowsContractRunnerTests(unittest.TestCase):
             )
             self.assertEqual(expected_main, summary["mainExitCode"])
             self.assertEqual(
-                None if canceled else 9 if mode == "isolated-fail" else 0,
+                None if not isolated_required else 9 if mode == "isolated-fail" else 0,
                 summary["isolatedExitCode"],
             )
             self.assertNotEqual(summary["mainDirectory"], summary["isolatedDirectory"])
-            self.assertEqual(mode != "pass", bool(summary["failures"]))
-            self.assertEqual(1 if canceled else 2, len(list(results.rglob("*.trx"))))
+            self.assertEqual(not passed, bool(summary["failures"]))
+            self.assertEqual(2 if isolated_required else 1, len(list(results.rglob("*.trx"))))
+            return invoked[0][invoked[0].index("--filter") + 1]
 
     def test_one_complete_partition_and_two_isolated_cases_succeed(self):
         self.run_case("pass")
