@@ -9,8 +9,8 @@ using TypeLay.Runtime;
 // Actual model/package/process verification only. No desktop or quality claim.
 internal static class IndexPackageCheck
 {
-    private const string Id = "index-translate-2b-q4-k-m";
-    private const string Profile = "index-v1-d1ba1b7b9a3e78434e49767a43586a097ce40ef7607d170f1097cfae67c95180";
+    internal const string Id = "index-translate-2b-q4-k-m";
+    internal const string Profile = "index-v1-d1ba1b7b9a3e78434e49767a43586a097ce40ef7607d170f1097cfae67c95180";
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
     private sealed class Owned(IChildProcess owner, ModelLoadPlan plan) : IChildProcess
     {
@@ -63,6 +63,8 @@ internal static class IndexPackageCheck
         var cleanup = new List<string>();
         string stage = stages[0], failure = "none";
         string? failureReason = null;
+        string? packageSha256 = null;
+        JsonElement? nativeIdentity = null;
         string data = Path.Combine(directory, "data"), worker = Path.Combine(distribution, "worker", "run_worker.py");
         var store = new ModelInstallationStore(data, worker);
         ModelClient? model = null;
@@ -104,7 +106,8 @@ internal static class IndexPackageCheck
         try
         {
             foreach (var assembly in new[] { typeof(ModelClient).Assembly, typeof(ModelInstaller).Assembly,
-                typeof(TypeLay.Core.Session).Assembly, typeof(TypeLay.Protocol.Wire).Assembly })
+                typeof(TypeLay.Core.Session).Assembly, typeof(TypeLay.Protocol.Wire).Assembly,
+                typeof(TypeLay.Windows.BrowserHostHello).Assembly })
             {
                 using var actual = File.OpenRead(assembly.Location);
                 using var expected = File.OpenRead(Path.Combine(distribution, "app", Path.GetFileName(assembly.Location)));
@@ -112,7 +115,11 @@ internal static class IndexPackageCheck
                 Require(hash.SequenceEqual(SHA256.HashData(expected)), "release-assembly-mismatch");
                 payloadHashes["app/" + Path.GetFileName(assembly.Location)] = Convert.ToHexString(hash).ToLowerInvariant();
             }
+            using (var archive = File.OpenRead(Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(distribution))!, "TypeLay-Windows-preview.zip")))
+                packageSha256 = Convert.ToHexString(await SHA256.HashDataAsync(archive, ct)).ToLowerInvariant();
             Require(WindowsIndexPayload.CanPrepare(worker), "index-payload-unavailable");
+            using (var manifest = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(distribution, "worker/native/index/production-adapter.json"), ct)))
+                nativeIdentity = manifest.RootElement.Clone();
             foreach (string path in Directory.EnumerateFiles(Path.Combine(distribution, "worker"), "*", SearchOption.AllDirectories))
             {
                 using var content = File.OpenRead(path);
@@ -183,7 +190,9 @@ internal static class IndexPackageCheck
                 {
                     input.Source,
                     input.Target,
+                    input.Text,
                     result.Status,
+                    Output = result.Text,
                     OutputSha256 = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(result.Text!))).ToLowerInvariant()
                 });
             }
@@ -279,6 +288,13 @@ internal static class IndexPackageCheck
                 responses,
                 payloadHashes,
                 inferenceProfiles,
+                packageSha256,
+                nativeIdentity,
+                testedCommit = Environment.GetEnvironmentVariable("GITHUB_SHA"),
+                runId = Environment.GetEnvironmentVariable("GITHUB_RUN_ID"),
+                runAttempt = Environment.GetEnvironmentVariable("GITHUB_RUN_ATTEMPT"),
+                cpu = Environment.GetEnvironmentVariable("PROCESSOR_IDENTIFIER"),
+                logicalProcessors = Environment.ProcessorCount,
                 cleanup,
                 allOwnedWorkersExited = !unknownOwner && children.All(child => child.Exited),
                 quality = "not-reviewed",
@@ -288,7 +304,7 @@ internal static class IndexPackageCheck
         }
         return outcomes.Values.All(value => value == "passed") && cleanup.Count == 0 ? 0 : 1;
     }
-    private static async Task SeedCache(string data, string distribution, string cache, CancellationToken ct)
+    internal static async Task SeedCache(string data, string distribution, string cache, CancellationToken ct)
     {
         using var document = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(distribution, "worker/native/index/model.lock.json"), ct));
         var root = document.RootElement;

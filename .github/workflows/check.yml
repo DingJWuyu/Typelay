@@ -300,12 +300,16 @@ jobs:
         with:
           path: artifacts/hy-download/
           key: ${{ steps.hy-admission.outputs.cache-key }}
-      - name: Prepare fixed Hy assets without an audit adapter
+      - name: Prepare fixed Hy and Index assets without an audit adapter
         id: hy-prepare
         if: ${{ !cancelled() && steps.hy-admission.outcome == 'success' && steps.hy-cache.outcome == 'success' }}
         timeout-minutes: 10
         shell: pwsh
-        run: ./dev.ps1 hy-product-prepare
+        run: |
+          ./dev.ps1 hy-product-prepare
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python eng/shared/prepare_index_model.py --output artifacts/index-model-download
+          exit $LASTEXITCODE
       - name: Save only verified Hy download assets to cache
         if: ${{ !cancelled() && steps.hy-prepare.outcome == 'success' && steps.hy-cache.outputs.cache-hit != 'true' }}
         timeout-minutes: 2
@@ -333,6 +337,10 @@ jobs:
         run: |
           python eng/windows/observe-browser-profile.py --stage before-browser-cooperation --output artifacts/browser-profile/before-browser-cooperation.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $fixture = 'tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows'
+          foreach ($assembly in @('TypeLay.App', 'TypeLay.Runtime', 'TypeLay.Core', 'TypeLay.Protocol', 'TypeLay.Windows.Contracts')) {
+            Copy-Item -LiteralPath "artifacts/package/TypeLay/app/$assembly.dll" -Destination "$fixture/$assembly.dll" -Force
+          }
           dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-browser-cooperation artifacts/browser-cooperation artifacts/package/TypeLay '${{ steps.cooperative-browser-prepare.outputs.chrome }}'
           exit $LASTEXITCODE
       - name: Verify prior model consumers have exited before Notepad
@@ -419,6 +427,8 @@ jobs:
             artifacts/browser-cooperation/result.json
             artifacts/browser-cooperation/consumer-exit.json
             artifacts/browser-cooperation/trace*.jsonl
+            artifacts/browser-cooperation/index-*.json
+            artifacts/browser-cooperation/*.png
             artifacts/ordinary-notepad/result.json
             artifacts/ordinary-notepad/consumer-exit.json
             artifacts/ordinary-notepad/trace*.jsonl

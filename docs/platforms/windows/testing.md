@@ -149,7 +149,9 @@ Esc 后先确认撤权后的新观察与公开 Direct 就绪，再发送唯一 D
 
 ## Windows 浏览器合作链
 
-`--verify-browser-cooperation <结果目录> <发行根> <CfT路径>` 使用实际 App、BrowserHost、包内扩展和本次已校验模型。Chrome for Testing（CfT）版本与摘要来自[固定来源](../../../tests/windows/support/chrome-for-testing.json)，缓存命中仍校验。
+`--verify-browser-cooperation <结果目录> <发行根> <CfT路径>` 使用实际 App、BrowserHost、包内扩展和默认 Index。Chrome for Testing（CfT）版本与摘要来自[固定来源](../../../tests/windows/support/chrome-for-testing.json)，缓存命中仍校验。
+
+先用 `eng/shared/prepare_index_model.py` 将固定模型缓存准备到结果目录的同级 `index-model-download`。fixture 在最终浏览器数据目录调用正式 ModelInstaller，核对十四方向和固定 profile，再确认准备 worker 退出，才启动发行 App。准备留在原有 120 秒 setup 与 540 秒总预算内。浏览器不复制 continuous 的 Argos 安装代。fixture 使用的五份程序集须与发行包一致，CI 在启动前同步并由 fixture 核对摘要。
 
 真实注册仅在明确的 `TYPELAY_BROWSER_REGISTRATION_E2E=1` 环境启用。生产发现器读取标准 Chrome User Data，测试不改 `connection.json` 或注入另一个 profile 路径。一般运行要求根目录不存在并由 fixture 原子创建。
 
@@ -157,7 +159,7 @@ Esc 后先确认撤权后的新观察与公开 Direct 就绪，再发送唯一 D
 
 设置接入后，只在本次受管页中唯一 `A message` 字段满足身份、完整边界、命中和无遮挡条件时，注入一次真实桌面点击。之后仍须确认 DOM trusted 点击、前台与字段焦点，再进入翻译。遮挡或取消零输入，不换点重试。
 
-验收包括自动接受、前台选区 F10、已受理后仅原框后台写入，以及正式 UI 移除后的无写负控。每阶段单独报告。CfT 开发加载和软件输入不代表品牌 Chrome 商店安装、物理按键或真实 IME。
+验收包括自动接受、人工稿的两次独立 Tab、前台选区 F10、已受理后仅原框后台写入，以及正式 UI 移除后的无写负控。人工稿第一次 Tab 必须回源且零写入，释放整组按键并看到新的接受提示后，第二次 Tab 才写入精确人工稿一次。结果保留固定合成输入、实际译文、字段状态和四张草稿截图，供逐句保义和视觉核对。每阶段单独报告。CfT 开发加载和软件输入不代表品牌 Chrome 商店安装、物理按键或真实 IME。
 
 ### 浏览器普通页与新标签页采集
 
