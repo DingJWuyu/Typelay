@@ -934,7 +934,7 @@ jobs:
         else
           echo "Qt probe did not pass; preserve its failure and collect independent GTK evidence."
         fi
-        python packaging/linux/fcitx-cooperative/pack.py --build-output artifacts/linux/fcitx-cooperative-5.1.22 "$@" --output artifacts/TypeLay-Fcitx-cooperative.tar.gz
+        python packaging/linux/fcitx-cooperative/pack.py --build-output artifacts/linux/fcitx-cooperative-5.1.22 "$@" --output artifacts/TypeLay-Fcitx-cooperative.tar.gz --compression-level 1
         mkdir -p "artifacts/linux/relocated 输入法"
         tar -xzf artifacts/TypeLay-Fcitx-cooperative.tar.gz -C "artifacts/linux/relocated 输入法"
         # Match the user's profile-writing versions in this disposable container.

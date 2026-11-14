@@ -1,5 +1,6 @@
 """Exercise main-package finalization with real files and cooperation archives."""
 
+import gzip
 import hashlib
 import importlib.util
 import io
@@ -105,6 +106,31 @@ class PackageReadmeTests(unittest.TestCase):
                 )
                 self.assertIn("/blob/" + "a" * 40 + "/docs/product/README.md", readme)
                 self.assertNotIn("](..", readme)
+
+
+class FcitxArchiveTests(unittest.TestCase):
+    def test_fast_compression_preserves_the_complete_normalized_package(self):
+        spec = importlib.util.spec_from_file_location(
+            "typelay_pack_compression_test", ROOT / "packaging/linux/fcitx-cooperative/pack.py"
+        )
+        pack = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pack)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle = root / "TypeLay-Fcitx-cooperative"
+            bundle.mkdir()
+            (bundle / "LICENSE").write_text("license and corresponding source\n" * 100)
+            executable = bundle / "fcitx5"
+            executable.write_bytes(b"inert executable payload\n" * 200)
+            executable.chmod(0o755)
+            (bundle / "launcher").symlink_to("fcitx5")
+            normal = root / "normal.tar.gz"
+            fast = root / "fast.tar.gz"
+            pack.write_archive(bundle, normal)
+            pack.write_archive(bundle, fast, compression_level=1)
+            self.assertEqual(
+                gzip.decompress(normal.read_bytes()), gzip.decompress(fast.read_bytes())
+            )
 
 
 class BuildSafetyTests(unittest.TestCase):

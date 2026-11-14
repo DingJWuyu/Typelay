@@ -124,6 +124,8 @@ Linux 生产者和消费 runner 都将 pacman 仓库固定到该日期，并用 
 
 普通 push 只上传 TRX、JSON、日志和截图。最终验收需要安装包时，在目标提交手动运行工作流，并设置 `upload_packages=true`。安装包仍在每轮构建和搬迁验证，只是平时不上载。
 
+CI 的合作包使用 `--compression-level 1`，减少压缩耗时；包内文件、来源校验和搬迁验收保持一致。单独运行打包入口时，默认仍使用等级 9。
+
 ```sh
 gh workflow run check.yml --repo DingJWuyu/Typelay --ref <工作分支> -f upload_packages=true
 ```

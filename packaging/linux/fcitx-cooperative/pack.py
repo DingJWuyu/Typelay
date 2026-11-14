@@ -577,7 +577,7 @@ def manifest(bundle, versions, pins, inputs, test_inputs, qt=None):
     }
 
 
-def write_archive(bundle, output):
+def write_archive(bundle, output, compression_level=9):
     epoch = int(os.environ.get("SOURCE_DATE_EPOCH", "0"))
     if epoch < 0:
         raise ValueError("SOURCE_DATE_EPOCH must be nonnegative")
@@ -588,7 +588,9 @@ def write_archive(bundle, output):
             dir=output.parent, prefix=".fcitx-bundle-", delete=False
         ) as raw:
             temporary = Path(raw.name)
-            with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=epoch) as compressed:
+            with gzip.GzipFile(
+                filename="", mode="wb", fileobj=raw, mtime=epoch, compresslevel=compression_level
+            ) as compressed:
                 with tarfile.open(mode="w", fileobj=compressed) as archive:
                     for path in [bundle, *sorted(bundle.rglob("*"))]:
                         info = archive.gettarinfo(path, arcname=path.relative_to(bundle.parent))
@@ -612,6 +614,7 @@ def main():
     parser.add_argument("--build-output", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True, help="Destination .tar.gz archive")
     parser.add_argument("--qt-output", type=Path, help="Fresh matching Qt build output (optional)")
+    parser.add_argument("--compression-level", type=int, choices=range(1, 10), default=9)
     args = parser.parse_args()
     build = args.build_output.resolve(strict=True)
     output = args.output.resolve()
@@ -645,7 +648,7 @@ def main():
             + "\n",
             encoding="utf-8",
         )
-        write_archive(bundle, output)
+        write_archive(bundle, output, args.compression_level)
     print(f"{output}\nSHA-256: {sha256(output)}")
 
 
