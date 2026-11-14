@@ -118,9 +118,13 @@ jobs:
       - name: Verify offline verification isolation and cache ownership
         id: verification-resources
         if: ${{ !cancelled() && steps.python.outcome == 'success' }}
-        # The hosted Ubuntu policy denies an unprivileged uid_map. Limit elevated
-        # execution to this kernel isolation test; desktop containers stay unchanged.
-        run: sudo "$(command -v python)" tests/linux/test_verification_resources.py -v
+        # Permit unprivileged namespaces only for this test, then restore the
+        # disposable runner policy. The test itself still runs as the runner user.
+        run: |
+          namespace_policy=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)
+          trap 'sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns="$namespace_policy"' EXIT
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          python tests/linux/test_verification_resources.py -v
       - name: Verify shared behavior without Windows
         id: shared-behavior
         if: ${{ !cancelled() && steps.python.outcome == 'success' }}
