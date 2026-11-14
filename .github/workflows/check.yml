@@ -580,10 +580,6 @@ jobs:
         id: checkout
         with:
           persist-credentials: false
-      - name: Verify offline verification isolation and cache ownership
-        id: verification-resources
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        run: python tests/linux/test_verification_resources.py -v
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         id: dotnet
         with:
@@ -746,6 +742,10 @@ jobs:
         id: test-private-session-paths
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         run: python tests/linux/test_private_session_paths.py -v
+      - name: Verify offline verification isolation and cache ownership
+        id: verification-resources
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        run: python tests/linux/test_verification_resources.py -v
       - name: Verify Linux test_translation_quality_capture
         id: test-translation-quality-capture
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
