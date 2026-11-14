@@ -128,6 +128,8 @@ CI 使用以下固定检查名。矩阵展开后共 16 个 job，各组保留现
 
 结果 artifact 的名称或内含源码记录带有 SHA、run ID 和 attempt。`artifacts/ci/source.json` 记录实际 `git rev-parse HEAD`。push 测试的是 head，不是 GitHub 临时合并提交。墙钟时间统一按 `max(必过 job.completed_at) - run.created_at` 计算，包含排队、准备和诊断上传。
 
+Linux / native 的 `qt-language-options` 步骤独立记录语言搜索。完整 Qt probe 成功时复用其中已经完成的语言场景证据；probe 失败时，在新目录复验并复用本次生产二进制，重建 fixture 后运行语言入口，保留原异步资格结果。两者均为必过步骤。搜索日志、状态和截图另存 `typelay-linux-qt-language-options-*` artifact，Qt 桌面日志和 JSON 另存 `typelay-linux-qt-desktop-events-*`。具体命令与证据边界见 [Qt 功能地图](../../.agents/skills/verify-typelay/features/qt.md)。
+
 ### 固定产物的复用与更新
 
 [fixed.py](../../eng/ci/fixed.py) 将固定构建保存为 GitHub prerelease。tag 为 `ci-fonts-<SHA256>`、`ci-fcitx-<SHA256>`、`ci-hy-<SHA256>`、`ci-index-<SHA256>` 或 `ci-linux-tools-<SHA256>`，所有分支都能读取。字体的输入包含生成器、字体锁和固定工具版本。`ci-fcitx` 只保存第三方 Fcitx、LibIME、中文附加组件及对应的固定源码和数据。它的键包含 [third_party.py](../../eng/linux/cooperative/third_party.py) 中的源码和数据校验值、第三方补丁、构建配方及 [Arch 快照日期](../../eng/ci/arch-snapshot)。TypeLay 自身的 GTK4、Qt6 和公共头文件不进入第三方键。

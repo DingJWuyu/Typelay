@@ -123,6 +123,30 @@ public sealed class EditingWorkflowTests
         Assert.True(session.BeginWrite(next));
     }
 
+    [Fact]
+    public void ProvenSourceContinuityResumesManualWordingWithANewRevisionOnly()
+    {
+        var (session, source) = Ready();
+        Assert.True(session.BeginEdit());
+        session.ChangeDraft("Keep the manual wording");
+        Assert.True(session.ConfirmSourceReturn(source, 1300));
+        var old = Assert.IsType<WritePlan>(session.Prepare(source, Context(source), 1300).Plan);
+        Assert.True(session.SuspendManualObservation());
+        var fresh = source with
+        {
+            InputEpoch = source.InputEpoch + 6,
+            ObservedAtMs = 1320
+        };
+        Assert.False(session.RebaseManualCandidate(source, fresh, 1320));
+        Assert.True(session.RebaseManualCandidate(source, fresh, 1320, resumeObservation: true));
+        Assert.False(session.BeginWrite(old));
+        Assert.Equal("Keep the manual wording", session.Candidate);
+        Assert.Null(session.TakeTranslationJob(1320));
+        var next = Assert.IsType<WritePlan>(session.Prepare(fresh, Context(fresh), 1320).Plan);
+        Assert.NotEqual(old.Revision, next.Revision);
+        Assert.True(session.BeginWrite(next));
+    }
+
     [Fact(DisplayName = "manual-return-failure-preserves-draft")]
     public void ManualReturnFailurePreservesDraft()
     {

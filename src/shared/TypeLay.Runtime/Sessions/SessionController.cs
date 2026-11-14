@@ -32,7 +32,7 @@ public sealed partial class SessionController : IDisposable
     // Provenance only: the existing Session remains the sole owner of manual text.
     private sealed record ManualObservation(long UserEpoch, long SourceEpoch, long ContentEpoch,
         long ForegroundEpoch, long WindowEpoch, long ConfigurationRevision, Guid CommandGeneration,
-        Guid ConnectionId, long UnavailableUntil = 0);
+        Guid ConnectionId, SourceObservationVersion? SourceVersion = null, long UnavailableUntil = 0);
     private ManualObservation? _manualObservation;
     private readonly ISessionLoop _loop;
     private long _generation, _nextCapture, _permitUntil, _editTransitionUntil, _retryBrokerAt;
@@ -857,22 +857,41 @@ public sealed partial class SessionController : IDisposable
                 Render();
                 return;
             }
+            if (_manualObservation is { SourceVersion.IsValid: true } && _session.Current is { } retained
+                && snapshot.IsUsable && snapshot.Target == retained.Target && snapshot.Text == retained.Text
+                && (request.UserEpoch != _hook.UserEpoch || request.SourceUserEpoch != _hook.SourceUserEpoch)
+                && SuspendManualObservation(now))
+                return; // This in-flight read cannot become the new acceptance basis.
             if (_manualObservation is { UnavailableUntil: > 0 })
             {
                 // Only a new safe observation of the exact original source can
                 // expose the retained draft. Unknown or changed evidence retires it.
-                if (!ManualObservationIsCurrent(now) || result.ForegroundExpired || result.Focus != FocusMember.Source
+                bool continuous = ManualSourceVersionMatches(result, request, now);
+                bool requiresNativeContinuity = _manualObservation.SourceVersion is { IsValid: true };
+                if (!ManualObservationIsCurrent(now)
+                    || (requiresNativeContinuity || !ManualInputEpochsAreCurrent()) && !continuous
+                    || result.ForegroundExpired || result.Focus != FocusMember.Source
                     || result.UserEpoch != _hook.UserEpoch || result.ForegroundEpoch != _hook.ForegroundEpoch
                     || !snapshot.IsUsable || _session.Current is not { } basis
                     || snapshot.ObservedAtMs < _manualObservation.UnavailableUntil - Limits.ObservationMaxAgeMs
                     || snapshot with
                     {
                         ObservedAtMs = basis.ObservedAtMs,
-                        Bounds = basis.Bounds
+                        Bounds = basis.Bounds,
+                        InputEpoch = continuous ? basis.InputEpoch : snapshot.InputEpoch
                     } != basis)
                     StopSession("manual-observation-changed");
+                else if (continuous && snapshot.InputEpoch > _session.Current!.InputEpoch)
+                    RebaseObservedManualCandidate(snapshot, now, resumeObservation: true);
                 _manualObservation = null;
             }
+            // Editing and returning own their original handoff checks. A prior
+            // pending observation cannot retire a later manual edit's draft.
+            else if (_session.State == SessionState.EditedTranslationPending
+                && _manualObservation is { SourceVersion.IsValid: true } && _session.Current is { } manualSource
+                && snapshot.Target == manualSource.Target && snapshot.Text == manualSource.Text
+                && !ManualSourceVersionMatches(result, request, now))
+                StopSession("manual-source-version-changed");
             // The ordinary read may observe the newly focused editor before
             // its pending handoff performs its own fresh source recheck. Do not
             // replace that handoff's frozen basis with an equivalent observation.
@@ -943,6 +962,9 @@ public sealed partial class SessionController : IDisposable
                 if (_session.RebaseManualCandidate(_session.Current!, snapshot, now))
                     _generation++;
             }
+            else if (_session.Current is { } manualBasis && snapshot.InputEpoch > manualBasis.InputEpoch
+                && ManualSourceVersionMatches(result, request, now))
+                RebaseObservedManualCandidate(snapshot, now, resumeObservation: false);
             // A capture may finish between the platform return and its awaiting
             // continuation. It cannot publish before that return has been verified.
             if (_interaction?.BeforeObserve(result, request, now) == true)
@@ -977,7 +999,8 @@ public sealed partial class SessionController : IDisposable
             _manualObservation = inputUnchanged && _session.State == SessionState.EditedTranslationPending
                 && result.Focus == FocusMember.Source
                 ? new(request.UserEpoch, request.SourceUserEpoch, contentEpoch, request.ForegroundEpoch,
-                    windowEpoch, configurationRevision, request.SessionShortcuts!.Generation, connectionId) : null;
+                    windowEpoch, configurationRevision, request.SessionShortcuts!.Generation, connectionId,
+                    result.SourceVersion is { IsValid: true } version ? version : null) : null;
             _alternativeObservation = inputUnchanged
                 ? (_session.Revision, request.SourceUserEpoch, contentEpoch, request.ForegroundEpoch, windowEpoch)
                 : default;
@@ -1898,11 +1921,43 @@ public sealed partial class SessionController : IDisposable
     private bool ManualObservationIsCurrent(long now) => _manualObservation is { } observed
         && _session.State == SessionState.EditedTranslationPending && _session.Current is { } source
         && (observed.UnavailableUntil == 0 || now < observed.UnavailableUntil)
-        && observed.UserEpoch == _hook.UserEpoch && observed.SourceEpoch == _hook.SourceUserEpoch
+        && (observed.UserEpoch == _hook.UserEpoch && observed.SourceEpoch == _hook.SourceUserEpoch
+            || observed.SourceVersion is { IsValid: true }
+                && observed.UserEpoch <= _hook.UserEpoch && observed.SourceEpoch <= _hook.SourceUserEpoch)
         && observed.ContentEpoch == _hook.ContentEpoch && observed.ForegroundEpoch == _hook.ForegroundEpoch
         && observed.WindowEpoch == _hook.WindowEpoch && observed.ConfigurationRevision == _configurationRevision
         && observed.CommandGeneration == _hook.CommandGeneration && observed.ConnectionId == _hook.ConnectionId
         && _hook.Ready && _broker.Available && _hook.GetFocus(source.Target) == FocusMember.Source;
+
+    private void RebaseObservedManualCandidate(InputSnapshot snapshot, long now, bool resumeObservation)
+    {
+        RevokeInput("manual-source-observed");
+        _permitUntil = 0;
+        if (_session.RebaseManualCandidate(_session.Current!, snapshot, now, resumeObservation))
+            _generation++;
+    }
+
+    private bool ManualInputEpochsAreCurrent() => _manualObservation is { } observed
+        && observed.UserEpoch == _hook.UserEpoch && observed.SourceEpoch == _hook.SourceUserEpoch;
+
+    private bool ManualSourceVersionMatches(InputCapture result, InputContext request, long now) =>
+        ManualObservationIsCurrent(now) && _manualObservation is { SourceVersion.IsValid: true } observed
+        && result.SourceVersion is { IsValid: true } version && version == observed.SourceVersion
+        && !result.ForegroundExpired && result.Focus == FocusMember.Source
+        && result.Snapshot is { IsUsable: true } fresh && _session.Current is { } basis
+        && request.UserEpoch == _hook.UserEpoch && request.SourceUserEpoch == _hook.SourceUserEpoch
+        && result.UserEpoch == _hook.UserEpoch && result.ForegroundEpoch == _hook.ForegroundEpoch
+        && request.ForegroundEpoch == _hook.ForegroundEpoch
+        && request.SessionShortcuts?.Generation == observed.CommandGeneration
+        && request.SessionShortcuts.Bindings == CurrentSessionBindings
+        && fresh.InputEpoch >= basis.InputEpoch && fresh.ObservedAtMs <= now
+        && now - fresh.ObservedAtMs <= Limits.ObservationMaxAgeMs
+        && fresh with
+        {
+            ObservedAtMs = basis.ObservedAtMs,
+            Bounds = basis.Bounds,
+            InputEpoch = basis.InputEpoch
+        } == basis;
 
     private bool SuspendManualObservation(long now)
     {

@@ -1,3 +1,16 @@
+--- a/qt5/platforminputcontext/fcitxcandidatewindow.cpp
++++ b/qt5/platforminputcontext/fcitxcandidatewindow.cpp
+@@ -720,6 +720,10 @@
+             return;
+         }
+     }
++    // X11 popup routing delivers outside clicks here first. Leave an
++    // unhandled release available to the same source window as its press.
++    // Candidate and paging hits above retain ownership of their release.
++    event->ignore();
+ }
+ 
+ QSize FcitxCandidateWindow::sizeHint() {
 --- a/qt5/platforminputcontext/qfcitxplatforminputcontext.cpp
 +++ b/qt5/platforminputcontext/qfcitxplatforminputcontext.cpp
 @@ -6,4 +6,7 @@

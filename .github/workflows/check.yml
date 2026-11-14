@@ -869,6 +869,10 @@ jobs:
       id: test-qt-candidate-observation
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
       run: python tests/linux/test_qt_candidate_observation.py -v
+    - name: Verify native Qt source observation projection
+      id: test-qt-source-version
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_qt_source_version.py -v
     - name: Verify Linux test_argos_repetition_process
       id: test-argos-repetition-process
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
@@ -1016,6 +1020,39 @@ jobs:
       run: |
         set -o pipefail
         python tests/linux/qt_cooperative/run.py --reuse-build --fcitx-root artifacts/linux/fcitx-cooperative-5.1.22 --verify-fcitx-build 2>&1 | tee artifacts/linux/qt-cooperative-probe.log
+    - name: Exercise Qt language search independently of ordered acceptance
+      id: qt-language-options
+      if: ${{ matrix.group == 'native' && !cancelled() && steps.fcitx.outputs.core-ready == 'true' && (steps.qt.outcome == 'success' || steps.qt.outcome == 'failure') && hashFiles('artifacts/linux/qt-cooperative/fcitx5-qt.tar.gz') != '' }}
+      env:
+        QT_PROBE_OUTCOME: ${{ steps.qt.outcome }}
+      shell: bash
+      run: |
+        set -o pipefail
+        qt=artifacts/linux/qt-cooperative
+        language=artifacts/linux/qt-language-options
+        mkdir "$language"
+        if [ "$QT_PROBE_OUTCOME" = success ]; then
+          cp "$qt"/language-options-*.json "$qt"/language-options-*.log "$language"/
+          cp "$qt"/language-*.png "$qt"/versions.json "$language"/
+          printf '%s\n' 'Reused the completed language entry from the successful original Qt probe.' | tee artifacts/linux/qt-language-options.log
+        else
+          cp -a "$qt"/fcitx5-qt.tar.gz "$qt"/fcitx5-qt-* "$qt"/plugins "$qt"/qt-runtime-probe "$qt"/versions.json "$language"/
+          mkdir "$language/native"
+          cp -a "$qt"/native/qt6 "$language/native/"
+          python tests/linux/qt_cooperative/run.py --reuse-build --fcitx-root artifacts/linux/fcitx-cooperative-5.1.22 --verify-fcitx-build --language-options-only --out "$language" 2>&1 | tee artifacts/linux/qt-language-options.log
+        fi
+    - name: Preserve independent Qt language search evidence
+      if: ${{ matrix.group == 'native' && !cancelled() && (steps.qt-language-options.outcome == 'success' || steps.qt-language-options.outcome == 'failure') }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: typelay-linux-qt-language-options-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          artifacts/linux/qt-language-options.log
+          artifacts/linux/qt-language-options/*.json
+          artifacts/linux/qt-language-options/*.log
+          artifacts/linux/qt-language-options/*.png
+        if-no-files-found: warn
+        retention-days: 14
     - name: Package and relocate the optional Fcitx cooperation runtime
       id: fcitx-package
       if: ${{ matrix.group == 'native' && !cancelled() && (steps.fcitx.outcome == 'success' || steps.fcitx.outcome == 'failure')
@@ -1167,6 +1204,17 @@ jobs:
         export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
         export XDG_CACHE_HOME="$PWD/artifacts/linux/hy-model-cache"
         python tests/linux/native_e2e.py --desktop --desktop-scope model-packages --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/hy-package
+    - name: Preserve small Qt desktop event diagnostics
+      if: ${{ always() && matrix.group == 'native' }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: typelay-linux-qt-desktop-events-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          artifacts/linux/qt-desktop/*.json
+          artifacts/linux/qt-desktop/*.jsonl
+          artifacts/linux/qt-desktop/*.log
+        if-no-files-found: ignore
+        retention-days: 14
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       if: always()
       with:
@@ -1191,6 +1239,10 @@ jobs:
           artifacts/linux/qt-desktop/
           artifacts/linux/qt-cooperative/*.json
           artifacts/linux/qt-cooperative/*.log
+          artifacts/linux/qt-cooperative/*.png
+          artifacts/linux/qt-language-options/*.json
+          artifacts/linux/qt-language-options/*.log
+          artifacts/linux/qt-language-options/*.png
           artifacts/linux/fcitx-cooperative-5.1.22/*.json
           artifacts/linux/fcitx-cooperative-5.1.22/*.log
           artifacts/linux/fcitx-cooperative-5.1.22/gtk*-glossary-session/*.json

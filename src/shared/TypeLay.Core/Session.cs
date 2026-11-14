@@ -392,11 +392,13 @@ public sealed partial class Session
         return true;
     }
 
-    // The caller has attributed an acceptance-modifier transition. This retains
-    // only manual wording, never an old revision, snapshot or write permission.
-    public bool RebaseManualCandidate(InputSnapshot before, InputSnapshot fresh, long nowMs)
+    // The caller has proved a non-editing transition from its native observation.
+    // This also resumes a suspended observation; it retains manual wording only,
+    // never an old revision, input action, snapshot or write permission.
+    public bool RebaseManualCandidate(InputSnapshot before, InputSnapshot fresh, long nowMs, bool resumeObservation = false)
     {
-        if (State != SessionState.EditedTranslationPending || _focus != FocusMember.Source
+        if (State != SessionState.EditedTranslationPending
+            || _focus != FocusMember.Source && !(resumeObservation && _focus == FocusMember.Other)
             || _current != before || _manualSeed is null || _manualBasis != before.Text
             || fresh.InputEpoch <= before.InputEpoch || WriteSafety.CheckSnapshot(fresh, nowMs) != Denial.None
             || fresh with
@@ -409,6 +411,7 @@ public sealed partial class Session
         _revision++;
         _previewRevision = _revision;
         _current = fresh;
+        _focus = FocusMember.Source;
         return true;
     }
 

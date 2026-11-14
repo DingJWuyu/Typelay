@@ -308,9 +308,19 @@ struct Target {
     QPlainTextEdit *plain() const { return qobject_cast<QPlainTextEdit *>(field.data()); }
     QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     quint64 content = 1, input = 1, focus = 1, storage = 0, selection = 1;
+    quint64 integrity = 1;
+    bool sourceVersionExhausted = false;
     TypeLayFcitxQtStateV1 state{};
     bool observed = false, probing = false, mutating = false, quarantined = false;
 };
+
+void advanceSourceRevision(Target *target, quint64 &revision) {
+    // Existing native revisions remain authoritative. Once a version cannot be
+    // represented losslessly by the transport, this optional proof stays off.
+    if (revision >= quint64(std::numeric_limits<qint64>::max()) - 1)
+        target->sourceVersionExhausted = true;
+    ++revision;
+}
 
 // Fixed-size observations for one queued native shortcut. Only the existing
 // terminal trace emits them; no provider inspection or per-tick logging.
@@ -626,6 +636,7 @@ public:
 
     bool beginOrdered(QObject *actual, quint64 id, const QEvent *input,
         const TypeLayFcitxQtStateV1 *before, TypeLayFcitxQtOrderedGrantV1 *grant) override {
+        tracePermit("ordered-begin", {}, qint64(id));
         if (!onThread() || insideGlossary(actual) || handlingKey_ || ordered_ || editorOrdered_ || !id || !before || !grant || !input
             || input->type() != QEvent::KeyPress || !orderedConfigured()) return false;
         const auto *key = static_cast<const QKeyEvent *>(input);
@@ -663,6 +674,7 @@ public:
             || (grant->acceptUntil <= now() && grant->exitUntil <= now())) {
             revokeOrdered(); return false;
         }
+        tracePermit("ordered-granted", current, qint64(id));
         return true;
     }
     bool decideOrdered(QObject *actual, quint64 id, const QEvent *input,
@@ -714,6 +726,7 @@ public:
         return true;
     }
     void retireOrdered(quint64 ticket) override {
+        tracePermit("ordered-retired", {}, qint64(ticket));
         if (ordered_ && ordered_->id == ticket) { ordered_.reset(); scheduleWriteSettlements(); }
         if (editorOrdered_ && editorOrdered_->id == ticket) editorOrdered_.reset();
     }
@@ -723,6 +736,7 @@ signals:
 
 private slots:
     void providerChanged(QObject *field, uint causes) {
+        tracePermit("provider-changed", {}, causes);
         constexpr uint knownCauses = TlQtInput | TlQtFocus | TlQtBinding | TlQtModifier
             | TlQtOrderedPrefix | TlQtDetachedRetired;
         const bool unknown = !causes || (causes & ~knownCauses);
@@ -742,6 +756,7 @@ private slots:
             && ordered_->target == target && ordered_->provider == sender()) loseProof();
         else clearPermit();
         if (!target || sender() != target->provider) return;
+        if (unknown || (causes & TlQtBinding)) advanceSourceRevision(target, target->integrity);
         if (causes & TlQtBinding) shortcutAuthority_ = {};
         if (causes & (TlQtInput | TlQtBinding)) invalidate(target, false, false);
         if (causes & TlQtFocus) invalidate(target, false, true);
@@ -750,6 +765,26 @@ private slots:
     }
 
 private:
+    void tracePermit(const char *phase, const QJsonObject &data = {}, qint64 detail = 0) {
+        // DEBUG-t11-permit: one original editor return, bounded metadata only.
+        // No capture, provider query, UI action, event iteration or lease change.
+        if (!onThread() || !permitTraceRemaining_) return;
+        --permitTraceRemaining_;
+        const auto active = publicationPlan(publication_);
+        const auto incoming = publicationPlan(data);
+        const auto record = writeSettlements_.value(incoming.isEmpty() ? active : incoming);
+        const QJsonObject entry{{"phase", QLatin1String(phase)}, {"atMs", now()}, {"detail", detail},
+            {"activePlan", active}, {"incomingPlan", incoming},
+            {"activeUntilMs", integer(publication_.value("permit").toObject(), "expiresAtMs")},
+            {"incomingUntilMs", integer(data.value("permit").toObject(), "expiresAtMs")},
+            {"ticket", qint64(ordered_ ? ordered_->id : 0)},
+            {"ticketPlan", ordered_ ? publicationPlan(ordered_->publication) : QString()},
+            {"ticketRevoked", ordered_ && ordered_->revoked},
+            {"authorization", qint64(authorizationGeneration_)},
+            {"admitting", record ? int(record->admitting) : -1},
+            {"inFlight", record ? int(record->inFlight) : -1}};
+        std::fprintf(stderr, "DEBUG-t11-permit %s\n", QJsonDocument(entry).toJson(QJsonDocument::Compact).constData());
+    }
     bool onThread() const { return QThread::currentThread() == thread(); }
     static bool takeTraceLine() {
         static unsigned traceLines = 0;
@@ -841,8 +876,8 @@ private:
         for (const auto &connection : target->documentConnections) disconnect(connection);
         target->documentConnections.clear();
         target->document = plain->document();
-        ++target->documentGeneration;
-        ++target->content;
+        advanceSourceRevision(target, target->documentGeneration);
+        advanceSourceRevision(target, target->content);
         invalidate(target, true, false);
         if (target == overlayTarget_) hideOverlay();
         if (!target->document) return;
@@ -854,25 +889,29 @@ private:
                 target->changePosition = position;
                 target->changeRemoved = removed;
                 target->changeAdded = added;
+                advanceSourceRevision(target, target->integrity);
                 if (!target->mutating) invalidate(target, false, false);
             }));
         target->documentConnections.append(connect(document, &QTextDocument::contentsChanged, this,
             [this, target, generation] {
                 if (target->documentGeneration != generation) return;
                 ++target->storage;
-                ++target->content;
+                advanceSourceRevision(target, target->content);
                 if (!target->mutating) invalidate(target, true, false);
             }));
         target->documentConnections.append(connect(document, &QTextDocument::documentLayoutChanged, this,
             [this, target, generation] {
-                if (target->documentGeneration == generation) invalidate(target, false, false);
+                if (target->documentGeneration == generation) {
+                    advanceSourceRevision(target, target->integrity);
+                    invalidate(target, false, false);
+                }
             }));
         target->documentConnections.append(connect(document, &QObject::destroyed, this,
             [this, target, generation] {
                 if (target->documentGeneration != generation) return;
                 target->document = nullptr;
-                ++target->documentGeneration;
-                ++target->content;
+                advanceSourceRevision(target, target->documentGeneration);
+                advanceSourceRevision(target, target->content);
                 invalidate(target, true, false);
                 if (target == overlayTarget_) hideOverlay();
             }));
@@ -884,13 +923,13 @@ private:
         target->field = widget;
         targets_.insert(widget, target);
         const auto selectionChanged = [this, target] {
-            ++target->selection;
+            advanceSourceRevision(target, target->selection);
             if (!target->mutating) invalidate(target, false, false);
         };
         if (auto *line = target->line()) {
             connect(line, &QLineEdit::textChanged, this, [this, target] {
                 ++target->storage;
-                ++target->content;
+                advanceSourceRevision(target, target->content);
                 if (!target->mutating) invalidate(target, true, false);
             });
             connect(line, &QLineEdit::selectionChanged, this, selectionChanged);
@@ -1023,8 +1062,9 @@ private:
         // The provider may retain this property for a proven Detached field.
         // Absence still grants no capability and is not itself a text edit;
         // only inspect can distinguish focused and sealed background proof.
-        if (!owner) { clearPermit(); return nullptr; }
+        if (!owner) { advanceSourceRevision(target, target->integrity); clearPermit(); return nullptr; }
         if (target->provider != owner) {
+            advanceSourceRevision(target, target->integrity);
             shortcutAuthority_ = {};
             target->provider = owner;
             target->observed = false;
@@ -1070,11 +1110,15 @@ private:
             && field->property(ProviderProperty).value<QObject *>() == owner
             && state.size == sizeof state && state.version == 1u && (state.flags & ~(TlQtKnown | TlQtFocused | TlQtPending | TlQtComposing | TlQtDetached)) == 0;
         if (!valid) {
+            tracePermit("inspect-invalid");
             if (ordered_ && ordered_->target == target && ordered_->provider == owner) loseProof();
             else clearPermit();
             return false;
         }
+        if (!(state.flags & TlQtKnown) || (state.flags & TlQtComposing))
+            advanceSourceRevision(target, target->integrity);
         if (target->observed && stamp(target->state) != stamp(state)) {
+            tracePermit("inspect-state-changed", {}, state.flags);
             const auto &before = ordered_ ? ordered_->before : target->state;
             if (ordered_ && ordered_->target == target && ordered_->provider == owner
                 && state.contextGeneration == before.contextGeneration && state.fieldGeneration == before.fieldGeneration
@@ -1109,6 +1153,7 @@ private:
     QJsonObject authority(Target *target) const {
         QJsonObject result{{"target", target->id}, {"metadataKey", metadataKey(target)},
             {"contentRevision", qint64(target->content)}, {"inputRevision", qint64(target->input)},
+            {"selectionRevision", qint64(target->selection)},
             {"focusRevision", qint64(target->focus)}, {"observedAtMs", now()}};
         if (target->observed) result.insert("contextStamp", stamp(target->state));
         return result;
@@ -1178,6 +1223,20 @@ private:
         result.insert("ime", "Clear");
         result.insert("writeSupported", !target->quarantined && sessionBindings(target).value("sourceReady").toBool());
         result.insert("observedAtMs", now());
+        // Every component belongs to this completed native read. In particular,
+        // raw key submission/replay invalidates input authority without posing
+        // as a text or selection edit. Fresh Clear/local checks above still apply.
+        const QJsonObject sourceVersion{{"version", 1}, {"content", qint64(target->content)},
+            {"selection", qint64(target->selection)}, {"document", qint64(target->documentGeneration + 1)},
+            {"focus", qint64(target->focus)}, {"context", qint64(target->state.contextGeneration)},
+            {"field", qint64(target->state.fieldGeneration)}, {"integrity", qint64(target->integrity)}};
+        bool representable = !target->sourceVersionExhausted;
+        for (const auto *key : {"content", "selection", "document", "focus", "context", "field", "integrity"}) {
+            const auto value = integer(sourceVersion, key);
+            representable = representable && value > 0 && value < std::numeric_limits<qint64>::max();
+        }
+        if (representable) result.insert("sourceVersion", sourceVersion);
+        else target->sourceVersionExhausted = true;
         return result;
     }
     void invalidate(Target *target, bool textChanged, bool focusChanged) {
@@ -1185,7 +1244,7 @@ private:
         if (editorOrdered_ && editorOrdered_->target == target) revokeEditorOrdered();
         cancelShortcut(target, focusChanged ? "NotSourceFocus" : textChanged ? "SourceChanged" : "EpochChanged");
         if (focusChanged) shortcutAuthority_ = {};
-        if (focusChanged) ++target->focus;
+        if (focusChanged) advanceSourceRevision(target, target->focus);
         else ++target->input;
         clearPermit();
         if (target->mutating) return;
@@ -1236,6 +1295,7 @@ private:
             writeSettlements_.insert(id, record);
         }
         ++record->admitting;
+        tracePermit("publication-admitted", data);
         return record;
     }
     std::shared_ptr<WriteSettlement> beginSourceWrite(const QString &id) {
@@ -1261,6 +1321,7 @@ private:
             if (ordered_ && !ordered_->revoked && publicationPlan(ordered_->publication) == record->plan)
                 until = std::max(until, integer(ordered_->publication.value("permit").toObject(), "expiresAtMs", -1));
             if (until >= current) { next = std::min(next, until - current + 1); ++entry; continue; }
+            tracePermit("publication-retired", {{"permit", QJsonObject{{"plan", QJsonObject{{"id", record->plan}}}}}});
             events.append(QJsonObject{{"planId", record->plan}, {"target", record->target}, {"generation", record->generation}});
             consumed_.append(record->plan);
             while (consumed_.size() > 128) consumed_.removeFirst();
@@ -1271,8 +1332,9 @@ private:
         for (const auto &event : events)
             if (fd_ >= 0 && observedConnection == connectionGeneration_) sendEvent("writeRetired", event.toObject());
     }
-    void loseProof() { publication_ = {}; scheduleWriteSettlements(); refreshHint(); }
+    void loseProof() { tracePermit("lose-proof"); publication_ = {}; scheduleWriteSettlements(); refreshHint(); }
     void revokeOrdered() {
+        tracePermit("ordered-revoke");
         const auto ticket = std::move(ordered_);
         if (!ticket) return;
         ticket->revoked = true;
@@ -1312,6 +1374,23 @@ private:
     static bool sameDraftAction(const QJsonObject &before, const QJsonObject &after) {
         return sameInteraction(before, after) && before.value("draftRevision") == after.value("draftRevision")
             && before.value("actionRevision") == after.value("actionRevision");
+    }
+    static bool sameMotionView(const QJsonObject &before, const QJsonObject &after) {
+        // Fresh permits change the hint and display sequence inside the same
+        // interaction. Those display values do not change the spring's target.
+        const auto withoutAcceptanceDisplay = [](QJsonObject view) {
+            view.remove("canAccept");
+            auto context = view.value("viewContext").toObject();
+            auto identity = context.value("identity").toObject();
+            identity.remove("displaySequence");
+            context.insert("identity", identity);
+            view.insert("viewContext", context);
+            auto presentation = view.value("presentation").toObject();
+            presentation.remove("tabHint");
+            view.insert("presentation", presentation);
+            return view;
+        };
+        return withoutAcceptanceDisplay(before) == withoutAcceptanceDisplay(after);
     }
     static QJsonObject formPresentation(const QJsonObject &view) {
         return view.value("viewContext").toObject().value("glossaryForm").toObject();
@@ -1389,6 +1468,11 @@ private:
             || !editorOrderedCurrent(ticket) || !provider->claimOrdered(actual, id, &ticket->before, current)) return false;
         // Claim fixes the original Fn pair before any host/focus callback. This
         // message cannot write; Runtime must return and freshly capture the source.
+        if (accept && !permitTraceStarted_ && qEnvironmentVariableIsSet("TYPELAY_QT_PROBE")) {
+            permitTraceStarted_ = true;
+            permitTraceRemaining_ = 96;
+            tracePermit("editor-return", {}, qint64(id));
+        }
         loseProof();
         sendEvent("ui", {{"target", ticket->target->id}, {"operation", exit ? "escape" : "return"},
             {"revision", ticket->revision}, {"generation", ticket->generation}});
@@ -2900,7 +2984,10 @@ private:
         }
         if (!building() || !scroll || !list) return false;
         scroll->setWidget(list);
-        if (!building() || !scroll) return false;
+        if (!building() || !scroll || !list) return false;
+        // QScrollArea enables this on installation; the menu surface owns the background.
+        list->setAutoFillBackground(false);
+        if (!building() || !scroll || !list) return false;
         layout->addWidget(scroll);
         if (!building()) return false;
         configuration->feedback = new QLabel(panel);
@@ -3657,7 +3744,7 @@ private:
         language_->setObjectName(QStringLiteral("typelay-menu-trigger"));
         status_ = new QLabel(frame);
         status_->setObjectName(QStringLiteral("typelay-status"));
-        status_->setWordWrap(true);
+        status_->setWordWrap(false);
         status_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         header->addStretch(); header->addWidget(status_);
         tools_ = new QWidget(frame);
@@ -3884,7 +3971,13 @@ private:
                 closeLanguageConfiguration();
                 if (menuView_ && (menuView_->revision != integer(data, "revision", 0)
                     || menuView_->generation != data.value("generation")
-                    || !sameInteraction(presentationIdentity(menuView_->view), identity))) {
+                    || !sameInteraction(presentationIdentity(menuView_->view), identity)
+                    || (openedMenu_ == moreMenu_
+                        && presentationIdentity(menuView_->view).value("actionRevision") != identity.value("actionRevision"))
+                    || menuView_->view.value("sourceLanguage") != view.value("sourceLanguage")
+                    || menuView_->view.value("targetLanguage") != view.value("targetLanguage")
+                    || languageChoices(menuView_->view, "source") != languageChoices(view, "source")
+                    || languageChoices(menuView_->view, "target") != languageChoices(view, "target"))) {
                     const QPointer<QWidget> observedMenu = qEnvironmentVariableIsSet("TYPELAY_QT_PROBE")
                         && openedMenu_ == menu_ && menu_ && menu_->isVisible() ? menu_ : nullptr;
                     QJsonObject retirement;
@@ -3900,16 +3993,19 @@ private:
                         observedMenu->setProperty("typelay.qt.menu.retirement", QVariant::fromValue(retirement));
                     }
                 }
-                const bool continueMotion = overlayMotion_.isActive()
-                    && integer(data, "visualExpansionFrom", -1) == overlayRevision_
-                    && integer(data, "revision", -1) == overlayRevision_ + 1
+                const bool expansionEcho = integer(data, "visualExpansionFrom", -1) == overlayRevision_
+                    && integer(data, "revision", -1) == overlayRevision_ + 1 && view == overlayView_;
+                const bool acceptanceDisplay = integer(data, "revision", -1) == overlayRevision_
+                    && integer(data, "visualExpansionFrom", -1) == -1
+                    && sameDraftAction(previousIdentity, identity) && sameMotionView(overlayView_, view);
+                const bool continueMotion = overlayMotion_.isActive() && (expansionEcho || acceptanceDisplay)
                     && target == overlayTarget_ && target->field == motionSource_ && editor_ == motionEditor_
                     && editor_ && editor_->document() == motionDocument_ && editor_->document()->revision() == motionDocumentRevision_
                     && editor_->isReadOnly() == motionReadOnly_ && editor_->focusPolicy() == motionFocusPolicy_
                     && card_ && card_->parentWidget() == motionParent_ && motionParent_
                     && motionParent_->geometry() == motionParentBounds_ && target->field->window() == motionParent_
                     && geometry(target) == motionGeometry_ && data.value("generation") == overlayGeneration_
-                    && view == overlayView_ && data.value("theme").toString(QStringLiteral("system")) == overlayTheme_
+                    && data.value("theme").toString(QStringLiteral("system")) == overlayTheme_
                     && data.value("appearance").toObject() == overlayAppearance_;
                 if (overlayMotion_.isActive())
                     traceOverlayMotion("render", integer(data, "revision", -1), integer(data, "visualExpansionFrom", -1), continueMotion);
@@ -4016,8 +4112,8 @@ private:
                 status_->setVisible(isPaused || !capsule);
                 language_->setVisible(!isPaused); resume_->setVisible(isPaused); resume_->setEnabled(!pendingResume_);
                 if (isPaused) closeOverlayMenus();
-                // Only the exact one-use expansion echo may continue geometry.
-                // All current view/authority/edit state above has already applied.
+                // The expansion echo and acceptance-only display updates keep
+                // the same geometry. Current authority and edit checks still apply.
                 if (continueMotion) motionRevision_ = overlayRevision_;
                 overlayTheme_ = data.value("theme").toString(QStringLiteral("system"));
                 applyOverlayTheme();
@@ -4187,7 +4283,10 @@ private:
                 && input->replacementStart() == 0 && input->replacementLength() == 0
                 && input->attributes().isEmpty();
             if (empty) clearPermit();
-            else invalidate(target, false, false);
+            else {
+                advanceSourceRevision(target, target->integrity);
+                invalidate(target, false, false);
+            }
         } else if (type == QEvent::KeyPress) {
             const auto *key = static_cast<QKeyEvent *>(event);
             if (ordered_ && ordered_->target == target && key->key() == Qt::Key_Control
@@ -4197,8 +4296,16 @@ private:
             else invalidate(target, false, false);
         } else if (type == QEvent::MouseButtonPress || type == QEvent::Wheel
             || type == QEvent::TouchBegin) invalidate(target, false, false);
-        if (type == QEvent::DynamicPropertyChange) bind(target);
+        if (type == QEvent::DynamicPropertyChange) {
+            // Only the provider property participates in source identity.
+            // Qt also changes private font properties when applying a style;
+            // that display update cannot retire an unchanged manual draft.
+            if (static_cast<QDynamicPropertyChangeEvent *>(event)->propertyName() == ProviderProperty)
+                advanceSourceRevision(target, target->integrity);
+            bind(target);
+        }
         if (type == QEvent::Hide || type == QEvent::EnabledChange || type == QEvent::ReadOnlyChange) {
+            advanceSourceRevision(target, target->integrity);
             invalidate(target, false, false);
             if (target == overlayTarget_) hideOverlay();
         }
@@ -4299,6 +4406,7 @@ private:
         else if (op == "return") returnSource(target, data.value("authority").toObject(), data.value("generation"), id);
         else if (op == "quarantine") { revokeEditorOrdered(); ++authorizationGeneration_; if (target) target->quarantined = true; cancelShortcut(); clearPermit(); respond(id); }
         else if (op == "revoke") {
+            tracePermit("host-revoke", data);
             ++authorizationGeneration_; clearPermit();
             if (integer(data, "shortcuts", 0)) { revokeEditorOrdered(); cancelShortcut(); shortcutAuthority_ = {}; }
             respond(id);
@@ -4307,16 +4415,20 @@ private:
             const auto settlement = admitPublication(data);
             const auto admitted = qScopeGuard([this, settlement] {
                 if (settlement && settlement->admitting) --settlement->admitting;
+                tracePermit("publication-complete", settlement
+                    ? QJsonObject{{"permit", QJsonObject{{"plan", QJsonObject{{"id", settlement->plan}}}}}} : QJsonObject());
                 scheduleWriteSettlements();
             });
             if (!sessionCurrent(data.value("generation"))) { respond(id, QJsonObject{{"published", false}}); return; }
             const bool renewal = sameOrderedPublication(data);
+            tracePermit("publication-replacement", data, renewal);
             if (!renewal) { ++authorizationGeneration_; clearPermit(); }
             else loseProof();
             if (target && sessionCurrent(data.value("generation")) && focused() == target
                 && metadataMatches(target, data.value("authority").toObject()) && inspect(target) && clear(target->state)
                 && sessionCurrent(data.value("generation")) && sessionProvider(target->field)) publication_ = data;
             const auto state = publicationState(target);
+            tracePermit("publication-result", data, state.value("ready").toBool());
             respond(id, QJsonObject{{"published", !publication_.isEmpty()
                 && (data.value("permit").isNull() || data.value("permit").isUndefined() || state.value("ready").toBool())}});
             if (target) { auto report = state; report.insert("target", target->id); sendEvent("publication", report); }
@@ -4458,6 +4570,8 @@ private:
     QString lifetime_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
     QTimer reconnect_, expiry_, writeSettlementTimer_;
     QHash<QString, std::shared_ptr<WriteSettlement>> writeSettlements_;
+    unsigned permitTraceRemaining_ = 0;
+    bool permitTraceStarted_ = false;
     QTimer overlayMotion_;
     QElapsedTimer motionClock_;
     qint64 motionLastFrame_ = 0;
