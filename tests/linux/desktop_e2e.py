@@ -223,8 +223,8 @@ def run_gtk_configuration_journey(fixture_command, environment, output, gtk4, ro
     evidence.append(
         "GTK4 configuration: changed view, cancel, external focus and late ACK never restore the retired source"
         if gtk4
-        else "GTK language preview: detached renewal rejects changed body, authority, "
-        "editing permission, external focus and source input"
+        else "GTK language preview: detached renewal preserves current menu focus and rejects "
+        "changed interaction, authority, external focus and source input"
     )
     return evidence
 

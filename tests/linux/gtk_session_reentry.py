@@ -1031,8 +1031,8 @@ def check_language_retention_refusal(
     def controls():
         return state().get("overlayControls", {})
 
-    def detached_menu():
-        actual = state()
+    def detached_menu(actual=None):
+        actual = state() if actual is None else actual
         selected = actual.get("overlayControls", {}).get(control, {})
         # Keep only the first selector's initial detach polls, not later renewals.
         # The X command receipt is not proof that GTK dispatched its input.
@@ -1193,6 +1193,7 @@ def check_language_retention_refusal(
         # changing the product interaction. It grants no editing or write lease.
         focused_control = trigger if trigger_case else control
         before = controls()[focused_control]["instance"]
+        rendered_ready = evidence.setdefault("retentionEditorReady", {})
         result = render_preview(
             client,
             source,
@@ -1202,14 +1203,16 @@ def check_language_retention_refusal(
             language_view=languages,
             token_revision=token_revision,
             can_edit=True,
-            evidence=evidence.setdefault("retentionEditorReady", {}),
+            evidence=rendered_ready,
         )
         assert result == {"visible": True, "editing": False}
 
         def same_focus():
-            if not trigger_case:
-                return detached_menu()
             actual = state()
+            if actual.get("observedAtMs", 0) <= rendered_ready["renderReturnedAtMonoMs"]:
+                return None
+            if not trigger_case:
+                return detached_menu(actual)
             return (
                 actual.get("overlayControls", {}).get(trigger, {}).get("focused")
                 and not actual["overlayControls"].get(menu, {}).get("visible")
