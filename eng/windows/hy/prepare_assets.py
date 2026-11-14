@@ -67,6 +67,7 @@ class Preparation:
 
     def acquire(self, record):
         path = self.download / record["file"]
+        print(json.dumps({"event": "hy-asset-start", "stage": self.stage}), flush=True)
         if path.exists() or path.is_symlink():
             # An invalid cache is a failure. Do not silently replace and call it a hit.
             verify_file(path, record)
@@ -78,10 +79,16 @@ class Preparation:
             request = urllib.request.Request(
                 record["url"], headers={"User-Agent": "TypeLay-Hy-fixture/1"}
             )
+            print(json.dumps({"event": "hy-asset-request", "stage": self.stage}), flush=True)
             with urllib.request.urlopen(request, timeout=min(30, self.remaining())) as response:
                 if response.status != 200 or not response.url.startswith("https://"):
                     raise ValueError("fixed HTTPS asset download failed")
+                print(json.dumps({"event": "hy-asset-response", "stage": self.stage}), flush=True)
                 value, size = hashlib.sha256(), 0
+                # At most sixteen progress records for the fixed asset. The outer
+                # process deadline can kill Python before its exception report.
+                stride = max(CHUNK, (record["bytes"] + 15) // 16)
+                next_report = stride
                 for block in iter(lambda: response.read(CHUNK), b""):
                     self.remaining()
                     size += len(block)
@@ -89,12 +96,21 @@ class Preparation:
                         raise ValueError("download exceeded fixed byte bound")
                     value.update(block)
                     output.write(block)
+                    if size >= next_report:
+                        print(
+                            json.dumps(
+                                {"event": "hy-asset-progress", "stage": self.stage, "bytes": size}
+                            ),
+                            flush=True,
+                        )
+                        next_report += stride
             if size != record["bytes"] or value.hexdigest() != record["sha256"]:
                 raise ValueError("download full hash mismatch")
         # Windows rename fails if another target appeared; never overwrite a cache hit.
         partial.rename(path)
         verify_file(path, record)
         self.remaining()
+        print(json.dumps({"event": "hy-asset-verified", "stage": self.stage}), flush=True)
         return "downloaded-full-hash-verified"
 
     def extract(self, lock):
