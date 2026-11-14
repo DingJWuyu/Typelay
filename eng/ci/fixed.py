@@ -14,6 +14,12 @@ sys.path.insert(0, str(ROOT))
 
 
 def key(kind):
+    if kind == "hy":
+        lock = json.loads(
+            (ROOT / "src/shared/TypeLay.Worker/native/hy/assets.lock.json").read_text()
+        )
+        downloads = {name: lock[name] for name in ("model", "model_license", "runtime_archive")}
+        return "ci-hy-" + hashlib.sha256(json.dumps(downloads, sort_keys=True).encode()).hexdigest()
     if kind == "fonts":
         files = ["eng/fonts/prepare.py", "eng/fonts/fonts.lock.json", "eng/requirements.txt"]
     else:
@@ -29,7 +35,7 @@ def key(kind):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("key", "lookup", "restore", "publish"))
-    parser.add_argument("kind", choices=("fonts", "fcitx"))
+    parser.add_argument("kind", choices=("fonts", "fcitx", "hy"))
     parser.add_argument("--tag")
     parser.add_argument("--wait-for-job", help="Wait for this run's named producer to publish")
     args = parser.parse_args()
@@ -39,7 +45,8 @@ def main():
     if args.action == "key":
         print(tag)
         return
-    archive = ROOT / "artifacts" / (args.kind + (".tar.gz" if args.kind == "fonts" else ".tar.zst"))
+    suffix = {"fonts": ".tar.gz", "fcitx": ".tar.zst", "hy": ".tar"}[args.kind]
+    archive = ROOT / "artifacts" / (args.kind + suffix)
     archive.parent.mkdir(exist_ok=True)
     repo = os.environ["GITHUB_REPOSITORY"]
     if args.action in ("lookup", "restore"):
@@ -102,23 +109,24 @@ def main():
             digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
         if digest != asset["digest"]:
             raise ValueError("Release asset digest mismatch")
+        extract = {"fonts": ["-xzf"], "fcitx": ["--zstd", "-xf"], "hy": ["-xf"]}[args.kind]
         subprocess.run(
-            ["tar", *(["-xzf"] if args.kind == "fonts" else ["--zstd", "-xf"]), str(archive)],
+            ["tar", *extract, str(archive)],
             cwd=ROOT,
             check=True,
         )
         with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
             stream.write("hit=true\n")
     else:
-        directories = (
-            ["artifacts/ui-fonts"]
-            if args.kind == "fonts"
-            else ["artifacts/linux/fcitx-cooperative-5.1.22"]
-        )
+        directories = {
+            "fonts": ["artifacts/ui-fonts"],
+            "fcitx": ["artifacts/linux/fcitx-cooperative-5.1.22"],
+            "hy": ["artifacts/hy-download"],
+        }[args.kind]
         subprocess.run(
             [
                 "tar",
-                *(["-z"] if args.kind == "fonts" else ["--zstd"]),
+                *({"fonts": ["-z"], "fcitx": ["--zstd"], "hy": []}[args.kind]),
                 "--exclude=core-build",
                 "--exclude=libime-build",
                 "--exclude=fcitx5-chinese-addons-build",

@@ -35,21 +35,27 @@ if sys.argv[1] == "api":
         sys.exit(1)
     print(Path(os.environ["FIXED_METADATA"]).read_text())
 else:
-    shutil.copyfile(os.environ["FIXED_ARCHIVE"], Path(sys.argv[sys.argv.index("--dir") + 1]) / "fonts.tar.gz")
+    shutil.copyfile(os.environ["FIXED_ARCHIVE"], Path(sys.argv[sys.argv.index("--dir") + 1]) / os.environ["FIXED_NAME"])
 """
 
 
 class FixedBuildTransportTests(unittest.TestCase):
-    def run_transport(self, mode, action="restore", wait=False):
+    def run_transport(self, mode, action="restore", wait=False, kind="fonts"):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             script = root / "eng/ci/fixed.py"
             script.parent.mkdir(parents=True)
             shutil.copyfile(ROOT / "eng/ci/fixed.py", script)
             data = b"synthetic fixed product"
-            archive = root / "fixture.tar.gz"
-            with tarfile.open(archive, "w:gz") as output:
-                info = tarfile.TarInfo("artifacts/ui-fonts/test.txt")
+            name = "fonts.tar.gz" if kind == "fonts" else "hy.tar"
+            payload = (
+                "artifacts/ui-fonts/test.txt"
+                if kind == "fonts"
+                else "artifacts/hy-download/test.gguf"
+            )
+            archive = root / name
+            with tarfile.open(archive, "w:gz" if kind == "fonts" else "w") as output:
+                info = tarfile.TarInfo(payload)
                 info.size = len(data)
                 output.addfile(info, io.BytesIO(data))
             digest = hashlib.sha256(archive.read_bytes()).hexdigest()
@@ -59,7 +65,7 @@ class FixedBuildTransportTests(unittest.TestCase):
                     {
                         "assets": [
                             {
-                                "name": "fonts.tar.gz",
+                                "name": name,
                                 "digest": "sha256:" + ("0" * 64 if mode == "corrupt" else digest),
                             }
                         ]
@@ -77,7 +83,7 @@ class FixedBuildTransportTests(unittest.TestCase):
             shim.chmod(0o700)
             output = root / "output"
             result = subprocess.run(
-                [sys.executable, str(script), action, "fonts", "--tag", "ci-fonts-test"]
+                [sys.executable, str(script), action, kind, "--tag", "ci-test"]
                 + (["--wait-for-job", "fcitx-build"] if wait else []),
                 cwd=root,
                 capture_output=True,
@@ -91,6 +97,7 @@ class FixedBuildTransportTests(unittest.TestCase):
                     "FIXED_CASE": mode,
                     "FIXED_METADATA": str(metadata),
                     "FIXED_ARCHIVE": str(archive),
+                    "FIXED_NAME": name,
                 },
                 timeout=20 if wait else 10,
             )
@@ -100,7 +107,7 @@ class FixedBuildTransportTests(unittest.TestCase):
                 result.stderr,
             )
             self.assertEqual(
-                (root / "artifacts/ui-fonts/test.txt").exists(),
+                (root / payload).exists(),
                 mode in ("valid", "wait-valid", "wait-draft") and action == "restore",
             )
             self.assertEqual(
@@ -138,8 +145,39 @@ class FixedBuildTransportTests(unittest.TestCase):
     def test_lookup_does_not_download_existing_builds(self):
         self.run_transport("valid", "lookup")
 
+    def test_hy_download_bytes_are_verified_before_becoming_a_local_cache(self):
+        for mode in ("valid", "corrupt"):
+            with self.subTest(mode=mode):
+                self.run_transport(mode, kind="hy")
+
 
 class FixedBuildKeyTests(unittest.TestCase):
+    def test_hy_cache_tracks_download_pins_independently_of_product_source_records(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = root / "eng/ci/fixed.py"
+            script.parent.mkdir(parents=True)
+            shutil.copyfile(ROOT / "eng/ci/fixed.py", script)
+            path = root / "src/shared/TypeLay.Worker/native/hy/assets.lock.json"
+            path.parent.mkdir(parents=True)
+            lock = {
+                name: {"sha256": "old"} for name in ("model", "model_license", "runtime_archive")
+            }
+            path.write_text(json.dumps(lock))
+
+            def key():
+                return subprocess.check_output(
+                    [sys.executable, str(script), "key", "hy"], text=True, timeout=10
+                ).strip()
+
+            original = key()
+            lock["source_sha256"] = "different current product implementation"
+            path.write_text(json.dumps(lock))
+            self.assertEqual(key(), original)
+            lock["model"]["sha256"] = "new deliberately pinned download"
+            path.write_text(json.dumps(lock))
+            self.assertNotEqual(key(), original)
+
     def test_native_edits_do_not_rebuild_third_party_dependencies(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

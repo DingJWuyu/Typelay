@@ -90,6 +90,24 @@ jobs:
         Path("artifacts/ci/source.json").write_text(json.dumps(source, indent=2), encoding="utf-8")
         PY_SOURCE
       shell: bash
+    - name: Hash fixed Hy download identities
+      run: echo "tag=$(python eng/ci/fixed.py key hy)" >> "$GITHUB_OUTPUT"
+      id: hy-key
+    - name: Find fixed Hy downloads
+      run: python eng/ci/fixed.py lookup hy --tag "$TAG"
+      id: hy-cache
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TAG: ${{ steps.hy-key.outputs.tag }}
+    - name: Prepare fixed Hy downloads without installing or running a model
+      if: steps.hy-cache.outputs.hit != 'true'
+      run: python eng/windows/hy/prepare_assets.py --artifacts "$PWD/artifacts" --budget-seconds 590 --assets-only
+    - name: Publish fixed Hy downloads
+      if: steps.hy-cache.outputs.hit != 'true'
+      run: python eng/ci/fixed.py publish hy --tag "$TAG"
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TAG: ${{ steps.hy-key.outputs.tag }}
     - name: Hash pinned third-party sources and toolchain
       run: echo "tag=$(python eng/ci/fixed.py key fcitx)" >> "$GITHUB_OUTPUT"
       id: key
@@ -299,6 +317,9 @@ jobs:
       matrix:
         group: [ordinary, hy]
     needs: fonts
+    permissions:
+      contents: read
+      actions: read
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -332,7 +353,12 @@ jobs:
       if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
       timeout-minutes: 10
       shell: pwsh
-      run: ./dev.ps1 hy-product-prepare
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        python eng/ci/fixed.py restore hy --wait-for-job fcitx-build
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        ./dev.ps1 hy-product-prepare
     - name: Package and test the relocated distribution
       id: windows-package
       if: ${{ !cancelled() && steps.windows-build.outcome == 'success' && steps.hy-prepare.outcome == 'success' }}
