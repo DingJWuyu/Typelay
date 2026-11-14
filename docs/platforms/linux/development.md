@@ -31,25 +31,48 @@ source artifacts/build-tools/bin/activate
 
 这个环境提供固定版本的 Ruff 和 fontTools。fontTools 用于生成随包离线字体，与运行时模型环境无关。GTK 桌面测试使用能加载系统 PyGObject 的 `/usr/bin/python3`。
 
-## 构建
-
-先运行主包构建：
+构建前分别检查工程解释器和桌面解释器。不要用工程虚拟环境替代系统 GTK 解释器：
 
 ```sh
-artifacts/build-tools/bin/python eng/linux/build.py
+artifacts/build-tools/bin/python --version
+artifacts/build-tools/bin/python -c 'import fontTools; print(fontTools.__version__)'
+/usr/bin/python3 -c 'import gi; gi.require_version("Gtk", "3.0"); from gi.events import GLibEventLoop'
+dotnet --version
+```
+
+fontTools 版本须与 `eng/requirements.txt` 一致，.NET SDK 须满足 `global.json`。Agent 私有桌面还需要 Xvfb、xdotool、grim、xauth 和 AT-SPI；用户级工具的发现与环境变量见 [verify-typelay 构建准备](../../../.agents/skills/verify-typelay/references/build.md)。
+
+## 构建
+
+先完成字体准备，再运行主包构建。主包和合作打包都消费 `artifacts/ui-fonts`；首次生成字体时，不要同时启动这些入口：
+
+```sh
+artifacts/build-tools/bin/python eng/fonts/prepare.py
+artifacts/build-tools/bin/python eng/linux/build.py --output artifacts/linux/package
 ```
 
 默认输出目录是 `artifacts/linux/package`，归档是 `artifacts/TypeLay-Linux-preview-x86_64.tar.gz` 及对应 `.sha256`。包内包含自包含 .NET 宿主、GTK3/GTK4 模块、桌面代码、浏览器接入、VS Code VSIX、worker 和安装器。模型权重不在包内。
 
 这个命令会生成 setup-only 包。它包含设置和基础客户端，但没有 Fcitx 合作接入载荷。构建会准备固定 Index CPU 运行库；首次准备需要网络，除此之外还可能访问 SDK、NuGet 和字体来源。它不会下载翻译模型。
 
-需要完整桌面包时，在同一干净提交完成[Fcitx 合作组件构建与打包](fcitx.md#构建与打包)，再封装：
+需要完整桌面包时，先满足 [Fcitx 固定版本与数据前提](fcitx.md#预检)。在同一干净提交构建合作组件、打包，再封装主包：
 
 ```sh
-artifacts/build-tools/bin/python eng/linux/build.py --finalize --cooperation-package artifacts/TypeLay-Fcitx-cooperative.tar.gz
+artifacts/build-tools/bin/python eng/linux/cooperative/fcitx.py \
+  --output artifacts/linux/fcitx-build
+artifacts/build-tools/bin/python packaging/linux/fcitx-cooperative/pack.py \
+  --build-output artifacts/linux/fcitx-build \
+  --output artifacts/TypeLay-Fcitx-cooperative.tar.gz
+artifacts/build-tools/bin/python eng/linux/build.py --finalize \
+  --output artifacts/linux/package \
+  --cooperation-package artifacts/TypeLay-Fcitx-cooperative.tar.gz
 ```
 
-`--finalize` 校验原主包清单、提交身份、固定合作来源及对应源码，把组件放进 `support/desktop/` 后重建清单和归档，不重新编译。主包与合作组件必须来自同一轮匹配构建。自带哈希用于完整性检查，不认证未知来源的发布者。
+`--finalize` 校验原主包清单、提交身份、固定合作来源及对应源码，把组件放进 `support/desktop/` 后重建清单和归档，不重新编译。自定义主包输出时，两次 `--output` 必须指向同一目录；归档仍写入根目录的 `artifacts/TypeLay-Linux-preview-x86_64.tar.gz`。需要原生测试 fixture 时，在首次主包构建加 `--with-test-fixture`，不要传给 `--finalize`。
+
+允许复用合作构建缓存，但须记录缓存来源，并用当前源码的 `pack.py` 复核构建输入和二进制，再执行 `--finalize` 复核归档闭包。主包始终从当前源码构建；干净提交和包内 `build-info.json` 的身份必须一致。自带哈希用于完整性检查，不认证未知来源的发布者。
+
+本机的临时构建办法是设置 GCC 15 的 `CC`、`CXX`，并以 `taskset -c 10` 运行合作构建。使用前检查 CPU 10 在允许集合内。工具路径与命令见上述构建准备。编译器间歇崩溃的根因仍由 [issue #24](https://github.com/DingJWuyu/Typelay/issues/24) 跟踪；单次成功不证明根因已解决，其它机器也不要求使用 CPU 10。
 
 生产合作构建归 [eng/linux/cooperative](../../../eng/linux/cooperative/)所有，打包入口归 [packaging/linux/fcitx-cooperative](../../../packaging/linux/fcitx-cooperative/)。测试 runner 调用这些入口，不维护第二份生产配方。改变生产来源、补丁或清单时，需要同时验证实际重建和对应测试入口。
 
@@ -104,6 +127,7 @@ artifacts/build-tools/bin/python eng/linux/hy/build.py --runtime artifacts/linux
 ```sh
 artifacts/build-tools/bin/python -m ruff check src/linux/desktop packaging/linux eng/linux tests/linux
 artifacts/build-tools/bin/python -m ruff format --check src/linux/desktop packaging/linux eng/linux tests/linux
+artifacts/build-tools/bin/python tests/linux/input_feedback.py -v
 dotnet build src/linux/TypeLay.Linux -c Release
 ```
 
