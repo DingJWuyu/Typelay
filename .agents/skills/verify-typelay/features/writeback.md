@@ -4,6 +4,7 @@
 
 ## Sub-features
 
+- `writeback/gtk3-index` 从空数据目录正式准备默认 Index，完成普通 GTK3 Entry 与 TextView 的预览、人工稿、默认两次 Tab、Unicode 选区和后台 Direct。
 - `writeback/accept` 在当前资格有效时用 Tab 接受，并观察原字段只发生一次替换。
 - `writeback/draft` 编辑译文后回源零写，再独立接受人工稿。
 - `writeback/direct` 通过直接替换快捷键或 CLI 操作原字段。
@@ -21,6 +22,27 @@
 ## Driving it with private niri
 
 Preconditions: 对本次合成字段有明确写回验收意图，实验选项通过真实设置 UI 开启，Fcitx 提供已确认状态。缺少任意条件时保持拒绝。
+
+- **GTK3 默认 Index 完整旅程。** 在本技能的私有会话内运行下列现役 runner。`--native` 指向当前源码以 `--with-test-fixture` 构建的 fixture；产品模块从私有正式包加载。`--model-cache` 只复用官方下载缓存，每次会话都在最终数据目录重新正式安装。输出目录须先创建。
+
+  ```bash
+  mkdir "$TYPELAY_VERIFY_OUTPUT/gtk-index"
+  DISPLAY="$TYPELAY_VERIFY_XDISPLAY" /usr/bin/python3 tests/linux/native_e2e.py \
+    --inside --desktop --desktop-scope gtk-index \
+    --package "$TYPELAY_VERIFY_PACKAGE" \
+    --fcitx-cooperative "$TYPELAY_VERIFY_COOPERATIVE" \
+    --native "$PWD/artifacts/linux/native" \
+    --model-cache "$PWD/artifacts/index-model-download" \
+    --output "$TYPELAY_VERIFY_OUTPUT/gtk-index"
+  ```
+
+  该入口明确注入初始中英方向、教程完成和实验写回设置，使用受控宿主中的普通 GTK 控件。它通过真实键鼠、Fcitx、生产模块和 Index 执行交互，没有翻译或写入替身。Unicode 人工稿使用 GTK 的 `Ctrl+Shift+U` 组合输入；结构样例使用私有 Wayland 剪贴板的合成正文和真实 `Ctrl+V`，不访问用户桌面的剪贴板。它不替代设置 UI 的用户入口验收。`initial-settings.json`、`installed.json`、`doctor-ready.json` 和 `fixture-identity.json` 保留这些前提。
+
+  检查 `entry-*`、`textview-*` 的预览、编辑、回源和接受截图及 JSON。固定原句为 `Please keep the backup until Friday.`，逐句确认保留备份到周五的意思。TextView 选区外保留 `Before 😀` 和 `After untouched`，精确人工稿包含 Unicode 与换行。首次 Tab 的按住、重复及释放都零写入；第二次独立 Tab 重新观察资格，只产生一条 Verified 回执。`result.json` 保存完整字段、选区、按键时序与实际模型输出。
+
+  `structure-preview.*` 核对既有 Index 生命周期样例 `  Please keep https://example.com\r\nThank you.  `，GTK 粘贴先将 CRLF 正规化为 LF，结果分别记录粘贴输入与实际字段。可见译文须保留当前字段的链接、唯一 LF 与首尾各两个空格，并表达保留和感谢；这不证明模型的 CRLF 保留。全选候选不能改变原 TextView 选区；候选编辑器不自动抢占 PRIMARY，显式复制与粘贴仍可用。
+
+  `direct-background.*` 与结果中的 Direct 记录分别保留原 A、新 B 和写入时的 B 状态。B 的正文、焦点、选区与修改计数必须保持不变。未支持的富文本、嵌入对象与只读字段继续拒绝。检查内部 `process-cleanup.json` 和外层 `cleanup.json`，成功时要求无残留进程、scratch/runtime 已清理、上述证据仍存在。
 
 - **接受。** 在私有旅程中按预览文件打开普通 GTK 字段，记录实际译文、源文和选区。向 `DISPLAY="$TYPELAY_VERIFY_XDISPLAY"` 投递 `xdotool key --clearmodifiers Tab`。检查同一源字段变为该次候选，保存前后 AT-SPI 文本与截图。只看到浮层关闭不能判为接受成功。
 - **人工稿。** 通过浮层可编辑 TEXT 控件的公开焦点接口进入编辑，再用私有 XTest 输入合成修改。第一次 Tab 后检查源文仍原样，第二次独立 Tab 后检查人工稿写回，分别保存证据。
@@ -62,6 +84,7 @@ runner 通过正式 `install.py install` 安装当前包，再从空数据执行
 
 - 基础 Launch 的实验写回保持默认关闭，因此 `gtk-preview.py` 明确记录 `writebackTested=false`。不能把预览通过升级为写回通过。
 - 可见译文、`ValidTranslation` 与短期接受许可不同。资格失效时不得重复投递直到“碰巧通过”，也不得放宽输入法状态或焦点判断。
+- GTK3 TextBuffer 不提供本旅程需要的原生 Undo。`userActionsStarted` / `userActionsFinished` 只证明一次编辑分组，结果中的 `nativeUndo=false` 不能改写为撤销成功。
 - GIMP 3.2.6-2 的 Comment 不提供评论修改的原生 Undo。既有 `ordinary-gimp` 会比较原生粘贴轨迹，这种不支持不能报告成 TypeLay 撤销成功。
 - 合成键盘、受控 fixture 与物理输入法各有边界。本机未执行物理输入法验收。
 - 网页旅程的 Tab 使用私有 XTest；Unicode 文本使用浏览器可信输入，选区通过 DOM 设置。它不证明物理输入、任意站点或普通 textarea 的原生 Undo。Firefox、富文本和商店安装仍有各自入口。

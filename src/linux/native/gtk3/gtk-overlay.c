@@ -2504,6 +2504,21 @@ static void body_height(gint height, gboolean animate) {
     tl_overlay_spring_to(&overlay.body_spring, height);
     if (!overlay.body_tick) overlay.body_tick = gtk_widget_add_tick_callback(overlay.scroll, body_frame, NULL, NULL);
 }
+static void editor_realized(GtkWidget *widget, gpointer unused) {
+    (void)unused;
+    /* Selecting a draft must not claim PRIMARY: GtkTextBuffer clears the
+     * previous owner's selection, which would invalidate our source range.
+     * Explicit clipboard copy/paste remains available in the editor. */
+    gtk_text_buffer_remove_selection_clipboard(gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget)),
+        gtk_widget_get_clipboard(widget, GDK_SELECTION_PRIMARY));
+}
+static void editor_unrealizing(GtkWidget *widget, gpointer unused) {
+    (void)unused;
+    /* Balance GtkTextView's registration before its unrealize handler removes
+     * it. Adding the registration does not claim clipboard ownership. */
+    gtk_text_buffer_add_selection_clipboard(gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget)),
+        gtk_widget_get_clipboard(widget, GDK_SELECTION_PRIMARY));
+}
 static void create(Target *target) {
     overlay.target = target;
     overlay.top = gtk_widget_get_toplevel(target->widget);
@@ -2555,6 +2570,8 @@ static void create(Target *target) {
     gtk_widget_set_margin_end(overlay.scroll, 8);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(overlay.scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     overlay.text = gtk_text_view_new();
+    g_signal_connect(overlay.text, "realize", G_CALLBACK(editor_realized), NULL);
+    g_signal_connect(overlay.text, "unrealize", G_CALLBACK(editor_unrealizing), NULL);
     gtk_widget_set_name(overlay.text, "typelay-candidate");
     atk_object_set_name(gtk_widget_get_accessible(overlay.text), "TypeLay 译文候选");
     gtk_buildable_set_name(GTK_BUILDABLE(overlay.text), "typelay-candidate");
