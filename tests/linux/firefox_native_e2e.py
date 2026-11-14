@@ -241,6 +241,7 @@ class FirefoxNativeContract(unittest.TestCase):
             self.assertEqual(
                 original["sessionBindings"],
                 {
+                    "presentationVersion": 1,
                     "generation": "native-default",
                     "accept": "Tab",
                     "exit": "Esc",

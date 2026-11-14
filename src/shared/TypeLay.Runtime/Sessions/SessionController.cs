@@ -1,4 +1,5 @@
 using TypeLay.Core;
+using TypeLay.Protocol;
 namespace TypeLay.Runtime;
 
 public sealed partial class SessionController : IDisposable
@@ -1651,7 +1652,7 @@ public sealed partial class SessionController : IDisposable
                 else if (_session.Fail(job))
                     SetAlternativeMenuStatus("暂时无法换种说法，已保留原译文。", generation, commandGeneration, job.Basis.Target, feedbackRevision);
                 Render();
-                Trace("translate-done");
+                TraceTranslationResult(result);
                 return; // Alternative generation never earns tutorial progress.
             }
             if (result.Status == "translated")
@@ -1677,10 +1678,24 @@ public sealed partial class SessionController : IDisposable
             _onDemandPractice.ObserveTranslatedPreview(practiceCommand, job, completed);
             if (completed)
                 _ownedSource.CompleteAutomaticPreview(automaticPractice, job);
-            Trace("translate-done");
+            TraceTranslationResult(result);
         }
         finally { _translationRunning = false; }
     }
+
+    private void TraceTranslationResult(ModelResponse result) => Trace("translate-done", detail: new
+    {
+        status = result.Status is "translated" or "no-translation" or "no-alternative" or "error"
+            ? result.Status : "other",
+        code = result.Code switch
+        {
+            null or "" => "",
+            "structure-not-preserved" or "invalid-output" or "output-too-long" or "segment-too-long"
+                or "not-ready" or "timeout" or "language-unavailable" or "glossary-output-missing" => result.Code,
+            _ => "other"
+        }
+    });
+
     private bool BeginEdit(SessionViewToken token)
     {
         var source = _session.Current;

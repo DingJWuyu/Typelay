@@ -23,7 +23,7 @@
 | [预览与按需唤醒](preview.md) | 普通 GTK 输入框、自动模式、按需快捷键和 CLI 唤醒。 |
 | [模型准备与恢复](models.md) | CLI、首次配置和本地模型页，观察正式安装、Ready 和库存。 |
 | [设置与暂停](settings.md) | 设置窗口、托盘、快捷面板与 CLI，观察保存和恢复。 |
-| [接受、编辑与直接替换](writeback.md) | Tab、浮层编辑、直接替换快捷键，观察原字段与撤销。 |
+| [接受、编辑与直接替换](writeback.md) | Tab、浮层编辑和直接替换。普通网页 `browser-index` 串联真实默认模型、两次 Tab、选区和后台 Direct。 |
 | [应用接入与练习](applications.md) | 应用支持、教程、手动合作入口及扩展，观察实际连接。 |
 
 每个功能文件使用四个 H2：`Sub-features`、`How to get to it (user POV)`、`Driving it with private niri`、`Gotchas`。

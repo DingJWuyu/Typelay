@@ -1656,7 +1656,7 @@
     if (failed) {
       const current = overlay, retry = document.createElement("button");
       const opened = {field: current.field, generation: current.generation, revision: current.revision,
-        token: JSON.stringify(current.viewToken)};
+        token: JSON.stringify(current.viewToken), identity: current.identity};
       retry.id = "translation-retry"; retry.className = "retry";
       retry.setAttribute("aria-label", "重试"); retry.title = "重试";
       retry.disabled = !!current.retryPending;
@@ -2281,7 +2281,8 @@
         // and its original trigger time; a fresh capture cannot renew either.
         if (nativeDispatch) return {triggered: true, commandId: data.commandId,
           triggeredAtMs: data.triggeredAtMs, native: snapshot};
-        send("shortcut", {kind: data.kind, generation: data.generation, native: snapshot, acceptedAtMs: now()});
+        send("shortcut", {kind: data.kind, generation: data.generation, native: snapshot,
+          triggeredAtMs: data.triggeredAtMs, acceptedAtMs: now()});
         return {triggered: true};
       }
       case "quarantine": retireOrdered(); retireEditorControl(); if (field) field.quarantined = true; publication = null; return null;

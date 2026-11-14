@@ -11,6 +11,31 @@ public sealed class SessionDiagnosticsCollection;
 [Collection("Session diagnostics")]
 public sealed class SessionDiagnosticsTests
 {
+    [Theory]
+    [InlineData("error", "structure-not-preserved", "error", "structure-not-preserved")]
+    [InlineData("error", "invalid-output", "error", "invalid-output")]
+    [InlineData("error", "private-error-content", "error", "other")]
+    [InlineData("private-status-content", "private-error-content", "other", "other")]
+    public void TranslationFailureTraceKeepsOnlyKnownCodes(string status, string code, string expectedStatus, string expectedCode)
+    {
+        WithTrace(path =>
+        {
+            using var s = new SessionScenario();
+            s.Source = s.Source with { Text = "private-source-content" };
+            s.Tick();
+            s.Tick(Limits.DebounceMs);
+            s.Model.Pending!.SetResult(new(1, status, "private-result-content", Code: code));
+            s.Tick();
+            string trace = File.ReadAllText(path);
+            Assert.DoesNotContain("private-", trace);
+            using var result = ReadOperation(trace, "translate-done");
+            Assert.Equal(expectedStatus, result.RootElement.GetProperty("detail").GetProperty("status").GetString());
+            Assert.Equal(expectedCode, result.RootElement.GetProperty("detail").GetProperty("code").GetString());
+            Assert.Empty(s.Service.Writes);
+            Assert.Empty(s.Service.DirectWrites);
+        });
+    }
+
     [Fact]
     public void DisposedControllerDoesNotInspectTheHookOrTraceALateDirectReceipt()
     {
