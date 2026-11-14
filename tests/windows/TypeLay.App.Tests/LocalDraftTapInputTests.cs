@@ -54,6 +54,7 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
         // This callback does not repair focus or participate in Hook permission.
         var foregroundEvents = new List<object>();
         int foregroundDropped = 0, foregroundErrors = 0;
+        nint firstExternalForeground = 0;
         string foregroundStage = "before-activation";
         Native.WinEventProc observeForeground = (_, _, original, _, _, eventThread, eventTime) =>
         {
@@ -66,6 +67,8 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                 }
                 long atTimestamp = Stopwatch.GetTimestamp();
                 uint windowThread = Native.GetWindowThreadProcessId(original, out uint process);
+                if (process != 0 && process != Environment.ProcessId && firstExternalForeground == 0)
+                    firstExternalForeground = original;
                 var className = new StringBuilder(256);
                 int classLength = LocalDraftWindowClass(original, className, className.Capacity);
                 string membership = original == hwnd ? "test-editor" : process != Environment.ProcessId ? "external"
@@ -73,8 +76,15 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                         ? "another-current-wpf-window" : "same-process-unlisted";
                 foregroundEvents.Add(new
                 {
-                    stage = foregroundStage, atTimestamp, atMs = WindowsInterruptClock.NowMs, eventTime,
-                    originalHwnd = (long)original, eventThread, windowThread, process, membership,
+                    stage = foregroundStage,
+                    atTimestamp,
+                    atMs = WindowsInterruptClock.NowMs,
+                    eventTime,
+                    originalHwnd = (long)original,
+                    eventThread,
+                    windowThread,
+                    process,
+                    membership,
                     className = classLength > 0 ? className.ToString() : null
                 });
             }
@@ -306,12 +316,26 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                 GC.KeepAlive(observeForeground);
                 try
                 {
+                    if (Volatile.Read(ref cancellations) != 0 && firstExternalForeground != 0)
+                        TestContext.Current.TestOutputHelper?.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
+                        {
+                            operation = "DEBUG-t12-local-foreground-process",
+                            originalEventWindow = (long)firstExternalForeground,
+                            laterIdentity = NativeSourceActivationTests.ObserveCallerFailure(firstExternalForeground,
+                                Native.GetForegroundWindow(), null, (_, _) => "unknown")
+                        }));
                     TestContext.Current.TestOutputHelper?.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
                     {
-                        operation = "DEBUG-t12-local-foreground-identity", change,
-                        testProcess = Environment.ProcessId, testHwnd = (long)hwnd, timestampFrequency = Stopwatch.Frequency,
-                        events = foregroundEvents, dropped = foregroundDropped, errors = foregroundErrors,
-                        cancelCallbacks = Volatile.Read(ref cancellations), firstCancellation = Volatile.Read(ref firstCancellation)
+                        operation = "DEBUG-t12-local-foreground-identity",
+                        change,
+                        testProcess = Environment.ProcessId,
+                        testHwnd = (long)hwnd,
+                        timestampFrequency = Stopwatch.Frequency,
+                        events = foregroundEvents,
+                        dropped = foregroundDropped,
+                        errors = foregroundErrors,
+                        cancelCallbacks = Volatile.Read(ref cancellations),
+                        firstCancellation = Volatile.Read(ref firstCancellation)
                     }));
                 }
                 catch (Exception error) when (error is not OutOfMemoryException) { }

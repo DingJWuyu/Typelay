@@ -15,14 +15,26 @@ namespace TypeLay.App.Tests;
 
 public sealed partial class OverlayTranslationMenuTests
 {
-    // DEBUG-t12: observes the existing Broker call boundary without another read,
-    // a new permission, a delay, or a change to the production Broker trace.
+    // DEBUG-t12: observes the existing Broker boundary without another read,
+    // a new permission, or a change to the production Broker trace. Only the
+    // explicit overlap case injects one slow read through DelayNextCapture.
     private sealed class OwnedConfirmationCaptureObservation : IInputBroker
     {
         private readonly BrokerClient _broker = new();
         private readonly object _gate = new();
         private readonly Queue<object> _events = new();
         private int _sequence, _active, _dropped;
+        private readonly TaskCompletionSource _delayedCaptureStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _editAdmitted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly CancellationTokenSource _stopping = new();
+        private CancellationToken _delayCancellation;
+        private int _delayNext, _disposed;
+        public Task DelayedCaptureStarted => _delayedCaptureStarted.Task;
+        public void DelayNextCapture(CancellationToken cancellation)
+        {
+            _delayCancellation = cancellation;
+            Volatile.Write(ref _delayNext, 1);
+        }
         public bool Available => _broker.Available;
         public int ProcessId => _broker.ProcessId;
         public Task StartAsync() => _broker.StartAsync();
@@ -39,13 +51,28 @@ public sealed partial class OverlayTranslationMenuTests
                 _active++;
                 Add(new
                 {
-                    stage = "capture-start", sequence, atMs = WindowsInterruptClock.NowMs, active = _active,
-                    request.SourceUserEpoch, nativeFocusRevision = request.OwnedCapture?.NativeFocusRevision
+                    stage = "capture-start",
+                    sequence,
+                    atMs = WindowsInterruptClock.NowMs,
+                    active = _active,
+                    request.SourceUserEpoch,
+                    nativeFocusRevision = request.OwnedCapture?.NativeFocusRevision
                 });
             }
             BrokerResponse? response = null;
             try
             {
+                if (Interlocked.Exchange(ref _delayNext, 0) == 1)
+                {
+                    using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_delayCancellation, _stopping.Token);
+                    Mark("injected-read-held");
+                    _delayedCaptureStarted.TrySetResult();
+                    await _editAdmitted.Task.WaitAsync(cancellation.Token).ConfigureAwait(false);
+                    // A controlled slow dependency exposes the edit/read overlap.
+                    // This is not a wait for readiness or an extended permission.
+                    await Task.Delay(200, cancellation.Token).ConfigureAwait(false);
+                    Mark("injected-read-released");
+                }
                 response = await _broker.CallAsync(request, timeout).ConfigureAwait(false);
                 return response;
             }
@@ -56,9 +83,14 @@ public sealed partial class OverlayTranslationMenuTests
                     _active--;
                     Add(new
                     {
-                        stage = "capture-completed", sequence, atMs = WindowsInterruptClock.NowMs, active = _active,
-                        returned = response is not null, observed = response?.Status == "observed",
-                        inputEpoch = response?.Snapshot?.InputEpoch, focusEpoch = response?.Snapshot?.FocusEpoch,
+                        stage = "capture-completed",
+                        sequence,
+                        atMs = WindowsInterruptClock.NowMs,
+                        active = _active,
+                        returned = response is not null,
+                        observed = response?.Status == "observed",
+                        inputEpoch = response?.Snapshot?.InputEpoch,
+                        focusEpoch = response?.Snapshot?.FocusEpoch,
                         observedAtMs = response?.Snapshot?.ObservedAtMs
                     });
                 }
@@ -67,7 +99,14 @@ public sealed partial class OverlayTranslationMenuTests
         public void Mark(string stage)
         {
             lock (_gate)
-                Add(new { stage, atMs = WindowsInterruptClock.NowMs, active = _active });
+                Add(new
+                {
+                    stage,
+                    atMs = WindowsInterruptClock.NowMs,
+                    active = _active
+                });
+            if (stage == "begin-edit-admitted")
+                _editAdmitted.TrySetResult();
         }
         private void Add(object entry)
         {
@@ -85,12 +124,21 @@ public sealed partial class OverlayTranslationMenuTests
                 lock (_gate)
                     TestContext.Current.TestOutputHelper?.WriteLine(JsonSerializer.Serialize(new
                     {
-                        operation = "DEBUG-t12-owned-capture-order", events = _events.ToArray(), dropped = _dropped
+                        operation = "DEBUG-t12-owned-capture-order",
+                        events = _events.ToArray(),
+                        dropped = _dropped
                     }));
             }
             catch (Exception error) when (error is not OutOfMemoryException) { }
         }
-        public void Dispose() => _broker.Dispose();
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+            _stopping.Cancel();
+            _stopping.Dispose();
+            _broker.Dispose();
+        }
     }
 
     private static Action ObserveOwnedKeyboardFlow(OverlayWindow overlay, TextBox editor, Button keep,

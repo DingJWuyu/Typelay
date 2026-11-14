@@ -27,6 +27,10 @@ public sealed partial class OverlayTranslationMenuTests
     public Task OwnedKeepPreservesTheSameEditorUndoAndReturnsThroughAFreshSourceBinding() => OwnedKeepCase(false);
 
     [Fact]
+    public Task AnOwnedDraftReturnsAfterAReadThatOverlappedEditorAdmission() =>
+        OwnedKeepCase(false, delayOwnedCapture: true);
+
+    [Fact]
     public Task ClickingOwnedKeepPreservesTheSameEditorDraftSelectionAndUndo() => OwnedKeepCase(false, keepClick: true);
 
     [Fact]
@@ -59,7 +63,8 @@ public sealed partial class OverlayTranslationMenuTests
         OwnedKeepCase(expandedNarrow: false, replaceAction: "click", emptyDraft: true);
 
     private Task OwnedKeepCase(bool expandedNarrow, string? returnChange = null, bool promptTab = false,
-        string? replaceAction = null, string? replaceRefusal = null, bool emptyDraft = false, bool keepClick = false) => desktop.RunAsync(async () =>
+        string? replaceAction = null, string? replaceRefusal = null, bool emptyDraft = false, bool keepClick = false,
+        bool delayOwnedCapture = false) => desktop.RunAsync(async () =>
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(25));
@@ -188,6 +193,13 @@ public sealed partial class OverlayTranslationMenuTests
 
             traceOffset = OwnedTraceOffset(tracePath); // Before this original editor click, never after its admission.
             brokerTraceOffset = OwnedTraceOffset(tracePath + ".broker.jsonl");
+            if (delayOwnedCapture)
+            {
+                // Hold one naturally scheduled read, not an extra preparatory capture.
+                // Its injected latency consumes the original scenario and edit deadlines.
+                observedBroker.DelayNextCapture(deadline.Token);
+                await observedBroker.DelayedCaptureStarted.WaitAsync(deadline.Token);
+            }
             using (var action = ActionDeadline())
                 await ClickOwnedConfirmationEditor(editor, overlay, () =>
                 {
