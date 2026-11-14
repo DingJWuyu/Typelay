@@ -55,10 +55,10 @@ static void remember(const char *id);
 
 static void trace_connection(const char *check, gint error_code) {
     static const char *previous;
-    static gint previous_error;
+    static gint previous_error_code;
     if (!g_getenv("TYPELAY_TRACE")) return;
-    if (g_strcmp0(previous, check) == 0 && previous_error == error_code) return;
-    previous = check; previous_error = error_code;
+    if (g_strcmp0(previous, check) == 0 && previous_error_code == error_code) return;
+    previous = check; previous_error_code = error_code;
     g_printerr("TypeLay GTK4 connect check=%s errno=%d\n", check, error_code);
 }
 static void trace_attach(const char *check) {
