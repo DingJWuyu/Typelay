@@ -106,7 +106,14 @@ def package_documentation(output, identity):
     (output / "README.md").write_text(text, encoding="utf-8")
 
 
-def build(output, fixture=False, cooperation_package=None, hy_runtime=None, index_runtime=None):
+def build(
+    output,
+    fixture=False,
+    cooperation_package=None,
+    hy_runtime=None,
+    index_runtime=None,
+    compression_level=9,
+):
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         raise RuntimeError("build-requires-linux-x86_64")
     output = output.resolve()
@@ -200,9 +207,9 @@ def build(output, fixture=False, cooperation_package=None, hy_runtime=None, inde
     (output / "build-info.json").write_text(json.dumps(identity) + "\n", encoding="utf-8")
     write_manifest(output)
     if cooperation_package is not None:
-        finalize(output, cooperation_package)
+        finalize(output, cooperation_package, compression_level)
     else:
-        write_archive(output)
+        write_archive(output, compression_level)
         print("Setup-only build: desktop cooperation payload is not included")
 
 
@@ -532,7 +539,7 @@ def cooperation_metadata(archive):
     }
 
 
-def finalize(output, cooperation_package):
+def finalize(output, cooperation_package, compression_level=9):
     output = output.resolve()
     if not output.is_relative_to(ROOT / "artifacts") or not output.is_dir():
         raise ValueError("finalization-requires-existing-package-in-artifacts")
@@ -555,17 +562,19 @@ def finalize(output, cooperation_package):
             shutil.rmtree(destination)
         pending.rename(destination)
     write_manifest(output)
-    write_archive(output)
+    write_archive(output, compression_level)
 
 
-def write_archive(output):
+def write_archive(output, compression_level=9):
     archive = ROOT / "artifacts/TypeLay-Linux-preview-x86_64.tar.gz"
     with tempfile.NamedTemporaryFile(
         dir=archive.parent, prefix=".main-package-", delete=False
     ) as raw:
         pending = Path(raw.name)
     try:
-        with tarfile.open(pending, "w:gz", format=tarfile.PAX_FORMAT) as package:
+        with tarfile.open(
+            pending, "w:gz", format=tarfile.PAX_FORMAT, compresslevel=compression_level
+        ) as package:
             package.add(output, arcname="TypeLay-Linux-preview", filter=normalize_owner)
         pending.replace(archive)
     finally:
@@ -708,6 +717,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "artifacts/linux/package")
     parser.add_argument("--with-test-fixture", action="store_true")
+    parser.add_argument("--compression-level", type=int, choices=range(1, 10), default=9)
     parser.add_argument(
         "--cooperation-package",
         type=Path,
@@ -739,7 +749,7 @@ if __name__ == "__main__":
             parser.error(
                 "--finalize requires --cooperation-package and cannot rebuild fixtures or Hy"
             )
-        finalize(args.output, args.cooperation_package)
+        finalize(args.output, args.cooperation_package, args.compression_level)
     else:
         build(
             args.output,
@@ -747,4 +757,5 @@ if __name__ == "__main__":
             args.cooperation_package,
             args.hy_runtime,
             args.index_runtime,
+            args.compression_level,
         )

@@ -1199,7 +1199,7 @@ class MainBundleTests(unittest.TestCase):
                 entry.size = len(data)
                 package.addfile(entry, io.BytesIO(data))
 
-    def finalize(self):
+    def finalize(self, *arguments, env=None):
         return subprocess.run(
             [
                 sys.executable,
@@ -1209,12 +1209,24 @@ class MainBundleTests(unittest.TestCase):
                 str(self.package),
                 "--cooperation-package",
                 str(self.archive),
+                *arguments,
             ],
             cwd=self.repository,
             text=True,
             capture_output=True,
+            env=env,
             timeout=30,
         )
+
+    def test_fast_main_archive_preserves_the_complete_finalized_package(self):
+        self.write_archive()
+        environment = os.environ | {"SOURCE_DATE_EPOCH": "1"}
+        normal = self.finalize(env=environment)
+        self.assertEqual(normal.returncode, 0, normal.stderr)
+        expected = gzip.decompress(self.output.read_bytes())
+        fast = self.finalize("--compression-level", "1", env=environment)
+        self.assertEqual(fast.returncode, 0, fast.stderr)
+        self.assertEqual(gzip.decompress(self.output.read_bytes()), expected)
 
     def test_current_regression_inputs_survive_finalization(self):
         self.metadata["testInputs"] = {"files": inputs.hashes(inputs.FCITX_TEST_INPUTS)}

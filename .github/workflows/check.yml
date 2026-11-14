@@ -693,7 +693,25 @@ jobs:
       if: ${{ !cancelled() }}
     - name: Build the relocatable Linux client
       id: build
-      run: python eng/linux/build.py --with-test-fixture --hy-runtime artifacts/linux/hy-cpu-runtime
+      shell: bash
+      env:
+        CI_LINUX_GROUP: ${{ matrix.group }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        if [ "$CI_LINUX_GROUP" = native ]; then
+          python eng/ci/fixed.py restore fcitx --wait-for-job fcitx-build
+          python eng/linux/cooperative/fcitx.py --reuse-third-party &
+          gtk_pid=$!
+          python eng/linux/cooperative/qt.py &
+          qt_pid=$!
+        fi
+        status=0
+        python eng/linux/build.py --with-test-fixture --hy-runtime artifacts/linux/hy-cpu-runtime --compression-level 1 || status=1
+        if [ "$CI_LINUX_GROUP" = native ]; then
+          wait "$gtk_pid" || status=1
+          wait "$qt_pid" || status=1
+        fi
+        exit "$status"
       if: ${{ !cancelled() && steps.hy-cpu.outcome == 'success' }}
     - name: Start the disposable X11 display
       id: display
@@ -711,21 +729,6 @@ jobs:
         mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR"
         chmod 700 "$XDG_RUNTIME_DIR"
         artifacts/linux/package/typelay --install-models argos
-    - name: Restore pinned dependencies and compile this commit's native modules
-      id: fixed-native
-      run: |
-        python eng/ci/fixed.py restore fcitx --wait-for-job fcitx-build
-        python eng/linux/cooperative/fcitx.py --reuse-third-party &
-        gtk_pid=$!
-        python eng/linux/cooperative/qt.py &
-        qt_pid=$!
-        status=0
-        wait "$gtk_pid" || status=1
-        wait "$qt_pid" || status=1
-        exit "$status"
-      env:
-        GH_TOKEN: ${{ github.token }}
-      if: matrix.group == 'native'
     - name: Verify Linux Hy preparation contracts
       id: hy-preparation-contracts
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
@@ -964,11 +967,11 @@ jobs:
         python tests/linux/firefox_native_e2e.py --package artifacts/linux/package --firefox /usr/bin/firefox --geckodriver /usr/bin/geckodriver --editor-bundle artifacts/editor-probe/fixture.js -v
     - name: Probe real Fcitx client requests and candidate selection
       id: fcitx-client
-      if: ${{ matrix.group == 'native' && !cancelled() && steps.build.outcome == 'success' }}
+      if: ${{ matrix.group == 'native' && !cancelled() }}
       run: python tests/linux/fcitx_probe.py
     - name: Verify isolated Fcitx and GTK cooperative transactions
       id: fcitx
-      if: ${{ matrix.group == 'native' && !cancelled() && steps.build.outcome == 'success' && steps.fixed-native.outcome == 'success' }}
+      if: ${{ matrix.group == 'native' && !cancelled() && steps.build.outcome == 'success' }}
       run: python tests/linux/fcitx_cooperative/run.py --reuse-build --core-version 5.1.22 --core-ready-output "$GITHUB_OUTPUT"
     - name: Probe original Fcitx Qt input delivery boundaries
       id: qt
@@ -1015,7 +1018,7 @@ jobs:
       if: ${{ matrix.group == 'native' && !cancelled() && steps.build.outcome == 'success' && steps.fcitx-package.outcome
         == 'success' && steps.qt.outcome == 'success' }}
       run: |
-        python eng/linux/build.py --finalize --cooperation-package artifacts/TypeLay-Fcitx-cooperative.tar.gz
+        python eng/linux/build.py --finalize --cooperation-package artifacts/TypeLay-Fcitx-cooperative.tar.gz --compression-level 1
         TYPELAY_REQUIRE_HY_RUNTIME=1 TYPELAY_REQUIRE_DESKTOP_COMPONENT=1 TYPELAY_LINUX_PACKAGE="$PWD/artifacts/TypeLay-Linux-preview-x86_64.tar.gz" python tests/linux/distribution_e2e.py -v
     - name: Verify settings with the real local model
       id: settings
