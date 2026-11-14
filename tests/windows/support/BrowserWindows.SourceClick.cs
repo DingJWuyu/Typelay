@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
 using TypeLay.App;
@@ -7,6 +8,8 @@ namespace TypeLay.Windows.Testing;
 
 internal sealed partial class BrowserWindows
 {
+    internal const string SourceClickFailureData = "source-click-observation";
+
     // Only the owned fixture page is eligible. Geometry/UIA observation cannot
     // inject input after a timeout: the awaiting caller alone sends the click.
     public async Task ClickVisibleSourceAsync(nint page, string fieldName, Rect excluded, CancellationToken ct)
@@ -35,9 +38,71 @@ internal sealed partial class BrowserWindows
                 Require(double.IsFinite(point.X) && double.IsFinite(point.Y)
                     && point.X >= int.MinValue && point.X <= int.MaxValue
                     && point.Y >= int.MinValue && point.Y <= int.MaxValue, "source-click-point-range");
-                Require(AutomationElement.FromPoint(point).GetRuntimeId().SequenceEqual(field.GetRuntimeId()),
-                    "source-click-field-obscured");
+                var hit = AutomationElement.FromPoint(point);
+                var hitId = hit.GetRuntimeId();
+                var fieldId = field.GetRuntimeId();
+                if (!hitId.SequenceEqual(fieldId))
+                {
+                    var failure = new Failure("source-click-field-obscured");
+                    object? expected = null, actual = null;
+                    string? diagnosticError = null;
+                    try
+                    {
+                        expected = Describe(field, bounds);
+                        actual = Describe(hit, hit.Current.BoundingRectangle);
+                    }
+                    catch (Exception error) when (error is not OutOfMemoryException)
+                    {
+                        diagnosticError = error.GetType().Name;
+                    }
+                    try
+                    {
+                        // Keep the original FromPoint result. These later
+                        // property reads neither retry hit testing nor authorize input.
+                        failure.Data[SourceClickFailureData] = JsonSerializer.Serialize(new
+                        {
+                            operation = SourceClickFailureData,
+                            page = (long)page,
+                            point.X,
+                            point.Y,
+                            runtimeIdsMatch = false,
+                            expectedRuntimeId = fieldId.Take(8).ToArray(),
+                            expectedRuntimeIdLength = fieldId.Length,
+                            actualRuntimeId = hitId.Take(8).ToArray(),
+                            actualRuntimeIdLength = hitId.Length,
+                            expected,
+                            actual,
+                            diagnosticError,
+                            propertiesReadAfterMismatch = true
+                        }, new JsonSerializerOptions
+                        {
+                            NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals
+                        });
+                    }
+                    catch (Exception error) when (error is not OutOfMemoryException) { }
+                    throw failure;
+                }
                 return (Bounds: bounds, X: (int)point.X, Y: (int)point.Y);
+
+                static object Describe(AutomationElement element, Rect rectangle)
+                {
+                    var info = element.Current;
+                    return new
+                    {
+                        info.NativeWindowHandle,
+                        info.ProcessId,
+                        controlType = info.ControlType.Id,
+                        info.IsOffscreen,
+                        info.IsEnabled,
+                        bounds = new
+                        {
+                            rectangle.X,
+                            rectangle.Y,
+                            rectangle.Width,
+                            rectangle.Height
+                        }
+                    };
+                }
             }
             finally { SetThreadDpiAwarenessContext(previousDpi); }
         }, ct).WaitAsync(ct);

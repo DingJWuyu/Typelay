@@ -38,6 +38,9 @@ internal sealed class UiaInputProvider : IDisposable
         _sourcePrototype = sourcePrototype;
         _sourceMessageRoute = sourcePrototype && sourceMessageRoute;
         _orderedSourceMessageWitness = orderedSourceMessageWitness;
+        // Complete managed UIA's default provider registration before hello.
+        // An empty additional table preserves the defaults and reads no target.
+        ClientSettings.RegisterClientSideProviders([]);
         _edits = new(sourceMessageRoute: _sourceMessageRoute, orderedSourceMessageWitness: orderedSourceMessageWitness);
     }
     public string? Application => _application;

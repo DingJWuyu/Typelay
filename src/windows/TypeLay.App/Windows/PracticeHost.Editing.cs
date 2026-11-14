@@ -13,7 +13,7 @@ internal enum OwnedEditorReason
 {
     None, Admission, Identity, Deadline, InputIntent, SourceIdentity, SourceFocus, SourceInvalid,
     Activation, EditorFocus, UiApp, UiRoot, UiFocusGained, UiFocusLost, UiRender, UiHidden, UiClosed, Foreground,
-    Retirement, Connection
+    Retirement, Connection, SourceRead
 }
 internal enum OwnedEditorPeer
 {
@@ -24,6 +24,7 @@ internal sealed partial class PracticeHost
 {
     private OverlayWindow? _editorOverlay;
     private bool _editorSealed;
+    private readonly List<Task<bool>> _ownedCaptureReads = [];
     private int _editorAdmissionTraceCount;
     private sealed class PendingEditor(OwnedEditorControl control, IChildProcess child, Guid connection, Guid run, long sequence)
     {
@@ -37,6 +38,10 @@ internal sealed partial class PracticeHost
             get; set;
         }
         public bool Fenced
+        {
+            get; set;
+        }
+        public bool FenceQueued
         {
             get; set;
         }
@@ -79,6 +84,18 @@ internal sealed partial class PracticeHost
     internal bool SuppressOwnedWrite(InputContext context) => _editorSealed
         && (context.BoundTarget is { } target && OwnsAutomaticTarget(target) || CapturesAutomaticForeground);
     internal bool SuppressOwnedCapture(InputContext context) => SuppressOwnedWrite(context) && ReturnDescriptor(context) is null && LocalReturnDescriptor(context) is null;
+
+    internal bool TryTrackOwnedCapture(InputContext context, Task<bool> completion)
+    {
+        _dispatcher.VerifyAccess();
+        // The same UI-owned seal guards both new registrations and the editor
+        // fence. Recheck after descriptor preparation, before starting transport.
+        if (SuppressOwnedCapture(context))
+            return false;
+        _ownedCaptureReads.RemoveAll(read => read.IsCompleted);
+        _ownedCaptureReads.Add(completion);
+        return true;
+    }
 
     internal void TraceOwnedEditorAdmission(OwnedEditorAdmissionReason reason, object? detail = null)
     {
@@ -177,12 +194,66 @@ internal sealed partial class PracticeHost
         });
         TraceOwnedEditor(control.Intent, OwnedEditorEvent.Admitted);
         var cancellation = _communication!.Token;
-        Enqueue(new("edit-fence", connection, run, sequence, Editing: control));
-        TraceOwnedEditor(control.Intent, OwnedEditorEvent.FenceQueued);
         if (attempt.Cancelled || cancellation.IsCancellationRequested)
             return null;
         _ = ExpireEditorAttemptAsync(attempt, cancellation);
-        return control;
+        _ = FenceEditorAfterReadsAsync(attempt, cancellation);
+        return attempt.Cancelled || cancellation.IsCancellationRequested ? null : control;
+    }
+
+    private async Task FenceEditorAfterReadsAsync(PendingEditor attempt, CancellationToken cancellation)
+    {
+        try
+        {
+            // Admission already sealed new reads. A previous read must finish
+            // against the still-focused source before its descriptor is retired.
+            // Its response is drained, never installed as the editor's basis.
+            long remaining = attempt.Control.ExpiresAtMs - WindowsInterruptClock.NowMs;
+            if (remaining <= 0)
+            {
+                CancelOwnedEditing(attempt.Control.Intent, OwnedEditorReason.Deadline);
+                return;
+            }
+            bool[] observed = await Task.WhenAll(_ownedCaptureReads.ToArray())
+                .WaitAsync(TimeSpan.FromMilliseconds(remaining), cancellation);
+            if (observed.Any(success => !success))
+            {
+                CancelOwnedEditing(attempt.Control.Intent, OwnedEditorReason.SourceRead);
+                return;
+            }
+            if (!ReferenceEquals(_editorAttempt, attempt) || attempt.Cancelled || cancellation.IsCancellationRequested)
+                return;
+            if (WindowsInterruptClock.NowMs >= attempt.Control.ExpiresAtMs)
+            {
+                CancelOwnedEditing(attempt.Control.Intent, OwnedEditorReason.Deadline);
+                return;
+            }
+            if (!EditorIdentityCurrent(attempt) || !DescriptorCurrent(attempt.Control.Descriptor)
+                || !KeyboardHook.OwnedFocus(attempt.Control.Descriptor))
+            {
+                CancelOwnedEditing(attempt.Control.Intent, OwnedEditorReason.SourceIdentity);
+                return;
+            }
+            // Native observations can dispatch retirement. The same sealed
+            // admission must still own the fence after those callbacks return.
+            if (!ReferenceEquals(_editorAttempt, attempt) || attempt.Cancelled || !_editorSealed
+                || cancellation.IsCancellationRequested)
+                return;
+            if (WindowsInterruptClock.NowMs >= attempt.Control.ExpiresAtMs)
+            {
+                CancelOwnedEditing(attempt.Control.Intent, OwnedEditorReason.Deadline);
+                return;
+            }
+            attempt.FenceQueued = true;
+            Enqueue(new("edit-fence", attempt.Connection, attempt.Run, attempt.Sequence, Editing: attempt.Control));
+            TraceOwnedEditor(attempt.Control.Intent, OwnedEditorEvent.FenceQueued);
+        }
+        catch (TimeoutException) { CancelOwnedEditing(attempt.Control.Intent, OwnedEditorReason.Deadline); }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            CancelOwnedEditing(attempt.Control.Intent, OwnedEditorReason.SourceRead);
+        }
     }
 
     private bool EditorIdentityCurrent(PendingEditor attempt) => !_disposed && !attempt.Cancelled
@@ -360,7 +431,9 @@ internal sealed partial class PracticeHost
         // Only the ordinary retire/new-run path can establish a fresh one.
         RevokeAcceptance();
         _editorOverlay?.CancelOwnedEditor(attempt.Control.Intent);
-        if (sendControl && !returning && _communication is not null && ReferenceEquals(_child, attempt.Child)
+        // While draining reads, the child has no matching editor control yet.
+        // Local revocation is final; cancel only a fence that was actually queued.
+        if (sendControl && attempt.FenceQueued && !returning && _communication is not null && ReferenceEquals(_child, attempt.Child)
             && _connection == attempt.Connection && _runId == attempt.Run && _sequence == attempt.Sequence)
             Enqueue(new("edit-cancel", attempt.Connection, attempt.Run, attempt.Sequence, Editing: attempt.Control));
     }

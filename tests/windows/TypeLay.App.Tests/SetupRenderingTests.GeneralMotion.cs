@@ -174,7 +174,7 @@ public sealed partial class SetupRenderingTests
                 GeneralSelection(oldChoice).Select();
                 Assert.Equal(WorkMode.Automatic, scene.Settings.Value.Mode);
                 Assert.Equal(saved, File.ReadAllText(scene.Path));
-            });
+            }, completed: () => committed);
             Assert.True(sawMiddle);
             Assert.True(sawOvershoot);
             Assert.True(acknowledged);
@@ -313,7 +313,7 @@ public sealed partial class SetupRenderingTests
         Assert.InRange(Math.Abs(expected.Left - actual.Left), 0, .01);
         Assert.InRange(Math.Abs(expected.Width - actual.Width), 0, .01);
     }
-    private static async Task ObserveThumbFrames(Action observe, Action? trigger = null)
+    private static async Task ObserveThumbFrames(Action observe, Action? trigger = null, Func<bool>? completed = null)
     {
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var clock = Stopwatch.StartNew();
@@ -323,7 +323,10 @@ public sealed partial class SetupRenderingTests
             try
             {
                 observe();
-                if ((clock.Elapsed - observationStarted).TotalMilliseconds >= 400)
+                // A deferred save may be acknowledged by this very frame.
+                // Its committed controls must render within the original total
+                // deadline before the delayed-save scenario can finish observing.
+                if ((clock.Elapsed - observationStarted).TotalMilliseconds >= 400 && (completed?.Invoke() ?? true))
                     done.TrySetResult();
             }
             catch (Exception error)

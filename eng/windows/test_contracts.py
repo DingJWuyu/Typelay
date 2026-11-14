@@ -108,6 +108,9 @@ def main():
         if args.shard is not None and not includes_class(args.shard, "ModelInstallerTests"):
             ordinary_results = results(primary)
             report["mainResults"] = len(ordinary_results)
+            report["failedTests"] = [
+                result for result in ordinary_results if result.get("outcome") == "Failed"
+            ]
             if not ordinary_results or any(r.get("outcome") == "Failed" for r in ordinary_results):
                 failures.append("main-results-missing-or-not-passed")
             return 1 if failures else 0
@@ -134,6 +137,11 @@ def main():
             failures.append("isolated-exit")
         ordinary_results, timed_results = results(primary), results(isolated)
         report.update(mainResults=len(ordinary_results), isolatedResults=len(timed_results))
+        report["failedTests"] = [
+            result
+            for result in ordinary_results + timed_results
+            if result.get("outcome") == "Failed"
+        ]
         if not ordinary_results:
             failures.append("main-results-missing")
         if any(r.get("outcome") == "Failed" for r in ordinary_results):

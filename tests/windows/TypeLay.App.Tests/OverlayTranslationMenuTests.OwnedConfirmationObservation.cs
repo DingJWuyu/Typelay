@@ -6,6 +6,8 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using TypeLay.Runtime;
+using TypeLay.Windows;
+using TypeLay.Windows.Contracts;
 using Xunit;
 using WpfKey = System.Windows.Input.Key;
 
@@ -13,6 +15,79 @@ namespace TypeLay.App.Tests;
 
 public sealed partial class OverlayTranslationMenuTests
 {
+    private enum OwnedCaptureDelay
+    {
+        Slow,
+        Refused,
+        Expired
+    }
+    // Delay only an already scheduled read through the existing broker boundary.
+    // The real broker still evaluates the original request and all its guards.
+    private sealed class OwnedConfirmationDelayedBroker : IInputBroker
+    {
+        private readonly BrokerClient _broker = new();
+        private readonly TaskCompletionSource _delayedCaptureStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _delayedCaptureCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _editAdmitted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly CancellationTokenSource _stopping = new();
+        private CancellationToken _delayCancellation;
+        private OwnedCaptureDelay _delayMode;
+        private int _delayNext, _disposed;
+        public Task DelayedCaptureStarted => _delayedCaptureStarted.Task;
+        public Task DelayedCaptureCompleted => _delayedCaptureCompleted.Task;
+        public void DelayNextCapture(OwnedCaptureDelay mode, CancellationToken cancellation)
+        {
+            _delayCancellation = cancellation;
+            _delayMode = mode;
+            Volatile.Write(ref _delayNext, 1);
+        }
+        public void EditAdmitted() => _editAdmitted.TrySetResult();
+        public bool Available => _broker.Available;
+        public int ProcessId => _broker.ProcessId;
+        public Task StartAsync() => _broker.StartAsync();
+        public Task<BrokerResponse> CaptureWakeAsync(BrokerRequest request, Func<bool> stillCurrent) =>
+            _broker.CaptureWakeAsync(request, stillCurrent);
+        public Task<BrokerResponse> CallAsync(BrokerRequest request, TimeSpan? timeout = null) =>
+            request.Op == "capture-owned" && Interlocked.Exchange(ref _delayNext, 0) == 1
+                ? DelayCapture(request, timeout) : _broker.CallAsync(request, timeout);
+        private async Task<BrokerResponse> DelayCapture(BrokerRequest request, TimeSpan? timeout)
+        {
+            try
+            {
+                using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_delayCancellation, _stopping.Token);
+                _delayedCaptureStarted.TrySetResult();
+                await _editAdmitted.Task.WaitAsync(cancellation.Token).ConfigureAwait(false);
+                // A controlled slow dependency exposes the edit/read overlap.
+                // This is not a wait for readiness or an extended permission.
+                await Task.Delay(_delayMode == OwnedCaptureDelay.Expired ? 600 : 200, cancellation.Token).ConfigureAwait(false);
+                if (_delayMode == OwnedCaptureDelay.Refused)
+                {
+                    var original = request.OwnedCapture ?? throw new InvalidOperationException("owned-capture-descriptor-missing");
+                    request = request with
+                    {
+                        OwnedCapture = original with
+                        {
+                            NativeFocusRevision = original.NativeFocusRevision + 1
+                        }
+                    };
+                }
+                return await _broker.CallAsync(request, timeout).ConfigureAwait(false);
+            }
+            finally
+            {
+                _delayedCaptureCompleted.TrySetResult();
+            }
+        }
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+            _stopping.Cancel();
+            _stopping.Dispose();
+            _broker.Dispose();
+        }
+    }
+
     private static Action ObserveOwnedKeyboardFlow(OverlayWindow overlay, TextBox editor, Button keep,
         SessionController controller, string draft)
     {

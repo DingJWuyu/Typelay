@@ -195,6 +195,17 @@ class WindowsContractRunnerTests(unittest.TestCase):
             )
             self.assertNotEqual(summary["mainDirectory"], summary["isolatedDirectory"])
             self.assertEqual(not passed, bool(summary["failures"]))
+            if not canceled:
+                expected_failed = (
+                    ["Controlled.Other"]
+                    if mode == "main-fail"
+                    else sorted([METHOD + "(packages: False)", METHOD + "(packages: True)"])
+                    if mode == "isolated-fail"
+                    else []
+                )
+                self.assertEqual(
+                    expected_failed, sorted(item["testName"] for item in summary["failedTests"])
+                )
             self.assertEqual(2 if isolated_required else 1, len(list(results.rglob("*.trx"))))
             return invoked[0][invoked[0].index("--filter") + 1]
 
@@ -203,6 +214,11 @@ class WindowsContractRunnerTests(unittest.TestCase):
 
     def test_main_failure_is_preserved_and_does_not_skip_the_independent_partition(self):
         self.run_case("main-fail")
+
+    def test_each_shard_preserves_the_failed_test_summary(self):
+        for shard in range(1, 5):
+            with self.subTest(shard=shard):
+                self.run_case("main-fail", shard)
 
     def test_isolated_failure_cannot_be_hidden_by_the_main_success(self):
         self.run_case("isolated-fail")

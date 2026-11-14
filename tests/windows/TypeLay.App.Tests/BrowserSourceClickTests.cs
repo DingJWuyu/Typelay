@@ -88,6 +88,16 @@ public sealed class BrowserSourceClickTests(WpfDesktopFixture desktop)
                 Assert.Equal(covered || cancelled ? 0 : 1, sourceUp);
                 Assert.Equal(0, otherDown);
             }
+            catch (BrowserWindows.Failure error)
+            {
+                try
+                {
+                    if (error.Data[BrowserWindows.SourceClickFailureData] is string observation)
+                        TestContext.Current.TestOutputHelper?.WriteLine(observation);
+                }
+                catch (Exception diagnosticError) when (diagnosticError is not OutOfMemoryException) { }
+                throw;
+            }
             finally
             {
                 other.Close();

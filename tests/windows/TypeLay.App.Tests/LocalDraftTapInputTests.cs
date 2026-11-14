@@ -49,6 +49,46 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
         var upTimes = new List<uint>();
         int cancellations = 0;
         object? firstCancellation = null;
+        bool observeFailure = change == "unarmed-prefix", succeeded = false;
+        var foregroundEvents = new List<object>(8);
+        var deliveredEdges = new List<object>(4);
+        var sentInputs = new List<object>(2);
+        int foregroundDropped = 0, foregroundErrors = 0, inputDropped = 0;
+        nint foregroundObservation = 0, firstExternalForeground = 0;
+        uint firstExternalProcess = 0;
+        string stage = "before-activation";
+        // Independent observations explain a failure only. They never restore
+        // focus or participate in the Hook's anchor or claim decisions.
+        Native.WinEventProc observeForeground = (_, _, original, _, _, eventThread, eventTime) =>
+        {
+            try
+            {
+                if (foregroundEvents.Count == 8)
+                {
+                    foregroundDropped++;
+                    return;
+                }
+                long observedAtTimestamp = Stopwatch.GetTimestamp();
+                uint windowThread = Native.GetWindowThreadProcessId(original, out uint process);
+                if (process != 0 && process != Environment.ProcessId && firstExternalForeground == 0)
+                {
+                    firstExternalForeground = original;
+                    firstExternalProcess = process;
+                }
+                foregroundEvents.Add(new
+                {
+                    stage,
+                    observedAtTimestamp,
+                    eventTime,
+                    originalWindow = (long)original,
+                    eventThread,
+                    windowThread,
+                    observedProcess = process,
+                    isTestEditor = original == hwnd
+                });
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { foregroundErrors++; }
+        };
         KeyEventHandler down = (_, e) =>
         {
             e.Handled = true;
@@ -57,6 +97,7 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
             var message = ComponentDispatcher.CurrentKeyboardMessage;
             uint time = unchecked((uint)message.time);
             downTimes.Add(time);
+            ObserveDeliveredEdge("down", time);
             uint scan = (uint)(message.lParam.ToInt64() >> 16) & 255;
             captures.Add(hook.CaptureLocalDraftPress(opening, scan, (message.lParam.ToInt64() & 0x01000000) != 0,
                 change == "old-down-message" ? unchecked(time - 1) : time));
@@ -65,12 +106,18 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
         {
             e.Handled = true;
             if (e.Key == Key.Tab)
-                upTimes.Add(unchecked((uint)ComponentDispatcher.CurrentKeyboardMessage.time));
+            {
+                uint time = unchecked((uint)ComponentDispatcher.CurrentKeyboardMessage.time);
+                upTimes.Add(time);
+                ObserveDeliveredEdge("up", time);
+            }
         };
         window.AddHandler(Keyboard.PreviewKeyDownEvent, down, true);
         window.AddHandler(Keyboard.PreviewKeyUpEvent, up, true);
         try
         {
+            if (observeFailure)
+                foregroundObservation = Native.SetWinEventHook(3, 3, 0, observeForeground, 0, 0, 0);
             // Install before the original activation, then consume that exact
             // event only after the product callback stack has fully processed it.
             // No extra activation, queue drain, timestamp inference or retry.
@@ -81,6 +128,7 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
             await Until(() => hook.ShortcutsReady && hook.EditorForegroundDelivered is { IsCompletedSuccessfully: true }
                 && Native.GetForegroundWindow() == hwnd && editor.IsKeyboardFocused);
             Assert.All(new[] { 9, 0x77, 0x10, 0x11, 0x12, 0x5b, 0x5c }, key => Assert.False(Native.GetAsyncKeyState(key) < 0));
+            stage = "anchor-open";
             hook.BeginLocalDraftAnchor(opening, hwnd, hwnd, id =>
             {
                 if (Interlocked.Increment(ref cancellations) != 1 || change != "unarmed-prefix")
@@ -102,6 +150,7 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
             Input[] pair = [Edge(tab, false), Edge(tab, true)];
             if (change == "unarmed-prefix")
             {
+                stage = "unarmed-pair";
                 Send(pair);
                 await Until(() => upTimes.Count == 1);
                 Assert.Null(captures.Single());
@@ -136,6 +185,7 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                 downTimes.Clear();
                 upTimes.Clear();
             }
+            stage = "armed-pair";
             hook.SetLocalDraftEditorFocus(opening, true);
             int expectedUps = 1;
             if (change == "retired-before-up")
@@ -207,6 +257,7 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
             KeyboardHook.LocalDraftTapClaimObservation? claim = null;
             if (press is not null)
             {
+                stage = "claim";
                 tap = hook.ClaimLocalDraftTap(press, tab, false,
                     change == "wrong-up-message" ? unchecked(upTimes[0] + 1) : upTimes[0], out var observed);
                 claim = observed;
@@ -258,14 +309,69 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                 Assert.True(hook.LocalDraftAnchorCurrent(newer));
             Assert.Equal("Synthetic local draft", editor.Text);
             Assert.False(hook.TryRead(out _)); // No source/action notice or acceptance permit.
+            succeeded = true;
         }
         finally
         {
+            bool observerRemoved = foregroundObservation == 0 || Native.UnhookWinEvent(foregroundObservation);
+            GC.KeepAlive(observeForeground);
+            if (observeFailure && !succeeded)
+            {
+                try
+                {
+                    TestContext.Current.TestOutputHelper?.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        operation = "local-draft-unarmed-prefix-failure",
+                        stage,
+                        testProcess = Environment.ProcessId,
+                        testWindow = (long)hwnd,
+                        timestampFrequency = Stopwatch.Frequency,
+                        observerInstalled = foregroundObservation != 0,
+                        observerRemoved,
+                        foregroundEvents,
+                        foregroundDropped,
+                        foregroundErrors,
+                        sentInputs,
+                        deliveredEdges,
+                        inputDropped,
+                        heldScans = held.ToArray(),
+                        cancelCallbacks = Volatile.Read(ref cancellations),
+                        firstCancellation = Volatile.Read(ref firstCancellation),
+                        originalExternalWindow = (long)firstExternalForeground,
+                        originalExternalProcess = firstExternalProcess,
+                        // Later PID/parent observations cannot prove ownership
+                        // of the original event or authorize touching that process.
+                        laterExternalIdentity = firstExternalForeground == 0 ? null
+                            : NativeSourceActivationTests.ObserveCallerFailure(firstExternalForeground,
+                                Native.GetForegroundWindow(), null, (_, _) => "unknown")
+                    }));
+                }
+                catch (Exception error) when (error is not OutOfMemoryException) { }
+            }
             window.RemoveHandler(Keyboard.PreviewKeyDownEvent, down);
             window.RemoveHandler(Keyboard.PreviewKeyUpEvent, up);
             hook.EndLocalDraftAnchor(opening);
             foreach (ushort scan in held.ToArray())
                 Assert.Equal(1u, SendInput(1, [Edge(scan, true)], Marshal.SizeOf<Input>()));
+            if (succeeded)
+                Assert.True(observerRemoved, "local-draft-foreground-observer-did-not-exit");
+        }
+        void ObserveDeliveredEdge(string edge, uint nativeTime)
+        {
+            if (!observeFailure)
+                return;
+            if (deliveredEdges.Count == 4)
+            {
+                inputDropped++;
+                return;
+            }
+            deliveredEdges.Add(new
+            {
+                stage,
+                edge,
+                nativeTime,
+                observedAtTimestamp = Stopwatch.GetTimestamp()
+            });
         }
         async Task Until(Func<bool> condition)
         {
@@ -274,15 +380,33 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
         }
         void Send(Input[] inputs)
         {
-            Assert.Equal(hwnd, Native.GetForegroundWindow());
+            nint foreground = Native.GetForegroundWindow();
+            Assert.Equal(hwnd, foreground);
             Assert.Same(editor, Keyboard.FocusedElement);
             deadline.Token.ThrowIfCancellationRequested();
+            long beforeSendTimestamp = observeFailure ? Stopwatch.GetTimestamp() : 0;
             uint sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<Input>());
             foreach (var edge in inputs.Take((int)sent))
                 if ((edge.Flags & 2) == 0)
                     held.Add(edge.Scan);
                 else
                     held.Remove(edge.Scan);
+            if (observeFailure && sentInputs.Count < 2)
+                sentInputs.Add(new
+                {
+                    stage,
+                    beforeSendTimestamp,
+                    afterSendTimestamp = Stopwatch.GetTimestamp(),
+                    foreground = (long)foreground,
+                    requested = inputs.Length,
+                    sent,
+                    edges = inputs.Take(2).Select(edge => new
+                    {
+                        edge.Scan,
+                        edge.Flags,
+                        edge.Time
+                    }).ToArray()
+                });
             Assert.Equal((uint)inputs.Length, sent); // A partial send is never retried.
         }
     });

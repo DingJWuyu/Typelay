@@ -452,7 +452,7 @@ public sealed partial class SettingsRenderingTests
         Assert.True(Native.GetCursorPos(out var previous));
         try
         {
-            ApplicationDialogActionAsync(owner, () => RightClickApplicationRow(owner, row), "ApplicationRemovalConfirmation", interact, awaitEntrance, observeNativeInput);
+            ApplicationDialogActionAsync(owner, () => RightClickApplicationRow(owner, row), "ApplicationRemovalConfirmation", interact, awaitEntrance, observeNativeInput, pointerTarget: row);
         }
         finally { SetCursorPos(previous.X, previous.Y); }
     }
