@@ -1,6 +1,7 @@
 // Real standard widgets with synthetic test content. No production diagnostics.
 #include <QApplication>
 #include <QAbstractButton>
+#include <QAbstractNativeEventFilter>
 #include <QClipboard>
 #include <QCryptographicHash>
 #include <QGlyphRun>
@@ -47,6 +48,7 @@
 #include <time.h>
 #include <utility>
 #include <unistd.h>
+#include <xcb/xinput.h>
 
 qint64 observedAtMs() {
     timespec value{};
@@ -112,7 +114,7 @@ static QJsonArray applicationCjkFonts(FontIdentities &identities) {
     return result;
 }
 
-class KeyObserver final : public QObject {
+class KeyObserver final : public QObject, public QAbstractNativeEventFilter {
     Q_OBJECT
 public:
     QLineEdit *first = nullptr, *second = nullptr;
@@ -130,6 +132,7 @@ public:
     QPointer<QAbstractButton> configurationMouseTarget;
     quint64 configurationMouseInstance = 0, configurationMouseSequence = 0;
     bool configurationMouseStarted = false, configurationMouseTracing = false, configurationMouseTruncated = false;
+    uint8_t xinputOpcode = 0;
     QJsonArray motionInputs;
     bool observeMotionInputs = false;
     QJsonObject counts;
@@ -184,6 +187,42 @@ public slots:
         if (state == "dispatched") applyCommandAction(commandDispatchedAction);
     }
 public:
+    bool nativeEventFilter(const QByteArray &eventType, void *message, qintptr *) override {
+        if (eventType != "xcb_generic_event_t" || !message || !window
+            || (!configurationMouseTracing && (configurationMouseStarted || !configurationPreeditField
+                || !configurationPreedit || QApplication::focusWidget() != configurationPreeditField))) return false;
+        const auto *event = static_cast<const xcb_generic_event_t *>(message);
+        const auto type = event->response_type & 0x7f;
+        bool pressed = false;
+        uint32_t button = 0, timestamp = 0;
+        xcb_window_t recipient = 0;
+        double x = 0, y = 0;
+        const char *family = "core";
+        if (type == XCB_BUTTON_PRESS || type == XCB_BUTTON_RELEASE) {
+            const auto *mouse = reinterpret_cast<const xcb_button_press_event_t *>(event);
+            pressed = type == XCB_BUTTON_PRESS;
+            button = mouse->detail; timestamp = mouse->time; recipient = mouse->event;
+            x = mouse->event_x; y = mouse->event_y;
+        } else if (type == XCB_GE_GENERIC) {
+            const auto *generic = reinterpret_cast<const xcb_ge_generic_event_t *>(event);
+            if (!xinputOpcode || generic->extension != xinputOpcode
+                || (generic->event_type != XCB_INPUT_BUTTON_PRESS && generic->event_type != XCB_INPUT_BUTTON_RELEASE)) return false;
+            const auto *mouse = reinterpret_cast<const xcb_input_button_press_event_t *>(event);
+            pressed = generic->event_type == XCB_INPUT_BUTTON_PRESS;
+            button = mouse->detail; timestamp = mouse->time; recipient = mouse->event;
+            x = double(mouse->event_x) / 65536; y = double(mouse->event_y) / 65536;
+            family = "xi2";
+        } else return false;
+        // DEBUG-t11-input: observe the original server event, never select,
+        // consume or replay it. effectiveWinId does not create a native window.
+        configurationMouseTracing = true;
+        configurationMouseEvent(pressed ? "native-mouse-press" : "native-mouse-release",
+            {QStringLiteral("native-window"), 0, {}},
+            {{"family", QLatin1String(family)}, {"button", qint64(button)}, {"timestamp", qint64(timestamp)},
+                {"sameWindow", recipient == window->effectiveWinId()}, {"x", x}, {"y", y},
+                {"sendEvent", bool(event->response_type & 0x80)}});
+        return false;
+    }
     void configurationMouseEvent(const char *event, const OverlayObject &object, QJsonObject extra = {}) {
         if (!configurationMouseTracing) return;
         // One composing mouse transaction, independent of the earlier menu's
@@ -305,12 +344,13 @@ public:
                 observeOverlay(configurationMouseTarget);
                 configurationMouseInstance = overlayObjects.value(configurationMouseTarget).instance;
             }
-            if (configurationMouseTracing && object == window->windowHandle()) {
+            if (configurationMouseTracing && qobject_cast<QWindow *>(object)) {
                 const auto point = window->mapFromGlobal(mouse->globalPosition().toPoint());
                 configurationMouseEvent(type == QEvent::MouseButtonPress ? "window-mouse-press" : "window-mouse-release",
                     {QStringLiteral("window"), 0, window->rect()},
                     {{"x", point.x()}, {"y", point.y()}, {"button", int(mouse->button())},
-                        {"buttons", int(mouse->buttons())}, {"spontaneous", event->spontaneous()}});
+                        {"buttons", int(mouse->buttons())}, {"spontaneous", event->spontaneous()},
+                        {"sameWindow", object == window->windowHandle()}});
             }
         }
         if (configurationMouseTracing && type == QEvent::KeyPress) {
@@ -461,6 +501,11 @@ int main(int argc, char **argv) {
     KeyObserver observer;
     observer.first = first; observer.second = second; observer.plain = plain; observer.window = &window;
     app.installEventFilter(&observer);
+    if (auto *x11 = app.nativeInterface<QNativeInterface::QX11Application>()) {
+        const auto *extension = xcb_get_extension_data(x11->connection(), &xcb_input_id);
+        if (extension && extension->present) observer.xinputOpcode = extension->major_opcode;
+        app.installNativeEventFilter(&observer);
+    }
     QObject::connect(&app, &QApplication::focusChanged, &observer, [&observer] { ++observer.focusTransitions; });
     first->setObjectName(QStringLiteral("first"));
     second->setObjectName(QStringLiteral("second"));

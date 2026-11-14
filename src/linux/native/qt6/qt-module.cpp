@@ -636,6 +636,7 @@ public:
 
     bool beginOrdered(QObject *actual, quint64 id, const QEvent *input,
         const TypeLayFcitxQtStateV1 *before, TypeLayFcitxQtOrderedGrantV1 *grant) override {
+        tracePermit("ordered-begin", {}, qint64(id));
         if (!onThread() || insideGlossary(actual) || handlingKey_ || ordered_ || editorOrdered_ || !id || !before || !grant || !input
             || input->type() != QEvent::KeyPress || !orderedConfigured()) return false;
         const auto *key = static_cast<const QKeyEvent *>(input);
@@ -673,6 +674,7 @@ public:
             || (grant->acceptUntil <= now() && grant->exitUntil <= now())) {
             revokeOrdered(); return false;
         }
+        tracePermit("ordered-granted", current, qint64(id));
         return true;
     }
     bool decideOrdered(QObject *actual, quint64 id, const QEvent *input,
@@ -724,6 +726,7 @@ public:
         return true;
     }
     void retireOrdered(quint64 ticket) override {
+        tracePermit("ordered-retired", {}, qint64(ticket));
         if (ordered_ && ordered_->id == ticket) { ordered_.reset(); scheduleWriteSettlements(); }
         if (editorOrdered_ && editorOrdered_->id == ticket) editorOrdered_.reset();
     }
@@ -733,6 +736,7 @@ signals:
 
 private slots:
     void providerChanged(QObject *field, uint causes) {
+        tracePermit("provider-changed", {}, causes);
         constexpr uint knownCauses = TlQtInput | TlQtFocus | TlQtBinding | TlQtModifier
             | TlQtOrderedPrefix | TlQtDetachedRetired;
         const bool unknown = !causes || (causes & ~knownCauses);
@@ -761,6 +765,26 @@ private slots:
     }
 
 private:
+    void tracePermit(const char *phase, const QJsonObject &data = {}, qint64 detail = 0) {
+        // DEBUG-t11-permit: one original editor return, bounded metadata only.
+        // No capture, provider query, UI action, event iteration or lease change.
+        if (!permitTraceRemaining_) return;
+        --permitTraceRemaining_;
+        const auto active = publicationPlan(publication_);
+        const auto incoming = publicationPlan(data);
+        const auto record = writeSettlements_.value(incoming.isEmpty() ? active : incoming);
+        const QJsonObject entry{{"phase", QLatin1String(phase)}, {"atMs", now()}, {"detail", detail},
+            {"activePlan", active}, {"incomingPlan", incoming},
+            {"activeUntilMs", integer(publication_.value("permit").toObject(), "expiresAtMs")},
+            {"incomingUntilMs", integer(data.value("permit").toObject(), "expiresAtMs")},
+            {"ticket", qint64(ordered_ ? ordered_->id : 0)},
+            {"ticketPlan", ordered_ ? publicationPlan(ordered_->publication) : QString()},
+            {"ticketRevoked", ordered_ && ordered_->revoked},
+            {"authorization", qint64(authorizationGeneration_)},
+            {"admitting", record ? int(record->admitting) : -1},
+            {"inFlight", record ? int(record->inFlight) : -1}};
+        std::fprintf(stderr, "DEBUG-t11-permit %s\n", QJsonDocument(entry).toJson(QJsonDocument::Compact).constData());
+    }
     bool onThread() const { return QThread::currentThread() == thread(); }
     static bool takeTraceLine() {
         static unsigned traceLines = 0;
@@ -1086,6 +1110,7 @@ private:
             && field->property(ProviderProperty).value<QObject *>() == owner
             && state.size == sizeof state && state.version == 1u && (state.flags & ~(TlQtKnown | TlQtFocused | TlQtPending | TlQtComposing | TlQtDetached)) == 0;
         if (!valid) {
+            tracePermit("inspect-invalid");
             if (ordered_ && ordered_->target == target && ordered_->provider == owner) loseProof();
             else clearPermit();
             return false;
@@ -1093,6 +1118,7 @@ private:
         if (!(state.flags & TlQtKnown) || (state.flags & TlQtComposing))
             advanceSourceRevision(target, target->integrity);
         if (target->observed && stamp(target->state) != stamp(state)) {
+            tracePermit("inspect-state-changed", {}, state.flags);
             const auto &before = ordered_ ? ordered_->before : target->state;
             if (ordered_ && ordered_->target == target && ordered_->provider == owner
                 && state.contextGeneration == before.contextGeneration && state.fieldGeneration == before.fieldGeneration
@@ -1269,6 +1295,7 @@ private:
             writeSettlements_.insert(id, record);
         }
         ++record->admitting;
+        tracePermit("publication-admitted", data);
         return record;
     }
     std::shared_ptr<WriteSettlement> beginSourceWrite(const QString &id) {
@@ -1294,6 +1321,7 @@ private:
             if (ordered_ && !ordered_->revoked && publicationPlan(ordered_->publication) == record->plan)
                 until = std::max(until, integer(ordered_->publication.value("permit").toObject(), "expiresAtMs", -1));
             if (until >= current) { next = std::min(next, until - current + 1); ++entry; continue; }
+            tracePermit("publication-retired", {{"permit", QJsonObject{{"plan", QJsonObject{{"id", record->plan}}}}}});
             events.append(QJsonObject{{"planId", record->plan}, {"target", record->target}, {"generation", record->generation}});
             consumed_.append(record->plan);
             while (consumed_.size() > 128) consumed_.removeFirst();
@@ -1304,8 +1332,9 @@ private:
         for (const auto &event : events)
             if (fd_ >= 0 && observedConnection == connectionGeneration_) sendEvent("writeRetired", event.toObject());
     }
-    void loseProof() { publication_ = {}; scheduleWriteSettlements(); refreshHint(); }
+    void loseProof() { tracePermit("lose-proof"); publication_ = {}; scheduleWriteSettlements(); refreshHint(); }
     void revokeOrdered() {
+        tracePermit("ordered-revoke");
         const auto ticket = std::move(ordered_);
         if (!ticket) return;
         ticket->revoked = true;
@@ -1439,6 +1468,11 @@ private:
             || !editorOrderedCurrent(ticket) || !provider->claimOrdered(actual, id, &ticket->before, current)) return false;
         // Claim fixes the original Fn pair before any host/focus callback. This
         // message cannot write; Runtime must return and freshly capture the source.
+        if (accept && !permitTraceStarted_ && qEnvironmentVariableIsSet("TYPELAY_QT_PROBE")) {
+            permitTraceStarted_ = true;
+            permitTraceRemaining_ = 96;
+            tracePermit("editor-return", {}, qint64(id));
+        }
         loseProof();
         sendEvent("ui", {{"target", ticket->target->id}, {"operation", exit ? "escape" : "return"},
             {"revision", ticket->revision}, {"generation", ticket->generation}});
@@ -4369,6 +4403,7 @@ private:
         else if (op == "return") returnSource(target, data.value("authority").toObject(), data.value("generation"), id);
         else if (op == "quarantine") { revokeEditorOrdered(); ++authorizationGeneration_; if (target) target->quarantined = true; cancelShortcut(); clearPermit(); respond(id); }
         else if (op == "revoke") {
+            tracePermit("host-revoke", data);
             ++authorizationGeneration_; clearPermit();
             if (integer(data, "shortcuts", 0)) { revokeEditorOrdered(); cancelShortcut(); shortcutAuthority_ = {}; }
             respond(id);
@@ -4377,16 +4412,20 @@ private:
             const auto settlement = admitPublication(data);
             const auto admitted = qScopeGuard([this, settlement] {
                 if (settlement && settlement->admitting) --settlement->admitting;
+                tracePermit("publication-complete", settlement
+                    ? QJsonObject{{"permit", QJsonObject{{"plan", QJsonObject{{"id", settlement->plan}}}}}} : QJsonObject());
                 scheduleWriteSettlements();
             });
             if (!sessionCurrent(data.value("generation"))) { respond(id, QJsonObject{{"published", false}}); return; }
             const bool renewal = sameOrderedPublication(data);
+            tracePermit("publication-replacement", data, renewal);
             if (!renewal) { ++authorizationGeneration_; clearPermit(); }
             else loseProof();
             if (target && sessionCurrent(data.value("generation")) && focused() == target
                 && metadataMatches(target, data.value("authority").toObject()) && inspect(target) && clear(target->state)
                 && sessionCurrent(data.value("generation")) && sessionProvider(target->field)) publication_ = data;
             const auto state = publicationState(target);
+            tracePermit("publication-result", data, state.value("ready").toBool());
             respond(id, QJsonObject{{"published", !publication_.isEmpty()
                 && (data.value("permit").isNull() || data.value("permit").isUndefined() || state.value("ready").toBool())}});
             if (target) { auto report = state; report.insert("target", target->id); sendEvent("publication", report); }
@@ -4528,6 +4567,8 @@ private:
     QString lifetime_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
     QTimer reconnect_, expiry_, writeSettlementTimer_;
     QHash<QString, std::shared_ptr<WriteSettlement>> writeSettlements_;
+    unsigned permitTraceRemaining_ = 0;
+    bool permitTraceStarted_ = false;
     QTimer overlayMotion_;
     QElapsedTimer motionClock_;
     qint64 motionLastFrame_ = 0;

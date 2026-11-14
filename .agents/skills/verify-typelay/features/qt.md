@@ -48,6 +48,8 @@ cp --reflink=auto "$PWD/artifacts/linux/qt-cooperative/fcitx5-qt.tar.gz" \
 
 保留 `language-options-result.json`、`language-options-native-state.json`、`language-options-native.log` 和 `language-configuration-*.png`。命令日志中的 `qt-configuration-click-request` 记录本次点击使用的快照。核对实际按下、释放和 clicked 回执；保留单次动作、原 15 秒观察期限和真实 pinyin 条件。Composing 点击、组合 Return、按住重复、释放后的独立 Return 分别判断。Unicode 搜索使用私有剪贴板粘贴，不是物理 Unicode 输入证据。
 
+组合点击缺少释放时，临时 `configurationMouseTrace` 同时记录原 XCB core/XInput2 按钮事件、Qt 窗口及控件接收。先判断释放是否进入本进程，再判断实际接收窗口和控件。该观察不消费事件，也不补发输入；没有原生释放证据时不能把问题归为语言行拒绝保存。
+
 同一原生版本内，设置推进正式 `actionRevision` 后，旧“更多”菜单必须关闭；仅反馈更新应保留当前菜单。无关翻译动作更新不能关闭语言菜单。三种情况都要保留源字段、编辑器正文与几何、焦点迁移记录的对照。
 
 原生编辑控件就绪只改变 `canEdit` 时，正式交互和动作身份可以保持不变。语言和“更多”菜单继续显示，编辑器仍只读，源正文、焦点和写入记录保持不变。检查必须使用本次 render 返回后观察到的新快照。旧菜单按下后的视图版本变化仍须退休原动作，释放不得借用新视图执行。
@@ -69,6 +71,8 @@ DISPLAY="$TYPELAY_VERIFY_XDISPLAY" timeout --kill-after=10s 240s \
 ```
 
 此入口注入初始语言、模式和实验写回设置，并使用标准 Qt 控件 fixture。读取 `qt-desktop-runtime.json` 核对实际 Qt 版本、加载库和 Wayland 平台。保留候选、编辑、按键时序、源字段和唯一写回回执。失败时保留 `failure-status.json`、`failure.png`、`inside.log` 和原始 controller trace，后续未执行项目记为 `not-run`。
+
+人工稿回源后的首次 Ctrl 接受使用临时 `DEBUG-t11-permit` 记录原计划的发布、撤销、检查失败和未用退休。它只在实际编辑回源后启用，最多记录 96 条元数据。将原生 hook、`qt-manual-acceptance-timing.json` 与 Host 原计划对齐；到达时没有发布许可不等于许可超时。确定原因并完成回归后删除这组临时诊断。
 
 配置 F12 的按需接受必须先观察本次源字段的实际隐藏新帧，再从首次 Ready 之后的新帧取得候选。源正文、选区和变更计数须与唤醒前一致。`qt-configured-f12-timing.json` 保留触发前的候选、编辑器文档身份及本次发布计划；写后核对该计划的唯一 Verified 回执与预存候选，不能用写后正文补填预期值。
 
