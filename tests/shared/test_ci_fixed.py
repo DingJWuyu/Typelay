@@ -195,6 +195,7 @@ class FixedBuildKeyTests(unittest.TestCase):
                 shutil.copytree(
                     ROOT / name, root / name, ignore=shutil.ignore_patterns("__pycache__")
                 )
+
             def key(kind="fcitx"):
                 return subprocess.check_output(
                     [sys.executable, str(root / "eng/ci/fixed.py"), "key", kind],
