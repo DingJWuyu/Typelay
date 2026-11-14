@@ -95,6 +95,11 @@ def main():
             failures.append("isolated-exit")
         ordinary_results, timed_results = results(primary), results(isolated)
         report.update(mainResults=len(ordinary_results), isolatedResults=len(timed_results))
+        report["failedTests"] = [
+            result
+            for result in ordinary_results + timed_results
+            if result.get("outcome") == "Failed"
+        ]
         if not ordinary_results:
             failures.append("main-results-missing")
         if any(r.get("outcome") == "Failed" for r in ordinary_results):

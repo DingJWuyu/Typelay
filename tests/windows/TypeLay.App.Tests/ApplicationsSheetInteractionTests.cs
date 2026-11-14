@@ -316,7 +316,7 @@ public sealed partial class SettingsRenderingTests
             ct.ThrowIfCancellationRequested();
             Assert.False(dialog.IsVisible);
             Assert.Null(old.Visual);
-        }, awaitEntrance: false);
+        }, awaitEntrance: false, observeNativeInput: retirement == "hide");
         Assert.Equal(before, File.ReadAllText(scene.Path));
         scene.Window.ShowPage("apps");
         ApplicationRemovalDialogAsync(scene.Window, "writer", async (dialog, ct) =>
@@ -452,7 +452,7 @@ public sealed partial class SettingsRenderingTests
         Assert.True(Native.GetCursorPos(out var previous));
         try
         {
-            ApplicationDialogActionAsync(owner, () => RightClickApplicationRow(owner, row), "ApplicationRemovalConfirmation", interact, awaitEntrance, observeNativeInput, inputTarget: row);
+            ApplicationDialogActionAsync(owner, () => RightClickApplicationRow(owner, row, observeNativeInput), "ApplicationRemovalConfirmation", interact, awaitEntrance, observeNativeInput, inputTarget: row);
         }
         finally { SetCursorPos(previous.X, previous.Y); }
     }
@@ -711,6 +711,7 @@ public sealed partial class SettingsRenderingTests
     }
     private static class SheetScreen
     {
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern int GetClassNameW(nint window, System.Text.StringBuilder name, int length);
         [DllImport("dwmapi.dll")] internal static extern int DwmFlush();
         [DllImport("user32.dll")] internal static extern nint SetThreadDpiAwarenessContext(nint context);
         [DllImport("user32.dll")] internal static extern nint GetDC(nint window);

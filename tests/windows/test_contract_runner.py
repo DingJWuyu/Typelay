@@ -136,6 +136,17 @@ class WindowsContractRunnerTests(unittest.TestCase):
             )
             self.assertNotEqual(summary["mainDirectory"], summary["isolatedDirectory"])
             self.assertEqual(mode != "pass", bool(summary["failures"]))
+            if not canceled:
+                expected_failed = (
+                    ["Controlled.Other"]
+                    if mode == "main-fail"
+                    else sorted([METHOD + "(packages: False)", METHOD + "(packages: True)"])
+                    if mode == "isolated-fail"
+                    else []
+                )
+                self.assertEqual(
+                    expected_failed, sorted(item["testName"] for item in summary["failedTests"])
+                )
             self.assertEqual(1 if canceled else 2, len(list(results.rglob("*.trx"))))
 
     def test_one_complete_partition_and_two_isolated_cases_succeed(self):
