@@ -281,8 +281,15 @@ public sealed class FirstWakeCaptureTests(WpfDesktopFixture desktop)
         else
             Assert.Equal(before, hook.BrowserEpochs); // Positive and expiry controls change no context.
         var notices = new List<InputNotice>();
-        while (input.TryRead(out notice))
-            notices.Add(Assert.IsType<InputNotice>(notice));
+        // The Broker has returned, but its DTO conversion may still be queued
+        // outside the dispatcher. Poll the original nonblocking delivery port
+        // within this fixture's existing deadline, without another command.
+        await Until(() =>
+        {
+            while (input.TryRead(out notice))
+                notices.Add(Assert.IsType<InputNotice>(notice));
+            return notices.Any(value => value.Kind == "wake");
+        }, source.Token);
         Assert.Equal(1, deliveryChecks);
         Assert.Equal(origin.TriggeredAtMs + Limits.ObservationMaxAgeMs, request.ExpiresAtMs);
         var first = Assert.Single(notices, value => value.Kind == "wake");
