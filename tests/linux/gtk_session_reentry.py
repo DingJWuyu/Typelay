@@ -26,6 +26,7 @@ from native_e2e import (
 )
 from niri import contents, request
 from paths import peer_credentials, process_lineage
+from support.settings_commit import SAVE_UNCONFIRMED_MESSAGE
 from wire import now_ms, receive_sync
 
 
@@ -642,6 +643,7 @@ def render_preview(
     expires_at=None,
     token_revision=None,
     status="fixture preview",
+    identity=None,
 ):
     token_revision = revision if token_revision is None else token_revision
     expires = now_ms() + 800 if expires_at is None else expires_at
@@ -684,6 +686,7 @@ def render_preview(
                     "exitHint": label,
                 },
                 "viewContext": {
+                    **({"identity": identity} if identity is not None else {}),
                     "token": {
                         "target": {
                             "backend": "linux-" + client.hello["backend"],
@@ -1028,8 +1031,8 @@ def check_language_retention_refusal(
     def controls():
         return state().get("overlayControls", {})
 
-    def detached_menu():
-        actual = state()
+    def detached_menu(actual=None):
+        actual = state() if actual is None else actual
         selected = actual.get("overlayControls", {}).get(control, {})
         # Keep only the first selector's initial detach polls, not later renewals.
         # The X command receipt is not proof that GTK dispatched its input.
@@ -1169,6 +1172,16 @@ def check_language_retention_refusal(
     expected_first = initial["first"]
     if stage == "language-retention-body":
         kwargs["text"] = "A different candidate cannot borrow the detached preview."
+        # A new completed candidate has a new product interaction even when its
+        # host token is unchanged. Text alone is not the identity: an append-only
+        # result may update a Translating preview within the same interaction.
+        kwargs["identity"] = {
+            "version": 1,
+            "interactionId": str(uuid.uuid4()),
+            "displaySequence": revision + 1,
+            "draftRevision": 0,
+            "actionRevision": 1,
+        }
     elif stage == "language-retention-host-token":
         kwargs["token_revision"] = 10
     elif stage == "language-retention-state":
@@ -1176,7 +1189,46 @@ def check_language_retention_refusal(
     elif stage == "language-retention-authority":
         changed_source["authority"]["inputRevision"] += 1
     elif stage == "language-retention-permissions":
-        kwargs["can_edit"] = True
+        # The first native editor-ready ACK can enable the edit action without
+        # changing the product interaction. It grants no editing or write lease.
+        focused_control = trigger if trigger_case else control
+        before = controls()[focused_control]["instance"]
+        rendered_ready = evidence.setdefault("retentionEditorReady", {})
+        result = render_preview(
+            client,
+            source,
+            generation,
+            revision + 1,
+            "fixture exit",
+            language_view=languages,
+            token_revision=token_revision,
+            can_edit=True,
+            evidence=rendered_ready,
+        )
+        assert result == {"visible": True, "editing": False}
+
+        def same_focus():
+            actual = state()
+            if actual.get("observedAtMs", 0) <= rendered_ready["renderReturnedAtMonoMs"]:
+                return None
+            if not trigger_case:
+                return detached_menu(actual)
+            return (
+                actual.get("overlayControls", {}).get(trigger, {}).get("focused")
+                and not actual["overlayControls"].get(menu, {}).get("visible")
+                and not actual["firstEntry"]["focused"]
+                and not actual["imeClear"]
+                and actual
+            )
+
+        final = wait_for(same_focus, "editor readiness changed source/menu focus")
+        assert final["overlayControls"][focused_control]["instance"] == before
+        for field in ("firstEntry", "secondEntry"):
+            for item in ("start", "end", "insertions", "deletions"):
+                assert final[field][item] == initial[field][item], (field, item)
+        assert final["first"] == initial["first"] and final["second"] == initial["second"]
+        assert not any(event.get("event") == "accepted" for event in client.events)
+        return
     elif stage == "language-retention-external-focus":
         click("secondEntry", field=True)
         wait_for(lambda: state().get("focus") == "fixture-second", "external field not focused")
@@ -2788,7 +2840,21 @@ def run_owned_language_options(
                     evidence["unexpectedOperation"] = f"host request: {operation}"
                     raise AssertionError(evidence["unexpectedOperation"])
                 saves.append(data)
-                return False  # Exercise the production save-failure response without persistence.
+                # Match the current Host commit result, without performing persistence.
+                result = {
+                    "saved": False,
+                    "state": "NotCommitted",
+                    "revision": 9,
+                    "startup": "NotRequested",
+                    "requestedStartup": None,
+                    "reason": "persistence-failed",
+                    "message": SAVE_UNCONFIRMED_MESSAGE,
+                    "retrySave": None,
+                    "code": None,
+                    "settingsRevision": None,
+                }
+                evidence["saveResponse"] = result
+                return result
 
         def task(coroutine):
             jobs.append(asyncio.create_task(coroutine))
@@ -3373,12 +3439,31 @@ async def check_language_options(
         assert overlay.current_record() is not None, "language owner lost current source binding"
         assert overlay.visible, "language preview retired during interaction"
 
+    identity = {
+        "version": 1,
+        "interactionId": str(uuid.uuid4()),
+        "displaySequence": 0,
+        "draftRevision": 0,
+        "actionRevision": 0,
+    }
+    previous_actions = None
+
     async def render(stage="language-renew"):
+        nonlocal previous_actions
         phase = {"stage": stage, "renderStartedAtMs": now_ms()}
         phases.append(phase)
         if len(phases) > 8:
             del phases[2]
         overlay.render_guidance({"languageChoices": view.get("languageChoices")})
+        actions = (
+            view["sourceLanguage"],
+            view["targetLanguage"],
+            json.dumps(overlay.language_choices, sort_keys=True),
+        )
+        identity["displaySequence"] += 1
+        if actions != previous_actions:
+            identity["actionRevision"] += 1
+            previous_actions = actions
         overlay.render(
             {
                 "state": "ValidTranslation",
@@ -3401,6 +3486,7 @@ async def check_language_options(
                     "exitHint": "fixture exit",
                 },
                 "viewContext": {
+                    "identity": identity.copy(),
                     "token": {
                         "target": source["target"],
                         "commandGeneration": generation,
@@ -3947,7 +4033,8 @@ async def check_language_options(
     assert emitted[-1]["value"] == {"source": "ko", "target": "en"}
     assert emitted[-1]["generation"] == generation and emitted[-1]["revision"] == apply_revision
     assert saves == [{"source": "ko", "target": "en"}]
-    assert "未保存" in overlay.value["status"]
+    evidence["saveFeedback"] = overlay.value["status"]
+    assert overlay.value["status"] == SAVE_UNCONFIRMED_MESSAGE
     # The controlled host has not confirmed the requested save. Reopening must
     # show its last confirmed state, including after a real host save failure.
     await toggle(True, renew=False)
