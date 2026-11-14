@@ -2640,9 +2640,13 @@ class ApplicationSupportTests(unittest.TestCase):
         shutil.copy2(ROOT / "packaging/linux/typelay", self.package / "typelay")
         (self.package / "typelay").chmod(0o755)
         desktop = self.package / "desktop"
-        desktop.mkdir()
-        for name in ("main.py", "setup.py", "paths.py", "wire.py"):
-            shutil.copy2(ROOT / "src/linux/desktop" / name, desktop / name)
+        # Exercise the shipped entry point with its production module closure.
+        # Only the practice process is controlled below.
+        shutil.copytree(
+            ROOT / "src/linux/desktop",
+            desktop,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
         (desktop / "practice.py").write_text(
             "import json,os,sys,time\nfrom pathlib import Path\n"
             f"Path({str(application_observation)!r}).write_text(json.dumps("
