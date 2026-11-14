@@ -715,8 +715,10 @@ class ApplicationsPane:
                 "desktop-icon" if symbol == "keyboard" else "browser-icon",
             )
             mark.add(design_icon(symbol, 15))
+            mark.set_size_request(26, 26)
+            mark.set_valign(Gtk.Align.CENTER)
             line.pack_start(mark, False, False, 0)
-            line.pack_start(label(owner.tr(zh, en)), True, True, 0)
+            line.pack_start(label(owner.tr(zh, en), wrap=False), True, True, 0)
             status = (
                 owner.localizer.text(row["statusText"])
                 if row
@@ -731,11 +733,18 @@ class ApplicationsPane:
                 style(dot, "attention")
             line.pack_start(dot, False, False, 0)
             caption = label(status, muted=True)
+            caption.set_line_wrap_mode(Pango.WrapMode.WORD)
             line.pack_start(caption, False, False, 0)
             action = row.get("primaryAction") if row else None
             button = Gtk.Button(
                 label=owner.localizer.text(action["label"]) if action else owner.tr("查看", "View")
             )
+            # Share narrow rows with the name and status. The action may wrap
+            # at words, instead of forcing the other labels into letter columns.
+            button.get_child().set_line_wrap(True)
+            button.get_child().set_line_wrap_mode(Pango.WrapMode.WORD)
+            button.get_child().set_justify(Gtk.Justification.CENTER)
+            button.set_valign(Gtk.Align.CENTER)
             button.set_sensitive(not support.busy)
             button.get_accessible().set_name(
                 owner.tr("应用连接：", "App connection: ") + owner.tr(zh, en)

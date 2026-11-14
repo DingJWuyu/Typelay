@@ -198,6 +198,39 @@ class GtkFeedbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(settings.language_swap.is_sensitive())
         self.assertTrue(settings.window.get_mapped())
 
+    async def test_sidebar_text_keeps_the_page_palette_when_not_selected(self):
+        settings = await self.open_settings()
+        for theme, expected in (("light", (20, 20, 19)), ("dark", (244, 243, 238))):
+            settings.configure({**SETTINGS, "theme": theme})
+            await self.wait_for(
+                lambda: settings.window.get_style_context().has_class("settings-dark")
+                == (theme == "dark"),
+                "settings palette",
+            )
+            for page, row in settings.nav_rows.items():
+                with self.subTest(theme=theme, page=page):
+                    # Observe the rendered label, including the native GTK row
+                    # theme, rather than assuming window inheritance wins.
+                    pending, captions = [row], []
+                    while pending:
+                        widget = pending.pop()
+                        if (
+                            isinstance(widget, Gtk.Label)
+                            and widget.get_text() == settings.page_headings[page].get_text()
+                        ):
+                            captions.append(widget)
+                            context = widget.get_style_context()
+                            ink = context.get_color(context.get_state())
+                            self.assertEqual(
+                                tuple(
+                                    round(value * 255) for value in (ink.red, ink.green, ink.blue)
+                                ),
+                                expected,
+                            )
+                        elif isinstance(widget, Gtk.Container):
+                            pending.extend(widget.get_children())
+                    self.assertEqual(len(captions), 1, "sidebar caption is missing or ambiguous")
+
     async def test_completed_tutorial_closes_and_leaves_its_warning_visible_in_settings(self):
         settings = await self.open_settings()
         settings.report({"modelReady": True, "modelInstalled": True})
