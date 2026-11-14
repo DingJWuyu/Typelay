@@ -11,6 +11,8 @@ runs:
     run: |
       snapshot=$(cat eng/ci/arch-snapshot)
       printf 'Server = https://archive.archlinux.org/repos/%s/$repo/os/$arch\n' "$snapshot" > /etc/pacman.d/mirrorlist
+      sed -i -E '/^#?ParallelDownloads[[:space:]]*=/d' /etc/pacman.conf
+      sed -i '/^\[options\]/a ParallelDownloads = 8' /etc/pacman.conf
     shell: bash
   - name: Install target native SDK
     run: pacman -Syyuu --needed --noconfirm git cmake ninja pkgconf gtk3 gtk4 json-glib python

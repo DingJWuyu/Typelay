@@ -124,6 +124,7 @@ class BuildSafetyTests(unittest.TestCase):
         for relative in (
             "eng/linux/build.py",
             "eng/linux/cooperative/inputs.py",
+            "eng/linux/cooperative/third_party.py",
             "eng/linux/index/prepare_runtime.py",
             "eng/fonts/prepare.py",
             "eng/index_profile.py",
