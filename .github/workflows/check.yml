@@ -72,9 +72,23 @@ jobs:
     - uses: ./.github/actions/linux-tools
     - &id001
       name: Record tested commit
-      run: |-
-        mkdir -p artifacts/ci
-        python -c 'import json,os,subprocess,pathlib; pathlib.Path("artifacts/ci/source.json").write_text(json.dumps(dict(tested_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),event=os.environ["GITHUB_EVENT_NAME"],run_id=os.environ["GITHUB_RUN_ID"],attempt=os.environ["GITHUB_RUN_ATTEMPT"])))'
+      run: |
+        python - <<'PY_SOURCE'
+        import json, os, subprocess
+        from pathlib import Path
+        event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+        source = {
+            "tested_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+            "event": os.environ["GITHUB_EVENT_NAME"],
+            "ref": os.environ["GITHUB_REF"],
+            "created": event.get("created"),
+            "before": event.get("before"),
+            "run_id": os.environ["GITHUB_RUN_ID"],
+            "attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+        }
+        Path("artifacts/ci").mkdir(parents=True, exist_ok=True)
+        Path("artifacts/ci/source.json").write_text(json.dumps(source, indent=2))
+        PY_SOURCE
       shell: bash
     - name: Hash native inputs and installed SDK
       run: echo "tag=$(python eng/ci/fixed.py key fcitx)" >> "$GITHUB_OUTPUT"

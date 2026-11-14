@@ -1,5 +1,6 @@
 """Windows runner CLI contracts; a controlled dotnet command is not a timing test."""
 
+import importlib.util
 import json
 import os
 import shutil
@@ -8,6 +9,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 METHOD = (
@@ -106,23 +109,43 @@ class WindowsContractRunnerTests(unittest.TestCase):
             self.assertEqual(
                 shim.resolve(), Path(shutil.which("dotnet", path=environment["PATH"])).resolve()
             )
-            execution = subprocess.run(
-                [
-                    sys.executable,
-                    "-B",
-                    str(ROOT / "eng/windows/test_contracts.py"),
-                    "--configuration",
-                    "Debug",
-                    "--results-directory",
-                    str(results),
-                    *(["--shard", str(shard)] if shard else []),
-                ],
-                env=environment,
-                cwd=ROOT,
-                capture_output=True,
-                text=True,
-                timeout=20,
-            )
+            command = [
+                sys.executable,
+                "-B",
+                str(ROOT / "eng/windows/test_contracts.py"),
+                "--configuration",
+                "Debug",
+                "--results-directory",
+                str(results),
+                *(["--shard", str(shard)] if shard else []),
+            ]
+            if shard is None:
+                execution = subprocess.run(
+                    command, env=environment, cwd=ROOT, capture_output=True, text=True, timeout=20
+                )
+            else:
+                spec = importlib.util.spec_from_file_location(
+                    "contracts", ROOT / "eng/windows/test_contracts.py"
+                )
+                runner = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(runner)
+                original_run = subprocess.run
+
+                def dotnet_port(arguments, **kwargs):
+                    # The real port is dotnet.exe. A .cmd stand-in would interpret
+                    # VSTest's | and & as shell operators before Python sees them.
+                    return original_run(
+                        [sys.executable, str(implementation), *arguments[1:]],
+                        env=environment,
+                        **kwargs,
+                    )
+
+                with (
+                    patch.dict(os.environ, environment),
+                    patch.object(sys, "argv", command[2:]),
+                    patch.object(runner.subprocess, "run", side_effect=dotnet_port),
+                ):
+                    execution = SimpleNamespace(returncode=runner.main(), stderr="")
             passed = mode in ("pass", "manual")
             self.assertEqual(passed, execution.returncode == 0, execution.stderr)
             invoked = [json.loads(line) for line in calls.read_text().splitlines()]
