@@ -136,6 +136,20 @@ def click_once(nested, point, evidence):
 
 
 def run_reentry_checks(command, environment, output, send_accept, *, gtk4, nested):
+    if gtk4:
+        connected_output = output / "gtk4-connected-before-map"
+        connected_output.mkdir()
+        with tempfile.TemporaryDirectory(prefix="tl-gtk-connect-") as directory:
+            run_case(
+                command,
+                {**environment, "TYPELAY_FIXTURE_CONNECT_BEFORE_MAP": "1"},
+                connected_output,
+                send_accept,
+                Path(directory),
+                "delete",
+                False,
+                nested,
+            )
     # Both cases dispatch the same real configure command inside the callback.
     # Only the generation changes, so nested IME dispatch cannot fake a pass.
     stages = ["delete", "insert", "selection", "footer", "expand"]
@@ -310,6 +324,10 @@ def run_case(
                     and value,
                     f"{name}: actual source IME/parent geometry did not become ready",
                 )
+                if child_environment.get("TYPELAY_FIXTURE_CONNECT_BEFORE_MAP"):
+                    assert (
+                        0 < initial["connectedBeforeMapAtUs"] < initial["firstEntry"]["focusInAtUs"]
+                    ), "the regression requires connection before actual GTK focus"
                 generation = str(uuid.uuid4())
                 configuration = {
                     "enabled": False,

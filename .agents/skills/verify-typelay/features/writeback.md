@@ -66,6 +66,8 @@ Preconditions: 对本次合成字段有明确写回验收意图，实验选项�
 
   `--inside` 复用技能的 niri；外层 `timeout 240` 保留原桌面总预算。短 `TMPDIR` 仅供该 runner 的小型配置与 socket，包和正式模型仍放在 Btrfs。保留 `gtk-fixture-identity.json`、`gtk-acceptance-phases.json`、`gtk-control-*.json`、原字段状态、截图和完整日志。按实际到达的阶段报告 `passed`、`failed`、`not-run`，不能用整条旅程的失败覆盖此前已通过阶段，也不能将未到达的 Undo 或 Direct 记作失败。核对原字段的精确人工稿、选区外正文和唯一回执，再核对撤销轨迹及新焦点字段。
 
+  重入检查另外覆盖先连接输入法、后映射窗口的启动顺序。受控 GTK4 字段先 realize，收到原 context 的 Binding 通知后才首次 present；没有补按键或再次 grab_focus。检查 `gtk4-connected-before-map/gtk-reentry-delete-unchanged.json`，确认 `connectedBeforeMapAtUs` 早于实际 `firstEntry.focusInAtUs`，并保留原 5 秒源字段就绪期限。该场景须完成真实源捕获和唯一 Verified 写入回执，原有自然启动及失效拒绝场景继续执行。
+
 普通网页完整旅程使用同一桌面 runner 的 `browser-index` 范围。先按 build.md 准备当前干净提交的完整包、合作包和 Index 下载缓存，再从新私有会话执行：
 
 ```bash

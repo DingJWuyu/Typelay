@@ -18,6 +18,7 @@ typedef struct {
     gint64 focus_in_at_us;
 } EntryEvidence;
 static EntryEvidence first_evidence, second_evidence;
+static gint64 connected_before_map_at_us;
 static JsonObject *first_insert_context, *first_delete_context;
 #include "gtk_reentry.inc"
 
@@ -1387,6 +1388,8 @@ static gboolean report_state(gpointer unused) {
     glossary_report(builder);
     json_builder_set_member_name(builder, "observedAtMs");
     json_builder_add_int_value(builder, g_get_monotonic_time() / 1000);
+    json_builder_set_member_name(builder, "connectedBeforeMapAtUs");
+    json_builder_add_int_value(builder, connected_before_map_at_us);
     json_builder_set_member_name(builder, "first");
     json_builder_add_string_value(builder, gtk_editable_get_text(GTK_EDITABLE(report_first)));
     json_builder_set_member_name(builder, "second");
@@ -1634,6 +1637,25 @@ static gboolean report_state(gpointer unused) {
 static gboolean close_fixture(GtkWindow *window, gpointer data) {
     (void)window; g_main_loop_quit(data); return FALSE;
 }
+static gboolean present_connected_window(gpointer data) {
+    gtk_window_present(GTK_WINDOW(data));
+    return G_SOURCE_REMOVE;
+}
+
+static void present_after_connection(GtkIMContext *context, guint causes, gpointer data) {
+    if (!(causes & TL_FCITX_CHANGE_BINDING)) return;
+    GtkWidget *window = GTK_WIDGET(data);
+    GtkWidget *widget = entry_client(report_first);
+    g_assert_true(g_object_get_data(G_OBJECT(widget), TL_FCITX_CONTEXT_V1) == context);
+    g_assert_true(gtk_root_get_focus(GTK_ROOT(window)) == widget);
+    g_assert_false(gtk_widget_get_mapped(window));
+    g_assert_false(gtk_window_is_active(GTK_WINDOW(window)));
+    connected_before_map_at_us = g_get_monotonic_time();
+    g_signal_handlers_disconnect_by_func(context, G_CALLBACK(present_after_connection), data);
+    // The original connected callback must finish before the first mapping.
+    g_idle_add(present_connected_window, window);
+}
+
 int main(void) {
     gtk_init();
     GMainLoop *loop = g_main_loop_new(NULL, FALSE);
@@ -1700,7 +1722,9 @@ int main(void) {
         gtk_box_append(GTK_BOX(box), excluded);
     }
     g_signal_connect(window, "close-request", G_CALLBACK(close_fixture), loop);
-    gtk_window_present(GTK_WINDOW(window));
+    const gboolean connect_before_map = g_getenv("TYPELAY_FIXTURE_CONNECT_BEFORE_MAP") != NULL;
+    if (connect_before_map) gtk_widget_realize(window);
+    else gtk_window_present(GTK_WINDOW(window));
     if (g_getenv("TYPELAY_FIXTURE_FULLSCREEN")) gtk_window_fullscreen(GTK_WINDOW(window));
     gtk_widget_grab_focus(first);
     gtk_editable_set_position(GTK_EDITABLE(first), -1);
@@ -1735,6 +1759,14 @@ int main(void) {
         watch_entry(second, &second_evidence);
         motion_init();
         g_timeout_add(25, report_state, NULL);
+    }
+    if (connect_before_map) {
+        // Realize the ordinary GtkText without mapping its window, so its own
+        // Fcitx connection completes before the compositor can activate it.
+        gtk_widget_realize(entry_client(first));
+        GtkIMContext *context = g_object_get_data(G_OBJECT(entry_client(first)), TL_FCITX_CONTEXT_V1);
+        g_assert_nonnull(context);
+        g_signal_connect(context, TL_FCITX_CHANGED_V1, G_CALLBACK(present_after_connection), window);
     }
     g_main_loop_run(loop);
     glossary_capture_clear();
