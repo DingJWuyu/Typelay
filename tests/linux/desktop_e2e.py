@@ -33,7 +33,7 @@ from setup import (
 )
 from support.gtk_settings_geometry import settings_scroll_snapshot, settings_viewport_from_pane
 from support.session_lifecycle import session_exit_confirmed
-from support.settings_commit import practice_allowed
+from support.settings_commit import SAVE_UNCONFIRMED_MESSAGE, practice_allowed
 from support.xtest import prepare_key, prepare_xtest
 from wire import Decoder, encode, now_ms
 
@@ -5444,7 +5444,9 @@ def run(arguments):
                 try:
                     activate_setting("交换语言")
                     wait_for(
-                        lambda: "未保存" in text(settings_control("设置反馈"))
+                        lambda: text(feedback := settings_control("设置反馈"))
+                        == SAVE_UNCONFIRMED_MESSAGE
+                        and feedback.get_state_set().contains(Atspi.StateType.SHOWING)
                         and swap_language.get_state_set().contains(Atspi.StateType.SENSITIVE)
                         and language_label(source_language) == "中文"
                         and language_label(target_language) == "英语",
@@ -6919,7 +6921,9 @@ def run(arguments):
                     assert Atspi.Component.grab_focus(themes[original_theme].get_component_iface())
                     key("space")
                     wait_for(
-                        lambda: "未保存" in text(settings_control("设置反馈"))
+                        lambda: text(feedback := settings_control("设置反馈"))
+                        == SAVE_UNCONFIRMED_MESSAGE
+                        and feedback.get_state_set().contains(Atspi.StateType.SHOWING)
                         and themes[selected_theme].get_state_set().contains(Atspi.StateType.CHECKED)
                         and not themes[original_theme]
                         .get_state_set()
@@ -7109,7 +7113,9 @@ def run(arguments):
                     record_shortcut(process.pid, "唤醒翻译", "Ctrl+Shift+F8", key)
                     wait_for(
                         lambda: status()["setup"]["settingsDraft"]
-                        and "未保存" in text(settings_control("设置反馈")),
+                        and text(feedback := settings_control("设置反馈"))
+                        == SAVE_UNCONFIRMED_MESSAGE
+                        and feedback.get_state_set().contains(Atspi.StateType.SHOWING),
                         "failed instant save did not retain the recorded edit",
                     )
                     assert paths.settings.read_bytes() == before_failure
