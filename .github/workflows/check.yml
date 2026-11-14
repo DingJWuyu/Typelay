@@ -645,6 +645,10 @@ jobs:
         id: setup-e2e
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         run: python tests/linux/setup_e2e.py -v
+      - name: Verify Linux private uv preparation
+        id: private-uv
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        run: python tests/linux/test_private_uv.py -v
       - name: Verify Linux test_desktop_session
         id: test-desktop-session
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}

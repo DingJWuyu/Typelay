@@ -122,6 +122,7 @@ def build(output, fixture=False, cooperation_package=None, hy_runtime=None, inde
         native,
         ROOT / "artifacts/linux/index-cpu-runtime",
         ROOT / "artifacts/linux/index-cpu-download",
+        ROOT / "artifacts/linux/uv-download",
         ROOT / "artifacts/TypeLay-Linux-preview-x86_64.tar.gz",
         ROOT / "artifacts/TypeLay-Linux-preview-x86_64.tar.gz.sha256",
         hy_runtime,
@@ -160,6 +161,9 @@ def build(output, fixture=False, cooperation_package=None, hy_runtime=None, inde
         output / "app",
     )
     package_runtime_notices(output)
+    from eng.linux.uv.prepare import prepare as prepare_uv
+
+    prepare_uv(ROOT / "artifacts/linux/uv-download", output / "support/uv")
     run(
         "cmake",
         "-S",

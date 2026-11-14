@@ -31,6 +31,7 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import private_uv  # noqa: E402
 from paths import private_directory  # noqa: E402
 
 PYTHON = "3.13.16"
@@ -294,6 +295,8 @@ def failure_code(line, previous=None):
                 "resource",
                 "networkReason",
                 "httpStatus",
+                "runtimeStep",
+                "runtimeReason",
             }
             or (
                 "resource" in value
@@ -320,10 +323,29 @@ def failure_code(line, previous=None):
                     or not 100 <= value["httpStatus"] <= 599
                 )
             )
+            or (
+                "runtimeStep" in value
+                and (
+                    value["stage"] not in ("runtime", "dependencies")
+                    or value["runtimeStep"] not in private_uv.STEPS
+                )
+            )
+            or (
+                "runtimeReason" in value
+                and ("runtimeStep" not in value or value["runtimeReason"] not in private_uv.REASONS)
+            )
             or any(
                 type(number) is not int
                 for key, number in value.items()
-                if key not in ("category", "stage", "resource", "networkReason")
+                if key
+                not in (
+                    "category",
+                    "stage",
+                    "resource",
+                    "networkReason",
+                    "runtimeStep",
+                    "runtimeReason",
+                )
             )
         ):
             return None
@@ -355,7 +377,14 @@ def report_failure(error, stage="prepare", data=None, cache=None, home=None, res
         or (isinstance(error, FileNotFoundError) and stage in ("runtime", "dependencies"))
     ):
         category = "runtime"
+    if isinstance(error, private_uv.PreparationError):
+        category = "runtime"
+        number = error.number
     diagnostic = {"category": category, "stage": stage}
+    if isinstance(error, private_uv.PreparationError):
+        diagnostic.update(runtimeStep=error.step, runtimeReason=error.reason)
+        if type(error.exit_code) is int:
+            diagnostic["exitCode"] = error.exit_code
     if stage == "model-download":
         diagnostic["resource"] = (
             resource if type(resource) is str and resource in DOWNLOAD_RESOURCES else "unknown"
@@ -1302,24 +1331,29 @@ def prepare_runtime(home, version, uv, set_stage):
     set_stage("runtime")
     print("正在安装私有 CPython 3.13.16 运行时", flush=True)
     uv("python", "install", PYTHON, "--no-bin")
-    python = Path(
-        uv("python", "find", PYTHON, "--managed-python", "--no-python-downloads", capture=True)
-    ).resolve(strict=True)
+    found = uv("python", "find", PYTHON, "--managed-python", "--no-python-downloads", capture=True)
+    try:
+        python = Path(found).resolve(strict=True)
+    except (OSError, ValueError):
+        raise private_uv.PreparationError("python-find", "output") from None
     if not python.is_relative_to(version):
-        raise ValueError("python-installation-path")
+        raise private_uv.PreparationError("python-find", "integrity")
     venv = version / "runtime/venv"
     uv("venv", venv, "--python", python, "--no-python-downloads")
     executable = venv / "bin/python"
     # uv may still emit its managed-directory alias. Normalize only this
     # unpublished venv's link to the exact interpreter already validated.
-    resolved = executable.resolve(strict=True)
+    try:
+        resolved = executable.resolve(strict=True)
+    except (OSError, ValueError):
+        raise private_uv.PreparationError("venv-create", "output") from None
     if (
         not executable.is_symlink()
         or resolved != python
         or not resolved.is_relative_to(version)
         or not executable.samefile(python)
     ):
-        raise ValueError("python-venv-path")
+        raise private_uv.PreparationError("venv-create", "integrity")
     executable.unlink()
     executable.symlink_to(python)
     set_stage("dependencies")
@@ -1541,21 +1575,7 @@ def install_packages(home, data, cache, request):
             )
 
             def uv(*arguments, capture=False):
-                process = subprocess.Popen(
-                    ["uv", *map(str, arguments), "--no-config"],
-                    env=environment,
-                    stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                try:
-                    output, _ = process.communicate(timeout=1200)
-                    if process.returncode:
-                        raise subprocess.CalledProcessError(process.returncode, "component-setup")
-                    return output.decode().strip() if capture else None
-                finally:
-                    if process.poll() is None:
-                        process.terminate()
-                        process.wait(timeout=5)
+                return private_uv.run(home, environment, *arguments, capture=capture)
 
             def set_stage(value):
                 nonlocal stage
@@ -1873,8 +1893,7 @@ def install(home, data, cache, requested_directions=None, repair=False):
                 process.wait(timeout=5)
 
     def uv(*arguments, capture=False):
-        result = run(["uv", *arguments, "--no-config"], 1200, capture)
-        return result.decode().strip() if capture else None
+        return private_uv.run(home, environment, *arguments, capture=capture)
 
     stage = "prepare"
     resource = "unknown"

@@ -32,5 +32,5 @@ Preconditions: 本次任务允许准备模型，固定模型缓存已按 build.m
 - **正常文件系统是验收路径。** Index 从文件描述符建立临时私有映射，按内核映射中的设备与 inode 核对已加载库，保留准确路径和完整摘要校验。Btrfs 子卷的 `stat` 设备号可能不同于映射设备号，不能据此放弃身份验证。
 - **tmpfs 仅作诊断。** 在外层 `private-session.py` 显式加 `--package-filesystem tmpfs`，脚本才把完整原样主包放到自有可执行 tmpfs。记录本次选项与文件系统。对照成功不满足正常路径验收。`/dev/shm` 可能带 `noexec`，不要硬编码运行路径；空间不足时保留证据并停止。
 - 私有 Python 在最终模型数据目录安装。搬迁已有 `components` 或 venv 会使解释器前缀失效。
-- uv 0.12.13 找不到固定 CPython 的问题已在 build.md 记录。空控件树、模型未就绪和原生字段未接入是三种不同失败。
+- 模型准备使用随包 `support/uv/uv`，系统 PATH 不决定工具版本。检查 `TYPELAY_SETUP_FAILURE` 的 `runtimeStep` 与 `runtimeReason`，区分工具校验、Python 下载、解释器查找、虚拟环境和依赖准备。诊断仅含固定标签与数值，不包含路径或原始 stderr。工具缺失或校验失败时重新取得完整发行包，不能用系统 uv 绕过。空控件树、模型未就绪和原生字段未接入是三种不同失败。
 - 默认缓存只有 Index，不满足 Hy/Argos 全量 UI 旅程。缺少这些权重时，该入口应报告前提失败，不能以默认 CLI 通过代替。
