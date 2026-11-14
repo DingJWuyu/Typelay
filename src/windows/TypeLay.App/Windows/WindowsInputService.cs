@@ -87,7 +87,19 @@ internal sealed class WindowsInputService : IInputService
                     OwnedCapture = descriptor,
                     CaptureDirect = false
                 };
-            var result = await broker.CallAsync(request);
+            // Register before calling the transport: editor admission can seal
+            // new reads, but it must also drain this already-issued observation.
+            var ownedRead = owned ? new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously) : null;
+            if (ownedRead is not null && !practice!.TryTrackOwnedCapture(context, ownedRead.Task))
+                return new(null);
+            BrokerResponse result;
+            bool observed = false;
+            try
+            {
+                result = await broker.CallAsync(request);
+                observed = result.Status == "observed";
+            }
+            finally { ownedRead?.TrySetResult(observed); }
             // A native claim may complete while this read is in flight. Let the
             // controller settle its exact receipt before observing post-write text.
             if (sourceAcceptanceConnected && monitor is not null)

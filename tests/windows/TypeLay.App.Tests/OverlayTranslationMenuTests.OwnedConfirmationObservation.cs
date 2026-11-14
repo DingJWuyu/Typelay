@@ -15,6 +15,12 @@ namespace TypeLay.App.Tests;
 
 public sealed partial class OverlayTranslationMenuTests
 {
+    private enum OwnedCaptureDelay
+    {
+        Slow,
+        Refused,
+        Expired
+    }
     // DEBUG-t12: observes the existing Broker boundary without another read,
     // a new permission, or a change to the production Broker trace. Only the
     // explicit overlap case injects one slow read through DelayNextCapture.
@@ -25,14 +31,18 @@ public sealed partial class OverlayTranslationMenuTests
         private readonly Queue<object> _events = new();
         private int _sequence, _active, _dropped;
         private readonly TaskCompletionSource _delayedCaptureStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _delayedCaptureCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource _editAdmitted = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly CancellationTokenSource _stopping = new();
         private CancellationToken _delayCancellation;
+        private OwnedCaptureDelay _delayMode;
         private int _delayNext, _disposed;
         public Task DelayedCaptureStarted => _delayedCaptureStarted.Task;
-        public void DelayNextCapture(CancellationToken cancellation)
+        public Task DelayedCaptureCompleted => _delayedCaptureCompleted.Task;
+        public void DelayNextCapture(OwnedCaptureDelay mode, CancellationToken cancellation)
         {
             _delayCancellation = cancellation;
+            _delayMode = mode;
             Volatile.Write(ref _delayNext, 1);
         }
         public bool Available => _broker.Available;
@@ -60,18 +70,31 @@ public sealed partial class OverlayTranslationMenuTests
                 });
             }
             BrokerResponse? response = null;
+            bool delayed = false;
             try
             {
                 if (Interlocked.Exchange(ref _delayNext, 0) == 1)
                 {
+                    delayed = true;
                     using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_delayCancellation, _stopping.Token);
                     Mark("injected-read-held");
                     _delayedCaptureStarted.TrySetResult();
                     await _editAdmitted.Task.WaitAsync(cancellation.Token).ConfigureAwait(false);
                     // A controlled slow dependency exposes the edit/read overlap.
                     // This is not a wait for readiness or an extended permission.
-                    await Task.Delay(200, cancellation.Token).ConfigureAwait(false);
+                    await Task.Delay(_delayMode == OwnedCaptureDelay.Expired ? 600 : 200, cancellation.Token).ConfigureAwait(false);
                     Mark("injected-read-released");
+                    if (_delayMode == OwnedCaptureDelay.Refused)
+                    {
+                        var original = request.OwnedCapture ?? throw new InvalidOperationException("owned-capture-descriptor-missing");
+                        request = request with
+                        {
+                            OwnedCapture = original with
+                            {
+                                NativeFocusRevision = original.NativeFocusRevision + 1
+                            }
+                        };
+                    }
                 }
                 response = await _broker.CallAsync(request, timeout).ConfigureAwait(false);
                 return response;
@@ -94,6 +117,8 @@ public sealed partial class OverlayTranslationMenuTests
                         observedAtMs = response?.Snapshot?.ObservedAtMs
                     });
                 }
+                if (delayed)
+                    _delayedCaptureCompleted.TrySetResult();
             }
         }
         public void Mark(string stage)

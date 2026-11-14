@@ -28,7 +28,13 @@ public sealed partial class OverlayTranslationMenuTests
 
     [Fact]
     public Task AnOwnedDraftReturnsAfterAReadThatOverlappedEditorAdmission() =>
-        OwnedKeepCase(false, delayOwnedCapture: true);
+        OwnedKeepCase(false, pendingCapture: OwnedCaptureDelay.Slow);
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task AnUnsuccessfulPendingReadCannotActivateTheOwnedEditor(bool expires) =>
+        OwnedKeepCase(false, pendingCapture: expires ? OwnedCaptureDelay.Expired : OwnedCaptureDelay.Refused);
 
     [Fact]
     public Task ClickingOwnedKeepPreservesTheSameEditorDraftSelectionAndUndo() => OwnedKeepCase(false, keepClick: true);
@@ -64,7 +70,7 @@ public sealed partial class OverlayTranslationMenuTests
 
     private Task OwnedKeepCase(bool expandedNarrow, string? returnChange = null, bool promptTab = false,
         string? replaceAction = null, string? replaceRefusal = null, bool emptyDraft = false, bool keepClick = false,
-        bool delayOwnedCapture = false) => desktop.RunAsync(async () =>
+        OwnedCaptureDelay? pendingCapture = null) => desktop.RunAsync(async () =>
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(25));
@@ -83,6 +89,7 @@ public sealed partial class OverlayTranslationMenuTests
         string? previousTrace = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
         string tracePath = Path.Combine(directory, "owned-key-trace.jsonl");
         Action? finishKeyboardObservation = null;
+        Action? finishReadFailureObservation = null;
         Exception? failure = null;
         var cleanupErrors = new List<Exception>();
         nint root = 0;
@@ -193,11 +200,19 @@ public sealed partial class OverlayTranslationMenuTests
 
             traceOffset = OwnedTraceOffset(tracePath); // Before this original editor click, never after its admission.
             brokerTraceOffset = OwnedTraceOffset(tracePath + ".broker.jsonl");
-            if (delayOwnedCapture)
+            int editorFocusEntries = 0, callsBeforeAdmission = model.Calls;
+            bool readMustRefuse = pendingCapture is OwnedCaptureDelay.Refused or OwnedCaptureDelay.Expired;
+            if (readMustRefuse)
+            {
+                KeyboardFocusChangedEventHandler observeEditorFocus = (_, _) => editorFocusEntries++;
+                editor.GotKeyboardFocus += observeEditorFocus;
+                finishReadFailureObservation = () => editor.GotKeyboardFocus -= observeEditorFocus;
+            }
+            if (pendingCapture is { } delay)
             {
                 // Hold one naturally scheduled read, not an extra preparatory capture.
                 // Its injected latency consumes the original scenario and edit deadlines.
-                observedBroker.DelayNextCapture(deadline.Token);
+                observedBroker.DelayNextCapture(delay, deadline.Token);
                 await observedBroker.DelayedCaptureStarted.WaitAsync(deadline.Token);
             }
             using (var action = ActionDeadline())
@@ -207,6 +222,24 @@ public sealed partial class OverlayTranslationMenuTests
                     Assert.Equal(before, host.CaptureDescriptor);
                     Assert.Equal(initialToken, controller.GetStyleSettingsState().Session);
                 }, action.Token);
+            if (readMustRefuse)
+            {
+                await Until(() => controller.GetStyleSettingsState().Session is null && !overlay.IsVisible);
+                await observedBroker.DelayedCaptureCompleted.WaitAsync(deadline.Token);
+                // Give the completed read's UI continuation its normal turn before
+                // checking that the retired admission cannot activate late.
+                await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+                Assert.Null(controller.GetStyleSettingsState().Session);
+                Assert.False(overlay.IsVisible);
+                Assert.Equal(0, editorFocusEntries);
+                Assert.False(host.EditorHandoffComplete(initialToken.Target));
+                Assert.Null(host.CaptureDescriptor);
+                Assert.Equal((root, field), N.Focused());
+                Assert.Equal(sourceText, N.ReadText(field, Limits.MaxTextUnits));
+                Assert.Equal(sourceSelection, N.ReadSelection(field));
+                Assert.Equal(callsBeforeAdmission, model.Calls);
+                return;
+            }
             await Until(() => host.EditorHandoffComplete(initialToken.Target) && editor.IsKeyboardFocused && !editor.IsReadOnly);
             Assert.Equal(overlay.Handle, Native.GetForegroundWindow());
             Assert.Null(host.CaptureDescriptor); // The owned reader remains sealed while editing.
@@ -451,6 +484,7 @@ public sealed partial class OverlayTranslationMenuTests
             try
             {
                 finishKeyboardObservation?.Invoke();
+                finishReadFailureObservation?.Invoke();
             }
             catch (Exception error) when (error is not OutOfMemoryException) { }
             try
