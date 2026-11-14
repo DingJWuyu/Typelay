@@ -3122,6 +3122,7 @@ if __name__ == "__main__":
             "browser",
             "browser-index",
             "gtk",
+            "gtk-index",
             "gtk4",
             "qt",
             "setup",
@@ -3143,6 +3144,9 @@ if __name__ == "__main__":
         "--gtk-session-bindings",
         action="store_true",
         help="exercise configured F1/F24, held editor return and rebinding on real GTK controls",
+    )
+    parser.add_argument(
+        "--model-cache", type=Path, help="official Index download cache for gtk-index"
     )
     parser.add_argument("--package", type=Path)
     parser.add_argument("--index-cache", type=Path)
@@ -3198,7 +3202,11 @@ if __name__ == "__main__":
         )
     if args.index_cache:
         args.index_cache = args.index_cache.resolve(strict=True)
-    if args.desktop_scope in ("gtk", "gtk4") and not args.fcitx_cooperative:
+    if args.desktop_scope == "gtk-index" and (
+        not args.desktop or not args.inside or not args.model_cache
+    ):
+        parser.error("gtk-index requires --inside and --model-cache in verify-typelay")
+    if args.desktop_scope in ("gtk", "gtk-index", "gtk4") and not args.fcitx_cooperative:
         parser.error("GTK desktop scopes require --fcitx-cooperative")
     if args.desktop_scope == "qt" and (not args.fcitx_cooperative or not args.qt_cooperative):
         parser.error("Qt research requires --fcitx-cooperative and --qt-cooperative")
@@ -3220,6 +3228,8 @@ if __name__ == "__main__":
                     from hy_package_e2e import run
                 elif args.desktop_scope == "browser-index":
                     from browser_index_journey import run
+                elif args.desktop_scope == "gtk-index":
+                    from gtk_index_e2e import run
                 else:
                     from desktop_e2e import run
 
