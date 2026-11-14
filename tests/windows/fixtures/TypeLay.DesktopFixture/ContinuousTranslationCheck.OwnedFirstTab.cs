@@ -326,7 +326,12 @@ internal static partial class ContinuousTranslationCheck
                 if (scene.Stage == "not-started")
                 {
                     scene.Stage = "dependency-unavailable";
-                    scene.Facts = new { dependency, reason = preceding.Failure, outcome = preceding.Outcome };
+                    scene.Facts = new
+                    {
+                        dependency,
+                        reason = preceding.Failure,
+                        outcome = preceding.Outcome
+                    };
                 }
             }
             var cleanupResult = activeResult;

@@ -137,6 +137,10 @@ dotnet "$fixture/TypeLay.DesktopFixture.dll" --verify-ordinary-notepad artifacts
 
 只有这两类明确的发键前边界，才允许继续独立按需场景。继续前只读重核原预算、App/worker、原源身份、正文和精确焦点，不补焦点或改文。随后一次 F9、Esc、一次 F10、Undo 成功后才检查普通退出；自动接受的未验范围仍保留，整体不会变成通过。
 
+`result.json` 的 `requiredOutcome` 单独表示当前自动化必过范围：应用前置、设置与模型、自动预览、按需取消及 Direct/原生 Undo、正常退出。五项全部通过，且另外两项仅因 `trusted-source-input-required` 及其编辑回源依赖而未执行时，`requiredOutcome` 为 `passed`，CLI 返回 0。此时整套 `outcome` 仍为 `not-run`，两个未执行分支的原状态和事实仍保留，物理输入验收由 [Issue #21](https://github.com/DingJWuyu/Typelay/issues/21) 承接。
+
+公开能力拒绝、未知原因、任一真实失败、必要场景缺失或未运行、超时、取消及清理失败，均使 `requiredOutcome` 为 `failed`，CLI 返回 1。CI 必需报告读取这个退出码；它表示上述必过范围通过，不表示普通源的可信自动接受或编辑回源已经验证。
+
 Esc 后先确认撤权后的新观察与公开 Direct 就绪，再发送唯一 Direct。trace 只用于排除页面缓存的旧 ready，不授写权。拒绝立即记录为原命令失败，不补发、不续时。
 
 业务共用 520 秒，另保留 20 秒清理，外部 owner 最多 585 秒。`result.json` 记录逐阶段结果与系统应用身份，`consumer-exit.json` 单独证明进程族退出。只有全部自有 owner 都确认退出，才删除自有数据；root 退出或空 cleanupErrors 不足以授权删除。当前 CI 编排和跨消费者退出门以 [check.yml](../../../.github/workflows/check.yml)为准。
