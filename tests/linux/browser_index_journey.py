@@ -6,7 +6,7 @@ import os
 import shutil
 import subprocess
 import time
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from desktop_e2e import acceptance_observation_current
@@ -121,6 +121,28 @@ def run(arguments):
             row["operation"] == "write-Verified-None" for row in outcomes
         ), outcomes
         return bool(outcomes)
+
+    @contextmanager
+    def general_settings():
+        assert control(paths, "settings") is True
+        settings_window = wait(
+            lambda: next(
+                (
+                    item
+                    for item in contents(request("Windows"), "Windows")
+                    if item.get("pid") == process.pid and item.get("title") == "TypeLay 设置"
+                ),
+                None,
+            ),
+            "owned settings window did not map",
+        )
+        request({"Action": {"FocusWindow": {"id": settings_window["id"]}}})
+        select_settings_page(process.pid, "通用")
+        try:
+            yield
+        finally:
+            request({"Action": {"CloseWindow": {"id": settings_window["id"]}}})
+            request({"Action": {"FocusWindow": {"id": window["id"]}}})
 
     try:
         identity = json.loads((arguments.package / "build-info.json").read_text())
@@ -335,36 +357,21 @@ def run(arguments):
 
             if native_undo:
                 stage = "native-undo"
-                assert control(paths, "settings") is True
-                settings_window = wait(
-                    lambda: next(
-                        (
-                            item
-                            for item in contents(request("Windows"), "Windows")
-                            if item.get("pid") == process.pid
-                            and item.get("title") == "TypeLay 设置"
-                        ),
-                        None,
-                    ),
-                    "owned settings window did not map",
-                )
-                request({"Action": {"FocusWindow": {"id": settings_window["id"]}}})
-                select_settings_page(process.pid, "通用")
-                switch = wait(
-                    lambda: named(process.pid, "设置：原生输入框替换"),
-                    "experimental writeback control missing",
-                )
-                assert json.loads(paths.settings.read_text())["ExperimentalWriteback"] is False
-                assert Atspi.Action.do_action(switch.get_action_iface(), 0)
-                actions.append({"action": "enable 原生输入框替换 through settings UI"})
-                wait(
-                    lambda: json.loads(paths.settings.read_text())["ExperimentalWriteback"] is True,
-                    "experimental writeback setting did not save",
-                )
-                save("settings-saved.json", json.loads(paths.settings.read_text()))
-                command("grim", output / "settings-writeback.png")
-                request({"Action": {"CloseWindow": {"id": settings_window["id"]}}})
-                request({"Action": {"FocusWindow": {"id": window["id"]}}})
+                with general_settings():
+                    switch = wait(
+                        lambda: named(process.pid, "设置：原生输入框替换"),
+                        "experimental writeback control missing",
+                    )
+                    assert json.loads(paths.settings.read_text())["ExperimentalWriteback"] is False
+                    assert Atspi.Action.do_action(switch.get_action_iface(), 0)
+                    actions.append({"action": "enable 原生输入框替换 through settings UI"})
+                    wait(
+                        lambda: json.loads(paths.settings.read_text())["ExperimentalWriteback"]
+                        is True,
+                        "experimental writeback setting did not save",
+                    )
+                    save("settings-saved.json", json.loads(paths.settings.read_text()))
+                    command("grim", output / "settings-writeback.png")
                 page.evaluate("""() => {
                   const mount=document.createElement('div'); mount.id='mount';
                   mount.style.cssText='margin:24px;width:600px;padding:16px;border:1px solid #aaa';
@@ -566,31 +573,16 @@ def run(arguments):
             stages[stage] = "passed"
 
             stage = "direct"
-            assert control(paths, "settings") is True
-            settings_window = wait(
-                lambda: next(
-                    (
-                        item
-                        for item in contents(request("Windows"), "Windows")
-                        if item.get("pid") == process.pid and item.get("title") == "TypeLay 设置"
-                    ),
-                    None,
-                ),
-                "owned settings window did not map",
-            )
-            request({"Action": {"FocusWindow": {"id": settings_window["id"]}}})
-            select_settings_page(process.pid, "通用")
-            mode = wait(
-                lambda: named(process.pid, "设置：工作模式：按需"), "OnDemand control missing"
-            )
-            assert Atspi.Action.do_action(mode.get_action_iface(), 0)
-            wait(
-                lambda: json.loads(paths.settings.read_text())["Mode"] == 1,
-                "OnDemand setting did not save",
-            )
-            save("settings-saved.json", json.loads(paths.settings.read_text()))
-            request({"Action": {"CloseWindow": {"id": settings_window["id"]}}})
-            request({"Action": {"FocusWindow": {"id": window["id"]}}})
+            with general_settings():
+                mode = wait(
+                    lambda: named(process.pid, "设置：工作模式：按需"), "OnDemand control missing"
+                )
+                assert Atspi.Action.do_action(mode.get_action_iface(), 0)
+                wait(
+                    lambda: json.loads(paths.settings.read_text())["Mode"] == 1,
+                    "OnDemand setting did not save",
+                )
+                save("settings-saved.json", json.loads(paths.settings.read_text()))
             insert("Keep field B unchanged. 🙂", "other")
             insert(DIRECT)
             wait(
