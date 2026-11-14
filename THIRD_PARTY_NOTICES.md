@@ -12,7 +12,7 @@ Linux 自包含发行包包含 .NET 运行时和共享 Python worker 源码；�
 
 ## Linux 私有 uv
 
-Linux 发行包在 `support/uv/` 携带 [Astral uv 0.13.8](https://github.com/astral-sh/uv/releases/tag/0.13.8)。来源提交为 `3d97a6aad5ad989c1b4fc89406d54f0dce370b72`。官方 Linux x86_64 GNU 归档的 SHA-256 为 `5acfd9177cfecf0bf87578f059728215ccc884388988f55f7a65041b57387d91`；精确文件摘要和来源保存在随包 `source.json`，由安装器的固定声明复验。产品只分发和调用 `uv`，不分发 `uvx`，不修改用户已安装的工具或 shell 配置。
+Linux 发行包在 `support/uv/` 携带 [Astral uv 0.13.6](https://github.com/astral-sh/uv/releases/tag/0.13.6)。官方 Linux x86_64 GNU 归档的 SHA-256 为 `f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645`；精确文件摘要和来源保存在随包 `source.json`，由安装器的固定声明复验。产品只分发和调用 `uv`，不分发 `uvx`，不修改用户已安装的工具或 shell 配置。
 
 uv 采用 MIT 或 Apache-2.0 双重许可。两份上游许可原文均原样保留在 `support/uv/LICENSE-MIT` 与 `support/uv/LICENSE-APACHE`。本声明不替代上游原文。Windows 的私有运行时准备不使用 uv。
 

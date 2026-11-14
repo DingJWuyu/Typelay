@@ -9,15 +9,14 @@ from pathlib import Path
 
 PIN = {
     "schema": 1,
-    "version": "0.13.8",
-    "commit": "3d97a6aad5ad989c1b4fc89406d54f0dce370b72",
-    "url": "https://github.com/astral-sh/uv/releases/download/0.13.8/uv-x86_64-unknown-linux-gnu.tar.gz",
-    "bytes": 16855069,
-    "sha256": "5acfd9177cfecf0bf87578f059728215ccc884388988f55f7a65041b57387d91",
+    "version": "0.13.6",
+    "url": "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-unknown-linux-gnu.tar.gz",
+    "bytes": 16799024,
+    "sha256": "f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645",
     "files": {
         "uv": {
-            "bytes": 37991656,
-            "sha256": "4a7607589912d9c20e86b860b032f7c7f2913c9a3e76f46aef136885387452b8",
+            "bytes": 37784096,
+            "sha256": "23803452c0fbe125033054cd9ff245f1d649fb65b4b73f68429f4abda432436d",
         },
         "LICENSE-MIT": {
             "bytes": 1077,

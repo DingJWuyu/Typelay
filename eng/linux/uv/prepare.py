@@ -23,7 +23,7 @@ def prepare(cache, output, *, offline=False):
     if output.exists():
         raise ValueError("private-uv-output-exists")
     cache.mkdir(parents=True, exist_ok=True)
-    archive = cache / "uv-0.13.8-x86_64-unknown-linux-gnu.tar.gz"
+    archive = cache / "uv-0.13.6-x86_64-unknown-linux-gnu.tar.gz"
     if not archive.exists() and not archive.is_symlink():
         if offline:
             raise FileNotFoundError("private-uv-offline-cache-missing")

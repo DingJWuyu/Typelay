@@ -279,7 +279,7 @@ class PrivateUvPackagingTests(unittest.TestCase):
                 base = Path(directory)
                 cache = base / "cache"
                 cache.mkdir()
-                archive = cache / "uv-0.13.8-x86_64-unknown-linux-gnu.tar.gz"
+                archive = cache / "uv-0.13.6-x86_64-unknown-linux-gnu.tar.gz"
                 payload = b"controlled executable bytes"
                 with tarfile.open(archive, "w:gz") as bundle:
                     entry = tarfile.TarInfo(
@@ -324,7 +324,7 @@ class PrivateUvPackagingTests(unittest.TestCase):
             base = Path(directory)
             cache = base / "cache"
             cache.mkdir()
-            archive = cache / "uv-0.13.8-x86_64-unknown-linux-gnu.tar.gz"
+            archive = cache / "uv-0.13.6-x86_64-unknown-linux-gnu.tar.gz"
             payload = b"controlled executable bytes"
             with tarfile.open(archive, "w:gz") as bundle:
                 entry = tarfile.TarInfo("uv-x86_64-unknown-linux-gnu/uv")
