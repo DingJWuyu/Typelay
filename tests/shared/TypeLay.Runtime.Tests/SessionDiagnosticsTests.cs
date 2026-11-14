@@ -21,7 +21,10 @@ public sealed class SessionDiagnosticsTests
         WithTrace(path =>
         {
             using var s = new SessionScenario();
-            s.Source = s.Source with { Text = "private-source-content" };
+            s.Source = s.Source with
+            {
+                Text = "private-source-content"
+            };
             s.Tick();
             s.Tick(Limits.DebounceMs);
             s.Model.Pending!.SetResult(new(1, status, "private-result-content", Code: code));

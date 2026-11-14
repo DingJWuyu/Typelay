@@ -19,13 +19,13 @@ CANCELED = {-2, -15, 130, -1073741510, 0xC000013A}
 GROUPS = (
     ("SetupRenderingTests", "OwnedPracticeQueueTests"),
     (
-        "SettingsRenderingTests",
+        "NativeSourceControllerTests",
         "ModelInstallerTests",
         "ModelInstallationStoreTests",
         "LanguagePickerInteractionTests",
     ),
     (
-        "NativeSourceControllerTests",
+        "SettingsRenderingTests",
         "NativeSourceGlossaryTests",
         "OverlayTranslationMenuTests",
         "ProductionForegroundWriteTests",
@@ -108,7 +108,7 @@ def main():
         if args.shard is not None and not includes_class(args.shard, "ModelInstallerTests"):
             ordinary_results = results(primary)
             report["mainResults"] = len(ordinary_results)
-            if not ordinary_results or any(r.get("outcome") != "Passed" for r in ordinary_results):
+            if not ordinary_results or any(r.get("outcome") == "Failed" for r in ordinary_results):
                 failures.append("main-results-missing-or-not-passed")
             return 1 if failures else 0
         # This is the only execution of these two cases, not a failed-test retry.

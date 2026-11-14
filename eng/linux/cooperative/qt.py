@@ -25,11 +25,50 @@ from eng.linux.cooperative.inputs import (  # noqa: E402
     QT_PIN,
     QT_SHA256,
     QT_SOURCE_VERSION,
+    QT_VERSION,
     hashes,
     sha256,
 )
 
 ABI = ROOT / "src/linux/native/fcitx5/typelay-fcitx-qt-v1.h"
+
+
+def verify_build(out):
+    """Verify reusable production bytes against current sources and the pinned ABI."""
+    versions = json.loads((out / "versions.json").read_text())
+    if (
+        versions.get("build_inputs") != hashes(QT_BUILD_INPUTS)
+        or versions.get("qt_build_version") != QT_VERSION
+        or versions.get("fcitx5_qt_source_version") != QT_SOURCE_VERSION
+        or versions.get("source_commit") != QT_PIN
+        or versions.get("source_sha256") != QT_SHA256
+        or sha256(out / "fcitx5-qt.tar.gz") != QT_SHA256
+    ):
+        raise ValueError("Qt production build inputs or pinned source differ")
+    names = {
+        "plugins/platforminputcontexts/libfcitx5platforminputcontextplugin.so",
+        "native/qt6/generic/libtypelay-qt6.so",
+        "qt-runtime-probe",
+    }
+    recorded = versions.get("binary_sha256", {})
+    if set(recorded) != names or any(sha256(out / name) != recorded[name] for name in names):
+        raise ValueError("Qt production binaries changed after their build")
+    source = out / f"fcitx5-qt-{QT_PIN}"
+    if sha256(source / "common" / ABI.name) != sha256(ABI):
+        raise ValueError("Qt source ABI differs from this checkout")
+    run(
+        [
+            "patch",
+            "--dry-run",
+            "--reverse",
+            "--force",
+            "--fuzz=0",
+            "-p1",
+            "-i",
+            PATCHES / "fcitx5-qt.patch",
+        ],
+        cwd=source,
+    )
 
 
 def run(args, **kwargs):

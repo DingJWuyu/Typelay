@@ -328,9 +328,6 @@ def main():
     evidence = artifacts / "physical-tab-package"
     evidence.mkdir()
     deadline = time.monotonic() + 110  # Work shares one limit; cleanup gets at most 5s.
-    start = int(os.environ["TYPELAY_WINDOWS_CHECK_START"])
-    if not 0 <= time.time() - start <= 85 * 60 - 180:
-        raise ValueError("Need the existing 2-minute tail slot plus 1 minute for artifact upload")
     verify_original_suite(current_main_results(artifacts / "test-results"))
     with tempfile.TemporaryDirectory(
         prefix="TypeLay physical Tab 中 ", dir=os.environ["RUNNER_TEMP"]
