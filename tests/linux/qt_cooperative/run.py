@@ -398,7 +398,7 @@ def stock_sync(out, env, children):
     return result
 
 
-def language_options(native, captured, generation, state, window, environment, native_log):
+def language_options(native, captured, generation, state, window, environment, native_log, fixture):
     """Drive actual native menu buttons; this is view rendering, never model inventory."""
     from wire import now_ms
 
@@ -888,6 +888,10 @@ def language_options(native, captured, generation, state, window, environment, n
         view["presentation"]["tabHint"] = "Ctrl+F7 交还应用"
         baseline = render()
         assert baseline["animationDuration"] > 0
+        fixture("observe-motion")
+        armed = state()
+        assert armed["motionArmed"] == baseline["motionArmed"] + 1
+        assert armed["motionArmedCurrent"]
         checkpoint = native_log.stat().st_size
         click("typelay-expand")
 
@@ -917,14 +921,51 @@ def language_options(native, captured, generation, state, window, environment, n
             assert "phase=layout-stop " not in trace
         else:
             trace = motion_trace()
-            assert "phase=layout-stop " in trace, (change, trace)
+            assert "continuation=0" in trace, (change, trace)
             assert "phase=settled " not in trace, (change, trace)
+        recorded = wait(
+            lambda: value
+            if (value := state())["motionRecordings"] == baseline["motionRecordings"] + 1
+            else None,
+            "original 800ms native frame observation completes",
+        )
+        inputs = recorded["motionInputs"]
+        assert [item["event"] for item in inputs] == ["mouse-press", "mouse-release", "clicked"]
+        assert all(item["instance"] == armed["motionArmedInstance"] for item in inputs)
+        frames = recorded["motionFrames"]
+        after_update = [
+            frame for frame in frames if frame["ms"] >= updated["observedAtMs"] - inputs[-1]["atMs"]
+        ]
+        assert after_update and after_update[-1]["ms"] >= 800
+        if change == "acceptance-display":
+            heights = [frame["editor"]["height"] for frame in frames]
+            assert heights[-1] == 360 and len(set(heights)) > 3, heights
+        else:
+            assert all(
+                frame["editor"] == updated["editorGeometry"]
+                and frame["overlay"] == updated["overlayGeometry"]
+                for frame in after_update
+            ), (change, after_update)
+            assert (
+                updated["editorGeometry"]["height"]
+                == {
+                    "interaction": 167,
+                    "text": 360,
+                    "layout": 178,
+                }[change]
+            )
+            if change == "layout":
+                assert updated["editorFontPixels"] == 16
+        assert all(
+            frame["visible"] and frame["sourceFocused"] and frame["text"] == view["text"]
+            for frame in after_update
+        )
         assert updated["editorReadOnly"] and not updated["editorFocused"]
         for field in ("first", "second"):
             assert updated[field] == baseline[field], (change, field)
         native.call("describe")
         assert not [item for item in native.events if item.get("event") == "accepted"]
-        motion_evidence[change] = trace.splitlines()
+        motion_evidence[change] = {"trace": trace.splitlines(), "frames": frames, "inputs": inputs}
     native_log.with_name("language-options-motion.json").write_text(
         json.dumps(motion_evidence, indent=2) + "\n"
     )
@@ -2169,7 +2210,14 @@ def ordered_controls(
                 )
                 assert captured and captured["ime"] == "Clear"
                 result = language_options(
-                    native, captured, generation, state, window, environment, Path(log.name)
+                    native,
+                    captured,
+                    generation,
+                    state,
+                    window,
+                    environment,
+                    Path(log.name),
+                    fixture,
                 )
                 result["configuration"] = language_configuration(
                     native, generation, state, window, environment, fixture, out

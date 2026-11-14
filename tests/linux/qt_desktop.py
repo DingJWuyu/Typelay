@@ -34,11 +34,15 @@ def observe_qt_processes(fixture, daemon, observe):
     return value
 
 
-def displayed_wake_candidate(value, source, ready):
+def displayed_wake_candidate(value, source, ready, *, after_ms, source_basis):
     """Observe a rendered source candidate; host readiness alone is not a frame."""
     field = value.get("first", {})
     if not (
-        field.get("text") == source
+        type(value.get("observedAtMs")) is int
+        and value["observedAtMs"] > after_ms
+        and field == source_basis["first"]
+        and value.get("focusTransitions") == source_basis["focusTransitions"]
+        and field.get("text") == source
         and field.get("focused")
         and field.get("selectionStart") == -1
         and field.get("selectionLength") == 0
@@ -599,11 +603,28 @@ def run_qt(
                     captures = (
                         status().get("input", {}).get("captureCounts", {}).get("supported", 0)
                     )
-                    wait_for(
-                        lambda: not status().get("overlayVisible")
-                        and status().get("input", {}).get("captureStatus") == "supported"
-                        and status().get("input", {}).get("captureCounts", {}).get("supported", 0)
-                        > captures,
+                    observed_after = now_ms()
+
+                    def dormant_frame():
+                        data = status()
+                        value = state()
+                        return (
+                            value
+                            if not data.get("overlayVisible")
+                            and data.get("input", {}).get("captureStatus") == "supported"
+                            and data.get("input", {}).get("captureCounts", {}).get("supported", 0)
+                            > captures
+                            and value.get("observedAtMs", 0) > observed_after
+                            and value.get("first", {}).get("text") == text
+                            and value["first"]["focused"]
+                            and not value.get("overlayVisible")
+                            and not value.get("editorVisible")
+                            and settled(value)
+                            else None
+                        )
+
+                    return wait_for(
+                        dormant_frame,
                         "OnDemand source did not remain dormant with a fresh supported capture",
                     )
 
@@ -2161,20 +2182,71 @@ def run_qt(
                     assert not new_write_outcomes(provider_trace)
 
                 set_mode(1, session_keys=("F12", "F1"))
-                dormant_source(function_source)
+                dormant = dormant_source(function_source)
+                wake_started = now_ms()
                 key("ctrl+shift+F9")
                 acceptance_timing = {"readyWaitStartedAtMs": now_ms()}
-                acceptance = wait_for(
-                    ready_to_accept, "mode switch lost the configured source acceptance route"
+                first_ready_at = None
+                acceptance = None
+
+                def configured_candidate():
+                    nonlocal first_ready_at, acceptance
+                    acceptance = ready_to_accept()
+                    if not acceptance:
+                        return None
+                    if first_ready_at is None:
+                        first_ready_at = now_ms()
+                    publications = acceptance.get("input", {}).get("nativePublications", [])
+                    if not publications or publications[-1]["receivedAtMs"] < wake_started:
+                        return None
+                    return displayed_wake_candidate(
+                        state(),
+                        function_source,
+                        lambda: acceptance,
+                        after_ms=first_ready_at,
+                        source_basis=dormant,
+                    )
+
+                function_frame = wait_for(
+                    configured_candidate,
+                    "mode switch did not render this source's fresh ready candidate",
                 )
+                function_candidate = function_frame["editorText"]
+                publication = acceptance["input"]["nativePublications"][-1]
                 acceptance_timing.update(
+                    dormantFrame={
+                        name: dormant[name]
+                        for name in (
+                            "observedAtMs",
+                            "first",
+                            "focusTransitions",
+                            "editorVisible",
+                            "overlayVisible",
+                        )
+                    },
+                    wakeStartedAtMs=wake_started,
+                    firstReadyObservedAtMs=first_ready_at,
                     readyObservedAtMs=now_ms(),
                     statusElapsedMs=acceptance.get("statusElapsedMs"),
                     acceptanceRemainingMs=acceptance.get("acceptanceRemainingMs"),
                     acceptanceHintRemainingMs=acceptance.get("acceptanceHintRemainingMs"),
+                    publication=publication,
+                    candidateFrame={
+                        name: function_frame[name]
+                        for name in (
+                            "observedAtMs",
+                            "first",
+                            "focusTransitions",
+                            "editorText",
+                            "editorInstance",
+                            "editorDocument",
+                            "editorDocumentRevision",
+                            "editorReadOnly",
+                            "editorVisible",
+                            "overlayVisible",
+                        )
+                    },
                 )
-                function_candidate = state()["editorText"]
-                acceptance_timing["candidateObservedAtMs"] = now_ms()
                 before_write = trace_checkpoint()
                 acceptance_timing["traceCheckpointAtMs"] = now_ms()
                 try:
@@ -2187,6 +2259,14 @@ def run_qt(
                         and verified_write(before_write),
                         "configured F12 did not accept the on-demand candidate",
                     )
+                    with (arguments.output / "controller.jsonl").open("rb") as trace:
+                        trace.seek(before_write)
+                        records = [
+                            json.loads(line) for line in trace.readlines() if line.endswith(b"\n")
+                        ]
+                    verified = [row for row in records if row["operation"] == "write-Verified-None"]
+                    assert len(verified) == 1 and verified[0]["planId"] == publication["planId"]
+                    acceptance_timing["verified"] = verified[0]
                 finally:
                     acceptance_timing["finishedAtMs"] = now_ms()
                     try:
@@ -2360,10 +2440,16 @@ def run_qt(
                     state()["applicationColorScheme"]
                     == initial_application["applicationColorScheme"]
                 )
-                dormant_source(wake_source)
+                dormant = dormant_source(wake_source)
                 key("ctrl+shift+F9")
                 wake_frame = wait_for(
-                    lambda: displayed_wake_candidate(state(), wake_source, ready_to_accept),
+                    lambda: displayed_wake_candidate(
+                        state(),
+                        wake_source,
+                        ready_to_accept,
+                        after_ms=dormant["observedAtMs"],
+                        source_basis=dormant,
+                    ),
                     "real Qt wake shortcut did not display its ready CPU model candidate",
                 )
                 wake_candidate = wake_frame["editorText"]

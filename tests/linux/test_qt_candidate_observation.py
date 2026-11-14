@@ -344,14 +344,27 @@ class SourceGlossaryCaptureBasisTests(unittest.TestCase):
 
 
 class WakeCandidateObservationTests(unittest.TestCase):
+    def observe(self, frame, ready):
+        return displayed_wake_candidate(
+            frame,
+            "Send this.",
+            ready,
+            after_ms=100,
+            source_basis=self.frame(""),
+        )
+
     def frame(self, candidate):
         return {
+            "observedAtMs": 101,
+            "focusTransitions": 3,
             "first": {
                 "text": "Send this.",
                 "focused": True,
                 "selectionStart": -1,
                 "selectionLength": 0,
                 "cursor": 10,
+                "changes": 12,
+                "edits": 12,
             },
             "overlayVisible": True,
             "editorVisible": True,
@@ -365,9 +378,9 @@ class WakeCandidateObservationTests(unittest.TestCase):
     def test_ready_host_does_not_make_an_old_empty_frame_a_candidate(self):
         ready = Mock(return_value=True)
         frames = [self.frame(""), self.frame("发送这个。")]
-        self.assertIsNone(displayed_wake_candidate(frames[0], "Send this.", ready))
+        self.assertIsNone(self.observe(frames[0], ready))
         ready.assert_not_called()
-        self.assertIs(displayed_wake_candidate(frames[1], "Send this.", ready), frames[1])
+        self.assertIs(self.observe(frames[1], ready), frames[1])
         ready.assert_called_once_with()
 
     def test_observation_does_not_select_a_language_or_wait_internally(self):
@@ -375,9 +388,9 @@ class WakeCandidateObservationTests(unittest.TestCase):
         # Wrong-language nonempty output must reach the caller's original
         # language assertion, not be filtered until a preferred answer appears.
         frame = self.frame("wrong language")
-        self.assertIs(displayed_wake_candidate(frame, "Send this.", ready), frame)
+        self.assertIs(self.observe(frame, ready), frame)
         for _ in range(3):
-            self.assertIsNone(displayed_wake_candidate(self.frame(""), "Send this.", ready))
+            self.assertIsNone(self.observe(self.frame(""), ready))
         ready.assert_called_once_with()
 
     def test_source_selection_focus_visibility_and_current_readiness_remain_required(self):
@@ -387,6 +400,12 @@ class WakeCandidateObservationTests(unittest.TestCase):
             ("first", "selectionStart", 0),
             ("first", "selectionLength", 1),
             ("first", "cursor", 9),
+            ("first", "changes", 14),
+            ("first", "edits", 14),
+            (None, "observedAtMs", 99),
+            (None, "observedAtMs", 100),
+            (None, "observedAtMs", None),
+            (None, "focusTransitions", 5),
             (None, "editorVisible", False),
             (None, "overlayVisible", False),
             (None, "editorReadOnly", False),
@@ -397,10 +416,8 @@ class WakeCandidateObservationTests(unittest.TestCase):
             with self.subTest(key=key):
                 frame = copy.deepcopy(self.frame("发送这个。"))
                 (frame[section] if section else frame)[key] = value
-                self.assertIsNone(displayed_wake_candidate(frame, "Send this.", lambda: True))
-        self.assertIsNone(
-            displayed_wake_candidate(self.frame("发送这个。"), "Send this.", lambda: False)
-        )
+                self.assertIsNone(self.observe(frame, lambda: True))
+        self.assertIsNone(self.observe(self.frame("发送这个。"), lambda: False))
 
 
 if __name__ == "__main__":
