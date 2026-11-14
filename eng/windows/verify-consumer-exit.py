@@ -2,6 +2,8 @@
 
 The default scope requires all three consumers before Hy. The fixed
 before-notepad scope requires continuous and browser before Notepad starts.
+An isolated Hy job has only its own continuous fixture as a prior consumer;
+continuous-only still requires that exact invocation's kernel exit proof.
 
 The workflow caller must supply run/attempt/head from the current
 Actions context and each nonce from that invocation's GITHUB_OUTPUT, NOT from
@@ -85,24 +87,32 @@ def valid_report(path, mode, nonce, args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scope", choices=("all", "before-notepad"), default="all")
+    parser.add_argument(
+        "--scope", choices=("all", "before-notepad", "continuous-only"), default="all"
+    )
     for name in (
         "continuous-proof",
-        "browser-proof",
         "continuous-nonce",
-        "browser-nonce",
         "run-id",
         "run-attempt",
         "head",
         "workflow-cancelled",
     ):
         parser.add_argument("--" + name, required=True)
+    parser.add_argument("--browser-proof")
+    parser.add_argument("--browser-nonce")
     parser.add_argument("--notepad-proof")
     parser.add_argument("--notepad-nonce")
     args = parser.parse_args()
+    if args.scope != "continuous-only" and (
+        args.browser_proof is None or args.browser_nonce is None
+    ):
+        parser.error("this scope requires --browser-proof and --browser-nonce")
     if args.scope == "all" and (args.notepad_proof is None or args.notepad_nonce is None):
         parser.error("the all scope requires --notepad-proof and --notepad-nonce")
-    nonces = [args.continuous_nonce, args.browser_nonce]
+    nonces = [args.continuous_nonce]
+    if args.scope != "continuous-only":
+        nonces.append(args.browser_nonce)
     if args.scope == "all":
         nonces.append(args.notepad_nonce)
     try:
@@ -117,11 +127,14 @@ def main():
             and valid_report(
                 args.continuous_proof, "--verify-continuous", args.continuous_nonce, args
             )
-            and valid_report(
-                args.browser_proof, "--verify-browser-cooperation", args.browser_nonce, args
+            and (
+                args.scope == "continuous-only"
+                or valid_report(
+                    args.browser_proof, "--verify-browser-cooperation", args.browser_nonce, args
+                )
             )
             and (
-                args.scope == "before-notepad"
+                args.scope != "all"
                 or valid_report(
                     args.notepad_proof, "--verify-ordinary-notepad", args.notepad_nonce, args
                 )

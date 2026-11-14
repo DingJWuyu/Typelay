@@ -13,10 +13,23 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SHIM = """import os,shutil,sys
+SHIM = """import json,os,shutil,sys
 from pathlib import Path
 if sys.argv[1] == "api":
     mode = os.environ["FIXED_CASE"]
+    if sys.argv[2].endswith('/jobs?per_page=100'):
+        print(json.dumps({'jobs': [{'name': 'fcitx-build', 'conclusion':
+            'failure' if mode == 'producer-failed' else None}]}))
+        sys.exit(0)
+    if mode in ('wait-valid', 'wait-draft'):
+        attempt = Path(os.environ["FIXED_METADATA"]).with_suffix('.attempt')
+        if not attempt.exists():
+            attempt.touch()
+            if mode == 'wait-draft':
+                print(json.dumps({'draft': True, 'assets': []}))
+                sys.exit(0)
+            mode = 'missing'
+    if mode == 'producer-failed': mode = 'missing'
     if mode in ("missing", "denied"):
         print("HTTP " + ("404" if mode == "missing" else "403"), file=sys.stderr)
         sys.exit(1)
@@ -27,7 +40,7 @@ else:
 
 
 class FixedBuildTransportTests(unittest.TestCase):
-    def run_transport(self, mode, action="restore"):
+    def run_transport(self, mode, action="restore", wait=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             script = root / "eng/ci/fixed.py"
@@ -64,7 +77,8 @@ class FixedBuildTransportTests(unittest.TestCase):
             shim.chmod(0o700)
             output = root / "output"
             result = subprocess.run(
-                [sys.executable, str(script), action, "fonts", "--tag", "ci-fonts-test"],
+                [sys.executable, str(script), action, "fonts", "--tag", "ci-fonts-test"]
+                + (["--wait-for-job", "fcitx-build"] if wait else []),
                 cwd=root,
                 capture_output=True,
                 text=True,
@@ -72,24 +86,33 @@ class FixedBuildTransportTests(unittest.TestCase):
                 | {
                     "PATH": str(root) + os.pathsep + os.environ["PATH"],
                     "GITHUB_REPOSITORY": "test/repo",
+                    "GITHUB_RUN_ID": "123",
                     "GITHUB_OUTPUT": str(output),
                     "FIXED_CASE": mode,
                     "FIXED_METADATA": str(metadata),
                     "FIXED_ARCHIVE": str(archive),
                 },
-                timeout=10,
+                timeout=20 if wait else 10,
             )
             self.assertEqual(
-                result.returncode == 0, mode not in ("denied", "corrupt"), result.stderr
+                result.returncode == 0,
+                mode not in ("denied", "corrupt", "producer-failed"),
+                result.stderr,
             )
             self.assertEqual(
                 (root / "artifacts/ui-fonts/test.txt").exists(),
-                mode == "valid" and action == "restore",
+                mode in ("valid", "wait-valid", "wait-draft") and action == "restore",
             )
             self.assertEqual(
                 output.read_text() if output.exists() else "",
-                "hit=false\n" if mode == "missing" else "hit=true\n" if mode == "valid" else "",
+                "hit=false\n"
+                if mode == "missing"
+                else "hit=true\n"
+                if mode in ("valid", "wait-valid", "wait-draft")
+                else "",
             )
+            if mode == "producer-failed":
+                self.assertIn("Fixed producer ended", result.stderr)
             if action == "lookup":
                 self.assertFalse((root / "artifacts/fonts.tar.gz").exists())
 
@@ -97,6 +120,14 @@ class FixedBuildTransportTests(unittest.TestCase):
         for mode in ("missing", "denied"):
             with self.subTest(mode=mode):
                 self.run_transport(mode)
+
+    def test_consumer_can_prepare_while_its_current_producer_is_running(self):
+        for mode in ("wait-valid", "wait-draft"):
+            with self.subTest(mode=mode):
+                self.run_transport(mode, wait=True)
+
+    def test_failed_producer_does_not_leave_a_consumer_waiting(self):
+        self.run_transport("producer-failed", wait=True)
 
     def test_changed_archive_fails_before_extracting(self):
         self.run_transport("corrupt")

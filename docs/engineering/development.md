@@ -104,11 +104,11 @@ CI 使用以下并行分工，各组保留现役测试命令、断言和产品�
 | `shared` | Python lint、格式、Linux 输入反馈、宿主离线隔离、共享 .NET 和 worker 回归。 |
 | `windows-contracts`，4 个分片 | 完整 Windows solution 测试。前三片分配耗时较长的 App 类，第四片自动接收其余类和项目。两项归档正文超时测试仍单独执行一次；物理 Tab 交接包消费同片的原合同结果。 |
 | `windows-tools` | 构建、格式、worker 与受控 native adapter。 |
-| `windows-desktop` | continuous、浏览器、Notepad 与 Hy 保留原来的模型依赖和退出证明。 |
+| `windows-desktop`，2 个分片 | 普通组执行 continuous、浏览器和 Notepad，保留三项退出校验。Hy 组在自己的 runner 重新执行 continuous，核验该消费者退出后，再执行 Hy。 |
 | `index-windows`、`index-linux` | 正式 Index 安装、真实推理及包生命周期。 |
 | `linux`，3 个分片，加 `linux-native` | 合同与无模型界面、浏览器与编辑器、合作输入与原生桌面、设置教程与 Hy 生命周期。 |
 
-每轮最多有 15 个 job，固定产物准备后最多并行 13 个。不同 runner 不共享桌面、模型安装代或消费者进程。Windows 桌面链中的 Hy 复用同轮 continuous 的正式 Argos 安装证明，因此这些场景保留同机顺序。job 内独立检查在失败后继续，依赖失败的场景保持 skipped。Actions 原始 step 和 job 状态就是结果；失败、取消和 skipped 都不能表述为通过。当前没有负责人批准的历史失败例外。以后获批的例外仍须放在独立非必需 job，保留真实失败。
+每轮最多有 16 个 job，字体准备后最多并行 15 个，低于免费 runner 的 20 个并发上限。不同 runner 不共享桌面、模型安装代或消费者进程。每个 Windows 桌面组各自完成正式 Argos 安装与 continuous。Hy 只消费自己 runner 中该次调用的安装和内核退出证明；普通组仍校验 continuous、浏览器与 Notepad 的全部原始退出证明。完整 solution 构建留在合同与工具组，桌面组只构建它实际消费的 fixture。job 内独立检查在失败后继续，依赖失败的场景保持 skipped。Actions 原始 step 和 job 状态就是结果；失败、取消和 skipped 都不能表述为通过。当前没有负责人批准的历史失败例外。以后获批的例外仍须放在独立非必需 job，保留真实失败。
 
 各结果 artifact 都带 SHA、run ID 和 attempt。`artifacts/ci/source.json` 记录实际 `git rev-parse HEAD`。push 测试的是 head，不是 GitHub 临时合并提交。墙钟时间统一按 `max(必过 job.completed_at) - run.created_at` 计算，包含排队、准备和诊断上传。
 
@@ -116,7 +116,7 @@ CI 使用以下并行分工，各组保留现役测试命令、断言和产品�
 
 [fixed.py](../../eng/ci/fixed.py) 将固定构建保存为 GitHub prerelease。tag 为 `ci-fonts-<SHA256>` 或 `ci-fcitx-<SHA256>`，所有分支都能读取。字体的输入包含生成器、字体锁和固定工具版本。Fcitx 与 Qt 的输入包含生产构建清单、补丁、原生源码、准备脚本与编译器和原生 SDK 包版本。
 
-输入没有变化时，CI 下载已有产物；输入变化或产物不存在时，CI 自动构建并发布新 tag。写入 job 按产物类型串行，避免分支同时重复构建。发布先创建 draft，上传完成后才公开。只有这两个 job 需要 `contents: write`，其余 job 只读。该机制不依赖默认分支缓存，不修改仓库设置。
+输入没有变化时，CI 下载已有产物；输入变化或产物不存在时，CI 自动构建并发布新 tag。写入 job 按产物类型串行，避免分支同时重复构建。原生生产者只装编译 SDK。消费 runner 同时准备桌面环境与当前应用，在使用固定字节前才等待发布；生产者失败会使等待明确失败。发布先创建 draft，上传完成后才公开。只有这两个 job 需要 `contents: write`，其余 job 只读。该机制不依赖默认分支缓存，不修改仓库设置。
 
 下载时先核对 GitHub asset SHA-256，再执行正式字体校验或合作包的源码、补丁与二进制校验。Fcitx 与 Qt 测试重新编译当前 fixture，并重新执行全部场景。固定构建不携带测试成功记录，旧结果不能授予当前提交通过资格。
 

@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -82,7 +83,10 @@ def main():
     parser.add_argument("action", choices=("key", "lookup", "restore", "publish"))
     parser.add_argument("kind", choices=("fonts", "fcitx"))
     parser.add_argument("--tag")
+    parser.add_argument("--wait-for-job", help="Wait for this run's named producer to publish")
     args = parser.parse_args()
+    if args.wait_for_job and args.action != "restore":
+        parser.error("--wait-for-job requires restore")
     tag = args.tag or key(args.kind)
     if args.action == "key":
         print(tag)
@@ -91,9 +95,31 @@ def main():
     archive.parent.mkdir(exist_ok=True)
     repo = os.environ["GITHUB_REPOSITORY"]
     if args.action in ("lookup", "restore"):
-        result = subprocess.run(
-            ["gh", "api", f"repos/{repo}/releases/tags/{tag}"], capture_output=True, text=True
-        )
+        while True:
+            result = subprocess.run(
+                ["gh", "api", f"repos/{repo}/releases/tags/{tag}"], capture_output=True, text=True
+            )
+            unavailable = (
+                "HTTP 404" in result.stderr
+                if result.returncode
+                else json.loads(result.stdout).get("draft", False)
+            )
+            if not (unavailable and args.wait_for_job):
+                break
+            jobs = json.loads(
+                subprocess.check_output(
+                    [
+                        "gh",
+                        "api",
+                        f"repos/{repo}/actions/runs/{os.environ['GITHUB_RUN_ID']}/jobs?per_page=100",
+                    ],
+                    text=True,
+                )
+            )["jobs"]
+            producer = next(job for job in jobs if job["name"] == args.wait_for_job)
+            if producer["conclusion"] is not None:
+                raise RuntimeError("Fixed producer ended without publishing the requested build")
+            time.sleep(5)
         if result.returncode:
             if "HTTP 404" not in result.stderr:
                 raise RuntimeError(result.stderr)
@@ -101,6 +127,8 @@ def main():
                 stream.write("hit=false\n")
             return
         release = json.loads(result.stdout)
+        if release.get("draft", False):
+            raise RuntimeError("Fixed build has not been published")
         asset = next(a for a in release["assets"] if a["name"] == archive.name)
         if args.action == "lookup":
             with open(os.environ["GITHUB_OUTPUT"], "a") as stream:

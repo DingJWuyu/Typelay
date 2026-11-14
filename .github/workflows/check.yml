@@ -61,8 +61,6 @@ jobs:
     concurrency:
       group: typelay-fixed-fcitx
       cancel-in-progress: false
-    outputs:
-      tag: ${{ steps.key.outputs.tag }}
     steps:
     - name: Install checkout prerequisite
       run: pacman -Sy --noconfirm git
@@ -70,6 +68,8 @@ jobs:
       with:
         persist-credentials: false
     - uses: ./.github/actions/linux-tools
+      with:
+        desktop: 'false'
     - &tested-source
       name: Record tested commit
       run: |
@@ -295,7 +295,11 @@ jobs:
         if-no-files-found: warn
         retention-days: 14
   windows-desktop:
-    name: Windows desktop
+    name: Windows desktop / ${{ matrix.group }}
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [ordinary, hy]
     needs: fonts
     runs-on: windows-latest
     timeout-minutes: 45
@@ -317,10 +321,14 @@ jobs:
         'C:\Program Files\LLVM\bin' >> $env:GITHUB_PATH
       shell: pwsh
     - *tested-source
-    - name: Build the Windows workspace
+    - name: Build the desktop and native fixtures
       id: windows-build
       shell: pwsh
-      run: ./dev.ps1 build
+      run: |
+        dotnet build tests/windows/fixtures/TypeLay.DesktopFixture -c Release -p:RestoreLockedMode=true -warnaserror
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        dotnet build tests/windows/fixtures/TypeLay.NativeFixture -c Release -p:RestoreLockedMode=true -warnaserror
+        exit $LASTEXITCODE
     - name: Prepare fixed Hy assets without an audit adapter
       id: hy-prepare
       if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
@@ -344,7 +352,7 @@ jobs:
         dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-continuous artifacts/continuous-translation src/shared/TypeLay.Worker/run_worker.py tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll
         exit $LASTEXITCODE
     - name: Verify and prepare Chrome for Testing for the cooperative product path
-      if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+      if: ${{ matrix.group == 'ordinary' && !cancelled() && steps.windows-build.outcome == 'success' }}
       id: cooperative-browser-prepare
       shell: pwsh
       run: |
@@ -367,7 +375,7 @@ jobs:
         "chrome=$chrome" >> $env:GITHUB_OUTPUT
     - name: Verify cooperative browser input with the shipped app and real model
       id: windows-browser
-      if: ${{ !cancelled() && steps.windows-package.outcome == 'success' && steps.cooperative-browser-prepare.outcome == 'success'
+      if: ${{ matrix.group == 'ordinary' && !cancelled() && steps.windows-package.outcome == 'success' && steps.cooperative-browser-prepare.outcome == 'success'
         }}
       timeout-minutes: 10
       shell: pwsh
@@ -381,7 +389,7 @@ jobs:
         exit $LASTEXITCODE
     - name: Verify prior model consumers have exited before Notepad
       id: notepad-consumer-exit
-      if: ${{ !cancelled() && steps.windows-package.outcome == 'success' && (steps.windows-browser.outcome == 'success' ||
+      if: ${{ matrix.group == 'ordinary' && !cancelled() && steps.windows-package.outcome == 'success' && (steps.windows-browser.outcome == 'success' ||
         steps.windows-browser.outcome == 'failure') }}
       shell: pwsh
       env:
@@ -395,7 +403,7 @@ jobs:
         exit $LASTEXITCODE
     - name: Verify real classic Notepad through shipped app Settings
       id: windows-ordinary-notepad
-      if: ${{ !cancelled() && steps.notepad-consumer-exit.outcome == 'success' }}
+      if: ${{ matrix.group == 'ordinary' && !cancelled() && steps.notepad-consumer-exit.outcome == 'success' }}
       timeout-minutes: 10
       shell: pwsh
       run: |
@@ -403,7 +411,7 @@ jobs:
         exit $LASTEXITCODE
     - name: Verify all prior model consumers have exited
       id: hy-consumer-exit
-      if: ${{ !cancelled() && steps.windows-package.outcome == 'success' }}
+      if: ${{ matrix.group == 'ordinary' && !cancelled() && steps.windows-package.outcome == 'success' }}
       shell: pwsh
       env:
         CONTINUOUS_NONCE: ${{ steps.windows-continuous.outputs.consumer_exit_nonce }}
@@ -413,9 +421,19 @@ jobs:
       run: |
         python eng/windows/verify-consumer-exit.py --continuous-proof artifacts/continuous-translation/consumer-exit.json --browser-proof artifacts/browser-cooperation/consumer-exit.json --notepad-proof artifacts/ordinary-notepad/consumer-exit.json --continuous-nonce "$env:CONTINUOUS_NONCE" --browser-nonce "$env:BROWSER_NONCE" --notepad-nonce "$env:NOTEPAD_NONCE" --run-id "$env:GITHUB_RUN_ID" --run-attempt "$env:GITHUB_RUN_ATTEMPT" --head "$env:GITHUB_SHA" --workflow-cancelled "$env:WORKFLOW_CANCELLED"
         exit $LASTEXITCODE
+    - name: Verify the isolated Hy job's prior consumer has exited
+      id: hy-isolated-exit
+      if: ${{ matrix.group == 'hy' && !cancelled() && steps.windows-package.outcome == 'success' }}
+      shell: pwsh
+      env:
+        CONTINUOUS_NONCE: ${{ steps.windows-continuous.outputs.consumer_exit_nonce }}
+        WORKFLOW_CANCELLED: ${{ job.status != 'success' && job.status != 'failure' }}
+      run: |
+        python eng/windows/verify-consumer-exit.py --scope continuous-only --continuous-proof artifacts/continuous-translation/consumer-exit.json --continuous-nonce "$env:CONTINUOUS_NONCE" --run-id "$env:GITHUB_RUN_ID" --run-attempt "$env:GITHUB_RUN_ATTEMPT" --head "$env:GITHUB_SHA" --workflow-cancelled "$env:WORKFLOW_CANCELLED"
+        exit $LASTEXITCODE
     - name: Verify the shipped Hy ABI5 worker and production process owner
       id: hy-production
-      if: ${{ !cancelled() && steps.windows-package.outcome == 'success' && steps.hy-consumer-exit.outcome == 'success' }}
+      if: ${{ matrix.group == 'hy' && !cancelled() && steps.windows-package.outcome == 'success' && steps.hy-isolated-exit.outcome == 'success' }}
       timeout-minutes: 6
       shell: pwsh
       run: |
@@ -424,7 +442,7 @@ jobs:
         exit $LASTEXITCODE
     - name: Verify Hy install select preview and remove through Settings
       id: hy-packages
-      if: ${{ !cancelled() && steps.windows-package.outcome == 'success' && steps.hy-production.outcome == 'success' }}
+      if: ${{ matrix.group == 'hy' && !cancelled() && steps.windows-package.outcome == 'success' && steps.hy-production.outcome == 'success' }}
       timeout-minutes: 16
       shell: pwsh
       run: |
@@ -434,7 +452,7 @@ jobs:
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       if: always()
       with:
-        name: windows-desktop-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        name: windows-desktop-${{ matrix.group }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
         path: |-
           artifacts/ci/
           artifacts/continuous-translation/*.json
@@ -453,7 +471,7 @@ jobs:
         if-no-files-found: warn
         retention-days: 14
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-      if: inputs.upload_packages
+      if: inputs.upload_packages && matrix.group == 'hy'
       with:
         name: windows-package-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
         path: |-
@@ -613,12 +631,6 @@ jobs:
       with:
         tag: ${{ needs.fonts.outputs.tag }}
         token: ${{ github.token }}
-    - name: Restore fixed Fcitx production bytes
-      run: python eng/ci/fixed.py restore fcitx --tag "$TAG"
-      env:
-        GH_TOKEN: ${{ github.token }}
-        TAG: ${{ needs.fcitx-build.outputs.tag }}
-      if: matrix.group == 'native'
     - name: Prepare the fixed official Linux Hy CPU closure
       id: hy-cpu
       timeout-minutes: 3
@@ -645,6 +657,12 @@ jobs:
         mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR"
         chmod 700 "$XDG_RUNTIME_DIR"
         artifacts/linux/package/typelay --install-models argos
+    - name: Restore fixed Fcitx production bytes
+      id: fixed-native
+      run: python eng/ci/fixed.py restore fcitx --wait-for-job fcitx-build
+      env:
+        GH_TOKEN: ${{ github.token }}
+      if: matrix.group == 'native'
     - name: Verify Linux Hy preparation contracts
       id: hy-preparation-contracts
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
@@ -887,7 +905,7 @@ jobs:
       run: python tests/linux/fcitx_probe.py
     - name: Verify isolated Fcitx and GTK cooperative transactions
       id: fcitx
-      if: ${{ matrix.group == 'native' && !cancelled() && steps.build.outcome == 'success' }}
+      if: ${{ matrix.group == 'native' && !cancelled() && steps.build.outcome == 'success' && steps.fixed-native.outcome == 'success' }}
       run: python tests/linux/fcitx_cooperative/run.py --reuse-build --core-version 5.1.22 --core-ready-output "$GITHUB_OUTPUT"
     - name: Probe original Fcitx Qt input delivery boundaries
       id: qt
@@ -1089,9 +1107,10 @@ jobs:
         retention-days: 14
   linux-native:
     name: Linux / ${{ matrix.group }}
-    needs:
-    - fonts
-    - fcitx-build
+    needs: fonts
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-latest
     container: *linux-container
     timeout-minutes: 45
