@@ -77,8 +77,10 @@ internal static partial class BrowserCooperationCheck
                     && RecoveryText(entry.GetProperty("detail"), "pageReason") == "Calibration"
                     && RecoveryText(entry.GetProperty("detail"), "clockReason") == "AuthorityMissing"
                     && RecoveryText(entry.GetProperty("detail"), "preparationToken") == RecoveryText(original, "token"));
-                int retirement = Array.FindIndex(events, entry => RecoveryStage(entry, "RetireAck", "Ready", owner));
-                int restore = Array.FindIndex(events, entry => RecoveryStage(entry, "Restore", "Ready"));
+                int retirement = rejection < 0 ? -1
+                    : Array.FindIndex(events, rejection + 1, entry => RecoveryStage(entry, "RetireAck", "Ready", owner));
+                int restore = retirement < 0 ? -1
+                    : Array.FindIndex(events, retirement + 1, entry => RecoveryStage(entry, "Restore", "Ready"));
                 Require(!events.Any(entry => RecoveryText(entry, "operation") == "browser-owner-source-refresh"),
                     "owner-recovered-before-new-source-input");
                 if (rejection >= 0 && retirement > rejection && restore > retirement)
