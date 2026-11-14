@@ -1010,6 +1010,10 @@ class MainBundleTests(unittest.TestCase):
         # This is an owned disposable Git repository, never the working checkout.
         for arguments in (
             ("init", "--quiet"),
+            # Detached maintenance may recreate .git while TemporaryDirectory
+            # removes this short-lived fixture after a successful test.
+            ("config", "maintenance.auto", "false"),
+            ("config", "gc.auto", "0"),
             ("add", "."),
             (
                 "-c",

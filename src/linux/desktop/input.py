@@ -274,6 +274,7 @@ class Input:
         self.shortcut_configured_at = now_ms()
         self.shortcut_cli_at = -1
         self.shortcut_cli_peer = None
+        self.shortcut_cli_kind = None
         self.shortcut_sequence = 0
         self.shortcut_ordered = False
         self.shortcut_command = None
@@ -3265,6 +3266,20 @@ class Input:
                         pass
                 return
             stamp = value.get("acceptedAtMs")
+            if peer.backend == "browser" and "triggeredAtMs" in value:
+                # The authenticated CLI's original host time orders its one
+                # command. The browser's calibrated lower bound still owns
+                # acceptedAtMs and the source observation; never raise either.
+                stamp = value["triggeredAtMs"]
+                if (
+                    type(stamp) is not int
+                    or stamp != self.shortcut_cli_at
+                    or peer is not self.shortcut_cli_peer
+                    or value["kind"] != self.shortcut_cli_kind
+                    or not 0 <= now_ms() - stamp <= 150
+                    or (command and command["triggeredAtMs"] >= stamp)
+                ):
+                    return
             if not self.ordered_shortcut_time(peer, stamp):
                 return
             if peer.backend != "qt6":
@@ -3442,6 +3457,7 @@ class Input:
         peer = self.focused_peer()
         self.shortcut_cli_at = stamp
         self.shortcut_cli_peer = peer
+        self.shortcut_cli_kind = kind
         record = peer.shortcut if peer else None
         reason = None
         if self.overlay_focused or (record and record["window"]["id"] != window["id"]):
@@ -3495,6 +3511,7 @@ class Input:
             self.shortcut_configured_at = now_ms()
             self.shortcut_cli_at = -1
             self.shortcut_cli_peer = None
+            self.shortcut_cli_kind = None
             self.shortcut_sequence = 0
             self.shortcut_ordered = False
             self.shortcut_command = None

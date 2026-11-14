@@ -2281,7 +2281,8 @@
         // and its original trigger time; a fresh capture cannot renew either.
         if (nativeDispatch) return {triggered: true, commandId: data.commandId,
           triggeredAtMs: data.triggeredAtMs, native: snapshot};
-        send("shortcut", {kind: data.kind, generation: data.generation, native: snapshot, acceptedAtMs: now()});
+        send("shortcut", {kind: data.kind, generation: data.generation, native: snapshot,
+          triggeredAtMs: data.triggeredAtMs, acceptedAtMs: now()});
         return {triggered: true};
       }
       case "quarantine": retireOrdered(); retireEditorControl(); if (field) field.quarantined = true; publication = null; return null;

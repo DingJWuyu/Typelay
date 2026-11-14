@@ -3120,6 +3120,7 @@ if __name__ == "__main__":
         choices=(
             "all",
             "browser",
+            "browser-index",
             "gtk",
             "gtk4",
             "qt",
@@ -3144,6 +3145,9 @@ if __name__ == "__main__":
         help="exercise configured F1/F24, held editor return and rebinding on real GTK controls",
     )
     parser.add_argument("--package", type=Path)
+    parser.add_argument("--index-cache", type=Path)
+    parser.add_argument("--chromium", default="/usr/bin/chromium")
+    parser.add_argument("--browser-kind", choices=("chromium", "google-chrome"), default="chromium")
     parser.add_argument("--editor-bundle", type=Path)
     parser.add_argument("--fcitx-cooperative", type=Path)
     parser.add_argument("--qt-cooperative", type=Path)
@@ -3188,6 +3192,12 @@ if __name__ == "__main__":
         parser.error("--gtk-refusal and --desktop verify different capability scopes")
     if args.desktop and not args.package:
         parser.error("--desktop requires --package")
+    if args.desktop_scope == "browser-index" and (not args.inside or not args.index_cache):
+        parser.error(
+            "browser-index requires --inside, --index-cache and the verify-typelay private session"
+        )
+    if args.index_cache:
+        args.index_cache = args.index_cache.resolve(strict=True)
     if args.desktop_scope in ("gtk", "gtk4") and not args.fcitx_cooperative:
         parser.error("GTK desktop scopes require --fcitx-cooperative")
     if args.desktop_scope == "qt" and (not args.fcitx_cooperative or not args.qt_cooperative):
@@ -3208,6 +3218,8 @@ if __name__ == "__main__":
                     run = inside_settings_ui
                 elif args.desktop_scope == "model-packages":
                     from hy_package_e2e import run
+                elif args.desktop_scope == "browser-index":
+                    from browser_index_journey import run
                 else:
                     from desktop_e2e import run
 

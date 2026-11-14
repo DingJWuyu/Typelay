@@ -9,6 +9,7 @@
 - `writeback/direct` 通过直接替换快捷键或 CLI 操作原字段。
 - `writeback/refusal` 在输入法未知、源文改变或目标变化时拒绝不安全写入。
 - `writeback/undo` 与目标控件自己的原生替换和撤销行为比较。
+- `writeback/browser-index` 使用正式默认 Index，验证普通网页的人工稿、两次默认 Tab、UTF-16 选区与后台直接替换。
 
 ## How to get to it (user POV)
 
@@ -27,9 +28,40 @@ Preconditions: 对本次合成字段有明确写回验收意图，实验选项�
 - **既有原生合同。** 在私有会话里执行 `DISPLAY="$TYPELAY_VERIFY_XDISPLAY" /usr/bin/python3 tests/linux/native_e2e.py --inside --gtk-refusal --native "$PWD/artifacts/linux/native" --output "$TYPELAY_VERIFY_OUTPUT/refusal"`，先创建输出目录。这条受控链验证 Unknown 拒绝与按键透传，不能算成功写回。
 - **真实合作回归。** 正式模型安装后，可运行 `native_e2e.py --inside --desktop --desktop-scope gtk`，提供私有 `--package`、`--fcitx-cooperative "$TYPELAY_VERIFY_COOPERATIVE"`、`--native "$PWD/artifacts/linux/native"` 和新的 `--output`，并设置私有 DISPLAY。该入口使用受控 GTK fixture 与初始化设置，保留其候选、Verified 回执和计数判据，单独标明证据边界。
 
+普通网页完整旅程使用同一桌面 runner 的 `browser-index` 范围。先按 build.md 准备当前干净提交的完整包、合作包和 Index 下载缓存，再从新私有会话执行：
+
+```bash
+/usr/bin/python3 "$PWD/.agents/skills/verify-typelay/scripts/private-session.py" \
+  --package artifacts/verification-build/package \
+  --cooperative artifacts/verification-build/cooperation/TypeLay-Fcitx-cooperative \
+  --output "$PWD/artifacts/verification/browser-index-$(date +%Y%m%d-%H%M%S)" \
+  -- bash -c 'exec /usr/bin/python3 tests/linux/native_e2e.py \
+    --inside --desktop --desktop-scope browser-index \
+    --package "$TYPELAY_VERIFY_PACKAGE" --native "$PWD/artifacts/linux/native" \
+    --index-cache "$PWD/artifacts/index-model-download" --chromium /usr/bin/chromium \
+    --output "$TYPELAY_VERIFY_OUTPUT/browser-index"'
+```
+
+桌面解释器需能导入系统 PyGObject 和支持 `connect_over_cdp(no_defaults=True)` 的 Playwright。可使用带系统包的私有工程环境，并把命令中的解释器和 `--chromium` 换成已安装工具的绝对路径。若实际可执行文件是 Chrome，另传 `--browser-kind google-chrome`，按真实进程身份登记；默认类型为 `chromium`。浏览器使用本次独立 profile。保持私有会话提供的短 `TMPDIR`，只将 socket 等临时文件放入其中；正式安装、模型和包副本留在 Btrfs 等正常文件系统。
+
+runner 通过正式 `install.py install` 安装当前包，再从空数据执行默认 `typelay --install-models`。它只预置合成旅程的英到中方向及教程完成状态，保存实际初始设置，不把这项注入当作设置 UI 验收。扩展通过开发加载，连接使用正式注册入口；页面内容由受控普通 HTML 提供，消息管道、桌面宿主和 Index 均为真实组件。
+
+固定模型样例为 backup 普通句和 URL/换行结构句。UTF-16 与 emoji 由原字段前后缀及多行人工稿覆盖。[质量票 #23](https://github.com/DingJWuyu/Typelay/issues/23)保留额外多行 emoji 组合的 `structure-not-preserved` 拒绝；该组合没有成功译文，本旅程不将它计为通过，也不放宽结构保护。
+
+依次检查 `browser-index/result.json` 的阶段和对应原件：
+
+- `preview` 保留原文和真实译文，记录固定 profile、正式库存与包身份。
+- `draft-before-return`、`draft-returned`、`draft-accepted` 分别证明人工稿保持、首次 Tab 零写和释放后的第二次独立 Tab 精确写入。源字段 input 事件与控制器 Verified 回执都只能出现一次。
+- `selection-before`、`selection-accepted` 核对 UTF-16 范围、emoji、换行、选区外原文及折叠光标。
+- `direct-before`、`direct-detached`、`direct-completed` 核对按需模式的正式 CLI Direct。A 的唯一替换事件必须记录 B 当时的焦点、正文和选区，最终状态也须一致。
+- `direct-command-times.json` 只读记录真实扩展端口的命令代际、原触发时间和保守观察时间；两种时间分别用于命令排序与源观察，不将观察下界抬高到触发时间。
+
+打开各阶段截图检查文字、位置和裁剪。逐句核对 `samples.json` 的输入输出，判断基本保义、emoji 和换行；非空译文与自动阶段通过不代表语义已审查。最后核对外层 `cleanup.json`，要求无自有残留且 scratch/runtime 已删除，原件仍在。重复验收使用新的输出目录和空安装代。
+
 ## Gotchas
 
 - 基础 Launch 的实验写回保持默认关闭，因此 `gtk-preview.py` 明确记录 `writebackTested=false`。不能把预览通过升级为写回通过。
 - 可见译文、`ValidTranslation` 与短期接受许可不同。资格失效时不得重复投递直到“碰巧通过”，也不得放宽输入法状态或焦点判断。
 - GIMP 3.2.6-2 的 Comment 不提供评论修改的原生 Undo。既有 `ordinary-gimp` 会比较原生粘贴轨迹，这种不支持不能报告成 TypeLay 撤销成功。
 - 合成键盘、受控 fixture 与物理输入法各有边界。本机未执行物理输入法验收。
+- 网页旅程的 Tab 使用私有 XTest；Unicode 文本使用浏览器可信输入，选区通过 DOM 设置。它不证明物理输入、任意站点或普通 textarea 的原生 Undo。Firefox、富文本和商店安装仍有各自入口。
