@@ -603,7 +603,7 @@ def gtk_source_glossary(out, environment, deadline, toolkit):
     ]
     config.write_text(
         "hotkey-overlay { skip-at-startup; }\nspawn-at-startup "
-        + " ".join(json.dumps(item) for item in command)
+        + " ".join(json.dumps(item, ensure_ascii=False) for item in command)
         + "\n"
     )
     nested_env = environment | {"GDK_BACKEND": "wayland", "LIBGL_ALWAYS_SOFTWARE": "1"}

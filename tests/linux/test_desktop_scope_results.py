@@ -16,7 +16,38 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from native_e2e import outer
+from native_e2e import gtk_source_glossary, outer
+
+
+class GlossaryConfigurationTests(unittest.TestCase):
+    def test_real_niri_accepts_glossary_startup_from_unicode_paths(self):
+        real_popen = subprocess.Popen
+
+        class ConfigurationValidated(Exception):
+            pass
+
+        def validate(command, **options):
+            with real_popen(
+                ["niri", "validate", "--config", command[2]],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            ) as process:
+                output, _ = process.communicate(timeout=5)
+            self.assertEqual(process.returncode, 0, output)
+            raise ConfigurationValidated
+
+        with tempfile.TemporaryDirectory(prefix="typelay-glossary-config-") as directory:
+            for name in ("plain", "中文 路径", "emoji 🐱"):
+                output = Path(directory) / name
+                output.mkdir()
+                for toolkit in ("gtk3", "gtk4"):
+                    with (
+                        self.subTest(path=name, toolkit=toolkit),
+                        patch("native_e2e.subprocess.Popen", side_effect=validate),
+                        self.assertRaises(ConfigurationValidated),
+                    ):
+                        gtk_source_glossary(output, {}, 0, toolkit)
 
 
 class DesktopScopeProcessTests(unittest.TestCase):
