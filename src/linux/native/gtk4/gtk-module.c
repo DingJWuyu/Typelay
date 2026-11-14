@@ -53,13 +53,13 @@ static gboolean trigger_shortcut(const char *kind, Target *target, JsonObject *a
 static gboolean already_consumed(const char *id);
 static void remember(const char *id);
 
-static void trace_connection(const char *check, gint error) {
+static void trace_connection(const char *check, gint error_number) {
     static const char *previous;
     static gint previous_error;
     if (!g_getenv("TYPELAY_TRACE")) return;
-    if (g_strcmp0(previous, check) == 0 && previous_error == error) return;
-    previous = check; previous_error = error;
-    g_printerr("TypeLay GTK4 connect check=%s errno=%d\n", check, error);
+    if (g_strcmp0(previous, check) == 0 && previous_error == error_number) return;
+    previous = check; previous_error = error_number;
+    g_printerr("TypeLay GTK4 connect check=%s errno=%d\n", check, error_number);
 }
 static void trace_attach(const char *check) {
     static const char *previous;
