@@ -1,10 +1,12 @@
 using System.IO;
 using System.Text.Json;
 using TypeLay.App;
+using TypeLay.Windows;
 using TypeLay.Windows.Testing;
 
 internal static partial class BrowserCooperationCheck
 {
+    private sealed record DraftEditorSample(long AtMs, string Stage, JsonElement State);
     private sealed class DraftObservation
     {
         public string Draft { get; } = "Manual draft: Please confirm the time and place of tomorrow afternoon's meeting. Tell me what materials to prepare, whether I can arrive ten minutes early, and whether we can discuss the next stage afterward. Thank you. Reference: https://example.com 🙂";
@@ -36,6 +38,23 @@ internal static partial class BrowserCooperationCheck
         {
             get; set;
         }
+        public int EditorSamples
+        {
+            get; set;
+        }
+        public DraftEditorSample? FirstEditor
+        {
+            get; set;
+        }
+        public DraftEditorSample? LastEditor
+        {
+            get; set;
+        }
+        public List<DraftEditorSample> EditorChanges { get; } = [];
+        public int DroppedEditorChanges
+        {
+            get; set;
+        }
     }
     private sealed partial class Cdp
     {
@@ -64,9 +83,41 @@ internal static partial class BrowserCooperationCheck
                     {
                         objectId = editor,
                         returnByValue = true,
-                        functionDeclaration = "function(){return {text:this.value,editable:!this.readOnly,focused:this.getRootNode().activeElement===this,connected:this.isConnected};}"
+                        arguments = new[]
+                        {
+                            new { value = observation.Draft },
+                            new { value = observation.Before.A },
+                            new { value = observation.Before.B }
+                        },
+                        functionDeclaration = """
+                            function(draft,originalA,originalB){
+                              const page=typeof state==='function'?state():null;
+                              const observed={utf16Length:this.value.length,exact:this.value===draft,
+                                editable:!this.readOnly,focused:this.getRootNode().activeElement===this,connected:this.isConnected,
+                                sourceAUnchanged:this.ownerDocument.getElementById('a')?.value===originalA,
+                                sourceBUnchanged:this.ownerDocument.getElementById('b')?.value===originalB,
+                                pageCountsAvailable:page!==null,replacements:page?.replacements??null,submits:page?.submits??null};
+                              return {text:this.value,editable:observed.editable,focused:observed.focused,observation:observed};
+                            }
+                            """
                     }, ct);
-                    return response.GetProperty("result").GetProperty("value");
+                    var value = response.GetProperty("result").GetProperty("value");
+                    var sample = new DraftEditorSample(WindowsInterruptClock.NowMs, scene.Stage,
+                        value.GetProperty("observation").Clone());
+                    observation.EditorSamples++;
+                    observation.FirstEditor ??= sample;
+                    // Keep transitions from the existing reads, including a detached
+                    // editor. Neither polling nor the original input is changed.
+                    if (observation.LastEditor is not { } previous || previous.Stage != sample.Stage
+                        || !JsonElement.DeepEquals(previous.State, sample.State))
+                    {
+                        if (observation.EditorChanges.Count < 8)
+                            observation.EditorChanges.Add(sample);
+                        else
+                            observation.DroppedEditorChanges++;
+                    }
+                    observation.LastEditor = sample;
+                    return value;
                 }
                 scene.Stage = "click-visible-translation-editor";
                 var point = await PageCallAsync("Runtime.callFunctionOn", new
