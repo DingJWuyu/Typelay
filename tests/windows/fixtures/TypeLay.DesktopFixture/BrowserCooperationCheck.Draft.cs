@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using TypeLay.App;
 using TypeLay.Windows.Testing;
 
 internal static partial class BrowserCooperationCheck

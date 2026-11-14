@@ -107,7 +107,7 @@ internal static class IndexPackageCheck
         {
             foreach (var assembly in new[] { typeof(ModelClient).Assembly, typeof(ModelInstaller).Assembly,
                 typeof(TypeLay.Core.Session).Assembly, typeof(TypeLay.Protocol.Wire).Assembly,
-                typeof(TypeLay.Windows.BrowserHostHello).Assembly })
+                typeof(TypeLay.Windows.Contracts.BrowserHostHello).Assembly })
             {
                 using var actual = File.OpenRead(assembly.Location);
                 using var expected = File.OpenRead(Path.Combine(distribution, "app", Path.GetFileName(assembly.Location)));

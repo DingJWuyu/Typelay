@@ -3,7 +3,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using TypeLay.App;
 using TypeLay.Runtime;
-using TypeLay.Windows;
+using TypeLay.Windows.Contracts;
 using TypeLay.Windows.Testing;
 
 internal static partial class BrowserCooperationCheck
