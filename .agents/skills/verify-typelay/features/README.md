@@ -26,5 +26,6 @@
 | [设置与暂停](settings.md) | 设置窗口、托盘、快捷面板与 CLI，观察保存和恢复。 |
 | [接受、编辑与直接替换](writeback.md) | Tab、浮层编辑和直接替换。普通网页 `browser-index` 串联真实默认模型、两次 Tab、选区和后台 Direct。 |
 | [应用接入与练习](applications.md) | 应用支持、教程、手动合作入口及扩展，观察实际连接。 |
+| [Qt 交互与语言搜索](qt.md) | 分开运行合作 probe、语言搜索和真实模型桌面，保留各阶段结果及发行证明边界。 |
 
 每个功能文件使用四个 H2：`Sub-features`、`How to get to it (user POV)`、`Driving it with private niri`、`Gotchas`。
