@@ -118,7 +118,9 @@ jobs:
       - name: Verify offline verification isolation and cache ownership
         id: verification-resources
         if: ${{ !cancelled() && steps.python.outcome == 'success' }}
-        run: python tests/linux/test_verification_resources.py -v
+        # The hosted Ubuntu policy denies an unprivileged uid_map. Limit elevated
+        # execution to this kernel isolation test; desktop containers stay unchanged.
+        run: sudo "$(command -v python)" tests/linux/test_verification_resources.py -v
       - name: Verify shared behavior without Windows
         id: shared-behavior
         if: ${{ !cancelled() && steps.python.outcome == 'success' }}
