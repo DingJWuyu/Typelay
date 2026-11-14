@@ -2,7 +2,7 @@
 
 Windows 实现将桌面输入框和 Chrome 合作字段接入同一个本地翻译会话。`TypeLay.App` 持有共享 Runtime、WPF 界面与平台适配器；Broker 隔离 UI Automation（UIA，界面自动化）调用；worker 执行本地模型推理。原生接受在源应用 GUI 线程执行，浏览器接受在页面事件栈执行，Runtime 依据执行回执结算。
 
-本页描述当前源码的进程、组件和 Windows 输入边界。跨平台会话合同见[会话运行时](../../engineering/session-runtime.md)，模型生命周期见[模型运行时](../../engineering/model-runtime.md)，领域术语见[术语表](../../../GLOSSARY.md)。推荐 CI518 包仍是旧版本，能力与结果见[当前可验证候选](README.md#当前可验证候选)。当前源码已构建，WPF 交互、写入退休与正常关闭仍缺目标桌面验证，状态见[当前开发安排](../../engineering/development-state.md)。
+本页描述当前源码的进程、组件和 Windows 输入边界。跨平台会话合同见[会话运行时](../../engineering/session-runtime.md)，模型生命周期见[模型运行时](../../engineering/model-runtime.md)，领域术语见[术语表](../../../GLOSSARY.md)。发行包的能力与结果以其[包身份](README.md#当前可验证候选)为准；当前任务及验证证据由 [GitHub Issues](https://github.com/DingJWuyu/Typelay/issues)维护。
 
 ## 系统范围与外部依赖
 
@@ -288,7 +288,7 @@ Hook 只用非阻塞 Win32 元数据取得 root、精确字段 HWND、PID/TID、
 
 完成页先等待实际完成与退休确认，再保存教程偏好。保存失败只重试保存。控制 stdio 有界且不载正文；每 run 的见证、plan/result 映射独立拥有，关闭、重启和配置变化先阻止新授权，再等待源端退休。自动 owned 标记保留到寿命结束，撤销计划不会重新开放旧通用写入口。
 
-[既有自有练习软件链](https://github.com/DingJWuyu/Typelay/actions/runs/39046030080)覆盖默认键、Ctrl+功能键、编辑回源、人工稿接受及完成保存。真实 SETSEL 栈内退休另有[单一反例回归](testing.md#系统-edit-前台事务回归)。这些证据不替代物理输入、实际 IME、其它重入情形或当前重构后的 GUI 验收。
+自有练习分别验证默认键、Ctrl+功能键、编辑回源、人工稿接受与完成保存。SETSEL 栈内退休的回归见[系统 Edit 前台事务](testing.md#系统-edit-前台事务回归)。软件输入证据不替代物理输入、实际 IME 或其它重入情形。
 
 ### 通用 UIA 后端缺口
 
@@ -306,7 +306,7 @@ Unknown IME 的字段只能预览，不能进入人工编辑或接受；读到�
 
 元数据续证与正文捕获分开。Poll 最多预取一个下一描述，批准仍在前一回执终态后串行提交；35ms 最小轮次间隔保持。描述本身会产生短期 authority，预取不更新 Ready 或旧期限。每轮正文只领取一次原描述，迟到结果不能追认旧键。
 
-连接收帧与 UI 处理通过有界 FIFO 分开，RPC 结果仍等待之前的事件处理。关闭或溢出停止新授权。已经收到的精确终态继续结算；送写后断连、超时或回执不完整则按未知结果隔离原目标，不重试。[既有软件链检查](https://github.com/DingJWuyu/Typelay/actions/runs/39232325140)覆盖了标准字段自动接受、前台与后台原框 F10，以及主动移除后的零写，不能替代当前源码、物理 IME 或异常断连的全部验收。
+连接收帧与 UI 处理通过有界 FIFO 分开，RPC 结果仍等待之前的事件处理。关闭或溢出停止新授权。已经收到的精确终态继续结算；送写后断连、超时或回执不完整则按未知结果隔离原目标，不重试。标准字段自动接受、前台与后台原框 F10、主动移除后的零写以及异常断连分别验收，软件输入不替代物理 IME。
 
 ### Chrome 接入管理
 
@@ -411,4 +411,4 @@ B-01 仍阻塞通用安全写回发布。UIA 读取、比较与 `SetValue` 不�
 | 模型安装与进程所有权 | [ModelInstaller.cs](../../../src/windows/TypeLay.App/Infrastructure/ModelInstaller.cs)、[ModelInstallationStore.cs](../../../src/windows/TypeLay.App/Infrastructure/ModelInstallationStore.cs)、[ModelChildProcess.cs](../../../src/windows/TypeLay.App/Windows/ModelChildProcess.cs)、[AppPaths.cs](../../../src/windows/TypeLay.App/Infrastructure/AppPaths.cs)。 |
 | 自有练习与发行入口 | [PracticeHost.cs](../../../src/windows/TypeLay.App/Windows/PracticeHost.cs)、[Practice/Program.cs](../../../src/windows/TypeLay.Practice/Program.cs)、[launcher.c](../../../src/windows/TypeLay.Launcher/launcher.c)。 |
 
-构建、打包及隔离研究入口见[开发与分发](development.md)。各层回归的证据范围见[测试与桌面验收](testing.md)。用户尚未关闭的实际故障见[待解决问题](open-issues.md)。
+构建、打包及隔离研究入口见[开发与分发](development.md)。各层回归的证据范围见[测试与桌面验收](testing.md)。原字段取证方法见[输入诊断](input-diagnostics.md)，未解决故障由 GitHub Issues 维护。

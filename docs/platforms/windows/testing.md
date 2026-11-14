@@ -2,7 +2,7 @@
 
 Windows 验收要回答用户能否在真实输入框中持续预览、安全接受、修改译文并正常退出。共享合同、受控原生测试、真实模型和物理输入分别提供证据，任何一层都不能替代其它层。
 
-先按[共享验证协议](../../engineering/testing.md)说明场景价值，再选择最接近故障的现有入口。本轮架构重构完成了 Windows 构建，但真实设置、编辑回源、写入退休与关闭尚未在 Windows 桌面执行；既有失败和当前验证范围统一见[开发状态](../../engineering/development-state.md)。推荐下载包另见[包身份与有限结果](README.md#当前可验证候选)。
+先按[共享验证协议](../../engineering/testing.md)说明场景价值，再选择最接近故障的现有入口。任务进展与验证证据由 [GitHub Issues](https://github.com/DingJWuyu/Typelay/issues)维护。已有发行包另见[包身份与有限结果](README.md#当前可验证候选)。
 
 ## 验证入口
 
@@ -149,7 +149,7 @@ Esc 后先确认撤权后的新观察与公开 Direct 就绪，再发送唯一 D
 
 ## Windows 浏览器合作链
 
-`--verify-browser-cooperation <结果目录> <发行根> <CfT路径>` 使用实际 App、BrowserHost、包内扩展和本轮已校验模型。Chrome for Testing（CfT）版本与摘要来自[固定来源](../../../tests/windows/support/chrome-for-testing.json)，缓存命中仍校验。
+`--verify-browser-cooperation <结果目录> <发行根> <CfT路径>` 使用实际 App、BrowserHost、包内扩展和本次已校验模型。Chrome for Testing（CfT）版本与摘要来自[固定来源](../../../tests/windows/support/chrome-for-testing.json)，缓存命中仍校验。
 
 真实注册仅在明确的 `TYPELAY_BROWSER_REGISTRATION_E2E=1` 环境启用。生产发现器读取标准 Chrome User Data，测试不改 `connection.json` 或注入另一个 profile 路径。一般运行要求根目录不存在并由 fixture 原子创建。
 
@@ -183,7 +183,7 @@ NTP 使用原 20 秒共用预算，先从 UIA Document 的 URL 确认内部页�
 dotnet test tests/windows/TypeLay.App.Tests/TypeLay.App.Tests.csproj -c Release --no-build --filter 'FullyQualifiedName~SessionShortcutHookTests|FullyQualifiedName~OverlayRenderingTests'
 ```
 
-本轮还需在 Windows 实跑[术语浮层反馈](../../../tests/windows/TypeLay.App.Tests/OverlayGlossaryTests.cs)、[设置提交反馈](../../../tests/windows/TypeLay.App.Tests/TranslationSettingsTests.cs)、编辑回源与关闭结算。当前新增 WPF 断言只有编译证据，不能写成桌面通过。
+修改术语或设置反馈时，在 Windows 执行[术语浮层反馈](../../../tests/windows/TypeLay.App.Tests/OverlayGlossaryTests.cs)、[设置提交反馈](../../../tests/windows/TypeLay.App.Tests/TranslationSettingsTests.cs)及受影响的编辑回源与关闭结算。WPF 编译不证明桌面行为通过。
 
 ## 系统 Edit 前台事务回归
 
@@ -200,7 +200,7 @@ python -m unittest discover -s tests/windows -p test_native_foreground_guards.py
 
 Windows 下另有测试专用 WinEvent DLL，只加载到自有 fixture。它观察真实 `EM_SETSEL` 栈内的 caret/selection 回调；无事件是有限阴性，不能推断永不重入。`OwnedRetirementInsideSelectionCallbackRejectsThePendingWriteBeforeTextMutation` 在该栈内退休 owned 寿命，要求拒绝正文且保留真实选区副作用。
 
-[既有单一反例](https://github.com/DingJWuyu/Typelay/actions/runs/38851776444/job/116814398968)观察到 SourceChanged 拒写、正文保持、选区 `[4,7]` 与焦点保持，但整例因测试 DLL 删除失败仍失败。该结果不能扩大成其它重入、物理键或第三方部署通过。
+该场景的历史 DLL 清理失败及原件由 [Issue #16](https://github.com/DingJWuyu/Typelay/issues/16)承接。有效拒绝子项不抵消清理失败，也不证明其它重入、物理键或第三方部署通过。
 
 ## 暂停入口回归
 
@@ -231,7 +231,7 @@ dotnet test tests/windows/TypeLay.App.Tests/TypeLay.App.Tests.csproj -c Release 
 
 Hook 保留原 64 条有界队列并报告溢出。capture、Broker 调用与源焦点诊断只输出固定类别、版本、布尔和时刻；没有 token 或进程状态时保留 null。只读既有 handle，不能为日志重新查询焦点或正文。可选 CDP 诊断保留最近 16 条已收到事件，不增加 RPC 或订阅；缺事件不能证明事件未发生。
 
-日志用于区分采集、调度、入口拒绝与显示失败，不能靠日志刷新、等待新许可或重按隐藏故障。当前无正文诊断用法见[用户故障取证](open-issues.md#新标签页实机复现)。
+日志用于区分采集、调度、入口拒绝与显示失败，不能靠日志刷新、等待新许可或重按隐藏故障。当前无正文诊断用法见[用户故障取证](input-diagnostics.md#新标签页实机复现)。
 
 生产 App 的 `--automation-test` 只为该进程提供明确的软件输入测试模式，不写设置。使用前退出旧客户端、设置完整发行根，直接启动 `app/TypeLay.App.exe --automation-test`；完成后退出，再用 `TypeLay.exe` 恢复普通模式。该参数不能绕过有序源的来源、IME、焦点或期限门，更不能充当物理验收。
 

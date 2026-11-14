@@ -1,6 +1,6 @@
 # 新界面的能力边界
 
-本页记录新原型中本轮只提供界面、不实现底层的功能。设置项必须明确显示尚未提供或不可用，不写入无效配置，不显示虚构下载、更新成功或硬件加速效果。界面重构不改变输入、焦点、输入法和写回安全条件。
+本页说明原型控件对应的现役能力。设置项必须明确显示尚未提供或不可用，不写入无效配置，不显示虚构下载、更新成功或硬件加速效果。界面重构不改变输入、焦点、输入法和写回安全条件。
 
 | 编号 | 界面 | 当前真实能力 | 后续需要实现 |
 | --- | --- | --- | --- |
@@ -15,22 +15,20 @@
 
 macOS 菜单栏、红黄绿窗口按钮、模拟聊天应用、场景控制器与预设译文只服务原型演示，不属于 Windows/Linux 产品界面。模型版本、容量和下载进度使用真实安装信息；不复制原型的虚构数据。快捷键冲突展示只反映实际校验和平台注册结果，不声称能扫描并归属任意应用的快捷键。
 
-## 已有底座的质量要求
+## 模型能力按发布策略判断
 
-术语表、按应用风格与换种说法的管理界面连接现有存储和会话接口，模型应用能力分别满足模型、语言方向和行为profile的质量条件。固定Index行为profile已登记中英双向仅术语应用；实际模型、方向和身份不满足时仍不应用，离线本地规则管理可用。该登记依据功能增量验收，不代表基础翻译的主体、数值或结构问题已经解决。
+术语表、按应用风格与换种说法的界面连接现有存储和会话接口。实际应用仍需满足模型、方向和固定 profile 的[采用条件](../engineering/model-runtime.md#模型能力边界)。离线本地规则管理可以使用，保存偏好不代表当前模型可以执行。
 
-自然/正式风格及换种说法仍未达到本轮放行标准：风格出现新增任务语义，改述未形成稳定的实质收益。这两项属于本轮未完成功能，而非第四类已允许的仅界面范围；组合能力也不借用术语证据。保存偏好不等于当前模型承诺执行，界面须明确区分已保存与当前可应用。当前验证和固定范围见[开发状态](../engineering/development-state.md)。
+自然/正式风格、换种说法与组合能力的未达标问题由[模型质量 #23](https://github.com/DingJWuyu/Typelay/issues/23)维护。它们不属于 N06–N11 的仅界面范围。
 
-## 原生呈现的已知差异
+## 原生呈现边界
 
-- 字体包提供Inter、Source Serif 4.004R派生的16个TypeLay Serif静态角色，以及SC/JP/KR的Noto Sans/Serif面，共32面；不是全CJK字符地区覆盖，TC/HK专用面未捆绑。光学角色按逻辑字号选择，不代表所有平台逐像素已验收；系统字体模式仍使用平台字体。
-- WPF浮层语言选择先退休原翻译会话，在原位置保留纯配置面板，清除旧接受许可；不把旧译文和原输入目标带入新的配置操作。它与原型保留背景译文的持续呈现仍有差异，其他消费者的具体差距见[原型对照](prototype-parity.md)。
-- GTK4 合作浮层保留已验证的即时尺寸变化，未为了弹簧动画引入已知编辑焦点丢失风险。GTK3 / Qt6 只对安全长文高度使用可中断弹簧，宽度和胶囊切形仍为即时变化。
-- GTK / Qt 跨应用浮层没有原型的背景模糊，使用可读的暖纸半透明回退；逐词模糊、写回飞入、拖动及完整菜单仍有差异。Qt 已拆分 More/语言 child，保四段风格及未开放禁用项。CI587 正式 Qt 桌面记录 26 项通过，并生成六张主题、两张中文编辑、两张暂停图；它们属于未封装构建的交互证据，`distributionAcceptance=false`，新图仍须逐张复核。此前已阅 More 三点、Expand 箭头与 paused 采色证据保留，英文 UI/Collapse 实图仍未齐。“暂时隐藏”复用现役 escape，原 × 及术语生命周期保持，既有受控单次事件/旧 view 负控和正式菜单全部 12 项完整可见已通过；完整 Host 隐藏及再次聚焦恢复用户链未闭。程序断言和局部实图不代替完整视觉 1:1，hover 与常驻关闭仍未改。GTK 使用私有字体配置与映射，不改变宿主默认映射；版本与系统字体行为见[合作组件说明](../platforms/linux/fcitx.md)。GTK3 设置语言弹层采用对应浅深实底，不声称已有背景模糊。
-- WPF普通编辑态与普通源字段待返回状态的重译确认键盘路径已有真实合同通过；CI571五个owned相关场景已逐名实际通过，包含Keep保稿/Undo与fresh source重新绑定子项；owned Replace 已发布源码已接真实 click/Enter/Space、独立 500ms 意图及 fresh 原源重译，475 项 Runtime/318 项 Core 与托管消费者构建通过；CI574 新 Click Keep、长按/重复拒绝及 Replace click/Enter/Space/空稿等 WPF 回归已过，迟消费重试与管道邻近也通过，不称完整交付。同壳340px确认呈现仍未等同原型中心modal、backdrop和完整动效。现有鼠标与无障碍操作不代替未完键盘路径，不放宽编辑或写回许可。
-- Browser 的新重译确认已发布版本协商的 Editing 实现与两端消费者，但未闭合最终平台验收：后来稿（含 ABA）优先、ACK 后 fresh 当前原源、明确拒绝与 unknown 分开；两端消费者已同 schema 合并。CI578 Linux DOM 96/96、Windows 三种 Replace/四种 Keep 已真实通过；无票确认的精确同稿 echo 保留锁原编辑序列防 ABA，保原合法展示续租与真实 Replace 500ms。CI579 Windows 术语入口及完整 9 场通过；CI583 正式 DOM 100/100、新 pending 精确 echo/后稿 ABA/焦点重入回归及 Windows 全部三 Replace/四 Keep、setup + 8 场已通过。保留原关联不授读写许可、不续原 500ms，上一头缺 render 身份仍不能认其排他根因；独立因果字段不改 snapshot 时间、permit 或 lease。完整键鼠/IME、Windows 明确失败后再试及混版 GUI 仍待平台。非 Editing 的完整确认状态和 rich 正文变化后旧 bookmark 失效的重译体验未齐，不能称全部浏览器确认完成。
-- GTK4 首 map 完整 CSS 与 nonmodal 配置修已越过原自退；同 map 已绘制内容 border 264 与完整不裁切真实通过，外层 342 包含阴影。CI587 正式配置前七场通过，包括 Enter 保存、实际 pinyin、held repeat、跨 row 与释放后 fresh 保存。第八场 window-focus 在 Begin 前 readiness 失败，Begin/Save/Cancel 均为 0；新 TRACE 记录 serverFocus=0、localFocus=1、local flags=2，分歧来源未知，flags 不能解读为 IME Known/Clear。完整外点/自然越界/Esc 矩阵与原 Composing 行点按接收目标仍未闭。独立早期 GTK4 术语矩阵首例在 capture-more→retain-more 间 lease 过期后 fixture abort，完成 0/40；最后快照源仍持焦，未证实源焦点丢失，具体慢阶段未知。有界耗时与焦点生命周期诊断候选已准备，本地检查已完成，独立审查进行中，目标平台验证待完成；原期限和资格门不变。GTK3 正式 21 项在本头完成，保源选择和显式 Apply；Unknown 专项仍未测。
-- Qt 目标搜索保原 source/target/交换，只在启用按需快捷键的源态开放，自动/禁快捷键和编辑态明确禁用；仅搜索当前 UI label/nativeLabel/code，完整按钮遍历未齐。CI587 真实 MOC/C++ 构建通过，两项 Unicode 查询经真实剪贴板 Ctrl+V 越过原超时，保存/交换、provider 恢复、键盘越界/取消及旧 opening 退休通过。随后 Composing 日语行收到新 press 却无新 clicked，回执等待失败；旧事件日志已达上限，release 接收者与几何原因未证。后续 Composing 零保存、Return/held/fresh 和配置主题截图未运行；有界点按诊断候选已准备，本地检查已完成，独立审查进行中，目标平台验证待完成。正式 Host 搜索及 multiline UTF-16/Undo、实际 pinyin 在独立未封装桌面链通过，不能抵消受控 probe 失败、改称发行包通过或物理 Unicode 键盘验收；停用固定 60s 自退后通过也不证明旧故障的排他原因。已有验证记录和缺口说明见[开发状态](../engineering/development-state.md)。
-- WPF 保留单一真实编辑控件与无障碍值语义；逐词模糊入场、跨进程向源框落入的装饰动画尚未等同原型。动画不足不能解释为已完整复刻。
+- 离线字体使用 Inter、TypeLay Serif 和 SC/JP/KR 的 Noto Sans/Serif。TC/HK 专用面未捆绑，系统字体模式使用平台字体。来源与角色见[字体资源说明](../../src/shared/ui/fonts/README.md)。
+- WPF 浮层语言选择先退休原翻译会话，再在原位置呈现纯配置面板。面板不持有旧译文的接受许可。
+- GTK4 合作浮层使用即时尺寸变化。GTK3 与 Qt6 对安全长文高度使用可中断弹簧，宽度和胶囊切形使用即时变化。
+- GTK/Qt 跨应用浮层使用暖纸半透明呈现，没有原型的背景模糊。GTK3 设置语言弹层使用浅深同色实底。GTK 私有字体映射不改变宿主默认映射，细节见[合作组件说明](../platforms/linux/fcitx.md)。
+- WPF 使用单一真实编辑控件与无障碍值语义。各平台的菜单、重译确认、装饰动画及材质差异，按[原型验收方法](prototype-parity.md)逐消费者核对。
 
-Linux 的全局暂停通过目标 niri 的显式系统键绑定调用 `typelay --toggle-pause`。界面录制与保存快捷键不等于所有 Wayland 合成器都自动注册成功，不修改用户已有合成器配置。
+剩余交互、视觉及历史失败由 [Issue #22](https://github.com/DingJWuyu/Typelay/issues/22)维护。GTK4 与 Qt 的现役失败分别由 [#14](https://github.com/DingJWuyu/Typelay/issues/14)、[#15](https://github.com/DingJWuyu/Typelay/issues/15)承接，局部成功不关闭完整产品验收。
+
+Linux 全局暂停通过目标 niri 的显式系统键绑定调用 `typelay --toggle-pause`。界面录制与保存快捷键不代表所有 Wayland 合成器都会注册成功，也不修改用户已有合成器配置。

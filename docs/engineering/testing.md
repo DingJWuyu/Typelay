@@ -99,7 +99,7 @@
 
 [Windows 测试](../platforms/windows/testing.md)维护 WPF、Win32 适配器、Hook、生产 Broker、搬迁 ZIP 和物理微软拼音路径。
 
-[Linux 开发与验证](../platforms/linux/development.md#验证)维护实际 tar.gz、CLI、安装生命周期、托盘、嵌套 niri 与目标桌面路径。修改设置或教程时，分别执行[设置与教程验收](../platforms/linux/development.md#设置与教程验收)。修改 GTK 通知、只读续显或 TextView direct 时，遵循[原生输入回归的判据](../platforms/linux/development.md#原生输入回归的判据)。验证 GIMP Comment 时，使用[宿主撤销对照](../platforms/linux/development.md#gimp-comment-的撤销边界)，不将宿主无 Undo 历史记作恢复成功。
+[Linux 开发与验证](../platforms/linux/development.md#验证)维护实际 tar.gz、CLI、安装生命周期、托盘、嵌套 niri 与目标桌面路径。修改设置或教程时，分别执行[设置与教程验收](../../.agents/skills/verify-typelay/features/applications.md#driving-it-with-private-niri)。修改 GTK 通知、只读续显或 TextView direct 时，遵循[原生输入回归的判据](../platforms/linux/development.md#原生输入回归的判据)。验证 GIMP Comment 时，使用[宿主撤销对照](../platforms/linux/development.md#gimp-comment-的撤销边界)，不将宿主无 Undo 历史记作恢复成功。
 
 ## Linux 模型包生命周期中的显式质量采集
 
@@ -120,7 +120,7 @@
 <a id="显式固定模型根因诊断40-响应"></a>
 <a id="hy-普通翻译解码对照"></a>
 
-固定输入、单因素对照、人工判分和功能增量准入统一见[翻译质量采集与评审](translation-quality.md)。现役质量门以[模型能力边界](development-state.md#模型能力边界)为准，不因采集完成或文档整理而开放。
+固定输入、单因素对照、人工判分和功能增量准入统一见[翻译质量采集与评审](translation-quality.md)。现役质量门以[模型能力边界](model-runtime.md#模型能力边界)为准，不因采集完成或文档整理而开放。
 
 ## 结果表述
 
