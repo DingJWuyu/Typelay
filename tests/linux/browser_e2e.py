@@ -1074,6 +1074,23 @@ class BrowserContract(unittest.TestCase):
                 )
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
 
+    def test_page_cli_shortcut_preserves_trigger_time_separately_from_observation(self):
+        self.type_source()
+        self.shortcut_snapshot()
+        result = self.page.evaluate("""() => {
+          const description = fixtureCommand({id: 711, op: 'describe'});
+          const source = fixtureCommand({id: 712, op: 'capture', data: {
+            target: description.target, authority: description.authority}});
+          const triggeredAtMs = fixtureHostClock().boottimeMs;
+          const response = fixtureCommand({id: 713, op: 'trigger-shortcut', data: {
+            target: source.target, authority: source.authority, generation: 'shortcut-dispatch',
+            kind: 'direct', triggeredAtMs}});
+          return {response, triggeredAtMs, event: fixtureMessages.filter(m=>m.event==='shortcut').at(-1)};
+        }""")
+        self.assertTrue(result["response"]["triggered"])
+        self.assertEqual(result["event"]["data"]["triggeredAtMs"], result["triggeredAtMs"])
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+
     def test_native_shortcut_uses_one_reply_and_preserves_the_host_command(self):
         self.type_source()
         snapshot = self.shortcut_snapshot("native")

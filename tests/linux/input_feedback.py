@@ -7874,6 +7874,65 @@ class InputFeedbackTests(unittest.TestCase):
             )
         self.assertEqual(self.host.notices, [])
 
+    def test_browser_cli_orders_original_trigger_without_raising_observation_time(self):
+        self.connect_registered_browser()
+        for mutation in ("none", "time", "kind", "generation", "missing", "expired"):
+            with self.subTest(mutation=mutation):
+                self.clock.return_value = 1000
+                self.generation = str(uuid.uuid4())
+                self.configure()
+                capture = asyncio.run(self.capture_browser())
+                self.input.notification(
+                    "publishShortcut",
+                    {
+                        "lease": {"source": capture["snapshot"]},
+                        "generation": self.generation,
+                    },
+                )
+                self.native_frames(self.peer)
+                self.clock.return_value = 1050
+                before = len(self.host.notices)
+
+                async def trigger():
+                    task = asyncio.create_task(
+                        self.input.trigger("direct", {"windowId": 99, "triggeredAtMs": 1040})
+                    )
+                    await asyncio.sleep(0)
+                    frames = self.native_frames(self.peer)
+                    self.assertEqual([frame["op"] for frame in frames], ["trigger-shortcut"])
+                    event = {
+                        "kind": "direct",
+                        "generation": self.generation,
+                        "triggeredAtMs": 1040,
+                        "acceptedAtMs": 1039,
+                        "native": {**self.browser_native, "observedAtMs": 1039},
+                    }
+                    if mutation == "time":
+                        event["triggeredAtMs"] = 1041
+                    elif mutation == "kind":
+                        event["kind"] = "wake"
+                    elif mutation == "generation":
+                        event["generation"] = str(uuid.uuid4())
+                    elif mutation == "missing":
+                        del event["triggeredAtMs"]
+                    elif mutation == "expired":
+                        self.clock.return_value = 1191
+                        event["acceptedAtMs"] = event["native"]["observedAtMs"] = 1190
+                    for _ in range(2):
+                        self.peer.link.receive(
+                            {"event": "shortcut", "data": event, "route": self.route}
+                        )
+                    self.peer.link.receive({"id": frames[0]["id"], "data": {"triggered": True}})
+                    await asyncio.wait_for(task, 1)
+
+                asyncio.run(trigger())
+                notices = self.host.notices[before:]
+                self.assertEqual(len(notices), 1 if mutation == "none" else 0)
+                if notices:
+                    self.assertEqual(notices[0]["acceptedAtMs"], 1039)
+                    self.assertEqual(notices[0]["source"]["observedAtMs"], 1039)
+                    self.assertEqual(notices[0]["source"]["text"], "Original source")
+
     def test_forwarded_qt_cli_keeps_its_original_time_and_emits_only_its_native_result(self):
         self.clock.return_value = 1050
         old = self.command(stamp=1020)
