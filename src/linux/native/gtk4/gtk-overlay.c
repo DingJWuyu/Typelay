@@ -2226,6 +2226,10 @@ typedef struct {
     gboolean pending, saving, opening, retired, english, swap_allowed, clear, composing, probing;
 } LanguageConfiguration;
 static LanguageConfiguration *language_configuration;
+/* Configuration retires the source interaction even after its widgets are
+ * destroyed. Keep only the publisher's bounded watermark, never source state. */
+static TlPresentationIdentity configuration_retired_identity;
+static char *configuration_retired_generation;
 static LanguageConfiguration *language_configuration_ref(LanguageConfiguration *configuration) {
     if (configuration) configuration->refs++;
     return configuration;
@@ -2943,6 +2947,9 @@ static void begin_language_configuration(GtkWidget *trigger, JsonObject *view) {
         || !tl_configuration_current(overlay.generation) || !tl_view_context_matches(target, view)) {
         json_object_unref(event); language_configuration_unref(configuration); goto done;
     }
+    configuration_retired_identity = overlay.identity;
+    g_free(configuration_retired_generation);
+    configuration_retired_generation = g_strdup(overlay.generation);
     hide_overlay("language-configuration");
     if (overlay.popover || language_configuration || !gtk_widget_get_mapped(top)
         || !gtk_window_is_active(GTK_WINDOW(top)) || tl_now() > configuration->expires) {
@@ -3442,6 +3449,10 @@ static gboolean render(Target *target, JsonObject *data) {
     if (overlay.target == target && g_strcmp0(overlay.generation, generation) == 0
         && !tl_presentation_follows(overlay.view, value, &overlay.identity, &identity)) return FALSE;
     language_configuration_close(TRUE);
+    if (g_strcmp0(configuration_retired_generation, generation) == 0
+        && (tl_presentation_same_interaction(&configuration_retired_identity, &identity)
+            || identity.display <= configuration_retired_identity.display
+            || identity.action < configuration_retired_identity.action)) return FALSE;
     gboolean is_paused = g_strcmp0(tl_string(value, "state"), "Paused") == 0;
     gboolean retained_editor = !is_paused && overlay.target == target && boolean(presentation, "editorOwnsText")
         && target && !target->dead

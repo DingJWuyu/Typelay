@@ -603,7 +603,7 @@ def gtk_source_glossary(out, environment, deadline, toolkit):
     ]
     config.write_text(
         "hotkey-overlay { skip-at-startup; }\nspawn-at-startup "
-        + " ".join(json.dumps(item) for item in command)
+        + " ".join(json.dumps(item, ensure_ascii=False) for item in command)
         + "\n"
     )
     nested_env = environment | {"GDK_BACKEND": "wayland", "LIBGL_ALWAYS_SOFTWARE": "1"}
@@ -1591,6 +1591,9 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                             assert not events("sessionGlossaryBegin")
                             unchanged()
                             host("retain-more-button")
+                            # Replace the host interaction, not only display text.
+                            # Cosmetic status updates retain the current menu.
+                            token["revision"] += 1
                             assert call(
                                 "overlay-render",
                                 {
@@ -3125,6 +3128,7 @@ if __name__ == "__main__":
             "gtk",
             "gtk-index",
             "gtk4",
+            "gtk4-interaction",
             "qt",
             "setup",
             "setup-settings",
@@ -3190,9 +3194,9 @@ if __name__ == "__main__":
             "GTK translation is unsupported; use --gtk-refusal for safety refusal or --desktop for the browser path"
         )
     if args.gtk_session_bindings and (
-        not args.desktop or args.desktop_scope not in ("gtk", "gtk4")
+        not args.desktop or args.desktop_scope not in ("gtk", "gtk4", "gtk4-interaction")
     ):
-        parser.error("--gtk-session-bindings requires --desktop --desktop-scope gtk or gtk4")
+        parser.error("--gtk-session-bindings requires a GTK desktop scope")
     if args.desktop and args.gtk_refusal:
         parser.error("--gtk-refusal and --desktop verify different capability scopes")
     if args.desktop and not args.package:
@@ -3211,7 +3215,10 @@ if __name__ == "__main__":
         not args.desktop or not args.inside or not args.model_cache
     ):
         parser.error("gtk-index requires --inside and --model-cache in verify-typelay")
-    if args.desktop_scope in ("gtk", "gtk-index", "gtk4") and not args.fcitx_cooperative:
+    if (
+        args.desktop_scope in ("gtk", "gtk-index", "gtk4", "gtk4-interaction")
+        and not args.fcitx_cooperative
+    ):
         parser.error("GTK desktop scopes require --fcitx-cooperative")
     if args.desktop_scope == "qt" and (not args.fcitx_cooperative or not args.qt_cooperative):
         parser.error("Qt research requires --fcitx-cooperative and --qt-cooperative")

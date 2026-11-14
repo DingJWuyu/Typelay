@@ -80,22 +80,35 @@ def gtk_candidate_observation_current(snapshot, source, not_before_ms):
     return snapshot
 
 
-def background_direct_rejection_current(report, rows, previous_feedback):
-    """Match the new single direct plan's refusal, not a prior status string."""
-    direct = [
-        row for row in rows if row.get("operation") in ("direct-write-start", "direct-write-result")
+def background_direct_settlement(rows):
+    """Direct shares the write ledger; correlate its sole terminal receipt by plan."""
+    writes = [
+        row
+        for row in rows
+        if row.get("operation", "").startswith("write-")
+        or row.get("operation") in ("direct-write-start", "direct-write-result")
     ]
-    if len(direct) != 2:
-        return False
-    start, result = direct
+    if len(writes) != 3:
+        return None
+    start, settlement, result = writes
+    detail = result.get("detail") or {}
     if (
         start.get("operation") != "direct-write-start"
         or result.get("operation") != "direct-write-result"
         or not start.get("planId")
-        or start["planId"] != result.get("planId")
+        or settlement.get("planId") != start["planId"]
+        or result.get("planId") != start["planId"]
+        or not detail.get("status")
+        or not detail.get("reason")
+        or settlement.get("operation") != f"write-{detail['status']}-{detail['reason']}"
     ):
-        return False
-    detail = result.get("detail") or {}
+        return None
+    return result
+
+
+def background_direct_rejection_current(report, outcome, previous_feedback):
+    """Match current feedback to the already correlated settlement's refusal."""
+    detail = outcome.get("detail") or {}
     if detail.get("status") != "RejectedBeforeMutation":
         return False
     reason = detail.get("reason")
@@ -129,6 +142,91 @@ def acceptance_observation_current(data, elapsed_ms):
         and elapsed_ms >= 0
         and remaining - elapsed_ms > 0
     )
+
+
+def run_gtk_configuration_journey(fixture_command, environment, output, gtk4, root_window):
+    """Run each configuration opening with its own fixture and original cleanup."""
+    from gtk_session_reentry import run_case
+
+    evidence = []
+    if gtk4:
+        # Independent, pre-registered configuration openings.
+        # Each action is sent once; captured sources are never renewed.
+        for action in (
+            "swap",
+            "swap-auto",
+            "enter",
+            "empty-recovery",
+            "tab-exit",
+            "shift-tab-exit",
+            "outside-blank",
+            "window-focus",
+        ):
+            with tempfile.TemporaryDirectory(prefix="tl-gtk-language-action-") as directory:
+                run_case(
+                    fixture_command,
+                    environment,
+                    output,
+                    None,
+                    Path(directory),
+                    "language-configuration-" + action,
+                    False,
+                    root_window,
+                    language_configuration=True,
+                )
+        evidence.append(
+            "GTK4 configuration: swap/search, empty recovery, natural Tab exit, outside click and second-window retirement"
+        )
+    with tempfile.TemporaryDirectory(prefix="tl-gtk-languages-") as directory:
+        run_case(
+            fixture_command,
+            environment,
+            output,
+            None,
+            Path(directory),
+            "language-options",
+            False,
+            root_window,
+            language_configuration=gtk4,
+        )
+    evidence.append(
+        "GTK4 configuration: source retired before search, keyboard navigation and explicit save/retry"
+        if gtk4
+        else "GTK renderer: catalog language choices preserve menu drafts and focus"
+    )
+    refusals = [
+        "body",
+        "host-token",
+        "state",
+        "authority",
+        "permissions",
+        "external-focus",
+        "source-input",
+        "trigger-authority",
+        "trigger-permissions",
+        "trigger-external-focus",
+        "trigger-expired-render",
+    ]
+    for refusal in refusals:
+        with tempfile.TemporaryDirectory(prefix="tl-gtk-language-refusal-") as directory:
+            run_case(
+                fixture_command,
+                environment,
+                output,
+                None,
+                Path(directory),
+                "language-retention-" + refusal,
+                False,
+                root_window,
+                language_configuration=gtk4,
+            )
+    evidence.append(
+        "GTK4 configuration: changed view, cancel, external focus and late ACK never restore the retired source"
+        if gtk4
+        else "GTK language preview: detached renewal rejects changed body, authority, "
+        "editing permission, external focus and source input"
+    )
+    return evidence
 
 
 def copy_setup_model_data(source_data, destination_data):
@@ -1059,12 +1157,14 @@ def run(arguments):
             evidence.append(verify_direction_installation(arguments, environment))
         send_tab = (
             prepare_tab(resources)
-            if arguments.desktop_scope in ("all", "browser", "qt", "gtk4", "ordinary-gimp")
+            if arguments.desktop_scope
+            in ("all", "browser", "qt", "gtk4", "gtk4-interaction", "ordinary-gimp")
             else None
         )
         control_keys = (
             {name: prepare_key(resources, name) for name in ("Control_L", "F7", "F8")}
-            if arguments.desktop_scope in ("all", "browser", "gtk", "gtk4", "qt")
+            if arguments.desktop_scope
+            in ("all", "browser", "gtk", "gtk4", "gtk4-interaction", "qt")
             else {}
         )
 
@@ -1902,8 +2002,13 @@ def run(arguments):
                     evidence.append(
                         "Wayland Firefox rich editor: selected-range CPU translation, native transaction, preserved surrounding marks and one Tab"
                     )
-        if arguments.fcitx_cooperative and arguments.desktop_scope in ("all", "gtk", "gtk4"):
-            gtk4 = arguments.desktop_scope == "gtk4"
+        if arguments.fcitx_cooperative and arguments.desktop_scope in (
+            "all",
+            "gtk",
+            "gtk4",
+            "gtk4-interaction",
+        ):
+            gtk4 = arguments.desktop_scope in ("gtk4", "gtk4-interaction")
             cooperation = arguments.fcitx_cooperative
             bundle_launcher = cooperation / "fcitx-cooperative.py"
             bundled = bundle_launcher.is_file()
@@ -2096,87 +2201,16 @@ def run(arguments):
                                 nested[0],
                             )
                         evidence.append("GTK renderer: only nonempty updating previews are muted")
-                        if gtk4:
-                            # Independent, pre-registered configuration openings.
-                            # No retry, old-source renewal or private activation.
-                            for action in (
-                                "swap",
-                                "swap-auto",
-                                "enter",
-                                "empty-recovery",
-                                "tab-exit",
-                                "shift-tab-exit",
-                                "outside-blank",
-                                "window-focus",
-                            ):
-                                with tempfile.TemporaryDirectory(
-                                    prefix="tl-gtk-language-action-"
-                                ) as directory:
-                                    run_case(
-                                        fixture_command,
-                                        gtk_environment,
-                                        arguments.output,
-                                        None,
-                                        Path(directory),
-                                        "language-configuration-" + action,
-                                        False,
-                                        nested[0],
-                                        language_configuration=True,
-                                    )
-                            evidence.append(
-                                "GTK4 configuration: swap/search, empty recovery, natural Tab exit, outside click and second-window retirement"
-                            )
-                        with tempfile.TemporaryDirectory(prefix="tl-gtk-languages-") as directory:
-                            run_case(
-                                fixture_command,
-                                gtk_environment,
-                                arguments.output,
-                                None,
-                                Path(directory),
-                                "language-options",
-                                False,
-                                nested[0],
-                                language_configuration=gtk4,
-                            )
-                        evidence.append(
-                            "GTK4 configuration: source retired before search, keyboard navigation and explicit save/retry"
-                            if gtk4
-                            else "GTK renderer: catalog language choices preserve menu drafts and focus"
-                        )
-                        refusals = [
-                            "body",
-                            "host-token",
-                            "state",
-                            "authority",
-                            "permissions",
-                            "external-focus",
-                            "source-input",
-                            "trigger-authority",
-                            "trigger-permissions",
-                            "trigger-external-focus",
-                            "trigger-expired-render",
-                        ]
-                        for refusal in refusals:
-                            with tempfile.TemporaryDirectory(
-                                prefix="tl-gtk-language-refusal-"
-                            ) as directory:
-                                run_case(
+                        if arguments.desktop_scope != "gtk4-interaction":
+                            evidence.extend(
+                                run_gtk_configuration_journey(
                                     fixture_command,
                                     gtk_environment,
                                     arguments.output,
-                                    None,
-                                    Path(directory),
-                                    "language-retention-" + refusal,
-                                    False,
+                                    gtk4,
                                     nested[0],
-                                    language_configuration=gtk4,
                                 )
-                        evidence.append(
-                            "GTK4 configuration: changed view, cancel, external focus and late ACK never restore the retired source"
-                            if gtk4
-                            else "GTK language preview: detached renewal rejects changed body, authority, "
-                            "editing permission, external focus and source input"
-                        )
+                            )
                         fixture = subprocess.Popen(
                             fixture_command,
                             env=gtk_environment,
@@ -4253,8 +4287,6 @@ def run(arguments):
 
                             def direct_terminal():
                                 report = status()
-                                if not changes_source:
-                                    return report.get("serviceStatus") == terminal
                                 with trace_path.open("rb") as trace:
                                     trace.seek(before_write)
                                     data = trace.read()
@@ -4266,15 +4298,18 @@ def run(arguments):
                                 # Real typing/focus transitions can safely refuse at
                                 # either gate, but only this new plan's exact receipt
                                 # and its corresponding public feedback are accepted.
-                                complete = background_direct_rejection_current(
-                                    report, rows, before_feedback
+                                outcome = background_direct_settlement(rows)
+                                complete = outcome is not None and (
+                                    background_direct_rejection_current(
+                                        report, outcome, before_feedback
+                                    )
+                                    if changes_source
+                                    else outcome["detail"]
+                                    == {"status": "Verified", "reason": "None"}
+                                    and report.get("serviceStatus") == terminal
                                 )
                                 if complete:
-                                    record["directOutcome"] = next(
-                                        row
-                                        for row in rows
-                                        if row.get("operation") == "direct-write-result"
-                                    )
+                                    record["directOutcome"] = outcome
                                 return complete
 
                             wait_for(
@@ -4309,9 +4344,7 @@ def run(arguments):
                             assert not first_after["focused"]
                             assert first_after["focusIn"] == first_before["focusIn"]
                             assert first_after["focusOut"] == first_before["focusOut"] + 1
-                            assert not new_write_outcomes(before_write), (
-                                "direct work used the Tab write path"
-                            )
+                            assert record["directOutcome"]["planId"]
                             if changes_source:
                                 assert after["first"] == source + "!"
                                 assert first_after["insertions"] == first_before["insertions"] + 1

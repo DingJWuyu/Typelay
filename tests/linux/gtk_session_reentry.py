@@ -136,6 +136,20 @@ def click_once(nested, point, evidence):
 
 
 def run_reentry_checks(command, environment, output, send_accept, *, gtk4, nested):
+    if gtk4:
+        connected_output = output / "gtk4-connected-before-map"
+        connected_output.mkdir()
+        with tempfile.TemporaryDirectory(prefix="tl-gtk-connect-") as directory:
+            run_case(
+                command,
+                {**environment, "TYPELAY_FIXTURE_CONNECT_BEFORE_MAP": "1"},
+                connected_output,
+                send_accept,
+                Path(directory),
+                "delete",
+                False,
+                nested,
+            )
     # Both cases dispatch the same real configure command inside the callback.
     # Only the generation changes, so nested IME dispatch cannot fake a pass.
     stages = ["delete", "insert", "selection", "footer", "expand"]
@@ -310,6 +324,10 @@ def run_case(
                     and value,
                     f"{name}: actual source IME/parent geometry did not become ready",
                 )
+                if child_environment.get("TYPELAY_FIXTURE_CONNECT_BEFORE_MAP"):
+                    assert (
+                        0 < initial["connectedBeforeMapAtUs"] < initial["firstEntry"]["focusInAtUs"]
+                    ), "the regression requires connection before actual GTK focus"
                 generation = str(uuid.uuid4())
                 configuration = {
                     "enabled": False,
@@ -1520,6 +1538,35 @@ async def language_wait_for(predicate, description, timeout=5):
     raise AssertionError(description)
 
 
+async def capture_language_source(input_service, ready, evidence):
+    """Admit the first source within the original readiness budget, before any lease."""
+    deadline = time.monotonic() + 5
+    attempts = evidence.setdefault("initialCaptureAdmission", [])
+    while time.monotonic() < deadline:
+        initial = await language_wait_for(
+            ready,
+            "language source IME/parent/compositor did not become ready",
+            timeout=deadline - time.monotonic(),
+        )
+        before = input_service.diagnostics()["windowEpoch"]
+        captured = await input_service.request("capture", {})
+        accepted = bool(captured and captured.get("snapshot"))
+        attempts.append(
+            {
+                "atMs": now_ms(),
+                "windowEpochBefore": before,
+                "windowEpochAfter": input_service.diagnostics()["windowEpoch"],
+                "snapshotAdmitted": accepted,
+                "reason": None if accepted else input_service.capture_status,
+            }
+        )
+        assert time.monotonic() < deadline, "initial source capture exceeded readiness budget"
+        if accepted:
+            return initial, captured
+        assert input_service.capture_status == "window-changing", input_service.capture_status
+    raise AssertionError("initial source capture did not stabilize within readiness budget")
+
+
 async def language_command(*arguments, timeout, environment=None):
     child = await asyncio.create_subprocess_exec(
         *arguments, env=environment, stdout=asyncio.subprocess.PIPE
@@ -1544,7 +1591,7 @@ async def language_key(value):
     await asyncio.sleep(0.025)  # Preserve key()'s original pacing, not a new retry/wait.
 
 
-def language_configuration_preview(source, generation):
+def language_configuration_preview(source, generation, *, display_sequence=1):
     return {
         "state": "ValidTranslation",
         "source": source,
@@ -1566,6 +1613,13 @@ def language_configuration_preview(source, generation):
             "exitHint": "fixture exit",
         },
         "viewContext": {
+            "identity": {
+                "version": 1,
+                "interactionId": str(uuid.uuid4()),
+                "displaySequence": display_sequence,
+                "draftRevision": 0,
+                "actionRevision": 1,
+            },
             "token": {"target": source["target"], "commandGeneration": generation, "revision": 1},
             "bindings": {"accept": "F1", "exit": "F24"},
             "canEdit": False,
@@ -1624,6 +1678,14 @@ async def check_language_configuration(
         assert actual["first"] == initial["first"] and actual["second"] == initial["second"]
         return actual
 
+    def configuration_open():
+        current = overlay.input.diagnostics()["languageConfiguration"]
+        return bool(
+            current
+            and current["openingId"] == configuration["openingId"]
+            and current["phase"] == "Open"
+        )
+
     def config_current():
         assert (
             overlay.input.diagnostics()["languageConfiguration"]["openingId"]
@@ -1665,7 +1727,7 @@ async def check_language_configuration(
             "xdotool", "type", "--clearmodifiers", "--delay", "0", text, timeout=3
         )
 
-    def geometry(actual, name):
+    def geometry(actual, name, *, leading=False):
         control = actual.get("overlayControls", {}).get(name, {})
         if not parent_geometry_ready(actual, dimensions) or control.get("enabled") is not True:
             return None
@@ -1683,18 +1745,21 @@ async def check_language_configuration(
             return None
         return click_point(
             actual,
-            (bounds["x"] + bounds["width"] / 2, bounds["y"] + bounds["height"] / 2),
+            (
+                bounds["x"] + (8 if leading else bounds["width"] / 2),
+                bounds["y"] + bounds["height"] / 2,
+            ),
             dimensions,
         )
 
-    async def click(name, *, opening=False):
+    async def click(name, *, opening=False, leading=False):
         # Freeze one painted object and one point. The production owner's normal
         # pre-begin display renewal is not a configuration/source capability.
         def ready():
             if not opening:
                 config_current()
             actual = observe()
-            point = geometry(actual, name)
+            point = geometry(actual, name, leading=leading)
             return (actual, point) if point else None
 
         actual, point = await language_wait_for(ready, f"{name}: current painted geometry missing")
@@ -1894,7 +1959,12 @@ async def check_language_configuration(
             fresh = await overlay.input.request("capture", {})
             assert fresh and fresh.get("snapshot") and fresh["snapshot"]["text"] == initial["first"]
             assert fresh["snapshot"]["observedAtMs"] > source["observedAtMs"]
-            following = language_configuration_preview(fresh["snapshot"], generation)
+            following = language_configuration_preview(
+                fresh["snapshot"],
+                generation,
+                display_sequence=old_render["view"]["viewContext"]["identity"]["displaySequence"]
+                + 1,
+            )
             following["viewContext"]["token"]["revision"] = 2
             overlay.render(following)
             await language_wait_for(
@@ -1911,7 +1981,7 @@ async def check_language_configuration(
     # Require actual Clear in the same observation budget; Unknown admits no input.
     actual = await language_wait_for(
         lambda: (value := observe())
-        and configuration["phase"] == "Open"
+        and configuration_open()
         and value.get("overlayControls", {}).get(search_name, {}).get("focused")
         and value.get("focusedImeClear") is True
         and all(
@@ -2290,7 +2360,10 @@ async def check_language_configuration(
         await language_wait_for(
             lambda: observe().get("focusedImeComposing"), "real search preedit missing"
         )
-        hover, pre_send = await click("typelay-language-choice-en")
+        # The IM candidate popup can cover the row center. Its commit is not a
+        # language-button action. Use the row's visible leading edge, still one
+        # fixed painted point with the original native hover proof and click.
+        hover, pre_send = await click("typelay-language-choice-en", leading=True)
         await peer.link.ask("describe")
         composed = observe()
         try:
@@ -2440,7 +2513,7 @@ async def check_language_configuration(
         await click("typelay-language-choice-ko")
         await language_wait_for(
             lambda: len(calls["save"]) == 1
-            and configuration["phase"] == "Open"
+            and configuration_open()
             and observe()["overlayControls"].get("fixture-language-feedback", {}).get("text"),
             "explicit save failure did not return this opening to Open",
         )
@@ -2479,7 +2552,7 @@ async def check_language_configuration(
         assert not any(event.get("operation") in ("accept", "beginEdit") for event in native_events)
         await source_click("firstEntry")
         await source_key("F1")
-        await peer.link.ask("describe")
+        described = await peer.link.ask("describe")
         assert observe().get("candidate") is None and not overlay.acceptance_ready
         assert not any(event.get("operation") in ("accept", "beginEdit") for event in native_events)
         rejected = json.loads(json.dumps(old_render))
@@ -2490,7 +2563,14 @@ async def check_language_configuration(
             rejected["view"]["editable"] = True
             rejected["view"]["viewContext"]["canEdit"] = True
         assert now_ms() <= old_render["expiresAtMs"], "closed-opening refusal masked by expiry"
-        assert await peer.link.ask("overlay-render", rejected) == {
+        reply = await peer.link.ask("overlay-render", rejected)
+        evidence["closedOpeningReplay"] = {
+            "reply": reply,
+            "originalAuthority": old_render["authority"],
+            "replayedAuthority": rejected["authority"],
+            "currentAuthority": described.get("authority") if described else None,
+        }
+        assert reply == {
             "visible": False,
             "editing": False,
         }
@@ -2842,9 +2922,16 @@ def run_owned_language_options(
                 )
 
             try:
-                initial = await language_wait_for(
-                    source_ready, "language source IME/parent/compositor did not become ready"
-                )
+                if configuration_stage:
+                    initial, captured = await capture_language_source(
+                        input_service, source_ready, evidence
+                    )
+                else:
+                    initial = await language_wait_for(
+                        source_ready, "language source IME/parent/compositor did not become ready"
+                    )
+                    captured = await input_service.request("capture", {})
+                    assert captured and captured.get("snapshot"), input_service.capture_status
             except AssertionError:
                 try:
                     if configuration_stage == "language-configuration-window-focus":
@@ -2875,8 +2962,6 @@ def run_owned_language_options(
                 except Exception:
                     pass  # Projection failures must preserve the original readiness assertion.
                 raise
-            captured = await input_service.request("capture", {})
-            assert captured and captured.get("snapshot"), input_service.capture_status
             source = captured["snapshot"]
             assert source["text"] == initial["first"]
             acknowledgement = captured["sessionShortcuts"]
