@@ -6184,6 +6184,37 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(self.accepted(), [])
 
+    def test_each_incomplete_utf16_edit_has_a_lossless_json_draft_and_can_recover(self):
+        self.open_editor("Tab", "Esc")
+        editor = self.overlay_control("TypeLay 译文", "textbox")
+        observed = self.overlay_dom(
+            editor,
+            r"""function() {
+              const values = ['Draft \ud83d', 'Draft 🙂', 'Draft \ude42', 'Recovered'];
+              const result = [];
+              for (const value of values) {
+                this.value = value;
+                this.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText'}));
+                const frame = fixtureMessages.findLast(m => m.event === 'ui' && m.data.operation === 'draft');
+                result.push(JSON.parse(JSON.stringify(frame.data.value)));
+              }
+              return {values:result, local:this.value, focused:this.matches(':focus')};
+            }""",
+        )
+        self.assertEqual(
+            observed["values"],
+            [
+                {"utf16": [68, 114, 97, 102, 116, 32, 55357]},
+                "Draft 🙂",
+                {"utf16": [68, 114, 97, 102, 116, 32, 56898]},
+                "Recovered",
+            ],
+        )
+        self.assertEqual(observed["local"], "Recovered")
+        self.assertTrue(observed["focused"])
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+
     def test_editor_draft_survives_render_and_two_separate_tabs_return_then_accept(self):
         self.check_editor_draft_return_then_accept("Tab", "Esc")
 

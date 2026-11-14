@@ -19,7 +19,20 @@ from geometry import anchor_geometry
 from link import Link, RoutedReply
 from niri import Niri
 from paths import peer_credentials, process_identity, process_lineage
-from wire import now_ms
+from wire import MAX_FRAME, now_ms
+
+
+def _browser_draft(value):
+    # Keep the JSON-safe representation until the .NET draft boundary. Decoding
+    # lone units here would make the next UTF-8 pipe encode fail again.
+    return isinstance(value, str) or (
+        isinstance(value, dict)
+        and set(value) == {"utf16"}
+        and isinstance(value["utf16"], list)
+        and len(value["utf16"]) < MAX_FRAME // 2
+        and all(type(unit) is int and 0 <= unit <= 65535 for unit in value["utf16"])
+    )
+
 
 # Same presentation handoff as the browser hint and Windows owned precedent.
 # This is not an input-latency guarantee and never alters a permit's deadline.
@@ -4255,7 +4268,7 @@ class Input:
                 if operation == "draft":
                     text = (
                         value
-                        if isinstance(value, str)
+                        if _browser_draft(value)
                         else value.get("text")
                         if (
                             isinstance(value, dict)
@@ -4264,7 +4277,7 @@ class Input:
                         )
                         else None
                     )
-                    if isinstance(text, str):
+                    if _browser_draft(text):
                         owner["draft"] = text
                         if actual is None:
                             # The UI task and Returning render each precede the
@@ -4369,12 +4382,13 @@ class Input:
             or token.get("commandGeneration") != acknowledgement["generation"]
             or not isinstance(value, dict)
             or set(value) != {"draft", "queuedAtMs"}
-            or not isinstance(value["draft"], str)
+            or not _browser_draft(value["draft"])
             or type(value["queuedAtMs"]) is not int
         ):
             return None
         if (
             not record.get("editorRegenerateSupported")
+            or not isinstance(value["draft"], str)
             or "\0" in value["draft"]
             or any(0xD800 <= ord(character) <= 0xDFFF for character in value["draft"])
             or len(value["draft"].encode("utf-16-le")) // 2 > 8192

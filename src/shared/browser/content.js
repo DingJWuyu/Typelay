@@ -131,6 +131,11 @@
     if (overlay) send("ui", {target: overlay.field.id, operation, revision: overlay.revision,
       generation: overlay.generation, value});
   };
+  // JSON consumers require Unicode scalars; the DOM can temporarily contain
+  // half of a supplementary character. Preserve every draft update losslessly,
+  // without treating its transport representation as permission to write it.
+  const draftText = text => text.isWellFormed() ? text
+    : {utf16: Array.from({length: text.length}, (_, index) => text.charCodeAt(index))};
   // Configuration is Applied only by this document's installed source/editor
   // listeners. A native-host or another document's ACK cannot grant capability.
   const shortcutDispatch = () => configuration?.shortcutDispatch === undefined
@@ -1273,7 +1278,7 @@
           closeRegenerate(overlay);
           overlay.draftRevision = (overlay.draftRevision || 0) + 1;
           ui("draft", overlay.editorReturn?.actionId
-            ? {actionId: overlay.editorReturn.actionId, text: editor.value} : editor.value);
+            ? {actionId: overlay.editorReturn.actionId, text: draftText(editor.value)} : draftText(editor.value));
           if (overlay?.editor === editor) refreshTextActions(overlay);
           sizeEditor(); position();
         }
@@ -1656,7 +1661,7 @@
     if (failed) {
       const current = overlay, retry = document.createElement("button");
       const opened = {field: current.field, generation: current.generation, revision: current.revision,
-        token: JSON.stringify(current.viewToken)};
+        identity: current.identity, token: JSON.stringify(current.viewToken)};
       retry.id = "translation-retry"; retry.className = "retry";
       retry.setAttribute("aria-label", "重试"); retry.title = "重试";
       retry.disabled = !!current.retryPending;
@@ -1759,7 +1764,7 @@
           || current.draftRevision !== echo.draftRevision || current.editor.value !== echo.draft) return;
         current.editorReturn = {token: current.viewToken, tokenKey: JSON.stringify(current.viewToken),
           revision: current.revision, queuedAtMs, actionId: null, operation: null, returned: false, echo};
-        ui("regenerate", {draft: echo.draft, queuedAtMs});
+        ui("regenerate", {draft: draftText(echo.draft), queuedAtMs});
       } else ui("regenerate");
     }
     if (overlay === current) position();
@@ -1811,7 +1816,7 @@
       && !field.dead && !field.quarantined && approved(field, data.authority) && issued(field, data.authority)
       && field.ime === "Clear" && document.hasFocus() && editorFocused();
     const response = returned => ({returned, editorReturn: request,
-      contextLost: !returned && !editorLegal(), editorFocused: editorFocused(), draft: current.editor.value});
+      contextLost: !returned && !editorLegal(), editorFocused: editorFocused(), draft: draftText(current.editor.value)});
     const expires = {expiresAtPerformanceMs: deadline(request.expiresAtMs, 500),
       expiresAtWallMs: request.expiresAtMs - clock?.upperWall};
     if (!sessionCurrent(data.generation) || !editorConfigured(field) || !approved(field, data.authority)

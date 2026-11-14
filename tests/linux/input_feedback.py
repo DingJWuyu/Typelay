@@ -4012,6 +4012,78 @@ class InputFeedbackTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def test_browser_pending_return_preserves_incomplete_drafts_and_later_recovery(self):
+        self.connect_registered_browser()
+
+        async def exercise():
+            state = await self.begin_browser_editor_return()
+            frame = await self.editor_return_frame(state, "return")
+            drafts = [{"utf16": [65, 55357]}, "A🙂", {"utf16": [65, 56898]}, "Recovered"]
+            for invalid in (
+                {"utf16": [True]},
+                {"utf16": [-1]},
+                {"utf16": [65536]},
+                {"utf16": [1.5]},
+                {"utf16": [], "text": "ambiguous"},
+            ):
+                self.peer.link.receive(
+                    {
+                        "event": "ui",
+                        "route": self.route,
+                        "data": {**state.event, "operation": "draft", "value": invalid},
+                    }
+                )
+            self.assertEqual(
+                [value for operation, value in self.host.events if operation == "draft"], []
+            )
+            for draft in drafts:
+                self.peer.link.receive(
+                    {
+                        "event": "ui",
+                        "route": self.route,
+                        "data": {**state.event, "operation": "draft", "value": draft},
+                    }
+                )
+            self.assertEqual(
+                [value for operation, value in self.host.events if operation == "draft"],
+                drafts,
+            )
+            action_id = state.requests[0]["action"]["actionId"]
+            for draft in drafts:
+                self.peer.link.receive(
+                    {
+                        "event": "ui",
+                        "route": self.route,
+                        "data": {
+                            **state.event,
+                            "operation": "draft",
+                            "value": {"actionId": action_id, "text": draft},
+                        },
+                    }
+                )
+            self.assertEqual(
+                [value for operation, value in self.host.events if operation == "draft"],
+                drafts + drafts,
+            )
+            self.peer.link.receive(
+                {
+                    "id": frame["id"],
+                    "route": self.route,
+                    "data": {
+                        "returned": False,
+                        "contextLost": False,
+                        "editorReturn": state.requests[0],
+                        "editorFocused": True,
+                        "draft": "Recovered",
+                    },
+                }
+            )
+            await self.settle_overlay(state.jobs)
+            self.assertEqual(state.results, [{"returned": False}])
+            await self.finish_browser_editor_return(state)
+
+        asyncio.run(exercise())
+
     def test_browser_unsent_expiry_flushes_real_latest_draft_before_false_without_native_return(
         self,
     ):

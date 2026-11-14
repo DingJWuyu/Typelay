@@ -27,6 +27,7 @@ Preconditions: 对本次合成字段有明确写回验收意图，实验选项�
 - **既有原生合同。** 在私有会话里执行 `DISPLAY="$TYPELAY_VERIFY_XDISPLAY" /usr/bin/python3 tests/linux/native_e2e.py --inside --gtk-refusal --native "$PWD/artifacts/linux/native" --output "$TYPELAY_VERIFY_OUTPUT/refusal"`，先创建输出目录。这条受控链验证 Unknown 拒绝与按键透传，不能算成功写回。
 - **真实合作回归。** 正式模型安装后，可运行 `native_e2e.py --inside --desktop --desktop-scope gtk`，提供私有 `--package`、`--fcitx-cooperative "$TYPELAY_VERIFY_COOPERATIVE"`、`--native "$PWD/artifacts/linux/native"` 和新的 `--output`，并设置私有 DISPLAY。该入口使用受控 GTK fixture 与初始化设置，保留其候选、Verified 回执和计数判据，单独标明证据边界。
 - **Windows 合作浏览器。** 本机只按 [Windows 证据](../references/windows.md)读取 Actions。对应入口覆盖默认 Index、人工稿两次独立 Tab 和原字段直接替换，不能用 Linux 旅程替代。
+- **浏览器草稿传输。** 在私有会话运行 `tests/linux/browser_e2e.py`，检查暂时不完整的 UTF-16 编辑仍逐次传递，补齐 emoji 后保留完整稿。结合共享 Protocol 与 Core 回归，检查非法载荷被拒、非法最终稿不能写入。该受控 DOM 契约不替代 Windows 的真实 Index 旅程。
 
 ## Gotchas
 
@@ -34,3 +35,4 @@ Preconditions: 对本次合成字段有明确写回验收意图，实验选项�
 - 可见译文、`ValidTranslation` 与短期接受许可不同。资格失效时不得重复投递直到“碰巧通过”，也不得放宽输入法状态或焦点判断。
 - GIMP 3.2.6-2 的 Comment 不提供评论修改的原生 Undo。既有 `ordinary-gimp` 会比较原生粘贴轨迹，这种不支持不能报告成 TypeLay 撤销成功。
 - 合成键盘、受控 fixture 与物理输入法各有边界。本机未执行物理输入法验收。
+- Windows 逐 UTF-16 单元输入 emoji 时，编辑器可能短暂持有孤立代理码元。验收保留原输入和完整稿，核对第一次 Tab 前的浮层仍可见，回源零写与下一次独立接受分别有证据。不能删除 emoji 或改换输入入口来绕过断连。

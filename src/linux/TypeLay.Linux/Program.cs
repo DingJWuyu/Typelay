@@ -1,5 +1,6 @@
 using System.Text.Json;
 using TypeLay.Core;
+using TypeLay.Protocol;
 using TypeLay.Runtime;
 
 namespace TypeLay.Linux;
@@ -519,7 +520,8 @@ internal static class Program
                         pendingSettingsDraft = null;
                     break;
                 case "draft":
-                    view.DraftChanged?.Invoke(value.GetString()!);
+                    if (EditorDraftText.TryRead(value, out string draftText))
+                        view.DraftChanged?.Invoke(draftText);
                     break;
                 case "composition":
                     view.EditingComposition = value.GetBoolean();
@@ -584,7 +586,7 @@ internal static class Program
                     };
                 case "editorRegenerate":
                     if (!ExactObject(value, "action", "draft")
-                        || value.GetProperty("draft").ValueKind != JsonValueKind.String)
+                        || !EditorDraftText.TryRead(value.GetProperty("draft"), out string regenerateDraft))
                         return false;
                     var editorAction = value.GetProperty("action");
                     if (!ExactObject(editorAction, "actionId", "token", "queuedAtMs")
@@ -598,7 +600,7 @@ internal static class Program
                     var regenerateRequest = DesktopLink.Decode<EditorRegenerateRequest>(editorAction);
                     if (regenerateRequest.Token != view.Token || regenerateRequest.Token.Target.Backend != "linux-browser")
                         return false;
-                    view.DraftChanged?.Invoke(value.GetProperty("draft").GetString()!);
+                    view.DraftChanged?.Invoke(regenerateDraft);
                     return view.EditorRegenerateRequested is { } regenerateEditor && await regenerateEditor(regenerateRequest);
                 case "beginLanguageConfiguration":
                     return await BeginLanguageConfiguration(value);
