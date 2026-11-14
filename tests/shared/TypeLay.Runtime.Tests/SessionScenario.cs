@@ -423,6 +423,10 @@ internal sealed class SessionScenario : IDisposable
             Available = true;
         }
         public string? Application { get; set; } = "org.typelay.ControlledApp";
+        public SourceObservationVersion? SourceVersion
+        {
+            get; set;
+        }
         public Func<SessionShortcutAcknowledgement, SessionShortcutAcknowledgement?> TransformAcknowledgement { get; set; } = value => value;
         public Action<InputContext>? CaptureObserved
         {
@@ -436,7 +440,8 @@ internal sealed class SessionScenario : IDisposable
                 host.Input.GetFocus(host.Source.Target), Application, context.UserEpoch, context.ForegroundEpoch,
                 TransformAcknowledgement(new(host.Source.Target, host.Input.CommandGeneration, host.Input.SessionBindings,
                     host.Input.SessionEnabled, host.Input.SessionEnabled)),
-                OwnedSource: context.PracticeRead is { } practice ? new(practice, host.Loop.NowMs, false) : null));
+                OwnedSource: context.PracticeRead is { } practice ? new(practice, host.Loop.NowMs, false) : null,
+                SourceVersion: SourceVersion));
         }
         public List<InputContext> PauseRequests { get; } = [];
         public TaskCompletionSource<PauseObservation>? PendingPauseObservation

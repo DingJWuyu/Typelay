@@ -11,12 +11,168 @@ from unittest.mock import Mock, call, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
+from desktop_e2e import background_direct_settlement  # noqa: E402
 from qt_cooperative.run import prepare_source_glossary_capture_basis  # noqa: E402
 from qt_desktop import (  # noqa: E402
+    configured_acceptance_settlement,
     displayed_wake_candidate,
     observe_qt_processes,
     settled_overlay_motion,
 )
+
+
+class ConfiguredAcceptanceSettlementTests(unittest.TestCase):
+    # c18d's actual publication/controller identities and times. acceptedAtMs
+    # is supplied through the native receipt boundary tested in input_feedback;
+    # that new diagnostic was not present in the historical c18d artifact.
+    observed = {
+        "planId": "2092a33f-9a0a-493a-9e53-6ad0037571a0",
+        "receivedAtMs": 1182259,
+        "sendStartedAtMs": 1182259,
+        "sendReturnedAtMs": 1182259,
+        "permitUntilMs": 1182359,
+    }
+    accepted = {
+        "planId": "510c0439-4eba-4d02-9c1b-5b4a7ddb6f39",
+        "receivedAtMs": 1182300,
+        "sendStartedAtMs": 1182300,
+        "sendReturnedAtMs": 1182300,
+        "permitUntilMs": 1182398,
+        "acceptedAtMs": 1182307,
+        "status": "Verified",
+        "reason": "None",
+    }
+    verified = {
+        "atMs": 1182316,
+        "operation": "write-Verified-None",
+        "planId": accepted["planId"],
+    }
+
+    def observe(self, rows=None, publications=None):
+        return configured_acceptance_settlement(
+            [self.verified] if rows is None else rows,
+            [self.observed, self.accepted] if publications is None else publications,
+            self.observed,
+            1182299,
+        )
+
+    def test_original_key_can_consume_a_fresh_publication_after_readiness_was_observed(self):
+        self.assertEqual(self.observe(), {"publication": self.accepted, "verified": self.verified})
+
+    def test_the_observed_publication_can_itself_supply_the_original_receipt(self):
+        publication = {
+            **self.observed,
+            "acceptedAtMs": 1182307,
+            "status": "Verified",
+            "reason": "None",
+        }
+        verified = {**self.verified, "planId": publication["planId"]}
+        self.assertEqual(
+            self.observe([verified], [publication]),
+            {"publication": publication, "verified": verified},
+        )
+
+    def test_native_can_accept_before_the_host_records_its_queue_handoff_return(self):
+        publication = {**self.accepted, "sendReturnedAtMs": self.accepted["acceptedAtMs"] + 1}
+        self.assertEqual(
+            self.observe(publications=[self.observed, publication]),
+            {"publication": publication, "verified": self.verified},
+        )
+
+    def test_missing_duplicate_and_unrelated_receipts_cannot_prove_the_original_key(self):
+        for rows in (
+            [],
+            [self.verified, self.verified],
+            [{**self.verified, "operation": "write-OutcomeUnknown-UnknownOutcome"}],
+            [{**self.verified, "planId": self.observed["planId"]}],
+        ):
+            with self.subTest(rows=rows):
+                self.assertIsNone(self.observe(rows=rows))
+        for publications in (
+            [],
+            [self.observed],
+            [self.accepted],
+            [self.observed, self.accepted, self.accepted],
+            [self.observed, self.observed, self.accepted],
+            [self.observed, self.accepted, {**self.accepted, "planId": "another-plan"}],
+        ):
+            with self.subTest(publications=publications):
+                self.assertIsNone(self.observe(publications=publications))
+        for key in self.accepted:
+            missing = dict(self.accepted)
+            del missing[key]
+            with self.subTest(missing=key):
+                self.assertIsNone(self.observe(publications=[self.observed, missing]))
+
+    def test_expired_unissued_and_late_publications_are_not_original_acceptance(self):
+        for changed in (
+            {"acceptedAtMs": self.accepted["permitUntilMs"]},
+            {"permitUntilMs": self.accepted["acceptedAtMs"] + 101},
+            {"acceptedAtMs": 1182298},
+            {"acceptedAtMs": self.verified["atMs"] + 1},
+            {"receivedAtMs": self.observed["receivedAtMs"] - 1},
+            {"sendStartedAtMs": self.accepted["receivedAtMs"] - 1},
+            {"sendStartedAtMs": self.accepted["acceptedAtMs"] + 1},
+            {"sendReturnedAtMs": self.accepted["sendStartedAtMs"] - 1},
+            {"acceptedAtMs": True},
+            {"status": "RejectedBeforeMutation", "reason": "EpochChanged"},
+        ):
+            with self.subTest(changed=changed):
+                self.assertIsNone(
+                    self.observe(publications=[self.observed, {**self.accepted, **changed}])
+                )
+
+
+class QtDirectSettlementTests(unittest.TestCase):
+    def test_background_success_has_one_original_plan_and_one_verified_receipt(self):
+        # Public trace from 52e82ba1's real background Qt source write.
+        plan = "2368c517-216a-4375-b60c-a8cd6b3094fb"
+        rows = [
+            {"atMs": 1185872, "operation": "direct-write-start", "planId": plan},
+            {"atMs": 1185876, "operation": "write-Verified-None", "planId": plan},
+            {
+                "atMs": 1185876,
+                "operation": "direct-write-result",
+                "planId": plan,
+                "detail": {"status": "Verified", "reason": "None"},
+            },
+        ]
+        self.assertEqual(background_direct_settlement(rows), rows[-1])
+        for index in range(3):
+            changed = copy.deepcopy(rows)
+            changed[index]["planId"] = "different-plan"
+            self.assertIsNone(background_direct_settlement(changed))
+        for incomplete in (rows[:2], rows[1:], rows[::-1], [*rows, rows[1]]):
+            self.assertIsNone(background_direct_settlement(incomplete))
+
+    def test_source_change_rejection_has_one_original_plan_and_no_success_receipt(self):
+        # Public trace from PR40's Qt post-snapshot source-change scene.
+        plan = "42df515e-d5c0-40a2-aed0-e0fb08e07325"
+        rows = [
+            {"atMs": 1609592, "operation": "direct-write-start", "planId": plan},
+            {
+                "atMs": 1609594,
+                "operation": "write-RejectedBeforeMutation-EpochChanged",
+                "planId": plan,
+            },
+            {
+                "atMs": 1609594,
+                "operation": "direct-write-result",
+                "planId": plan,
+                "detail": {"status": "RejectedBeforeMutation", "reason": "EpochChanged"},
+            },
+        ]
+        self.assertEqual(background_direct_settlement(rows), rows[-1])
+        for index in range(3):
+            changed = copy.deepcopy(rows)
+            changed[index]["planId"] = "different-plan"
+            self.assertIsNone(background_direct_settlement(changed))
+        for extra in (
+            {"operation": "write-Verified-None", "planId": plan},
+            {"operation": "write-OutcomeUnknown-None", "planId": plan},
+            rows[1],
+        ):
+            self.assertIsNone(background_direct_settlement([*rows, extra]))
 
 
 class QtProcessObservationTests(unittest.TestCase):
@@ -102,6 +258,36 @@ class OverlayMotionTraceTests(unittest.TestCase):
     def test_completed_native_motion_reports_its_actual_continuation(self):
         self.assertEqual(settled_overlay_motion(self.completed), {"revision": 94, "elapsedMs": 752})
 
+    def test_start_logging_can_follow_clock_restart_by_one_millisecond(self):
+        delayed_start = self.completed.replace("phase=started time=0", "phase=started time=1")
+        self.assertEqual(settled_overlay_motion(delayed_start), {"revision": 94, "elapsedMs": 752})
+
+    def test_original_reverse_click_stops_old_motion_before_its_own_settlement(self):
+        # CI run 43563208796 reached the compact frame with this original
+        # single-click trace. The stopped expansion is not the new collapse.
+        reversed_motion = (
+            "tlqt-motion phase=attempt time=924 running=1 revision=81 incoming=-1 from=-1 continuation=-1\n"
+            "tlqt-motion phase=layout-stop time=924 running=1 revision=81 incoming=-1 from=-1 continuation=-1\n"
+            "tlqt-motion phase=started time=0 running=1 revision=81 incoming=-1 from=-1 continuation=-1\n"
+            "tlqt-motion phase=render time=4 running=1 revision=81 incoming=82 from=81 continuation=1\n"
+            "tlqt-motion phase=settled time=528 running=1 revision=82 incoming=-1 from=-1 continuation=-1\n"
+        )
+        self.assertEqual(
+            settled_overlay_motion(reversed_motion), {"revision": 82, "elapsedMs": 528}
+        )
+        for changed in (
+            reversed_motion.replace("phase=layout-stop", "phase=hide-stop"),
+            reversed_motion.replace("layout-stop time=924", "layout-stop time=923"),
+            reversed_motion.replace(
+                "layout-stop time=924 running=1 revision=81",
+                "layout-stop time=924 running=1 revision=80",
+            ),
+            reversed_motion.replace("phase=started time=0", "phase=started time=925"),
+            reversed_motion.replace("phase=settled", "phase=layout-stop"),
+        ):
+            with self.subTest(trace=changed):
+                self.assertIsNone(settled_overlay_motion(changed))
+
     def test_ci_collapse_without_settlement_is_not_a_compact_baseline(self):
         self.assertIsNone(settled_overlay_motion(self.unfinished_collapse))
         self.assertIsNone(settled_overlay_motion(self.completed + self.unfinished_collapse))
@@ -127,6 +313,20 @@ class OverlayMotionTraceTests(unittest.TestCase):
                 "settled time=752 running=1 revision=95", "settled time=752 running=1 revision=94"
             ),
             self.completed + continuation,
+        ):
+            with self.subTest(trace=changed):
+                self.assertIsNone(settled_overlay_motion(changed))
+
+    def test_same_revision_display_continues_only_with_native_confirmation(self):
+        terminal = "tlqt-motion phase=settled time=752 running=1 revision=94 incoming=-1 from=-1 continuation=-1\n"
+        display = "tlqt-motion phase=render time=63 running=1 revision=94 incoming=94 from=-1 continuation=1\n"
+        continued = self.completed.replace(terminal, display + terminal)
+        self.assertEqual(settled_overlay_motion(continued), {"revision": 94, "elapsedMs": 752})
+        for changed in (
+            continued.replace(display, display.replace("continuation=1", "continuation=0")),
+            continued.replace(display, display.replace("incoming=94", "incoming=93")),
+            continued.replace(display, display.replace("from=-1", "from=94")),
+            continued.replace(terminal, terminal.replace("phase=settled", "phase=layout-stop")),
         ):
             with self.subTest(trace=changed):
                 self.assertIsNone(settled_overlay_motion(changed))
@@ -268,14 +468,27 @@ class SourceGlossaryCaptureBasisTests(unittest.TestCase):
 
 
 class WakeCandidateObservationTests(unittest.TestCase):
+    def observe(self, frame, ready):
+        return displayed_wake_candidate(
+            frame,
+            "Send this.",
+            ready,
+            after_ms=100,
+            source_basis=self.frame(""),
+        )
+
     def frame(self, candidate):
         return {
+            "observedAtMs": 101,
+            "focusTransitions": 3,
             "first": {
                 "text": "Send this.",
                 "focused": True,
                 "selectionStart": -1,
                 "selectionLength": 0,
                 "cursor": 10,
+                "changes": 12,
+                "edits": 12,
             },
             "overlayVisible": True,
             "editorVisible": True,
@@ -289,9 +502,9 @@ class WakeCandidateObservationTests(unittest.TestCase):
     def test_ready_host_does_not_make_an_old_empty_frame_a_candidate(self):
         ready = Mock(return_value=True)
         frames = [self.frame(""), self.frame("发送这个。")]
-        self.assertIsNone(displayed_wake_candidate(frames[0], "Send this.", ready))
+        self.assertIsNone(self.observe(frames[0], ready))
         ready.assert_not_called()
-        self.assertIs(displayed_wake_candidate(frames[1], "Send this.", ready), frames[1])
+        self.assertIs(self.observe(frames[1], ready), frames[1])
         ready.assert_called_once_with()
 
     def test_observation_does_not_select_a_language_or_wait_internally(self):
@@ -299,9 +512,9 @@ class WakeCandidateObservationTests(unittest.TestCase):
         # Wrong-language nonempty output must reach the caller's original
         # language assertion, not be filtered until a preferred answer appears.
         frame = self.frame("wrong language")
-        self.assertIs(displayed_wake_candidate(frame, "Send this.", ready), frame)
+        self.assertIs(self.observe(frame, ready), frame)
         for _ in range(3):
-            self.assertIsNone(displayed_wake_candidate(self.frame(""), "Send this.", ready))
+            self.assertIsNone(self.observe(self.frame(""), ready))
         ready.assert_called_once_with()
 
     def test_source_selection_focus_visibility_and_current_readiness_remain_required(self):
@@ -311,6 +524,12 @@ class WakeCandidateObservationTests(unittest.TestCase):
             ("first", "selectionStart", 0),
             ("first", "selectionLength", 1),
             ("first", "cursor", 9),
+            ("first", "changes", 14),
+            ("first", "edits", 14),
+            (None, "observedAtMs", 99),
+            (None, "observedAtMs", 100),
+            (None, "observedAtMs", None),
+            (None, "focusTransitions", 5),
             (None, "editorVisible", False),
             (None, "overlayVisible", False),
             (None, "editorReadOnly", False),
@@ -321,10 +540,8 @@ class WakeCandidateObservationTests(unittest.TestCase):
             with self.subTest(key=key):
                 frame = copy.deepcopy(self.frame("发送这个。"))
                 (frame[section] if section else frame)[key] = value
-                self.assertIsNone(displayed_wake_candidate(frame, "Send this.", lambda: True))
-        self.assertIsNone(
-            displayed_wake_candidate(self.frame("发送这个。"), "Send this.", lambda: False)
-        )
+                self.assertIsNone(self.observe(frame, lambda: True))
+        self.assertIsNone(self.observe(self.frame("发送这个。"), lambda: False))
 
 
 if __name__ == "__main__":

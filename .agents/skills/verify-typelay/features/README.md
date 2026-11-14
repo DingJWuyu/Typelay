@@ -27,5 +27,6 @@
 | [接受、编辑与直接替换](writeback.md) | Tab、浮层编辑和直接替换。普通网页 `browser-index` 串联真实默认模型、两次 Tab、选区和后台 Direct。 |
 | [Linux 原生 Undo](undo.md) | 必过旅程 `browser-undo-index` 使用真实 Index 和 Tiptap，默认 Tab 替换后由宿主 Ctrl+Z 恢复原文。 |
 | [应用接入与练习](applications.md) | 应用支持、教程、手动合作入口及扩展，观察实际连接。 |
+| [Qt 交互与语言搜索](qt.md) | 分开运行合作 probe、语言搜索和真实模型桌面，保留各阶段结果及发行证明边界。 |
 
 每个功能文件使用四个 H2：`Sub-features`、`How to get to it (user POV)`、`Driving it with private niri`、`Gotchas`。

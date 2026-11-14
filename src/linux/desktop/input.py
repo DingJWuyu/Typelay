@@ -2106,6 +2106,57 @@ class Input:
         )
 
     @staticmethod
+    def source_observation_version(peer, native):
+        # Only the audited native producer owns these monotonic revisions.
+        # Browser/page metadata and a cached describe cannot opt in by name.
+        version = native.get("sourceVersion")
+        metadata, authority = native.get("metadata", {}), native.get("authority", {})
+        if not isinstance(metadata, dict) or not isinstance(authority, dict):
+            return None
+        stamp = authority.get("contextStamp", {})
+        names = ("content", "selection", "document", "focus", "context", "field", "integrity")
+        document = metadata.get("documentGeneration")
+        if (
+            peer.backend != "qt6"
+            or getattr(native, "route", None) is not None
+            or native.get("focused") is not True
+            or native.get("ime") != "Clear"
+            or not isinstance(version, dict)
+            or type(version.get("version")) is not int
+            or version["version"] != 1
+            or any(
+                type(version.get(key)) is not int or not 0 < version[key] < 2**63 - 1
+                for key in names
+            )
+            or metadata.get("aria") not in ("QLineEdit", "QPlainTextEdit")
+            or metadata.get("password") is not False
+            or metadata.get("readOnly") is not False
+            or metadata.get("enabled") is not True
+            or type(document) is not int
+            or document < 0
+            or metadata.get("aria") == "QLineEdit"
+            and document != 0
+            or metadata.get("aria") == "QPlainTextEdit"
+            and document == 0
+            or version["document"] != document + 1
+            or authority.get("target") != native.get("target")
+            or not isinstance(stamp, dict)
+            or type(stamp.get("flags")) is not int
+            or stamp.get("flags") != 3
+            or type(stamp.get("server")) is not int
+            or stamp["server"] < 0
+            or type(stamp.get("applied")) is not int
+            or stamp.get("server") != stamp.get("applied")
+            or version["content"] != authority.get("contentRevision")
+            or version["selection"] != authority.get("selectionRevision")
+            or version["focus"] != authority.get("focusRevision")
+            or version["context"] != stamp.get("context")
+            or version["field"] != stamp.get("field")
+        ):
+            return None
+        return {"version": 1, **{key: version[key] for key in names}}
+
+    @staticmethod
     def qt6_source_glossary(peer, native):
         metadata, authority = native.get("metadata", {}), native.get("authority", {})
         stamp = authority.get("contextStamp", {})
@@ -3130,6 +3181,7 @@ class Input:
                 "snapshot": snapshot,
                 "ownedSource": owned_source,
                 "sessionShortcuts": acknowledgement,
+                "sourceVersion": self.source_observation_version(peer, native),
                 "focus": focus,
                 "application": peer.application,
                 "userEpoch": self.user_epoch,
@@ -3989,6 +4041,25 @@ class Input:
             receipt = value.get("receipt")
             if not isinstance(receipt, dict):
                 receipt = refused(True)
+            for diagnostic in self.publish_diagnostics:
+                if diagnostic["planId"] == value["planId"]:
+                    # This is the original issued peer's completed receipt, not
+                    # readiness sampled before a later publication. Keep only
+                    # bounded scalar metadata; do not log the source snapshot.
+                    accepted_at = value.get("acceptedAtMs")
+                    status, reason = receipt.get("status"), receipt.get("reason")
+                    # Only the successful receipt is needed by this observer.
+                    # Unrecognized outcomes stay unrecognized here; the original
+                    # receipt still reaches the existing settlement unchanged.
+                    verified = status == "Verified" and reason == "None"
+                    diagnostic.update(
+                        acceptedAtMs=accepted_at
+                        if type(accepted_at) is int and 0 <= accepted_at < 2**53
+                        else None,
+                        status="Verified" if verified else None,
+                        reason="None" if verified else None,
+                    )
+                    break
             self.finish_issued(
                 value["planId"],
                 receipt,

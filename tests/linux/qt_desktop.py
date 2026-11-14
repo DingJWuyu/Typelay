@@ -34,11 +34,15 @@ def observe_qt_processes(fixture, daemon, observe):
     return value
 
 
-def displayed_wake_candidate(value, source, ready):
+def displayed_wake_candidate(value, source, ready, *, after_ms, source_basis):
     """Observe a rendered source candidate; host readiness alone is not a frame."""
     field = value.get("first", {})
     if not (
-        field.get("text") == source
+        type(value.get("observedAtMs")) is int
+        and value["observedAtMs"] > after_ms
+        and field == source_basis["first"]
+        and value.get("focusTransitions") == source_basis["focusTransitions"]
+        and field.get("text") == source
         and field.get("focused")
         and field.get("selectionStart") == -1
         and field.get("selectionLength") == 0
@@ -54,6 +58,54 @@ def displayed_wake_candidate(value, source, ready):
     ):
         return None
     return value if ready() else None
+
+
+def configured_acceptance_settlement(rows, publications, observed, dispatched_at_ms):
+    """Correlate the configured source key with its original native receipt."""
+    outcomes = [row for row in rows if row.get("operation", "").startswith("write-")]
+    if len(outcomes) != 1 or outcomes[0].get("operation") != "write-Verified-None":
+        return None
+    verified = outcomes[0]
+    original = [item for item in publications if item.get("planId") == observed.get("planId")]
+    matching = [item for item in publications if item.get("planId") == verified.get("planId")]
+    if (
+        len(original) != 1
+        or not all(original[0].get(key) == value for key, value in observed.items())
+        or len(matching) != 1
+    ):
+        return None
+    publication = matching[0]
+    times = (
+        observed.get("receivedAtMs"),
+        publication.get("receivedAtMs"),
+        publication.get("sendStartedAtMs"),
+        publication.get("sendReturnedAtMs"),
+        publication.get("acceptedAtMs"),
+        publication.get("permitUntilMs"),
+        verified.get("atMs"),
+        dispatched_at_ms,
+    )
+    if not all(type(value) is int and 0 <= value < 2**53 for value in times):
+        return None
+    observed_at, received, started, returned, accepted, until, settled, dispatched = times
+    accepted_since_ready = [
+        item
+        for item in publications
+        if type(item.get("receivedAtMs")) is int
+        and item["receivedAtMs"] >= observed_at
+        and "acceptedAtMs" in item
+    ]
+    if (
+        accepted_since_ready != [publication]
+        or publication.get("status") != "Verified"
+        or publication.get("reason") != "None"
+        or not observed_at <= received <= started <= accepted <= settled
+        or returned < started
+        or not observed_at <= dispatched <= accepted < until
+        or not 0 < until - accepted <= 100
+    ):
+        return None
+    return {"publication": publication, "verified": verified}
 
 
 def settled_overlay_motion(trace):
@@ -74,7 +126,16 @@ def settled_overlay_motion(trace):
         if match is None:
             return None
         events.append((match[1], *(int(value) for value in match.groups()[1:])))
-    # The byte checkpoint precedes the single original collapse click. A new
+    # A reverse click may stop the previous expansion before starting its own
+    # motion. Only that immediately paired stop belongs to the old animation.
+    if len(events) >= 3 and events[0][0] == "attempt" and events[0][2] == 1:
+        attempt, stopped = events[:2]
+        if not (
+            stopped[0] == "layout-stop" and stopped[1] >= attempt[1] and stopped[2:] == attempt[2:]
+        ):
+            return None
+        events = [attempt, *events[2:]]
+    # The byte checkpoint precedes the single original collapse click. A later
     # attempt, stop, missing continuation or truncated trace is not settlement.
     if (
         len(events) < 4
@@ -84,17 +145,21 @@ def settled_overlay_motion(trace):
         return None
     attempt, started = events[:2]
     revision = attempt[3]
-    if not (attempt[2:] == (0, revision, -1, -1, -1) and started[2:] == (1, revision, -1, -1, -1)):
+    if not (
+        attempt[2:] in ((0, revision, -1, -1, -1), (1, revision, -1, -1, -1))
+        and started[2:] == (1, revision, -1, -1, -1)
+    ):
         return None
     elapsed = started[1]
     for render in events[2:-1]:
         incoming = render[4]
+        expansion_echo = incoming == revision + 1 and render[5] == revision
+        acceptance_display = incoming == revision and render[5] == -1
         if not (
             render[0] == "render"
-            and render[2:] == (1, revision, incoming, revision, 1)
-            # Every native continuation is old+1, but the actual incoming
-            # revision must be observed at each link rather than invented.
-            and incoming == revision + 1
+            and render[2:4] == (1, revision)
+            and render[6] == 1
+            and (expansion_echo or acceptance_display)
             and render[1] >= elapsed
         ):
             return None
@@ -121,6 +186,7 @@ def run_qt(
     trace_checkpoint,
     new_write_outcomes,
     verified_write,
+    direct_settlement,
 ):
     """Use the caller's running production desktop/model and input callbacks."""
     qt = arguments.qt_cooperative
@@ -585,11 +651,28 @@ def run_qt(
                     captures = (
                         status().get("input", {}).get("captureCounts", {}).get("supported", 0)
                     )
-                    wait_for(
-                        lambda: not status().get("overlayVisible")
-                        and status().get("input", {}).get("captureStatus") == "supported"
-                        and status().get("input", {}).get("captureCounts", {}).get("supported", 0)
-                        > captures,
+                    observed_after = now_ms()
+
+                    def dormant_frame():
+                        data = status()
+                        value = state()
+                        return (
+                            value
+                            if not data.get("overlayVisible")
+                            and data.get("input", {}).get("captureStatus") == "supported"
+                            and data.get("input", {}).get("captureCounts", {}).get("supported", 0)
+                            > captures
+                            and value.get("observedAtMs", 0) > observed_after
+                            and value.get("first", {}).get("text") == text
+                            and value["first"]["focused"]
+                            and not value.get("overlayVisible")
+                            and not value.get("editorVisible")
+                            and settled(value)
+                            else None
+                        )
+
+                    return wait_for(
+                        dormant_frame,
                         "OnDemand source did not remain dormant with a fresh supported capture",
                     )
 
@@ -1257,20 +1340,48 @@ def run_qt(
                     assert not new_write_outcomes(return_offset)
                 finally:
                     subprocess.run(["xdotool", "keyup", "F7", "Control_L"], check=True, timeout=2)
+                manual_acceptance_timing = {"readinessStartedAtMs": now_ms()}
+
+                def returned_manual_ready():
+                    report = ready_to_accept("EditedTranslationPending")
+                    if report and settled(state()):
+                        manual_acceptance_timing.update(
+                            readyObservedAtMs=now_ms(),
+                            acceptanceRemainingMs=report.get("acceptanceRemainingMs"),
+                            acceptanceHintRemainingMs=report.get("acceptanceHintRemainingMs"),
+                            nativePublications=report.get("input", {}).get(
+                                "nativePublications", []
+                            ),
+                        )
+                        return report
+                    return None
+
                 wait_for(
-                    lambda: ready_to_accept("EditedTranslationPending") and settled(state()),
+                    returned_manual_ready,
                     "new source capture did not publish the returned manual draft",
                 )
                 for name in ("firstF7Press", "firstF7Release"):
                     assert state()["keys"].get(name, 0) == before_return["keys"].get(name, 0)
                 before_write = state()["first"]["changes"]
+                manual_acceptance_timing["checkpointStartedAtMs"] = now_ms()
                 write_offset = trace_checkpoint()
-                send_control_key("F7")
-                wait_for(
-                    lambda: state()["first"]["text"] == manual_draft
-                    and verified_write(write_offset),
-                    "fresh Qt Ctrl+F7 did not accept the exact returned draft",
-                )
+                manual_acceptance_timing["checkpointFinishedAtMs"] = now_ms()
+                try:
+                    manual_acceptance_timing["dispatchStartedAtMs"] = now_ms()
+                    send_control_key("F7")
+                    manual_acceptance_timing["dispatchReturnedAtMs"] = now_ms()
+                    wait_for(
+                        lambda: state()["first"]["text"] == manual_draft
+                        and verified_write(write_offset),
+                        "fresh Qt Ctrl+F7 did not accept the exact returned draft",
+                    )
+                    manual_acceptance_timing["status"] = "passed"
+                finally:
+                    manual_acceptance_timing["finishedAtMs"] = now_ms()
+                    manual_acceptance_timing.setdefault("status", "failed")
+                    (arguments.output / "qt-manual-acceptance-timing.json").write_text(
+                        json.dumps(manual_acceptance_timing, indent=2) + "\n"
+                    )
                 assert state()["first"]["changes"] == before_write + 1
                 assert len(new_write_outcomes(write_offset)) == 1
                 key("ctrl+z")
@@ -1425,11 +1536,19 @@ def run_qt(
                 recording = start_motion("qt-motion-reduced")
                 reduced_frames = finish_motion(recording, "qt-motion-reduced")
                 assert {frame["editor"]["height"] for frame in reduced_frames} == {167}
+                assert all(
+                    frame["text"] == candidate and frame["sourceFocused"]
+                    for frame in reduced_frames
+                )
                 command("application-motion", reduced=False)
                 wait_for(
                     lambda: state()["animationDuration"] > 0,
                     "Qt did not restore its original animation style preference",
                 )
+                restored = state()
+                assert restored["editorText"] == candidate
+                assert restored["first"]["text"] == motion_source
+                assert not new_write_outcomes(motion_trace)
                 # Existing metadata invalidation must withdraw a resizing
                 # surface, then stay hidden beyond its original finish time.
                 recording = start_motion("qt-motion-safety-hide")
@@ -2111,20 +2230,71 @@ def run_qt(
                     assert not new_write_outcomes(provider_trace)
 
                 set_mode(1, session_keys=("F12", "F1"))
-                dormant_source(function_source)
+                dormant = dormant_source(function_source)
+                wake_started = now_ms()
                 key("ctrl+shift+F9")
                 acceptance_timing = {"readyWaitStartedAtMs": now_ms()}
-                acceptance = wait_for(
-                    ready_to_accept, "mode switch lost the configured source acceptance route"
+                first_ready_at = None
+                acceptance = None
+
+                def configured_candidate():
+                    nonlocal first_ready_at, acceptance
+                    acceptance = ready_to_accept()
+                    if not acceptance:
+                        return None
+                    if first_ready_at is None:
+                        first_ready_at = now_ms()
+                    publications = acceptance.get("input", {}).get("nativePublications", [])
+                    if not publications or publications[-1]["receivedAtMs"] < wake_started:
+                        return None
+                    return displayed_wake_candidate(
+                        state(),
+                        function_source,
+                        lambda: acceptance,
+                        after_ms=first_ready_at,
+                        source_basis=dormant,
+                    )
+
+                function_frame = wait_for(
+                    configured_candidate,
+                    "mode switch did not render this source's fresh ready candidate",
                 )
+                function_candidate = function_frame["editorText"]
+                publication = acceptance["input"]["nativePublications"][-1]
                 acceptance_timing.update(
+                    dormantFrame={
+                        name: dormant[name]
+                        for name in (
+                            "observedAtMs",
+                            "first",
+                            "focusTransitions",
+                            "editorVisible",
+                            "overlayVisible",
+                        )
+                    },
+                    wakeStartedAtMs=wake_started,
+                    firstReadyObservedAtMs=first_ready_at,
                     readyObservedAtMs=now_ms(),
                     statusElapsedMs=acceptance.get("statusElapsedMs"),
                     acceptanceRemainingMs=acceptance.get("acceptanceRemainingMs"),
                     acceptanceHintRemainingMs=acceptance.get("acceptanceHintRemainingMs"),
+                    publication=publication,
+                    candidateFrame={
+                        name: function_frame[name]
+                        for name in (
+                            "observedAtMs",
+                            "first",
+                            "focusTransitions",
+                            "editorText",
+                            "editorInstance",
+                            "editorDocument",
+                            "editorDocumentRevision",
+                            "editorReadOnly",
+                            "editorVisible",
+                            "overlayVisible",
+                        )
+                    },
                 )
-                function_candidate = state()["editorText"]
-                acceptance_timing["candidateObservedAtMs"] = now_ms()
                 before_write = trace_checkpoint()
                 acceptance_timing["traceCheckpointAtMs"] = now_ms()
                 try:
@@ -2137,6 +2307,34 @@ def run_qt(
                         and verified_write(before_write),
                         "configured F12 did not accept the on-demand candidate",
                     )
+                    with (arguments.output / "controller.jsonl").open("rb") as trace:
+                        trace.seek(before_write)
+                        records = [
+                            json.loads(line) for line in trace.readlines() if line.endswith(b"\n")
+                        ]
+                    publications = status().get("input", {}).get("nativePublications", [])
+                    outcome = configured_acceptance_settlement(
+                        records, publications, publication, acceptance_timing["xdotoolStartedAtMs"]
+                    )
+                    acceptance_timing.update(nativePublications=publications, settlement=outcome)
+                    assert outcome is not None, (records, publications)
+                    accepted_frame = state()
+                    assert accepted_frame["first"]["text"] == function_candidate
+                    assert accepted_frame["first"]["changes"] == dormant["first"]["changes"] + 1
+                    assert accepted_frame["first"]["focused"]
+                    assert accepted_frame["first"]["selectionLength"] == 0
+                    assert (
+                        accepted_frame["first"]["cursor"]
+                        == len(function_candidate.encode("utf-16-le")) // 2
+                    )
+                    assert accepted_frame["focusTransitions"] == dormant["focusTransitions"]
+                    assert accepted_frame["second"] == function_frame["second"]
+                    assert accepted_frame["first"]["undoAvailable"]
+                    acceptance_timing["acceptedFrame"] = {
+                        name: accepted_frame[name]
+                        for name in ("observedAtMs", "first", "second", "focusTransitions")
+                    }
+                    acceptance_timing["verified"] = outcome["verified"]
                 finally:
                     acceptance_timing["finishedAtMs"] = now_ms()
                     try:
@@ -2310,10 +2508,16 @@ def run_qt(
                     state()["applicationColorScheme"]
                     == initial_application["applicationColorScheme"]
                 )
-                dormant_source(wake_source)
+                dormant = dormant_source(wake_source)
                 key("ctrl+shift+F9")
                 wake_frame = wait_for(
-                    lambda: displayed_wake_candidate(state(), wake_source, ready_to_accept),
+                    lambda: displayed_wake_candidate(
+                        state(),
+                        wake_source,
+                        ready_to_accept,
+                        after_ms=dormant["observedAtMs"],
+                        source_basis=dormant,
+                    ),
                     "real Qt wake shortcut did not display its ready CPU model candidate",
                 )
                 wake_candidate = wake_frame["editorText"]
@@ -2521,7 +2725,21 @@ def run_qt(
                 assert after["first"]["changes"] == before["first"]["changes"] + 1
                 assert after["second"]["text"] == other
                 assert after["second"]["changes"] == before["second"]["changes"]
-                assert not new_write_outcomes(before_write)
+                with (arguments.output / "controller.jsonl").open("rb") as trace:
+                    trace.seek(before_write)
+                    records = trace.read()
+                rows = [
+                    json.loads(line) for line in records[: records.rfind(b"\n") + 1].splitlines()
+                ]
+                rejected = direct_settlement(rows)
+                assert rejected is not None and rejected["detail"] == {
+                    "status": "RejectedBeforeMutation",
+                    "reason": "EpochChanged",
+                }, rows
+                (arguments.output / "qt-direct-source-change.json").write_text(
+                    json.dumps({"outcome": rejected, "before": before, "after": after}, indent=2)
+                    + "\n"
+                )
                 evidence.append(
                     "Qt6 explicit command safety: real queued input/focus changes cancel without writes "
                     "and report distinct shared refusal messages; "
@@ -2607,7 +2825,29 @@ def run_qt(
                     assert changed["secondFocused"] and changed["secondText"] == other
                     assert changed["focusTransitions"] == after["focusTransitions"]
                     assert native_verified_count() == before_verified + succeeds
-                    assert not new_write_outcomes(before_write)
+                    assert after["first"]["selectionLength"] == 0
+                    assert (
+                        after["first"]["cursor"]
+                        == len(after["first"]["text"].encode("utf-16-le")) // 2
+                    )
+                    with (arguments.output / "controller.jsonl").open("rb") as trace:
+                        trace.seek(before_write)
+                        records = trace.read()
+                    rows = [
+                        json.loads(line)
+                        for line in records[: records.rfind(b"\n") + 1].splitlines()
+                    ]
+                    outcome = direct_settlement(rows)
+                    expected = (
+                        {"status": "Verified", "reason": "None"}
+                        if succeeds
+                        else {"status": "RejectedBeforeMutation", "reason": "EpochChanged"}
+                    )
+                    assert outcome is not None and outcome["detail"] == expected, rows
+                    (arguments.output / f"qt-background-direct-{action}.json").write_text(
+                        json.dumps({"outcome": outcome, "before": before, "after": after}, indent=2)
+                        + "\n"
+                    )
                     if succeeds:
                         assert after["first"]["text"] != background_source
                         assert re.search(r"[\u3400-\u9fff]", after["first"]["text"])

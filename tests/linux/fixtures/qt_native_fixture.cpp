@@ -449,6 +449,7 @@ int main(int argc, char **argv) {
     int applicationThemeChanges = 0;
     int themeSampleCount = 0;
     QJsonObject themeSamples;
+    QJsonObject configurationPaint;
     QWidget window;
     window.setWindowTitle(QStringLiteral("TypeLay Qt native fixture"));
     auto *layout = new QVBoxLayout(&window);
@@ -747,6 +748,7 @@ int main(int argc, char **argv) {
             {"applicationPalette", paletteState(app.palette())},
             {"applicationThemeChanges", applicationThemeChanges},
             {"themeSampleCount", themeSampleCount}, {"themeSamples", themeSamples},
+            {"configurationPaint", configurationPaint},
             { "motionArmed", motionArmed }, {"motionFrames", motionFrames}, {"motionRecordings", motionRecordings}, {"motionRecording", motionRecording},
             {"motionArmedInstance", motionTriggerInstance},
             {"motionArmedCurrent", motionTrigger && visibleExpandCount == 1 && visibleExpand == motionTrigger},
@@ -1060,12 +1062,30 @@ int main(int argc, char **argv) {
                 observer.overlayHideFocusAction = action == QStringLiteral("focus-second")
                     || action == QStringLiteral("focus-second-back") ? action : QString();
             }
+            else if (op == "window-screenshot") {
+                if (!window.grab().save(command.value("path").toString()))
+                    qFatal("Current source window screenshot unavailable");
+            }
             else if (op == "configuration-screenshot") {
                 QPointer<QWidget> panel;
                 for (auto *candidate : window.findChildren<QWidget *>(QStringLiteral("typelay-language-configuration")))
                     if (candidate->isVisible()) { if (panel) qFatal("Multiple current configuration panels"); panel = candidate; }
-                if (!panel || !panel->grab().save(command.value("path").toString()))
+                if (!panel) qFatal("Current configuration screenshot unavailable");
+                const auto screenshot = panel->grab();
+                if (!screenshot.save(command.value("path").toString()))
                     qFatal("Current configuration screenshot unavailable");
+                const auto pixels = screenshot.toImage();
+                const auto colorAt = [&](QPoint logical) {
+                    const auto scale = screenshot.devicePixelRatioF();
+                    return pixels.pixelColor(qFloor(logical.x() * scale), qFloor(logical.y() * scale)).name();
+                };
+                QJsonObject backgrounds;
+                for (auto *row : panel->findChildren<QAbstractButton *>()) {
+                    if (!row->isVisible() || !row->objectName().startsWith(QStringLiteral("typelay-language-choice-"))) continue;
+                    backgrounds.insert(row->objectName(), colorAt(row->mapTo(panel, QPoint(row->width() - 2, row->height() / 2))));
+                }
+                configurationPaint = {{"surface", colorAt(QPoint(panel->width() / 2, panel->height() - 3))},
+                    {"rowBackgrounds", backgrounds}};
             }
             else if (op == "configuration-clipboard") {
                 // MIME reads may run a nested event loop. No stdin command may

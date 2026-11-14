@@ -62,7 +62,20 @@ public sealed record InputCapture(InputSnapshot? Snapshot, FocusMember Focus = F
     string? Application = null, long UserEpoch = 0, long ForegroundEpoch = 0,
     SessionShortcutAcknowledgement? SessionShortcuts = null, OwnedSourceEvidence? OwnedSource = null,
     bool ForegroundExpired = false, OwnedPracticeBinding? FencedPracticeRead = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? SourceReadStartedAtMs = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? SourceReadStartedAtMs = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] SourceObservationVersion? SourceVersion = null);
+
+// Optional native evidence from this same fresh capture. These counters must
+// survive text/selection/document ABA and change on lost provider integrity.
+// Equality retains manual wording only; it cannot revive an old input or plan.
+public sealed record SourceObservationVersion(int Version, long Content, long Selection, long Document,
+    long Focus, long Context, long Field, long Integrity)
+{
+    [JsonIgnore]
+    public bool IsValid => Version == 1 && Valid(Content) && Valid(Selection) && Valid(Document)
+        && Valid(Focus) && Valid(Context) && Valid(Field) && Valid(Integrity);
+    private static bool Valid(long value) => value is > 0 and < long.MaxValue;
+}
 
 // Body-free evidence for an existing owned lesson only. ContextAdvanced implies
 // this read was refused and its original executor acknowledged revocation.

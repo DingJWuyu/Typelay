@@ -4639,6 +4639,7 @@ def run(arguments):
                     trace_checkpoint=trace_checkpoint,
                     new_write_outcomes=new_write_outcomes,
                     verified_write=verified_write,
+                    direct_settlement=background_direct_settlement,
                 )
             )
         if setup_scope:

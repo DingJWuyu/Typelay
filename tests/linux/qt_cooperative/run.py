@@ -401,7 +401,7 @@ def stock_sync(out, env, children):
     return result
 
 
-def language_options(native, captured, generation, state, window, environment, native_log):
+def language_options(native, captured, generation, state, window, environment, native_log, fixture):
     """Drive actual native menu buttons; this is view rendering, never model inventory."""
     from wire import now_ms
 
@@ -434,7 +434,7 @@ def language_options(native, captured, generation, state, window, environment, n
     def controls():
         return state().get("overlayControls", {})
 
-    def render(advance_revision=True, can_edit=False):
+    def render(advance_revision=True, can_edit=False, appearance=None):
         nonlocal revision
         if advance_revision:
             revision += 1
@@ -462,6 +462,7 @@ def language_options(native, captured, generation, state, window, environment, n
                 "revision": revision,
                 "expiresAtMs": now_ms() + 800,
                 "theme": "light",
+                "appearance": appearance or {},
                 "view": view,
             },
         )["visible"]
@@ -709,6 +710,22 @@ def language_options(native, captured, generation, state, window, environment, n
     assert switched["editorGeometry"] == before_cancel["editorGeometry"]
     assert switched["first"] == before_cancel["first"]
     assert switched["focusTransitions"] == before_cancel["focusTransitions"]
+    menu_actions = {**menu_actions, "feedback": "Feedback keeps the current actions"}
+    feedback = render(advance_revision=False)
+    assert feedback["overlayMoreMenuVisible"]
+    assert not feedback["overlayMenuVisible"]
+    for name in (
+        "first",
+        "second",
+        "editorText",
+        "editorDocument",
+        "editorDocumentRevision",
+        "editorGeometry",
+        "overlayGeometry",
+        "focusTransitions",
+    ):
+        assert feedback[name] == switched[name], name
+    fixture("window-screenshot", path=str(native_log.with_name("language-options-feedback.png")))
     menu_actions = {
         **menu_actions,
         "settingsRevision": 13,
@@ -774,6 +791,22 @@ def language_options(native, captured, generation, state, window, environment, n
         lambda: value if (value := state())["overlayMoreMenuVisible"] else None,
         "open Hide before view retirement",
     )
+    # Native editor readiness can change CanEdit without changing the formal
+    # interaction or action identity. It grants no editing or write by itself.
+    ready = render(advance_revision=False, can_edit=True)
+    assert ready["overlayMoreMenuVisible"] and ready["editorReadOnly"]
+    for name in (
+        "first",
+        "second",
+        "editorText",
+        "editorDocument",
+        "editorDocumentRevision",
+        "editorGeometry",
+        "overlayGeometry",
+        "focusTransitions",
+    ):
+        assert ready[name] == pressed[name], name
+    assert not [item for item in native.events if item.get("event") == "accepted"]
     bounds = pressed["overlayControls"]["typelay-hide"]["geometry"]
     before_escape = len(native.events)
     run(
@@ -790,7 +823,7 @@ def language_options(native, captured, generation, state, window, environment, n
         env=environment,
     )
     try:
-        retired_hide = render(advance_revision=False, can_edit=True)
+        retired_hide = render(can_edit=True)
         assert not retired_hide["overlayMoreMenuVisible"]
     finally:
         run(["xdotool", "mouseup", "1"], env=environment)
@@ -804,9 +837,26 @@ def language_options(native, captured, generation, state, window, environment, n
     render(can_edit=False)
     before_events = events()
     toggle(True, renew=False)
+    before_permissions = state()
     permissions = render(advance_revision=False, can_edit=True)
-    assert not permissions["overlayMenuVisible"], "changed editor permission must retire language"
+    assert permissions["overlayMenuVisible"], (
+        "editor readiness retains the same language interaction"
+    )
     assert not permissions["overlayMoreMenuVisible"]
+    assert permissions["editorReadOnly"]
+    for name in (
+        "first",
+        "second",
+        "editorText",
+        "editorDocument",
+        "editorDocumentRevision",
+        "editorGeometry",
+        "overlayGeometry",
+        "focusTransitions",
+    ):
+        assert permissions[name] == before_permissions[name], name
+    assert events() == before_events
+    assert not [item for item in native.events if item.get("event") == "accepted"]
     view.update(sourceLanguage="ja", targetLanguage="ko")
     render(advance_revision=False)
     for invalid in (None, {**choices, "target": choices["target"] * 2}):
@@ -831,6 +881,102 @@ def language_options(native, captured, generation, state, window, environment, n
     assert events() == before_events
     assert state()["first"]["text"] == original["first"]["text"]
     assert state()["second"]["text"] == original["second"]["text"]
+    # Real native motion must survive a fresh acceptance display in the same
+    # interaction, but a changed interaction, body or layout retires that motion.
+    motion_evidence = {}
+    preview = view["text"]
+    for change in ("acceptance-display", "interaction", "text", "layout"):
+        native.call("overlay-hide")
+        view["text"] = "Read-only long preview with stable source ownership. " * 24
+        view["canAccept"] = False
+        view["presentation"]["tabHint"] = "Ctrl+F7 交还应用"
+        baseline = render()
+        assert baseline["animationDuration"] > 0
+        fixture("observe-motion")
+        armed = state()
+        assert armed["motionArmed"] == baseline["motionArmed"] + 1
+        assert armed["motionArmedCurrent"]
+        checkpoint = native_log.stat().st_size
+        click("typelay-expand")
+
+        def motion_trace():
+            with native_log.open() as stream:
+                stream.seek(checkpoint)
+                return "\n".join(
+                    line for line in stream.read().splitlines() if line.startswith("tlqt-motion ")
+                )
+
+        wait(lambda: "phase=started " in motion_trace(), "original native expansion starts")
+        if change == "acceptance-display":
+            view["canAccept"] = True
+            view["presentation"]["tabHint"] = "Ctrl+F7 接受译文"
+        elif change == "text":
+            view["text"] += "Changed preview."
+        updated = render(
+            advance_revision=change == "interaction",
+            appearance={"textSize": 16} if change == "layout" else None,
+        )
+        if change == "acceptance-display":
+            trace = wait(
+                lambda: value if "phase=settled " in (value := motion_trace()) else None,
+                "same-interaction acceptance display preserves native settlement",
+            )
+            assert f"incoming={revision} from=-1 continuation=1" in trace
+            assert "phase=layout-stop " not in trace
+        else:
+            trace = motion_trace()
+            assert "continuation=0" in trace, (change, trace)
+            assert "phase=settled " not in trace, (change, trace)
+        recorded = wait(
+            lambda: value
+            if (value := state())["motionRecordings"] == baseline["motionRecordings"] + 1
+            else None,
+            "original 800ms native frame observation completes",
+        )
+        inputs = recorded["motionInputs"]
+        assert [item["event"] for item in inputs] == ["mouse-press", "mouse-release", "clicked"]
+        assert all(item["instance"] == armed["motionArmedInstance"] for item in inputs)
+        frames = recorded["motionFrames"]
+        after_update = [
+            frame for frame in frames if frame["ms"] >= updated["observedAtMs"] - inputs[-1]["atMs"]
+        ]
+        assert after_update and after_update[-1]["ms"] >= 800
+        if change == "acceptance-display":
+            heights = [frame["editor"]["height"] for frame in frames]
+            assert heights[-1] == 360 and len(set(heights)) > 3, heights
+        else:
+            assert all(
+                frame["editor"] == updated["editorGeometry"]
+                and frame["overlay"] == updated["overlayGeometry"]
+                for frame in after_update
+            ), (change, after_update)
+            assert (
+                updated["editorGeometry"]["height"]
+                == {
+                    "interaction": 167,
+                    "text": 360,
+                    "layout": 178,
+                }[change]
+            )
+            if change == "layout":
+                assert updated["editorFontPixels"] == 16
+        assert all(
+            frame["visible"] and frame["sourceFocused"] and frame["text"] == view["text"]
+            for frame in after_update
+        )
+        assert updated["editorReadOnly"] and not updated["editorFocused"]
+        for field in ("first", "second"):
+            assert updated[field] == baseline[field], (change, field)
+        native.call("describe")
+        assert not [item for item in native.events if item.get("event") == "accepted"]
+        motion_evidence[change] = {"trace": trace.splitlines(), "frames": frames, "inputs": inputs}
+    native_log.with_name("language-options-motion.json").write_text(
+        json.dumps(motion_evidence, indent=2) + "\n"
+    )
+    native.call("overlay-hide")
+    view["text"] = preview
+    view.pop("canAccept")
+    view["presentation"].pop("tabHint")
     # A genuinely outside QWidget must still receive the original mouse press.
     # End this fixture by focusing the other source, rather than manufacturing
     # a new authority or restoring focus after the click.
@@ -1391,6 +1537,12 @@ def language_configuration(native, generation, state, window, environment, fixtu
 
         move_to(configuration()["searchGeometry"])
         photograph("normal")
+        paint = state()["configurationPaint"]
+        surface = "#282724" if theme == "dark" else "#fbfaf7"
+        assert paint["surface"] == surface, (theme, paint)
+        assert paint["rowBackgrounds"] and all(
+            color == surface for color in paint["rowBackgrounds"].values()
+        ), (theme, paint)
         move_to(state()["overlayControls"]["typelay-language-choice-en"]["geometry"])
         wait(
             lambda: state()["overlayControls"]["typelay-language-choice-en"]["underMouse"],
@@ -2068,7 +2220,14 @@ def ordered_controls(
                 )
                 assert captured and captured["ime"] == "Clear"
                 result = language_options(
-                    native, captured, generation, state, window, environment, Path(log.name)
+                    native,
+                    captured,
+                    generation,
+                    state,
+                    window,
+                    environment,
+                    Path(log.name),
+                    fixture,
                 )
                 result["configuration"] = language_configuration(
                     native, generation, state, window, environment, fixture, out
@@ -2102,26 +2261,49 @@ def ordered_controls(
                 result["queued_fn_original_deadline_passes_pair"] = True
             else:
                 before = state()["first"]["changes"]
-                publication = publish()
-                chord(repeat=True)
-                wait(
-                    lambda: state().get("first", {}).get("text") == "Translated result"
-                    and settled(),
-                    "rapid Ctrl Fn writes once after actual original Ctrl retirement",
-                )
-                native.describe()  # Drain actual protocol outcomes.
-                accepted = [event for event in native.events if event.get("event") == "accepted"]
-                assert len(accepted) == 1 and accepted[0]["data"]["receipt"]["status"] == "Verified"
-                assert state()["first"]["changes"] == before + 1
-                assert not state()["keys"].get("firstF7Press") and not state()["keys"].get(
-                    "firstF7Release"
-                )
-                assert (
-                    state()["keys"].get("controlPress", 0) > 0
-                    and state()["keys"].get("controlRelease", 0) > 0
-                )
-                fixture("undo", field="first")
-                assert state()["first"]["text"] == "Original source"
+                rapid = {"status": "failed", "publicationStartedAtMs": now_ms()}
+                try:
+                    publication = publish()
+                    rapid["publicationReturnedAtMs"] = now_ms()
+                    rapid["publication"] = publication
+                    rapid["dispatchStartedAtMs"] = now_ms()
+                    chord(repeat=True)
+                    rapid["dispatchReturnedAtMs"] = now_ms()
+                    wait(
+                        lambda: state().get("first", {}).get("text") == "Translated result"
+                        and settled(),
+                        "rapid Ctrl Fn writes once after actual original Ctrl retirement",
+                    )
+                    native.describe()  # Drain actual protocol outcomes.
+                    accepted = [
+                        event for event in native.events if event.get("event") == "accepted"
+                    ]
+                    assert (
+                        len(accepted) == 1
+                        and accepted[0]["data"]["receipt"]["status"] == "Verified"
+                    )
+                    assert state()["first"]["changes"] == before + 1
+                    assert not state()["keys"].get("firstF7Press") and not state()["keys"].get(
+                        "firstF7Release"
+                    )
+                    assert (
+                        state()["keys"].get("controlPress", 0) > 0
+                        and state()["keys"].get("controlRelease", 0) > 0
+                    )
+                    fixture("undo", field="first")
+                    assert state()["first"]["text"] == "Original source"
+                    rapid["status"] = "passed"
+                finally:
+                    # Observe only after the original batch and assertion. No
+                    # extra input, RPC, publication or wait repairs a rejection.
+                    try:
+                        rapid["fixture"] = state()
+                        rapid["recentNativeEvents"] = native.events[-16:]
+                        (out / "rapid-control-result.json").write_text(
+                            json.dumps(rapid, indent=2) + "\n"
+                        )
+                    except Exception:
+                        pass  # Keep the original assertion and process cleanup.
                 result["rapid_accept_repeat_ctrl_first_release_and_undo"] = True
 
                 releases = state()["keys"].get("controlRelease", 0)
@@ -2236,6 +2418,71 @@ def ordered_controls(
                 )
                 assert state()["first"]["text"] == "Original source"
                 result["explicit_revoke_passes_pair"] = True
+
+                def capture_source_version():
+                    description = native.describe()
+                    captured = native.call(
+                        "capture",
+                        {"target": description["target"], "authority": description["authority"]},
+                    )
+                    assert captured and captured["ime"] == "Clear" and captured["focused"]
+                    version = captured.get("sourceVersion")
+                    assert isinstance(version, dict) and version.get("version") == 1
+                    assert all(
+                        type(version.get(name)) is int and 0 < version[name] < 2**63 - 1
+                        for name in (
+                            "content",
+                            "selection",
+                            "document",
+                            "focus",
+                            "context",
+                            "field",
+                            "integrity",
+                        )
+                    )
+                    return captured
+
+                # Separate read-only proof checks after the original refusal.
+                # They do not renew that permit or submit an acceptance key.
+                source_versions = result["sourceObservationVersions"] = {}
+                stable = capture_source_version()
+                source_versions["stable"] = stable["sourceVersion"]
+                assert capture_source_version()["sourceVersion"] == stable["sourceVersion"]
+                for reduced in (True, False):
+                    fixture("application-motion", reduced=reduced)
+                    after = capture_source_version()
+                    assert after["target"] == stable["target"] and after["text"] == stable["text"]
+                    assert after["selection"] == stable["selection"]
+                    assert after["sourceVersion"] == stable["sourceVersion"], reduced
+                    source_versions["reduced-motion" if reduced else "restored-motion"] = after[
+                        "sourceVersion"
+                    ]
+                for change in ("text-aba", "selection-aba", "read-only-aba", "focus-aba"):
+                    before = capture_source_version()
+                    if change == "text-aba":
+                        fixture("set", field="first", text="Temporary different source")
+                        fixture("set", field="first", text=before["text"])
+                    elif change == "selection-aba":
+                        fixture("select", field="first", start=0, length=1)
+                        selected = before["selection"]
+                        fixture(
+                            "select",
+                            field="first",
+                            start=selected["start"],
+                            length=selected["end"] - selected["start"],
+                        )
+                    elif change == "read-only-aba":
+                        fixture("read-only", field="first", enabled=True)
+                        fixture("read-only", field="first", enabled=False)
+                    else:
+                        fixture("focus", field="second")
+                        fixture("focus", field="first")
+                        wait(settled, "source focus ABA settles without accepting")
+                    after = capture_source_version()
+                    assert after["target"] == before["target"] and after["text"] == before["text"]
+                    assert after["selection"] == before["selection"]
+                    assert after["sourceVersion"] != before["sourceVersion"], change
+                    source_versions[change] = after["sourceVersion"]
 
                 # X11 connection/keycode setup is harness preparation, not a
                 # user's Ctrl-to-F7 interval. Finish it before the 100ms permit;
@@ -3197,7 +3444,7 @@ def ordered_controls(
                     True
                 )
 
-                def editor_view(observation=None):
+                def editor_view(observation=None, translation_actions=None):
                     prepare()
                     publication = publish()
                     target = publication["target"]
@@ -3207,6 +3454,7 @@ def ordered_controls(
                         "Exact manual translation",
                         True,
                         1,
+                        translation_actions,
                         observation=observation,
                     )["editing"]
                     assert native.call(
@@ -3229,7 +3477,23 @@ def ordered_controls(
                         if event.get("event") == "ui" and event["data"].get("operation") == "return"
                     ]
 
-                publication = editor_view()
+                # Keep the same settings/capability baseline throughout this
+                # feedback-only scene. Introducing settingsRevision after Ctrl
+                # would correctly retire the original action's presentation.
+                editor_menu_actions = {
+                    "settingsRevision": 12,
+                    "styleReleased": True,
+                    "canChangeStyle": False,
+                    "canInheritStyle": False,
+                    "applicationStyle": None,
+                    "styleUnavailableReason": "请先完成当前编辑",
+                    "inheritUnavailableReason": "请先完成当前编辑",
+                    "alternativeReleased": True,
+                    "canRequestAlternative": False,
+                    "alternativeUnavailableReason": "请先完成当前编辑",
+                    "feedback": None,
+                }
+                publication = editor_view(translation_actions=editor_menu_actions)
                 initial_returns = len(returns())
                 original_source = state()["first"]
                 controls = state()["keys"].get("controlPress", 0)
@@ -3245,19 +3509,7 @@ def ordered_controls(
                         "Exact manual translation",
                         True,
                         1,
-                        {
-                            "settingsRevision": 12,
-                            "styleReleased": True,
-                            "canChangeStyle": False,
-                            "canInheritStyle": False,
-                            "applicationStyle": None,
-                            "styleUnavailableReason": "请先完成当前编辑",
-                            "inheritUnavailableReason": "请先完成当前编辑",
-                            "alternativeReleased": True,
-                            "canRequestAlternative": False,
-                            "alternativeUnavailableReason": "请先完成当前编辑",
-                            "feedback": "请先完成当前编辑",
-                        },
+                        {**editor_menu_actions, "feedback": "请先完成当前编辑"},
                     )["editing"]
                     run(["xdotool", "keydown", "--delay", "0", "F7"], env=environment)
                     wait(
