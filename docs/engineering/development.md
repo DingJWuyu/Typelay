@@ -94,7 +94,9 @@ Python 开发工具进入 [eng/requirements.txt](../../eng/requirements.txt)。�
 
 ## 判断 CI 实际检查了什么
 
-主工作流是 [check.yml](../../.github/workflows/check.yml)。它自动检查所有目标分支的 PR，包括指向 `hitl` 的 PR 和指向下层工作分支的堆叠 PR。PR 创建、更新提交、重新打开、转为待审或修改目标分支时都会触发。仅修改标题或正文时，各 job 跳过，也不取消正在运行的代码检查。`hitl`、`trunk` 和 `work/**` 的 push 也会触发。触发器不授予修改分支的权限。
+主工作流是 [check.yml](../../.github/workflows/check.yml)。它自动检查所有目标分支的 PR，包括指向 `hitl` 的 PR 和指向下层工作分支的堆叠 PR。PR 创建、更新提交、重新打开或转为待审时都会触发。标题、正文或目标分支编辑不触发工作流，避免产生同名的 skipped 检查。`hitl`、`trunk` 和 `work/**` 的 push 也会触发。触发器不授予修改分支的权限。
+
+堆叠 PR 调整目标分支后，按[任务跟踪约定](../agents/issue-tracker.md#stacked-prs)同步栈。rebase 后推送新 head 会通过 `synchronize` 产生新证据。只改 base 而未更新 head 时，没有新的被测合并提交证据；审查仍须核对 artifact 中的 base 和 `tested_commit`。
 
 [ci_scope.py](../../eng/shared/ci_scope.py) 根据事件和提交证据选择检查范围。PR 和 `hitl` push 始终保留共享、Windows 和 Linux 检查。PR 使用 Actions 默认检出的测试合并提交。每次运行的 Summary 和 `typelay-ci-source-*` artifact 记录事件、PR head、base、实际被测提交、run ID 和 attempt。审查时核对这三个提交身份，不把 PR head 当作测试合并提交。
 

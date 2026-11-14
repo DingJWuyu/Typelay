@@ -3,8 +3,8 @@ on:
   push:
     branches: [hitl, trunk, "work/**"]
   pull_request:
-    # Stack layers can target any lower branch. Retargeting also needs fresh evidence.
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+    # Stack layers can target any lower branch. A rebased head gets fresh evidence.
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
     inputs:
       check_mode:
@@ -33,12 +33,10 @@ on:
 permissions:
   contents: read
 concurrency:
-  # Metadata edits get their own group so they cannot cancel code checks.
-  group: typelay-checks-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.check_mode == 'quality-only' && 'quality-only' || 'full' }}-${{ github.event.action == 'edited' && !github.event.changes.base && github.run_id || 'code' }}
+  group: typelay-checks-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.check_mode == 'quality-only' && 'quality-only' || 'full' }}
   cancel-in-progress: true
 jobs:
   scope:
-    if: github.event.action != 'edited' || github.event.changes.base
     runs-on: ubuntu-latest
     outputs:
       selected: ${{ steps.select.outcome }}
@@ -79,7 +77,6 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   shared:
-    if: github.event.action != 'edited' || github.event.changes.base
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
