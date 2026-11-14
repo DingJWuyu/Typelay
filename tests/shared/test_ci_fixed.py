@@ -47,11 +47,11 @@ class FixedBuildTransportTests(unittest.TestCase):
             script.parent.mkdir(parents=True)
             shutil.copyfile(ROOT / "eng/ci/fixed.py", script)
             data = b"synthetic fixed product"
-            name = "fonts.tar.gz" if kind == "fonts" else "hy.tar"
+            name = "fonts.tar.gz" if kind == "fonts" else f"{kind}.tar"
             payload = (
                 "artifacts/ui-fonts/test.txt"
                 if kind == "fonts"
-                else "artifacts/hy-download/test.gguf"
+                else f"artifacts/{'hy-download' if kind == 'hy' else 'index-model-download'}/test.gguf"
             )
             archive = root / name
             with tarfile.open(archive, "w:gz" if kind == "fonts" else "w") as output:
@@ -145,20 +145,22 @@ class FixedBuildTransportTests(unittest.TestCase):
     def test_lookup_does_not_download_existing_builds(self):
         self.run_transport("valid", "lookup")
 
-    def test_hy_download_bytes_are_verified_before_becoming_a_local_cache(self):
-        for mode in ("valid", "corrupt"):
-            with self.subTest(mode=mode):
-                self.run_transport(mode, kind="hy")
+    def test_model_download_bytes_are_verified_before_becoming_a_local_cache(self):
+        for kind in ("hy", "index"):
+            for mode in ("valid", "corrupt"):
+                with self.subTest(kind=kind, mode=mode):
+                    self.run_transport(mode, kind=kind)
 
 
 class FixedBuildKeyTests(unittest.TestCase):
-    def test_hy_cache_tracks_download_pins_independently_of_product_source_records(self):
+    def check_download_key(self, kind):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             script = root / "eng/ci/fixed.py"
             script.parent.mkdir(parents=True)
             shutil.copyfile(ROOT / "eng/ci/fixed.py", script)
-            path = root / "src/shared/TypeLay.Worker/native/hy/assets.lock.json"
+            filename = "assets.lock.json" if kind == "hy" else "model.lock.json"
+            path = root / "src/shared/TypeLay.Worker/native" / kind / filename
             path.parent.mkdir(parents=True)
             lock = {
                 name: {"sha256": "old"} for name in ("model", "model_license", "runtime_archive")
@@ -167,7 +169,7 @@ class FixedBuildKeyTests(unittest.TestCase):
 
             def key():
                 return subprocess.check_output(
-                    [sys.executable, str(script), "key", "hy"], text=True, timeout=10
+                    [sys.executable, str(script), "key", kind], text=True, timeout=10
                 ).strip()
 
             original = key()
@@ -177,6 +179,12 @@ class FixedBuildKeyTests(unittest.TestCase):
             lock["model"]["sha256"] = "new deliberately pinned download"
             path.write_text(json.dumps(lock))
             self.assertNotEqual(key(), original)
+
+    def test_hy_cache_tracks_download_pins_independently_of_product_source_records(self):
+        self.check_download_key("hy")
+
+    def test_index_cache_tracks_download_pins_independently_of_product_source_records(self):
+        self.check_download_key("index")
 
     def test_native_edits_do_not_rebuild_third_party_dependencies(self):
         with tempfile.TemporaryDirectory() as directory:

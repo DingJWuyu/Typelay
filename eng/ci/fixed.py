@@ -14,12 +14,19 @@ sys.path.insert(0, str(ROOT))
 
 
 def key(kind):
-    if kind == "hy":
-        lock = json.loads(
-            (ROOT / "src/shared/TypeLay.Worker/native/hy/assets.lock.json").read_text()
+    if kind in ("hy", "index"):
+        filename = "assets.lock.json" if kind == "hy" else "model.lock.json"
+        lock = json.loads((ROOT / "src/shared/TypeLay.Worker/native" / kind / filename).read_text())
+        names = (
+            ("model", "model_license", "runtime_archive")
+            if kind == "hy"
+            else ("model", "model_license")
         )
-        downloads = {name: lock[name] for name in ("model", "model_license", "runtime_archive")}
-        return "ci-hy-" + hashlib.sha256(json.dumps(downloads, sort_keys=True).encode()).hexdigest()
+        downloads = {name: lock[name] for name in names}
+        return (
+            f"ci-{kind}-"
+            + hashlib.sha256(json.dumps(downloads, sort_keys=True).encode()).hexdigest()
+        )
     if kind == "fonts":
         files = ["eng/fonts/prepare.py", "eng/fonts/fonts.lock.json", "eng/requirements.txt"]
     else:
@@ -35,7 +42,7 @@ def key(kind):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("key", "lookup", "restore", "publish"))
-    parser.add_argument("kind", choices=("fonts", "fcitx", "hy"))
+    parser.add_argument("kind", choices=("fonts", "fcitx", "hy", "index"))
     parser.add_argument("--tag")
     parser.add_argument("--wait-for-job", help="Wait for this run's named producer to publish")
     args = parser.parse_args()
@@ -45,7 +52,7 @@ def main():
     if args.action == "key":
         print(tag)
         return
-    suffix = {"fonts": ".tar.gz", "fcitx": ".tar.zst", "hy": ".tar"}[args.kind]
+    suffix = {"fonts": ".tar.gz", "fcitx": ".tar.zst", "hy": ".tar", "index": ".tar"}[args.kind]
     archive = ROOT / "artifacts" / (args.kind + suffix)
     archive.parent.mkdir(exist_ok=True)
     repo = os.environ["GITHUB_REPOSITORY"]
@@ -109,7 +116,9 @@ def main():
             digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
         if digest != asset["digest"]:
             raise ValueError("Release asset digest mismatch")
-        extract = {"fonts": ["-xzf"], "fcitx": ["--zstd", "-xf"], "hy": ["-xf"]}[args.kind]
+        extract = {"fonts": ["-xzf"], "fcitx": ["--zstd", "-xf"], "hy": ["-xf"], "index": ["-xf"]}[
+            args.kind
+        ]
         subprocess.run(
             ["tar", *extract, str(archive)],
             cwd=ROOT,
@@ -122,11 +131,12 @@ def main():
             "fonts": ["artifacts/ui-fonts"],
             "fcitx": ["artifacts/linux/fcitx-cooperative-5.1.22"],
             "hy": ["artifacts/hy-download"],
+            "index": ["artifacts/index-model-download"],
         }[args.kind]
         subprocess.run(
             [
                 "tar",
-                *({"fonts": ["-z"], "fcitx": ["--zstd"], "hy": []}[args.kind]),
+                *({"fonts": ["-z"], "fcitx": ["--zstd"], "hy": [], "index": []}[args.kind]),
                 "--exclude=core-build",
                 "--exclude=libime-build",
                 "--exclude=fcitx5-chinese-addons-build",

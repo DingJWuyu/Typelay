@@ -108,6 +108,19 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
         TAG: ${{ steps.hy-key.outputs.tag }}
+    - name: Find fixed Index downloads
+      run: python eng/ci/fixed.py lookup index
+      id: index-cache
+      env:
+        GH_TOKEN: ${{ github.token }}
+    - name: Prepare fixed Index downloads
+      if: steps.index-cache.outputs.hit != 'true'
+      run: python eng/shared/prepare_index_model.py --output artifacts/index-model-download
+    - name: Publish fixed Index downloads
+      if: steps.index-cache.outputs.hit != 'true'
+      run: python eng/ci/fixed.py publish index
+      env:
+        GH_TOKEN: ${{ github.token }}
     - name: Hash pinned third-party sources and toolchain
       run: echo "tag=$(python eng/ci/fixed.py key fcitx)" >> "$GITHUB_OUTPUT"
       id: key
@@ -505,6 +518,9 @@ jobs:
         retention-days: 14
   index-windows:
     name: Index / windows
+    permissions:
+      contents: read
+      actions: read
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -530,7 +546,11 @@ jobs:
     - name: Prepare and verify official Index model and CPU closure
       timeout-minutes: 10
       shell: pwsh
+      env:
+        GH_TOKEN: ${{ github.token }}
       run: |
+        python eng/ci/fixed.py restore index --wait-for-job fcitx-build
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         python eng/windows/index/prepare_runtime.py --cache artifacts/index-runtime-download --output artifacts/index-runtime
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         python eng/shared/prepare_index_model.py --output artifacts/index-model-download
@@ -564,6 +584,9 @@ jobs:
     needs: fonts
   index-linux:
     name: Index / linux
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -584,7 +607,10 @@ jobs:
         python -m pip install uv==0.13.4
     - name: Prepare and verify official Index model and CPU closure
       timeout-minutes: 10
+      env:
+        GH_TOKEN: ${{ github.token }}
       run: |
+        python eng/ci/fixed.py restore index --wait-for-job fcitx-build
         python eng/linux/index/prepare_runtime.py --cache artifacts/index-runtime-download --output artifacts/index-runtime
         python eng/shared/prepare_index_model.py --output artifacts/index-model-download
     - name: Build the actual Linux host and worker payload
