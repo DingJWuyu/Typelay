@@ -255,9 +255,12 @@ public sealed partial class SetupRenderingTests
             var bar = OnboardingModelElement<ProgressBar>(window, "OnboardingModelProgress");
             var fill = Assert.IsType<Border>(bar.Template.FindName("displayFill", bar));
             bool acted = false;
+            var beforeTarget = new List<FillFrame>(4);
             await Task.Delay(80, TestContext.Current.CancellationToken);
-            await ObserveOnboardingFill(bar, () => transfers[0].Body.Continue.TrySetResult(), 75, frame =>
+            var samples = await ObserveOnboardingFill(bar, () => transfers[0].Body.Continue.TrySetResult(), 75, frame =>
             {
+                if (frame.Value != 75 && beforeTarget.Count < 4)
+                    beforeTarget.Add(frame);
                 if (acted || bar.Value != 75 || fill.Width <= frame.TrackWidth * .51 || fill.Width >= frame.TrackWidth * .74)
                     return;
                 acted = true;
@@ -274,6 +277,33 @@ public sealed partial class SetupRenderingTests
                         Motion = "reduce"
                     });
             }, retiredAllowed: true);
+            if (!acted)
+            {
+                try
+                {
+                    // These are the original Rendering samples. Failure evidence
+                    // does not trigger layout or make another paint observation.
+                    TestContext.Current.TestOutputHelper?.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        operation = "onboarding-progress-retirement-not-observed",
+                        requestedAction = operation,
+                        acted,
+                        beforeTarget,
+                        sampleCount = samples.Count,
+                        firstSamples = samples.Take(12).ToArray(),
+                        lastSamples = samples.Skip(Math.Max(12, samples.Count - 4)).ToArray(),
+                        maximumObservedFrameGapMs = samples.Zip(samples.Skip(1), (before, after) => after.Elapsed - before.Elapsed)
+                            .DefaultIfEmpty(0).Max(),
+                        trackWidths = samples.Select(frame => frame.TrackWidth).Distinct().Take(4).ToArray(),
+                        matchingSampleCount = samples.Count(frame => frame.Value == 75
+                            && frame.PaintedWidth > frame.TrackWidth * .51 && frame.PaintedWidth < frame.TrackWidth * .74)
+                    }, new System.Text.Json.JsonSerializerOptions
+                    {
+                        NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals
+                    }));
+                }
+                catch (Exception error) when (error is not OutOfMemoryException) { }
+            }
             Assert.True(acted);
             var current = OnboardingModelElement<ProgressBar>(window, "OnboardingModelProgress");
             var currentFill = Assert.IsType<Border>(current.Template.FindName("displayFill", current));
