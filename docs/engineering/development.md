@@ -52,7 +52,7 @@ flowchart TB
 pwsh -File ./dev.ps1 shared-check
 ```
 
-该入口执行 Core、Runtime、Protocol、Windows.Contracts 的 .NET 回归，以及共享 Python 套件。它使用 locked restore，不需要 Windows SDK、桌面或翻译模型。Windows.Contracts 虽可跨平台执行，仍属于 Windows 的契约。
+该入口执行 Core、Runtime、Protocol、Windows.Contracts 的 .NET 回归，以及共享 Python 套件。一个套件失败后，其余套件继续执行；入口在全部套件结束后返回失败。它使用 locked restore，不需要 Windows SDK、桌面或翻译模型。Windows.Contracts 虽可跨平台执行，仍属于 Windows 的契约。
 
 修改 Python 代码时，先按平台开发说明创建工程 Python 虚拟环境并安装固定工具。激活该环境后，检查格式与 lint：
 
@@ -94,7 +94,13 @@ Python 开发工具进入 [eng/requirements.txt](../../eng/requirements.txt)。�
 
 ## 判断 CI 实际检查了什么
 
-主工作流是 [check.yml](../../.github/workflows/check.yml)。[ci_scope.py](../../eng/shared/ci_scope.py) 根据事件和提交证据选择检查范围。工作流的触发分支以 YAML 为准，存在触发器不代表获得修改该分支的授权。
+主工作流是 [check.yml](../../.github/workflows/check.yml)。它自动检查所有目标分支的 PR，包括指向 `hitl` 的 PR 和指向下层工作分支的堆叠 PR。PR 创建、更新提交、重新打开或转为待审时都会触发。标题、正文或目标分支编辑不触发工作流，避免产生同名的 skipped 检查。`hitl`、`trunk` 和 `work/**` 的 push 也会触发。触发器不授予修改分支的权限。
+
+堆叠 PR 调整目标分支后，按[任务跟踪约定](../agents/issue-tracker.md#stacked-prs)同步栈。rebase 后推送新 head 会通过 `synchronize` 产生新证据。只改 base 而未更新 head 时，没有新的被测合并提交证据；审查仍须核对 artifact 中的 base 和 `tested_commit`。
+
+检查名按事件隔离。PR 使用固定的 `PR /` 前缀，`hitl` push 使用 `hitl push /`，其它 push 使用 `branch push /`，手动运行使用 `manual /`。工作分支收缩范围或手动质量采集不能产生 PR 的检查名。以后配置 PR 必需检查时，应从实际执行成功的 `PR /` 名称中选择，并包含 `PR / scope`。选择器失败时，下游 job 可能跳过；GitHub 会将 skipped 视为满足必需检查，不能单靠这些下游状态判断完整执行。
+
+[ci_scope.py](../../eng/shared/ci_scope.py) 根据事件和提交证据选择检查范围。PR 和 `hitl` push 始终保留共享、Windows 和 Linux 检查。PR 使用 Actions 默认检出的测试合并提交。每次运行的 Summary 和 `typelay-ci-source-*` artifact 记录事件、PR head、base、实际被测提交、run ID 和 attempt。审查时核对这三个提交身份，不把 PR head 当作测试合并提交。
 
 工作流触发后，检查范围由现役选择器确定。完整检查覆盖共享、Windows 和 Linux；符合条件的工作分支 push 可以按本次 push 触及的全部路径缩减平台范围。选择器会计入撤销、重命名和合并父提交；提交身份不完整、未知或共享路径、跨平台变更和空变更会保留双端检查。
 
@@ -103,6 +109,12 @@ Python 开发工具进入 [eng/requirements.txt](../../eng/requirements.txt)。�
 - 仅文档的有效工作分支 push 只运行共享检查；只涉及单个平台的变更保留共享与该平台检查。共享测试修改也保留双端检查。
 - `index-windows` 和 `index-linux` 独立检查正式 Index 安装器与宿主生命周期。它们不替代既有输入、Hy 或 GUI 检查；`quality-only` 也不执行这些 Index job。
 - `quality-only` 必须同时显式选择质量采集。它用于固定响应采集，不构成产品验收。只有执行这类任务时才读[翻译质量采集指南](translation-quality.md#linux-模型包生命周期中的显式质量采集)。
+
+共享、Windows、Linux 和两端 Index job 各自运行，不等待其它平台检查通过。选择器成功后，源码证据上传失败仍保留为失败，但不阻断已选定的平台 job。job 内的独立检查也继续执行。例如，Python lint 失败不阻断共享行为检查；Linux 主包构建失败不阻断 HTTP 下载和 VS Code 事务检查。需要实际包、模型或前序进程退出证明的场景仍等待这些前提。Notepad 退出证明单独记录，证明失败时场景显示 `not-run`。
+
+各 job 的 Summary 和 `artifacts/ci/<job>.json` 逐项记录 `passed`、`failed` 或 `not-run`。[ci_report.py](../../eng/shared/ci_report.py) 读取 Actions 的原始步骤 outcome；跳过、取消或缺少执行记录都记为 `not-run`。所选必过项没有全部通过时，报告步骤返回失败。报告不会把 `continue-on-error` 后的 conclusion 当作通过依据。runner 被强制终止、job 未启动或检出失败时可能无法生成报告，此时以 Actions 的失败、取消或 skipped 状态确认未完成，不能补记通过。
+
+当前没有负责人批准的历史失败例外，全部产品检查保留在必过 job 中。获批例外须在相应变更中放入独立的非必需 job，保留原始失败结果。本工作流不配置合并保护。CI 触发与结果呈现可以独立验收；产品红项仍阻塞对应产品规格的完成。
 
 共享 CI 还执行仓库 Python lint、格式检查和 Linux 输入反馈合同。`shared-check` 本身不包含全部 CI 步骤。选择器的行为回归已纳入共享检查，单独维护选择器时可运行 `python -m unittest discover -s tests/shared -v`。
 
