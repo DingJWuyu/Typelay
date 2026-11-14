@@ -208,13 +208,14 @@ public sealed class OrdinaryNotepadScenarioTests
     }
 
     [Fact]
-    public async Task PublicDenialPreservesFailedAcceptanceWhileIndependentDirectAndExitRun()
+    public async Task PublicDenialLeavesUnattemptedAcceptanceNotRunWhileIndependentDirectAndExitRun()
     {
         var report = CreateReport(TestContext.Current.CancellationToken);
         var observed = new List<string>();
         var facts = new
         {
             requestedAcceptanceCue = true,
+            acceptanceAttempted = false,
             lastPublicObservation = new
             {
                 overlayCount = 1,
@@ -229,7 +230,7 @@ public sealed class OrdinaryNotepadScenarioTests
 
         Assert.Equal(["confirm-original-source", "direct", "exit"], observed);
         var acceptance = report.Scenes[0];
-        Assert.Equal("failed", acceptance.Outcome);
+        Assert.Equal("not-run", acceptance.Outcome);
         Assert.Equal("await-public-acceptance-cue", acceptance.Stage);
         Assert.Equal("required-capability-unavailable", acceptance.Failure);
         Assert.Equal("Failure", acceptance.ErrorType);
@@ -242,6 +243,8 @@ public sealed class OrdinaryNotepadScenarioTests
         Assert.Equal(540, saved.RootElement.GetProperty("budgetSeconds").GetInt32());
         Assert.Equal(520, saved.RootElement.GetProperty("operationBudgetSeconds").GetInt32());
         var scenes = saved.RootElement.GetProperty("scenes");
+        Assert.Equal("not-run", scenes[0].GetProperty("outcome").GetString());
+        Assert.False(scenes[0].GetProperty("facts").GetProperty("acceptanceAttempted").GetBoolean());
         Assert.Equal(1, scenes[0].GetProperty("facts").GetProperty("lastPublicObservation").GetProperty("overlayCount").GetInt32());
         Assert.Equal("automatic-accept-and-undo", scenes[1].GetProperty("facts").GetProperty("dependency").GetString());
         Assert.Equal("required-capability-unavailable", scenes[1].GetProperty("facts").GetProperty("reason").GetString());
@@ -307,7 +310,7 @@ public sealed class OrdinaryNotepadScenarioTests
         else
             Assert.IsType<HyPackageCheck.Failure>(caught);
         Assert.Empty(observed);
-        Assert.Equal(capabilityDenied ? "failed" : "not-run", report.Scenes[0].Outcome);
+        Assert.Equal("not-run", report.Scenes[0].Outcome);
         Assert.Equal(capabilityDenied ? "required-capability-unavailable" : "none", report.Scenes[0].Failure);
         Assert.Equal("not-run", report.Scenes[1].Outcome);
         Assert.Equal("failed", report.Scenes[2].Outcome);

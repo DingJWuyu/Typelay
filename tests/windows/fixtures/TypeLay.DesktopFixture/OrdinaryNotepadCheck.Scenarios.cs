@@ -100,7 +100,9 @@ internal static partial class HyPackageCheck
         }
         catch (Failure error) when (ReferenceEquals(error, publicDenialBeforeInput))
         {
-            // Retain the product's actual public denial, stage and observations.
+            // The public cue was refused before any acceptance input. Preserve
+            // that reason and observation without claiming a failed write attempt.
+            report.Scenes.Single(scene => scene.Name == "automatic-accept-and-undo").Outcome = "not-run";
         }
         var edit = report.Scenes.Single(scene => scene.Name == "edit-return-and-undo");
         edit.Stage = "dependency-unavailable";
