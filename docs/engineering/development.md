@@ -96,21 +96,37 @@ Python 开发工具进入 [eng/requirements.txt](../../eng/requirements.txt)。�
 
 主工作流是 [check.yml](../../.github/workflows/check.yml)。每次向工作分支或 `hitl` 推送都会执行完整检查。`main`、`trunk` 不触发该工作流。仓库内 PR 直接展示 head 提交的 push 检查，避免同一提交再跑一次 PR 合并提交。堆叠 PR 的 base 变化后，需要 rebase 并推送新 head，才能取得新基底上的证据。
 
-CI 使用以下并行分工，各组保留现役测试命令、断言和产品期限。
+审查堆叠 PR 时，重新读取远端 head 和紧邻 base，确认 head 已包含该 base。调整 base 或 PR 正文不会产生检查；同步栈并推送新 head 后，核对本次 push 的检查与源码 artifact。
 
-| Job | 执行范围 |
+核对提交时，分别记录以下身份：
+
+| 身份 | 核对内容 |
+| --- | --- |
+| PR head 和 base | GitHub 当前的源分支提交和目标分支提交。旧 head 的成功不属于最新 head。 |
+| 实际被测提交 `tested_commit` | 运行实际检出的提交。当前 push 运行须与 PR head 相同，并确认该 head 包含最新 base。 |
+| tree | 用 `git rev-parse '<提交>^{tree}'` 核对源码树。tree 相同只能说明源码内容相同，不能证明某次检查实际执行。 |
+| 最终 `hitl` 提交 | 合入后的集成提交。最终综合验收须来自同一实际集成提交，不能拼接各层的旧结果。 |
+
+CI 使用以下固定检查名。矩阵展开后共 16 个 job，各组保留现役测试命令、断言和产品期限。工作流没有按事件添加前缀，自动 push 与手动取证使用相同 job 名称。保护配置仍须核对最终候选的实际 check name 和来源 app。
+
+| 检查名 | 执行范围 |
 | --- | --- |
 | `fonts`、`fcitx-build` | 按输入哈希准备跨分支固定产物。 |
 | `shared` | Python lint、格式、Linux 输入反馈、宿主离线隔离、共享 .NET 和 worker 回归。 |
-| `windows-contracts`，4 个分片 | 完整 Windows solution 测试。前三片分配耗时较长的 App 类，第四片自动接收其余类和项目。两项归档正文超时测试仍单独执行一次；物理 Tab 交接包消费同片的原合同结果。 |
+| `Windows contracts / 1`、`Windows contracts / 2`、`Windows contracts / 3`、`Windows contracts / 4` | 完整 Windows solution 测试。前三片分配耗时较长的 App 类，第四片自动接收其余类和项目。两项归档正文超时测试仅在第二片执行；物理 Tab 交接包消费同片的原合同结果。每片单独保存 TRX 和失败摘要。 |
 | `windows-tools` | 构建、格式、worker 与受控 native adapter。 |
-| `windows-desktop`，2 个分片 | 普通组执行 continuous、浏览器和 Notepad，保留三项退出校验。Hy 组在自己的 runner 重新执行 continuous，核验该消费者退出后，再执行 Hy。 |
-| `index-windows`、`index-linux` | 正式 Index 安装、真实推理及包生命周期。 |
-| `linux`，3 个分片，加 `linux-native` | 合同与无模型界面、浏览器与编辑器、合作输入与原生桌面、设置教程与 Hy 生命周期。 |
+| `Windows desktop / ordinary` | continuous 与 Notepad。启动 Notepad 前核验本组 continuous 的退出，末尾核验两个消费者的退出。 |
+| `Windows desktop / hy` | 在自己的 runner 执行 continuous，核验该消费者退出后，再执行 Hy。 |
+| `Index / windows` | 一次构建实际发行包，依次执行正式 Index 生命周期和默认 Index 浏览器。两份结果保留同一 ZIP、原生载荷和共同文件摘要。 |
+| `Index / linux` | 正式 Index 安装、真实宿主推理及包生命周期。 |
+| `Linux / contracts` | 合同、无模型界面与发行包验证。 |
+| `Linux / browser` | 合作浏览器与编辑器。 |
+| `Linux / settings` | 设置、教程与 Hy 生命周期。 |
+| `Linux / native` | Fcitx 探针、GTK/Qt 合作输入、桌面组件附加与原生桌面。 |
 
-每轮最多有 16 个 job，字体准备后最多并行 15 个，低于免费 runner 的 20 个并发上限。不同 runner 不共享桌面、模型安装代或消费者进程。每个 Windows 桌面组各自完成正式 Argos 安装与 continuous。Hy 只消费自己 runner 中该次调用的安装和内核退出证明；普通组仍校验 continuous、浏览器与 Notepad 的全部原始退出证明。完整 solution 构建留在合同与工具组，桌面组只构建它实际消费的 fixture。job 内独立检查在失败后继续，依赖失败的场景保持 skipped。Actions 原始 step 和 job 状态就是结果；失败、取消和 skipped 都不能表述为通过。当前没有负责人批准的历史失败例外。以后获批的例外仍须放在独立非必需 job，保留真实失败。
+每轮最多有 16 个 job，字体准备后最多并行 15 个，低于免费 runner 的 20 个并发上限。不同 runner 不共享桌面、模型安装代或消费者进程。每个 Windows 桌面组各自完成正式 Argos 安装与 continuous。Hy 只消费自己 runner 中该次调用的安装和内核退出证明；普通组校验自己 runner 中 continuous 与 Notepad 的原始退出证明。Index 生命周期和浏览器各自执行正式准备，并保留本次安装代和退出证明。同一包不表示同一安装代，也不授予其它 runner 通过资格。完整 solution 构建留在合同与工具组，桌面组只构建它实际消费的 fixture。job 内独立检查在失败后继续，依赖失败的场景保持 skipped。Actions 原始 step 和 job 状态就是结果；失败、取消和 skipped 都不能表述为通过。当前没有负责人批准的历史失败例外。以后获批的例外仍须放在独立非必需 job，保留真实失败。
 
-各结果 artifact 都带 SHA、run ID 和 attempt。`artifacts/ci/source.json` 记录实际 `git rev-parse HEAD`。push 测试的是 head，不是 GitHub 临时合并提交。墙钟时间统一按 `max(必过 job.completed_at) - run.created_at` 计算，包含排队、准备和诊断上传。
+结果 artifact 的名称或内含源码记录带有 SHA、run ID 和 attempt。`artifacts/ci/source.json` 记录实际 `git rev-parse HEAD`。push 测试的是 head，不是 GitHub 临时合并提交。墙钟时间统一按 `max(必过 job.completed_at) - run.created_at` 计算，包含排队、准备和诊断上传。
 
 ### 固定产物的复用与更新
 
@@ -124,7 +140,7 @@ Linux 生产者和消费 runner 都将 pacman 仓库固定到该日期，并用 
 
 下载时先核对 GitHub asset SHA-256，再校验第三方输入、已安装文件和上游源码补丁。消费 runner 每次重新编译当前提交的 TypeLay GTK/Qt 模块及接入它们的 Fcitx GTK/Qt 插件，随后执行原有生产构建记录和 ABI 校验。测试 fixture 也重新编译，全部场景重新执行。固定构建不携带 TypeLay 模块或测试成功记录，旧结果不能授予当前提交通过资格。
 
-Hy 的键只包含生成锁中模型、许可证和运行库压缩包的固定下载记录，不包含当前产品源码记录。它复用原始下载文件，不保存安装后的模型、运行库目录或验收结果。Windows 消费 runner 仍执行原有准备入口，对每个文件重新检查完整大小与哈希、提取并校验运行库，再执行模型安装和产品场景。Index 的模型和许可证也以各自锁定的下载记录为键，Linux 和 Windows 均复用原始下载，并执行原准备入口的完整校验。传输复用同一 release 机制，不增加 job 或重试。
+Hy 的键只包含生成锁中模型、许可证和运行库压缩包的固定下载记录，不包含当前产品源码记录。它复用原始下载文件，不保存安装后的模型、运行库目录或验收结果。运行 Hy 场景的 Windows runner 仍执行原有准备入口，对每个文件重新检查完整大小与哈希、提取并校验运行库，再执行模型安装和产品场景。`Index / windows` 只通过现有 `eng/windows/hy/prepare_runtime.py` 准备打包所需的 Hy CPU 运行库，不搬运 Hy 模型。该入口校验固定官方归档与运行库文件。Index 的模型和许可证也以各自锁定的下载记录为键，Linux 和 Windows 均复用原始下载，并执行原准备入口的完整校验。固定下载产物的传输复用同一 release 机制，不增加 job 或重试。
 
 普通 push 只上传 TRX、JSON、日志和截图。最终验收需要安装包时，在目标提交手动运行工作流，并设置 `upload_packages=true`。安装包仍在每轮构建和搬迁验证，只是平时不上载。
 
@@ -136,11 +152,24 @@ gh workflow run check.yml --repo DingJWuyu/Typelay --ref <工作分支> -f uploa
 
 手动运行也执行完整检查；它不能替代两次自动 push 的时限验收。模型权重只在固定下载 release 和临时 runner 中复用，不进入结果 artifact。CI 不再提供质量采集开关，显式模型研究按[翻译质量采集指南](translation-quality.md)独立执行。
 
+## 启用与验收 hitl 合并保护
+
+保护设置由负责人在开发流程 PR 合入 `hitl` 后另行触发。文档合入不代表保护已经生效，也不免除启用前提。启用时按以下顺序核对：
+
+1. 按[任务跟踪约定](../agents/issue-tracker.md)核对原生依赖。对应 job 已在真实 PR 最新 head 的自动 push 上运行，spec 的必过项均须成功。残留历史失败须逐项获准，并在独立的非必需 job 中保留原始结果。批准规则见[结束条件](#结束条件)。前提未满足时保留未完成状态，不配置保护。
+2. 从最终候选最新 head 的自动 push 检查中确定完整集合。将 spec 必过范围逐项对应到实际 check name 和来源 app ID，核对工作流、原始步骤 outcome 及 artifact。集合须覆盖前置生产者和全部必过分片，不能只选已经成功的消费者。工作流拆分、事件或名称变化后重新核对，不沿用旧清单或同名的任意来源。
+3. 负责人触发设置后，用 GitHub 原生保护约束 `hitl`。将必需检查绑定到上一步确认的名称和 app，并要求分支与最新 base 同步。管理员也须遵守检查，不设置管理员或其它角色的绕过入口。只保护 `hitl` 不会约束以 `work/**` 为目标的上层 PR；负责人仍按相邻 base 和该层最新证据逐层审查。
+4. 读取实际保护配置和有效规则，核对匹配分支、启用状态、必需检查及来源、最新 base 约束和管理员限制。使用规则集时，连同继承的规则和 bypass actor 一起核对。配置文案或一般的 `mergeable` 状态不足以证明这些约束生效。
+5. 在受规则约束的 PR 上观察管理员的原生合并判定。分别验证必需检查失败、缺失、跳过、取消，以及最新 head 尚无结果时都阻止合并。跳过情形须覆盖前置失败导致的未执行。若任一情形仍可合并，保护验收失败；修正工作流或配置后重新验证，不能用人工审查代替原生阻断。
+6. 将实际启用的检查名、来源 app、目标分支和管理员约束同步到本页，并在任务中保存配置与合并判定回执。负责人确认保护生效且验收完成后，才关闭对应 ticket。后续修改工作流或保护时，同步更新现役说明。
+
 ## 结束条件
 
 交付前检查 `git diff`，确认只有预期变更，没有用户数据、临时脚本或生成物。删除已无现役用途的内容时，同步清理入口、引用和配置。
 
 按[结果表述](testing.md#结果表述)报告已执行、失败和未执行的范围。必过项中的测试、lint 或打包检查失败或未执行时，任务仍未完成。允许保留的历史失败必须由负责人逐项批准，在 spec 或 ticket 中提供复现方式、影响边界、原始结果和后续 ticket；结果仍如实记录为失败，不能因建票而记为通过。例外不得覆盖必过项、新引入的回归、错误目标写入、隐私泄漏或人工稿丢失。
+
+负责人仍须审查本地旅程与视觉证据，GitHub 检查不能代替这项审查。按[测试策略](testing.md#结果表述)核对实际范围、源码与包及模型身份、命令与退出码、字段结果、截图和清理回执。复用相同 tree 的本地结果时说明适用范围，不能将这些结果记成新 head 的原生检查成功。
 
 任务未完成时，保留必要原件和进度。达到完成条件后删除临时文件，不另建任务归档。
 
