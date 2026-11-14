@@ -10,6 +10,7 @@
 - `writeback/direct` 通过直接替换快捷键或 CLI 操作原字段。
 - `writeback/refusal` 在输入法未知、源文改变或目标变化时拒绝不安全写入。
 - `writeback/undo` 与目标控件自己的原生替换和撤销行为比较。
+- `writeback/browser-undo-index` 是 [Linux 原生 Undo 必过旅程](undo.md)。它在 Tiptap 中接受真实 Index 候选，再用宿主快捷键撤销和重做。
 - `writeback/browser-index` 使用正式默认 Index，验证普通网页的人工稿、两次默认 Tab、UTF-16 选区与后台直接替换。
 
 ## How to get to it (user POV)

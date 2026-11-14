@@ -3121,6 +3121,7 @@ if __name__ == "__main__":
             "all",
             "browser",
             "browser-index",
+            "browser-undo-index",
             "gtk",
             "gtk-index",
             "gtk4",
@@ -3196,10 +3197,14 @@ if __name__ == "__main__":
         parser.error("--gtk-refusal and --desktop verify different capability scopes")
     if args.desktop and not args.package:
         parser.error("--desktop requires --package")
-    if args.desktop_scope == "browser-index" and (not args.inside or not args.index_cache):
+    if args.desktop_scope in ("browser-index", "browser-undo-index") and (
+        not args.desktop or not args.inside or not args.index_cache
+    ):
         parser.error(
-            "browser-index requires --inside, --index-cache and the verify-typelay private session"
+            "Index browser journeys require --desktop, --inside, --index-cache and verify-typelay"
         )
+    if args.desktop_scope == "browser-undo-index" and not args.editor_bundle:
+        parser.error("browser-undo-index requires the real Tiptap --editor-bundle")
     if args.index_cache:
         args.index_cache = args.index_cache.resolve(strict=True)
     if args.desktop_scope == "gtk-index" and (
@@ -3226,7 +3231,7 @@ if __name__ == "__main__":
                     run = inside_settings_ui
                 elif args.desktop_scope == "model-packages":
                     from hy_package_e2e import run
-                elif args.desktop_scope == "browser-index":
+                elif args.desktop_scope in ("browser-index", "browser-undo-index"):
                     from browser_index_journey import run
                 elif args.desktop_scope == "gtk-index":
                     from gtk_index_e2e import run

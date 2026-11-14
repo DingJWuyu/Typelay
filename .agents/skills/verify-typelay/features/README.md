@@ -25,6 +25,7 @@
 | [模型准备与恢复](models.md) | CLI、首次配置和本地模型页，观察正式安装、Ready 和库存。 |
 | [设置与暂停](settings.md) | 设置窗口、托盘、快捷面板与 CLI，观察保存和恢复。 |
 | [接受、编辑与直接替换](writeback.md) | Tab、浮层编辑和直接替换。普通网页 `browser-index` 串联真实默认模型、两次 Tab、选区和后台 Direct。 |
+| [Linux 原生 Undo](undo.md) | 必过旅程 `browser-undo-index` 使用真实 Index 和 Tiptap，默认 Tab 替换后由宿主 Ctrl+Z 恢复原文。 |
 | [应用接入与练习](applications.md) | 应用支持、教程、手动合作入口及扩展，观察实际连接。 |
 
 每个功能文件使用四个 H2：`Sub-features`、`How to get to it (user POV)`、`Driving it with private niri`、`Gotchas`。
