@@ -58,7 +58,9 @@ internal sealed class WindowsInputService : IInputService
         var result = await broker.CaptureWakeAsync(new(BrokerProtocol.Version, 0, "capture-wake", "",
             UserEpoch: epochs.User, ForegroundEpoch: epochs.Foreground, SourceUserEpoch: epochs.Source,
             Excluded: excluded, ExpiresAtMs: capture.Origin.TriggeredAtMs + Limits.ObservationMaxAgeMs,
-            WakeOrigin: capture.Origin), stillCurrent);
+            WakeOrigin: capture.Origin), stillCurrent).ConfigureAwait(false);
+        // This conversion uses only the completed reply. Avoid another UI queue
+        // turn before TryRead performs its unchanged target and deadline checks.
         return result.Status == "observed"
             ? new(result.Snapshot, result.Focus, result.Application, result.UserEpoch, result.ForegroundEpoch)
             : new(null);
