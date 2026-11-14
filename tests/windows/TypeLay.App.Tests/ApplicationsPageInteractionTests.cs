@@ -621,7 +621,7 @@ public sealed partial class SettingsRenderingTests
             }
             finally { completed = true; }
         }
-        var action = owner.Dispatcher.BeginInvoke(new Action(() => interaction = InteractAsync()), DispatcherPriority.ApplicationIdle);
+        DispatcherOperation? action = null;
         var timeout = new DispatcherTimer(DispatcherPriority.Send, owner.Dispatcher) { Interval = TimeSpan.FromSeconds(3) };
         timeout.Tick += (_, _) =>
         {
@@ -696,14 +696,47 @@ public sealed partial class SettingsRenderingTests
                 // Loaded and arranged geometry do not prove native hit testing
                 // after Hide/Show. Wait for this exact row's screen point in the
                 // original dialog budget, then send the original click once.
-                while (!pointerTarget.IsLoaded || !pointerTarget.IsVisible
-                    || WindowFromPoint(ApplicationRowPoint(pointerTarget)) != handle)
+                bool RowReceivesClick() => pointerTarget.IsLoaded && pointerTarget.IsVisible
+                    && WindowFromPoint(ApplicationRowPoint(pointerTarget)) == handle;
+                if (!RowReceivesClick())
                 {
+                    var frame = new DispatcherFrame();
+                    Exception? hitTestFailure = null;
+                    bool inspecting = false;
+                    void InspectFrame(object? sender, EventArgs args)
+                    {
+                        if (inspecting || !frame.Continue)
+                            return;
+                        inspecting = true;
+                        try
+                        {
+                            ct.ThrowIfCancellationRequested();
+                            if (RowReceivesClick())
+                                frame.Continue = false;
+                        }
+                        catch (Exception error)
+                        {
+                            hitTestFailure = error;
+                            frame.Continue = false;
+                        }
+                        finally { inspecting = false; }
+                    }
+                    CompositionTarget.Rendering += InspectFrame;
+                    try
+                    {
+                        // Cancellation wakes the dispatcher even if no frame is
+                        // rendered, so a hidden or closed owner cannot hang here.
+                        using var cancelled = ct.Register(() => frame.Continue = false);
+                        Dispatcher.PushFrame(frame);
+                    }
+                    finally { CompositionTarget.Rendering -= InspectFrame; }
                     ct.ThrowIfCancellationRequested();
-                    owner.Dispatcher.Invoke(() => { }, DispatcherPriority.Background);
+                    if (hitTestFailure is not null)
+                        System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(hitTestFailure).Throw();
                 }
             }
             ct.ThrowIfCancellationRequested();
+            action = owner.Dispatcher.BeginInvoke(new Action(() => interaction = InteractAsync()), DispatcherPriority.ApplicationIdle);
             open();
             owner.Dispatcher.Invoke(() => { }, DispatcherPriority.SystemIdle);
         }
@@ -737,7 +770,7 @@ public sealed partial class SettingsRenderingTests
                 }
             }
         }
-        if (action.Status == DispatcherOperationStatus.Pending)
+        if (action?.Status == DispatcherOperationStatus.Pending)
             action.Abort();
         if (failure is not null)
         {
