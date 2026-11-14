@@ -261,14 +261,10 @@ def run(arguments):
                         None,
                     )
                     raise AssertionError("real Index rejected this candidate; see controller.jsonl")
+                if value.get("viewState") != "ValidTranslation":
+                    return None
                 node = editor()
-                return (
-                    (value, node)
-                    if value.get("viewState") == "ValidTranslation"
-                    and node
-                    and node.get("value", {}).get("value")
-                    else None
-                )
+                return (value, node) if node and node.get("value", {}).get("value") else None
 
             def insert(text, field="source"):
                 actions.append(
