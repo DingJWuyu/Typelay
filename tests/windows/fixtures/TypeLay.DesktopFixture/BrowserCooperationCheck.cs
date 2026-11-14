@@ -256,6 +256,8 @@ internal static partial class BrowserCooperationCheck
         var automatic = new Scene("automatic-preview-tab");
         var draft = new Scene("manual-draft-return-independent-tab");
         var draftObservation = new DraftObservation();
+        var ownerRecovery = new OwnerRecoveryObservation();
+        long ownerRecoveryOffset = 0;
         var glossary = new Scene("browser-editor-glossary-lifetime");
         var regenerate = new Scene("browser-editing-regenerate-confirmation");
         var mode = new Scene("on-demand-settings");
@@ -591,12 +593,16 @@ internal static partial class BrowserCooperationCheck
                 }
                 finally { mode.OverlayMenuObservation = cdp!.LastOverlayMenuObservation; }
                 commandSettings = await SetOnDemandAsync(app!.Process, data, ct);
+                ownerRecoveryOffset = TraceLength(trace);
+                await cdp.ArmOwnerRejectionAsync(distribution, extensionId!, ownerRecovery, ct);
                 await FocusPageAsync(cdp, windows!, ct);
             });
             await Phase(direct, "wait-public-command-ready", 30, async ct =>
             {
                 var sourceBounds = await FocusCommandFieldAsync(cdp!, windows!, commandSettings!, ct,
                     observeLayout: observation => direct.SourceLayout = observation);
+                direct.Stage = "observe-injected-initial-owner-rejection";
+                await WaitRejectedOwnerAsync(cdp!, trace, ownerRecoveryOffset, ownerRecovery, ct);
                 direct.Stage = "prepare-final-selection";
                 await PrepareInputAsync(cdp!, windows!, "Keep [", "] unchanged", selectSource: true, ct);
                 Record("final-selection-complete", direct);
@@ -612,6 +618,8 @@ internal static partial class BrowserCooperationCheck
                 CheckReplacement(state, direct, "Keep [" + reference + "] unchanged", sourceFocus: true, caret: 6 + reference.Length);
                 direct.NoPreview = state.PreviewMounts == 0;
                 Require(direct.NoPreview && !(await cdp!.PreviewAsync(ct)).Visible, "direct-opened-preview");
+                await VerifyOwnerRecoveryAsync(cdp!, trace, ownerRecoveryOffset, ownerRecovery, ct);
+                await cdp!.RemoveOwnerInjectionAsync(ownerRecovery, ct);
             });
             await Phase(background, "wait-public-command-ready", 30, async ct =>
             {
@@ -730,7 +738,15 @@ internal static partial class BrowserCooperationCheck
                 }
                 catch (Exception error) when (error is not OutOfMemoryException) { cleanupErrors.Add(new(resource, error.GetType().Name)); }
             }
-            await Clean("cdp", () => { cdp?.Dispose(); return Task.CompletedTask; });
+            await Clean("cdp", async () =>
+            {
+                try
+                {
+                    if (cdp is not null && !all.IsCancellationRequested)
+                        await cdp.RemoveOwnerInjectionAsync(ownerRecovery, all.Token);
+                }
+                finally { cdp?.Dispose(); } // Closing this owned session also removes its debugger breakpoints.
+            });
             await Clean("browser-process-family", () => browserLifetime.StopAsync(async child =>
             {
                 if (windows is not null && browser is not null)
@@ -823,6 +839,7 @@ internal static partial class BrowserCooperationCheck
             failure = first?.Failure ?? (passed ? "none" : "cleanup-failed"),
             scenes,
             draftObservation,
+            ownerRecovery,
             cleanupErrors,
             ownedDataRemoved,
             appExitConfirmed = appLifetime.ExitConfirmed,

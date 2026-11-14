@@ -120,8 +120,9 @@ internal static partial class BrowserCooperationCheck
         }
     }
     // Only this fixture's owned CfT endpoint is used. CDP drives/observes synthetic
-    // page UI and reads public extension metadata; it never writes extension state,
-    // native messages or product permits.
+    // page UI and reads public extension metadata. The owner recovery case also
+    // injects one identical DOM style mutation at the real preparation reply.
+    // It never changes protocol replies, native messages or product permits.
     private sealed partial class Cdp : IDisposable
     {
         private readonly ClientWebSocket _socket = new();
@@ -777,6 +778,7 @@ internal static partial class BrowserCooperationCheck
                     var root = response.RootElement;
                     if (!root.TryGetProperty("id", out var responseId) || responseId.GetInt32() != id)
                     {
+                        ObserveRecoveryScript(root);
                         Diagnostics.Observe(root, _page, _pageTarget, _mainFrame, _navigationUrl);
                         continue;
                     }

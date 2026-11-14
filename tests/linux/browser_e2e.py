@@ -945,6 +945,54 @@ class BrowserContract(unittest.TestCase):
 
     def test_source_command_rejected_by_identical_layout_needs_a_new_owner_and_source(self):
         self.type_source()
+        scripts = []
+        paused = []
+        self.cdp.on("Debugger.scriptParsed", lambda script: scripts.append(script))
+        self.cdp.on("Debugger.paused", lambda event: paused.append(event))
+        self.cdp.send("Debugger.enable")
+        self.addCleanup(self.cdp.send, "Debugger.disable")
+        source = CONTENT.read_text()
+        matches = []
+        for script in scripts:
+            actual = self.cdp.send("Debugger.getScriptSource", {"scriptId": script["scriptId"]})[
+                "scriptSource"
+            ]
+            if actual.count(source) == 1:
+                matches.append((script, actual))
+        self.assertEqual(len(matches), 1)
+        script, actual = matches[0]
+        marker = "    if (message.id) port.postMessage({id: message.id, data: result});"
+        self.assertEqual(actual.count(marker), 1)
+        breakpoint = self.cdp.send(
+            "Debugger.setBreakpoint",
+            {
+                "location": {
+                    "scriptId": script["scriptId"],
+                    "lineNumber": actual[: actual.index(marker)].count("\n"),
+                    "columnNumber": 4,
+                },
+                "condition": """(() => {
+                  if (message.op !== 'prepare-command-owner' || !result) return false;
+                  const proof = globalThis.__typelayOwnerRecovery ??= {hits:0,preparations:[],preparationCount:0};
+                  const a=result.authority;
+                  proof.preparationCount++;
+                  if (proof.preparations.length<2) proof.preparations.push({ownerId:result.ownerId,token:a.token,
+                    target:a.target,content:a.contentRevision,input:a.inputRevision,focus:a.focusRevision});
+                  if (proof.hits) return false;
+                  const fields=[document.body,document.activeElement];
+                  proof.before=fields.map(f=>f.getAttribute('style'));
+                  fields.forEach((f,i)=>f.setAttribute('style',proof.before[i]));
+                  proof.after=fields.map(f=>f.getAttribute('style'));
+                  proof.hits++;
+                  return false;
+                })()""",
+            },
+        )
+        self.addCleanup(
+            self.cdp.send,
+            "Debugger.removeBreakpoint",
+            {"breakpointId": breakpoint["breakpointId"]},
+        )
         rejected = self.page.evaluate("""async () => {
           fixtureCommand({id: 8900, op: 'configure-shortcuts', data: {
             generation: 'style-owner', enabled: true, sessionEnabled: true,
@@ -960,7 +1008,7 @@ class BrowserContract(unittest.TestCase):
           const prepared = fixtureCommand({id: 8901, op: 'prepare-command-owner',
             data: {ownerId: 'old-owner', generation: 'style-owner', traceOwner: true}});
           const before = [document.body.getAttribute('style'), source.getAttribute('style')];
-          layout(); await Promise.resolve();
+          await Promise.resolve();
           const stamp = fixtureHostClock().boottimeMs;
           window.rejectedOwner = {ownerId: 'old-owner', generation: 'style-owner',
             documentToken: prepared.target.split(':')[0], target: prepared.target,
@@ -1002,6 +1050,12 @@ class BrowserContract(unittest.TestCase):
             renewed["prepared"]["focusRevision"], rejected["prepared"]["focusRevision"]
         )
         self.assertEqual(renewed["late"]["state"], "rejected")
+        injection = self.page.evaluate("__typelayOwnerRecovery")
+        self.assertEqual(injection["hits"], 1)
+        self.assertEqual(injection["before"], injection["after"])
+        self.assertEqual(len(injection["preparations"]), 2)
+        self.assertEqual(injection["preparationCount"], 2)
+        self.assertEqual(paused, [])
         self.page.keyboard.press("F10")
         commands = self.source_commands()
         self.assertEqual(len(commands), 1)
