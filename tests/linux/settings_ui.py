@@ -18,7 +18,10 @@ import time
 from collections import deque
 from pathlib import Path
 
-from support.settings_commit import saved as commit_saved
+# The production runner uses -I, which omits the script directory. Admit only
+# this checkout's test helpers; desktop modules still come from --package.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support.settings_commit import saved as commit_saved  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 

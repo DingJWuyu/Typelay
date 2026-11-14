@@ -27,8 +27,8 @@ Preconditions: 私有会话内已有真实桌面进程。语言功能需要正�
 - **系统字体与侧栏回归。** 在私有会话中设置 `TYPELAY_UI_FONT_ROOT="$TYPELAY_VERIFY_PACKAGE/fonts"`，执行 `/usr/bin/python3 tests/linux/test_ui_fonts.py -v` 和 `/usr/bin/python3 tests/linux/test_settings_feedback.py -v`。字体检查读取真实 GTK 系统字体，并在同一测试进程验证 Adwaita Sans 和另一系统字体偏好；侧栏检查真实标签在浅色、深色下的墨色。无显示的字体检查只证明通用字体回退，不能代替这条桌面语义检查。
 - **暂停 CLI。** 执行 `"$TYPELAY_VERIFY_PACKAGE/typelay" --toggle-pause`。先观察原浮层消失和持久化的 Enabled 变化，再执行相同命令恢复。重新输入合成文本确认翻译恢复，不能只看开关外观。
 - **快捷面板。** 执行 `"$TYPELAY_VERIFY_PACKAGE/typelay" --quick-panel`，保存实际面板截图和控件树，通过面板中的暂停动作验证同一行为，单独记录该入口。
-- **既有设置回归。** 在私有旅程脚本内执行 `DISPLAY="$TYPELAY_VERIFY_XDISPLAY" /usr/bin/python3 tests/linux/native_e2e.py --inside --desktop --desktop-scope settings-ui --package "$TYPELAY_VERIFY_PACKAGE" --native "$PWD/artifacts/linux/native" --output "$TYPELAY_VERIFY_OUTPUT/settings-ui"`，先创建其输出目录。该测试使用真实 GTK 设置和受控宿主，报告其范围，不替代真实模型、普通字段排除或写回。
-- **托盘合同。** 在私有旅程脚本内执行 `DISPLAY="$TYPELAY_VERIFY_XDISPLAY" GDK_BACKEND=x11 /usr/bin/python3 tests/linux/tray_e2e.py --package "$TYPELAY_VERIFY_PACKAGE"`。该入口不需要模型，验证 GTK/Ayatana 注册、菜单、暂停恢复和持久化，不证明真实 Waybar 的点击和视觉。
+- **既有设置回归。** 在私有旅程脚本内执行 `DISPLAY="$TYPELAY_VERIFY_XDISPLAY" /usr/bin/python3 tests/linux/native_e2e.py --desktop --desktop-scope settings-ui --package "$TYPELAY_VERIFY_PACKAGE" --native "$PWD/artifacts/linux/native" --output "$XDG_RUNTIME_DIR/settings-ui"`。退出前将该输出目录复制到 `$TYPELAY_VERIFY_OUTPUT/settings-ui`，保留原退出码。入口会创建自己的捕获会话，并用 `python -I -B` 加载设置驱动；短输出路径用于避免捕获 socket 超过 Unix 路径长度限制。该测试使用正式包的真实 GTK 设置和受控宿主，报告其范围，不替代真实模型、普通字段排除或写回。
+- **托盘合同。** 在私有旅程脚本内执行 `DISPLAY="$TYPELAY_VERIFY_XDISPLAY" GDK_BACKEND=x11 /usr/bin/python3 tests/linux/tray_e2e.py --package "$TYPELAY_VERIFY_PACKAGE" --output "$TYPELAY_VERIFY_OUTPUT/tray"`。该入口使用当前工作树的 GTK 代码与包内宿主，不需要模型，验证 GTK/Ayatana 注册、菜单、暂停恢复和持久化，不证明真实 Waybar 的点击和视觉。语言保存失败时检查 `language-<source/target>-save-failure.json` 和 PNG，确认底部反馈可见、磁盘旧值不变、控件回滚且焦点保留。
 
 ## Gotchas
 

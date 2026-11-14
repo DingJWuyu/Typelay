@@ -44,6 +44,26 @@ def png(alpha=255):
     return data
 
 
+class SettingsEntryTests(unittest.TestCase):
+    def test_isolated_settings_entry_can_load_its_test_support(self):
+        with tempfile.TemporaryDirectory() as unrelated:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    "-B",
+                    str(Path(__file__).with_name("settings_ui.py")),
+                    "--help",
+                ],
+                cwd=unrelated,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--package", result.stdout)
+
+
 class PixbufObservationTests(unittest.TestCase):
     def test_summary_ignores_padding_and_preserves_transparent_pixel_evidence(self):
         pixels = b"\0\0\0\0\xff\0\0\xff" + b"junk" + b"\0\xff\0\x80\0\0\xff\xff"
