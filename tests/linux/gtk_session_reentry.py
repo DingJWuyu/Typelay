@@ -1520,6 +1520,35 @@ async def language_wait_for(predicate, description, timeout=5):
     raise AssertionError(description)
 
 
+async def capture_language_source(input_service, ready, evidence):
+    """Admit the first source within the original readiness budget, before any lease."""
+    deadline = time.monotonic() + 5
+    attempts = evidence.setdefault("initialCaptureAdmission", [])
+    while time.monotonic() < deadline:
+        initial = await language_wait_for(
+            ready,
+            "language source IME/parent/compositor did not become ready",
+            timeout=deadline - time.monotonic(),
+        )
+        before = input_service.diagnostics()["windowEpoch"]
+        captured = await input_service.request("capture", {})
+        accepted = bool(captured and captured.get("snapshot"))
+        attempts.append(
+            {
+                "atMs": now_ms(),
+                "windowEpochBefore": before,
+                "windowEpochAfter": input_service.diagnostics()["windowEpoch"],
+                "snapshotAdmitted": accepted,
+                "reason": None if accepted else input_service.capture_status,
+            }
+        )
+        assert time.monotonic() < deadline, "initial source capture exceeded readiness budget"
+        if accepted:
+            return initial, captured
+        assert input_service.capture_status == "window-changing", input_service.capture_status
+    raise AssertionError("initial source capture did not stabilize within readiness budget")
+
+
 async def language_command(*arguments, timeout, environment=None):
     child = await asyncio.create_subprocess_exec(
         *arguments, env=environment, stdout=asyncio.subprocess.PIPE
@@ -2875,9 +2904,16 @@ def run_owned_language_options(
                 )
 
             try:
-                initial = await language_wait_for(
-                    source_ready, "language source IME/parent/compositor did not become ready"
-                )
+                if configuration_stage:
+                    initial, captured = await capture_language_source(
+                        input_service, source_ready, evidence
+                    )
+                else:
+                    initial = await language_wait_for(
+                        source_ready, "language source IME/parent/compositor did not become ready"
+                    )
+                    captured = await input_service.request("capture", {})
+                    assert captured and captured.get("snapshot"), input_service.capture_status
             except AssertionError:
                 try:
                     if configuration_stage == "language-configuration-window-focus":
@@ -2908,8 +2944,6 @@ def run_owned_language_options(
                 except Exception:
                     pass  # Projection failures must preserve the original readiness assertion.
                 raise
-            captured = await input_service.request("capture", {})
-            assert captured and captured.get("snapshot"), input_service.capture_status
             source = captured["snapshot"]
             assert source["text"] == initial["first"]
             acknowledgement = captured["sessionShortcuts"]

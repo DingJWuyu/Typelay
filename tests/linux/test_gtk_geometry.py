@@ -50,6 +50,75 @@ from native_e2e import (  # noqa: E402
 from support.gtk_settings_geometry import settings_viewport_from_pane  # noqa: E402
 
 
+class GtkLanguageInitialCaptureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_window_change_before_any_snapshot_admits_one_fresh_source(self):
+        from gtk_session_reentry import capture_language_source
+
+        class Input:
+            capture_status = "window-changing"
+            calls = 0
+
+            def diagnostics(self):
+                return {"windowEpoch": self.calls}
+
+            async def request(self, operation, data):
+                self.calls += 1
+                assert (operation, data) == ("capture", {})
+                return None if self.calls == 1 else {"snapshot": {"text": "Fresh source"}}
+
+        service, evidence = Input(), {}
+        initial, captured = await capture_language_source(
+            service, lambda: {"first": "Fresh source"}, evidence
+        )
+        self.assertEqual(initial["first"], captured["snapshot"]["text"])
+        self.assertEqual(service.calls, 2)
+        self.assertEqual(len(evidence["initialCaptureAdmission"]), 2)
+
+    async def test_other_refusal_never_retries_or_invents_a_snapshot(self):
+        from gtk_session_reentry import capture_language_source
+
+        for reason in ("ime-unknown", "native-focus-changed", "native-disconnected"):
+
+            class Input:
+                capture_status = reason
+                calls = 0
+
+                def diagnostics(self):
+                    return {"windowEpoch": 1}
+
+                async def request(self, *_):
+                    self.calls += 1
+                    return None
+
+            service = Input()
+            with self.subTest(reason=reason), self.assertRaisesRegex(AssertionError, reason):
+                await capture_language_source(service, lambda: {"first": "Source"}, {})
+            self.assertEqual(service.calls, 1)
+
+    async def test_refused_capture_consumes_the_original_five_second_budget(self):
+        from gtk_session_reentry import capture_language_source
+
+        clock = [10.0]
+
+        class Input:
+            capture_status = "window-changing"
+            calls = 0
+
+            def diagnostics(self):
+                return {"windowEpoch": self.calls}
+
+            async def request(self, *_):
+                self.calls += 1
+                clock[0] = 15.0
+                return None
+
+        service = Input()
+        with patch("gtk_session_reentry.time.monotonic", side_effect=lambda: clock[0]):
+            with self.assertRaisesRegex(AssertionError, "initial source capture"):
+                await capture_language_source(service, lambda: {"first": "Source"}, {})
+        self.assertEqual(service.calls, 1)
+
+
 class GtkLanguageSizeRequestCaptureTests(unittest.IsolatedAsyncioTestCase):
     async def test_eof_keeps_original_bytes_and_marks_complete(self):
         stream = asyncio.StreamReader()
