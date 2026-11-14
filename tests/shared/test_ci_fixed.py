@@ -137,3 +137,54 @@ class FixedBuildTransportTests(unittest.TestCase):
 
     def test_lookup_does_not_download_existing_builds(self):
         self.run_transport("valid", "lookup")
+
+
+class FixedBuildKeyTests(unittest.TestCase):
+    def test_native_edits_do_not_rebuild_third_party_dependencies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("eng", "src/linux/native", ".github/actions/linux-tools"):
+                shutil.copytree(
+                    ROOT / name, root / name, ignore=shutil.ignore_patterns("__pycache__")
+                )
+            # The command port supplies a stable installed SDK on hosts without pacman.
+            pacman = root / ("pacman.cmd" if sys.platform == "win32" else "pacman")
+            pacman.write_text(
+                "@echo fixed-test-sdk\n"
+                if sys.platform == "win32"
+                else "#!/bin/sh\necho fixed-test-sdk\n"
+            )
+            pacman.chmod(0o700)
+
+            def key():
+                return subprocess.check_output(
+                    [sys.executable, str(root / "eng/ci/fixed.py"), "key", "fcitx"],
+                    env=os.environ | {"PATH": str(root) + os.pathsep + os.environ["PATH"]},
+                    text=True,
+                    timeout=10,
+                ).strip()
+
+            original = key()
+            for name in (
+                "src/linux/native/gtk4/CMakeLists.txt",
+                "src/linux/native/qt6/CMakeLists.txt",
+                "src/linux/native/common/overlay-design.h",
+                "eng/linux/cooperative/fcitx.py",
+                "eng/linux/cooperative/qt.py",
+            ):
+                with self.subTest(name=name):
+                    path = root / name
+                    contents = path.read_bytes()
+                    path.write_bytes(contents + b"\n/* native edit */\n")
+                    self.assertEqual(key(), original)
+                    path.write_bytes(contents)
+            for name in (
+                "eng/ci/arch-snapshot",
+                "eng/linux/cooperative/patches/fcitx5.patch",
+            ):
+                with self.subTest(pin=name):
+                    path = root / name
+                    contents = path.read_bytes()
+                    path.write_bytes(contents + b"\n# deliberate pin update\n")
+                    self.assertNotEqual(key(), original)
+                    path.write_bytes(contents)

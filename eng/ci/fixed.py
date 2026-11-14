@@ -16,63 +16,11 @@ sys.path.insert(0, str(ROOT))
 def key(kind):
     if kind == "fonts":
         files = ["eng/fonts/prepare.py", "eng/fonts/fonts.lock.json", "eng/requirements.txt"]
-        environment = b""
     else:
-        from eng.linux.cooperative.inputs import FCITX_BUILD_INPUTS, QT_BUILD_INPUTS
+        from eng.linux.cooperative.third_party import BUILD_INPUTS
 
-        files = [
-            *FCITX_BUILD_INPUTS,
-            *QT_BUILD_INPUTS,
-            "eng/ci/fixed.py",
-            ".github/actions/linux-tools/action.yml",
-        ]
-        # Compiler and native SDK changes invalidate the build. Browsers and
-        # editors are test consumers, not inputs to the cooperation binaries.
-        environment = subprocess.check_output(
-            [
-                "pacman",
-                "-Q",
-                "gcc",
-                "gcc-libs",
-                "glibc",
-                "cmake",
-                "ninja",
-                "python",
-                "pkgconf",
-                "patch",
-                "fmt",
-                "glib2",
-                "glib2-devel",
-                "gtk3",
-                "gtk4",
-                "libxkbcommon",
-                "libxkbcommon-x11",
-                "wayland",
-                "wayland-protocols",
-                "plasma-wayland-protocols",
-                "extra-cmake-modules",
-                "libxcb",
-                "xcb-util-keysyms",
-                "systemd-libs",
-                "boost",
-                "boost-libs",
-                "opencc",
-                "icu",
-                "expat",
-                "libxml2",
-                "iso-codes",
-                "xkeyboard-config",
-                "zlib",
-                "zstd",
-                "libffi",
-                "pcre2",
-                "gettext",
-                "fcitx5",
-                "libime",
-                "qt6-base",
-            ]
-        )
-    digest = hashlib.sha256(environment)
+        files = BUILD_INPUTS
+    digest = hashlib.sha256()
     for name in sorted(files):
         digest.update(name.encode() + b"\0" + (ROOT / name).read_bytes() + b"\0")
     return f"ci-{kind}-{digest.hexdigest()}"
@@ -165,7 +113,7 @@ def main():
         directories = (
             ["artifacts/ui-fonts"]
             if args.kind == "fonts"
-            else ["artifacts/linux/fcitx-cooperative-5.1.22", "artifacts/linux/qt-cooperative"]
+            else ["artifacts/linux/fcitx-cooperative-5.1.22"]
         )
         subprocess.run(
             [
@@ -174,7 +122,6 @@ def main():
                 "--exclude=core-build",
                 "--exclude=libime-build",
                 "--exclude=fcitx5-chinese-addons-build",
-                "--exclude=artifacts/linux/qt-cooperative/build",
                 "-cf",
                 str(archive),
                 *directories,

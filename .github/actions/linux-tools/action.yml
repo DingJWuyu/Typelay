@@ -7,8 +7,13 @@ inputs:
 runs:
   using: composite
   steps:
+  - name: Pin the native toolchain and runtime repositories
+    run: |
+      snapshot=$(cat eng/ci/arch-snapshot)
+      printf 'Server = https://archive.archlinux.org/repos/%s/$repo/os/$arch\n' "$snapshot" > /etc/pacman.d/mirrorlist
+    shell: bash
   - name: Install target native SDK
-    run: pacman -Syu --needed --noconfirm git cmake ninja pkgconf gtk3 gtk4 json-glib python
+    run: pacman -Syyuu --needed --noconfirm git cmake ninja pkgconf gtk3 gtk4 json-glib python
       curl icu openssl zlib libxkbcommon-x11 dbus fcitx5 fcitx5-gtk fcitx5-chinese-addons boost libime
       patch fmt glib2-devel nlohmann-json expat xkeyboard-config iso-codes extra-cmake-modules gettext wayland-protocols plasma-wayland-protocols
       github-cli opencc procps-ng zstd qt6-base libxkbcommon libxcb

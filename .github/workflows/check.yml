@@ -90,7 +90,7 @@ jobs:
         Path("artifacts/ci/source.json").write_text(json.dumps(source, indent=2), encoding="utf-8")
         PY_SOURCE
       shell: bash
-    - name: Hash native inputs and installed SDK
+    - name: Hash pinned third-party sources and toolchain
       run: echo "tag=$(python eng/ci/fixed.py key fcitx)" >> "$GITHUB_OUTPUT"
       id: key
     - name: Find fixed Fcitx build
@@ -99,10 +99,8 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
         TAG: ${{ steps.key.outputs.tag }}
-    - name: Build Fcitx once per input and SDK hash
-      run: |
-        python eng/linux/cooperative/fcitx.py
-        python eng/linux/cooperative/qt.py
+    - name: Build pinned third-party Fcitx dependencies
+      run: python eng/linux/cooperative/third_party.py
       if: steps.restore.outputs.hit != 'true'
     - name: Publish fixed Fcitx build
       run: python eng/ci/fixed.py publish fcitx --tag "$TAG"
@@ -657,9 +655,18 @@ jobs:
         mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR"
         chmod 700 "$XDG_RUNTIME_DIR"
         artifacts/linux/package/typelay --install-models argos
-    - name: Restore fixed Fcitx production bytes
+    - name: Restore pinned dependencies and compile this commit's native modules
       id: fixed-native
-      run: python eng/ci/fixed.py restore fcitx --wait-for-job fcitx-build
+      run: |
+        python eng/ci/fixed.py restore fcitx --wait-for-job fcitx-build
+        python eng/linux/cooperative/fcitx.py --reuse-third-party &
+        gtk_pid=$!
+        python eng/linux/cooperative/qt.py &
+        qt_pid=$!
+        status=0
+        wait "$gtk_pid" || status=1
+        wait "$qt_pid" || status=1
+        exit "$status"
       env:
         GH_TOKEN: ${{ github.token }}
       if: matrix.group == 'native'
