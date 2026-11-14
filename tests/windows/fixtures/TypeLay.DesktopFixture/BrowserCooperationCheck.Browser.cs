@@ -120,8 +120,9 @@ internal static partial class BrowserCooperationCheck
         }
     }
     // Only this fixture's owned CfT endpoint is used. CDP drives/observes synthetic
-    // page UI and reads public extension metadata; it never writes extension state,
-    // native messages or product permits.
+    // page UI and reads public extension metadata. The owner recovery case also
+    // injects one identical DOM style mutation at the real preparation reply.
+    // It never changes protocol replies, native messages or product permits.
     private sealed partial class Cdp : IDisposable
     {
         private readonly ClientWebSocket _socket = new();
@@ -289,8 +290,13 @@ internal static partial class BrowserCooperationCheck
             var pages = targets.EnumerateArray().Where(target => target.GetProperty("type").GetString() == "page"
                 && target.GetProperty("url").GetString() == "about:blank").ToArray();
             Require(pages.Length == 1, "owned-initial-page-ambiguous");
+            stage("create-owned-page");
+            var created = await CallAsync("Target.createTarget", new
+            {
+                url = "about:blank"
+            }, null, ct);
+            _pageTarget = created.GetProperty("targetId").GetString();
             stage("attach-page");
-            _pageTarget = pages[0].GetProperty("targetId").GetString();
             var attach = await CallAsync("Target.attachToTarget", new
             {
                 targetId = _pageTarget,
@@ -772,6 +778,7 @@ internal static partial class BrowserCooperationCheck
                     var root = response.RootElement;
                     if (!root.TryGetProperty("id", out var responseId) || responseId.GetInt32() != id)
                     {
+                        ObserveRecoveryScript(root);
                         Diagnostics.Observe(root, _page, _pageTarget, _mainFrame, _navigationUrl);
                         continue;
                     }

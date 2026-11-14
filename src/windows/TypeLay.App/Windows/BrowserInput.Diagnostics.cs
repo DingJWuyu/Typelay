@@ -20,7 +20,7 @@ internal sealed class BrowserTraceBudget
         bool command = operation is "browser-command-approved" or "browser-command-path" or "browser-tab"
             or "browser-direct-Verified" or "browser-direct-RejectedBeforeMutation" or "browser-direct-OutcomeUnknown"
             or "browser-accept-Verified" or "browser-accept-RejectedBeforeMutation" or "browser-accept-OutcomeUnknown";
-        bool owner = operation is "browser-owner" or "browser-page-owner" or "browser-tray";
+        bool owner = operation is "browser-owner" or "browser-owner-source-refresh" or "browser-page-owner" or "browser-tray";
         bool input = operation == "browser-input";
         ref int count = ref (command ? ref _commands : ref (owner ? ref _owners : ref (input ? ref _inputs : ref _general)));
         int maximum = command || input ? 32 : owner ? 64 : 128;
@@ -295,7 +295,7 @@ internal sealed partial class BrowserInput
         PageRetired, PageNotActive, PendingGrantMismatch, GrantMissing, ExpiryMismatch, PolicyAckMismatch, NotActive,
         PeerMismatch, PolicyLimit, PolicyDuplicate, PolicyReplaced, PageNotApplied, TargetMismatch
     }
-    private readonly record struct OwnerTraceKey(OwnerReason Reason, bool? Active, bool? Prepared, bool? PendingGrant,
+    private readonly record struct OwnerTraceKey(string? OwnerId, OwnerReason Reason, bool? Active, bool? Prepared, bool? PendingGrant,
         bool RefreshRequested, bool RegistrationDeferred, bool RestorationAttempted, bool? PolicyReady, bool? Released,
         string PageStage, string PageReason, PageReason ClockReason);
     private Dictionary<OwnerStage, OwnerTraceKey>? _lastOwnerTrace;
@@ -338,7 +338,7 @@ internal sealed partial class BrowserInput
                 ? nested : default;
             string pageStage = PageOwnerStage(String(diagnostic, "stage")), pageReason = PageOwnerReason(String(diagnostic, "firstReason"));
             var clockReason = DiagnosticReason(String(diagnostic, "lastClockReason"));
-            var key = new OwnerTraceKey(reason, owner?.Active, owner?.Prepared, owner is null ? null : owner.PendingGrant != 0,
+            var key = new OwnerTraceKey(owner?.Id, reason, owner?.Active, owner?.Prepared, owner is null ? null : owner.PendingGrant != 0,
                 _ownerRefreshRequested, _registrationDeferred, _restorationAttempted, owner is null ? null : owner.ReadyPolicy is not null,
                 released, pageStage, pageReason, clockReason);
             _lastOwnerTrace ??= new();
@@ -349,6 +349,9 @@ internal sealed partial class BrowserInput
             {
                 stage,
                 firstReason = reason,
+                ownerId = owner?.Id,
+                preparationToken = owner?.Preparation is { } prepared
+                    ? String(prepared.Data.GetProperty("authority"), "token") : null,
                 key.Active,
                 key.Prepared,
                 key.PendingGrant,

@@ -943,6 +943,157 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.page.evaluate("fixturePassedCommandKeys"), ["keydown", "keyup"])
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
 
+    def test_source_command_rejected_by_identical_layout_needs_a_new_owner_and_source(self):
+        self.assert_source_command_recovers_after_rejection(text_change=True)
+
+    def test_source_command_rejected_by_identical_layout_can_recover_after_a_real_selection_click(
+        self,
+    ):
+        self.assert_source_command_recovers_after_rejection(text_change=False)
+
+    def assert_source_command_recovers_after_rejection(self, *, text_change):
+        self.type_source()
+        scripts = []
+        paused = []
+        self.cdp.on("Debugger.scriptParsed", lambda script: scripts.append(script))
+        self.cdp.on("Debugger.paused", lambda event: paused.append(event))
+        self.cdp.send("Debugger.enable")
+        self.addCleanup(self.cdp.send, "Debugger.disable")
+        source = CONTENT.read_text()
+        matches = []
+        for script in scripts:
+            actual = self.cdp.send("Debugger.getScriptSource", {"scriptId": script["scriptId"]})[
+                "scriptSource"
+            ]
+            if actual.count(source) == 1:
+                matches.append((script, actual))
+        self.assertEqual(len(matches), 1)
+        script, actual = matches[0]
+        marker = "    if (message.id) port.postMessage({id: message.id, data: result});"
+        self.assertEqual(actual.count(marker), 1)
+        breakpoint = self.cdp.send(
+            "Debugger.setBreakpoint",
+            {
+                "location": {
+                    "scriptId": script["scriptId"],
+                    "lineNumber": actual[: actual.index(marker)].count("\n"),
+                    "columnNumber": 4,
+                },
+                "condition": """(() => {
+                  if (message.op !== 'prepare-command-owner' || !result) return false;
+                  const proof = globalThis.__typelayOwnerRecovery ??= {hits:0,preparations:[],preparationCount:0};
+                  const a=result.authority;
+                  proof.preparationCount++;
+                  if (proof.preparations.length<2) proof.preparations.push({ownerId:result.ownerId,token:a.token,
+                    target:a.target,content:a.contentRevision,input:a.inputRevision,focus:a.focusRevision,
+                    selectionStart:document.activeElement.selectionStart,selectionEnd:document.activeElement.selectionEnd});
+                  if (proof.hits) return false;
+                  const fields=[document.body,document.activeElement];
+                  proof.before=fields.map(f=>f.getAttribute('style'));
+                  fields.forEach((f,i)=>f.setAttribute('style',proof.before[i]));
+                  proof.after=fields.map(f=>f.getAttribute('style'));
+                  proof.hits++;
+                  return false;
+                })()""",
+            },
+        )
+        self.addCleanup(
+            self.cdp.send,
+            "Debugger.removeBreakpoint",
+            {"breakpointId": breakpoint["breakpointId"]},
+        )
+        rejected = self.page.evaluate("""async () => {
+          fixtureCommand({id: 8900, op: 'configure-shortcuts', data: {
+            generation: 'style-owner', enabled: true, sessionEnabled: true,
+            accept: 'Tab', exit: 'Esc', shortcutDispatch: 'source-local',
+            wake: {keyval: 65478, modifiers: 0}, direct: {keyval: 65479, modifiers: 0}}});
+          const layout = () => {
+            document.body.style.cssText = 'margin:0;padding:8px;box-sizing:border-box;font:20px sans-serif;width:182px';
+            for (const f of [source, other]) {
+              f.style.boxSizing='border-box';f.style.width='100%';f.style.margin='8px 0';f.style.padding='8px';
+            }
+          };
+          layout(); await Promise.resolve();
+          const prepared = fixtureCommand({id: 8901, op: 'prepare-command-owner',
+            data: {ownerId: 'old-owner', generation: 'style-owner', traceOwner: true}});
+          const before = [document.body.getAttribute('style'), source.getAttribute('style')];
+          await Promise.resolve();
+          const stamp = fixtureHostClock().boottimeMs;
+          window.rejectedOwner = {ownerId: 'old-owner', generation: 'style-owner',
+            documentToken: prepared.target.split(':')[0], target: prepared.target,
+            authority: prepared.authority, grantSequence: 1, expiresAtMs: stamp + 800,
+            releasedAtMs: stamp, traceOwner: true};
+          fixtureCommand({id: 8902, op: 'activate-command-owner', data: rejectedOwner});
+          const ack = fixtureMessages.filter(item => item.event === 'command-owner').at(-1).data;
+          fixtureCommand({id: 8903, op: 'deactivate-command-owner', data: rejectedOwner});
+          return {before, after: [document.body.getAttribute('style'), source.getAttribute('style')],
+            prepared: prepared.authority, ack};
+        }""")
+        self.assertEqual(rejected["before"], rejected["after"])
+        self.assertEqual(rejected["ack"]["state"], "rejected")
+        self.assertEqual(rejected["ack"]["diagnostic"]["firstReason"], "Calibration")
+        self.assertEqual(rejected["ack"]["diagnostic"]["lastClockReason"], "authorityMissing")
+        if text_change:
+            self.page.keyboard.insert_text(" changed")
+        else:
+            self.page.evaluate("""() => source.addEventListener('mousedown', event => {
+              window.recoveryClick = {trusted:event.isTrusted,target:event.target===source};
+            }, {once:true})""")
+            self.page.locator("#source").click(position={"x": 12, "y": 12})
+            self.assertEqual(self.page.evaluate("recoveryClick"), {"trusted": True, "target": True})
+            self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        renewed = self.page.evaluate("""() => {
+          const prepared = fixtureCommand({id: 8904, op: 'prepare-command-owner',
+            data: {ownerId: 'new-owner', generation: rejectedOwner.generation}});
+          const stamp = fixtureHostClock().boottimeMs;
+          fixtureCommand({id: 8905, op: 'activate-command-owner', data: {...rejectedOwner,
+            ownerId: 'new-owner', authority: prepared.authority, expiresAtMs: stamp + 800,
+            releasedAtMs: stamp}});
+          const ack = fixtureMessages.filter(item => item.event === 'command-owner').at(-1).data;
+          fixtureCommand({id: 8906, op: 'activate-command-owner', data: rejectedOwner});
+          return {prepared: prepared.authority, ack,
+            late: fixtureMessages.filter(item => item.event === 'command-owner').at(-1).data};
+        }""")
+        self.assertEqual(renewed["ack"]["state"], "active")
+        self.assertEqual(renewed["ack"]["ownerId"], "new-owner")
+        self.assertNotEqual(renewed["prepared"]["token"], rejected["prepared"]["token"])
+        self.assertGreater(
+            renewed["prepared"]["inputRevision"], rejected["prepared"]["inputRevision"]
+        )
+        if text_change:
+            self.assertGreater(
+                renewed["prepared"]["contentRevision"], rejected["prepared"]["contentRevision"]
+            )
+        else:
+            self.assertEqual(
+                renewed["prepared"]["contentRevision"], rejected["prepared"]["contentRevision"]
+            )
+        self.assertEqual(
+            renewed["prepared"]["focusRevision"], rejected["prepared"]["focusRevision"]
+        )
+        self.assertEqual(renewed["late"]["state"], "rejected")
+        injection = self.page.evaluate("__typelayOwnerRecovery")
+        self.assertEqual(injection["hits"], 1)
+        self.assertEqual(injection["before"], injection["after"])
+        self.assertEqual(len(injection["preparations"]), 2)
+        self.assertEqual(injection["preparationCount"], 2)
+        self.assertEqual(paused, [])
+        previous, current = injection["preparations"]
+        self.assertNotEqual(
+            (previous["selectionStart"], previous["selectionEnd"]),
+            (current["selectionStart"], current["selectionEnd"]),
+        )
+        self.assertEqual(current["input"], renewed["prepared"]["inputRevision"])
+        self.assertEqual(current["content"], renewed["prepared"]["contentRevision"])
+        self.assertEqual(current["target"], previous["target"])
+        self.page.keyboard.press("F10")
+        commands = self.source_commands()
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(commands[0]["data"]["ownerId"], "new-owner")
+        expected_text = "Hello changed" if text_change else "Hello"
+        self.assertEqual(commands[0]["data"]["native"]["text"], expected_text)
+        self.assertEqual(self.page.locator("#source").input_value(), expected_text)
+
     def test_source_command_requires_new_policy_after_focus_change(self):
         self.type_source()
         self.activate_source_command_owner(trace_command=True)
@@ -2314,11 +2465,12 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.accepted(), [])
 
     def test_overlay_keeps_translation_primary_and_actions_visible(self):
-        output = ROOT / "artifacts/linux/browser-native/overlay"
+        output = ROOT / "artifacts/linux/browser-native/overlay" / f"layout-{uuid.uuid4().hex}"
         output.mkdir(parents=True, exist_ok=True)
+        print(f"Overlay layout screenshots: {output}", flush=True)
         self.page.keyboard.insert_text("Hello")
         for theme in ("light", "dark"):
-            for width in (320, 520):
+            for width in (180, 320, 520):
                 with self.subTest(theme=theme, width=width):
                     self.command("overlay-hide")
                     self.page.locator("#source").evaluate(
@@ -2457,6 +2609,7 @@ class BrowserContract(unittest.TestCase):
                     self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
                     view["presentation"]["editorOwnsText"] = True
                     view["state"] = "EditingTranslation"
+                    view["status"] = "编辑中"
                     data["revision"] += 1
                     self.assertTrue(self.command("overlay-render", data)["visible"])
                     self.command(
@@ -2485,6 +2638,33 @@ class BrowserContract(unittest.TestCase):
                     self.page.screenshot(
                         path=output / f"{theme}-{width}-editing.png", clip=host.bounding_box()
                     )
+                    layout = self.overlay_dom(
+                        self.overlay_control("TypeLay 译文", "textbox"),
+                        """function() {
+                          const header = this.getRootNode().querySelector('header');
+                          const status = header.querySelector('.status');
+                          const range = document.createRange(); range.selectNodeContents(status);
+                          const text = range.getBoundingClientRect();
+                          const panel = header.parentElement.getBoundingClientRect();
+                          return {status: status.textContent, textHeight: text.height,
+                            lineHeight: parseFloat(getComputedStyle(status).lineHeight),
+                            controls: Array.from(header.children).filter(node => !node.hidden).map(node => {
+                              const box = node.getBoundingClientRect();
+                              return {text: node.textContent, left: box.left - panel.left,
+                                right: box.right - panel.right, bottom: box.bottom - panel.bottom,
+                                width: box.width, height: box.height};
+                            })};
+                        }""",
+                    )
+                    (output / f"{theme}-{width}-editing.json").write_text(
+                        json.dumps(layout, ensure_ascii=False, indent=2) + "\n"
+                    )
+                    self.assertEqual(layout["status"], "编辑中")
+                    self.assertLessEqual(layout["textHeight"], layout["lineHeight"] + 1)
+                    for control in layout["controls"]:
+                        self.assertGreaterEqual(control["left"], 0, control)
+                        self.assertLessEqual(control["right"], 0, control)
+                        self.assertLessEqual(control["bottom"], 0, control)
 
     def test_packaged_cjk_faces_render_by_target_without_loading_all_regions(self):
         self.assertEqual(self.font_requests, [])
@@ -6198,6 +6378,37 @@ class BrowserContract(unittest.TestCase):
         self.click_overlay_control("重新翻译")
         self.click_overlay_control("替换")
         self.assertEqual(count(), 1)
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+
+    def test_each_incomplete_utf16_edit_has_a_lossless_json_draft_and_can_recover(self):
+        self.open_editor("Tab", "Esc")
+        editor = self.overlay_control("TypeLay 译文", "textbox")
+        observed = self.overlay_dom(
+            editor,
+            r"""function() {
+              const values = ['Draft \ud83d', 'Draft 🙂', 'Draft \ude42', 'Recovered'];
+              const result = [];
+              for (const value of values) {
+                this.value = value;
+                this.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText'}));
+                const frame = fixtureMessages.findLast(m => m.event === 'ui' && m.data.operation === 'draft');
+                result.push(JSON.parse(JSON.stringify(frame.data.value)));
+              }
+              return {values:result, local:this.value, focused:this.matches(':focus')};
+            }""",
+        )
+        self.assertEqual(
+            observed["values"],
+            [
+                {"utf16": [68, 114, 97, 102, 116, 32, 55357]},
+                "Draft 🙂",
+                {"utf16": [68, 114, 97, 102, 116, 32, 56898]},
+                "Recovered",
+            ],
+        )
+        self.assertEqual(observed["local"], "Recovered")
+        self.assertTrue(observed["focused"])
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(self.accepted(), [])
 

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using TypeLay.Core;
+using TypeLay.Protocol;
 using TypeLay.Runtime;
 
 namespace TypeLay.App;
@@ -16,7 +17,7 @@ internal sealed partial class BrowserSessionView
         if (_editorRegenerateAction is not null || _glossary is not null || EditingComposition
             || EditorRegenerateRequested is not { } regenerate || value.ValueKind != JsonValueKind.Object
             || value.EnumerateObject().Count() != 2
-            || BrowserInput.String(value, "draft") is not { } draft
+            || !value.TryGetProperty("draft", out var draftValue) || !EditorDraftText.TryRead(draftValue, out string draft)
             || !value.TryGetProperty("queuedAtMs", out var queued) || queued.ValueKind != JsonValueKind.Number
             || !queued.TryGetInt64(out long queuedAt))
             return;
@@ -73,13 +74,13 @@ internal sealed partial class BrowserSessionView
         switch (BrowserInput.String(message.Data, "operation"))
         {
             case "draft":
-                string? text = value.ValueKind == JsonValueKind.String ? value.GetString()
-                    : value.ValueKind == JsonValueKind.Object && value.EnumerateObject().Count() == 2
-                        && BrowserInput.String(value, "actionId") == action.ActionId.ToString()
-                        ? BrowserInput.String(value, "text") : null;
+                if (value.ValueKind == JsonValueKind.Object && value.EnumerateObject().Count() == 2
+                    && BrowserInput.String(value, "actionId") == action.ActionId.ToString()
+                    && value.TryGetProperty("text", out var actionText))
+                    value = actionText;
                 // This exact editor's real input retires Replace even when it
                 // cannot be written. Keep the wire bound, not a write-size gate.
-                if (text is not null)
+                if (EditorDraftText.TryRead(value, out string text))
                     DraftChanged?.Invoke(text);
                 return true;
             case "composition":

@@ -56,3 +56,11 @@
 - **Why**：T16 最初把 TypeLay GTK/Qt 源码和滚动 Arch 包版本放进同一个键。两次热运行虽在 10 分钟内，普通原生代码修改或上游更新仍会触发 17 分钟冷构建，热运行无法代表日常推送。
 - **Evidence**：[PR #42 负责人审查](https://github.com/DingJWuyu/Typelay/pull/42#issuecomment-6874249197)。
 - **Seen**：1 次，2026-11-14。
+
+### 同包验收核对实际消费字节
+
+- **Rule**：要求同一发行包的旅程，应消费一次构建的同一包，并核对包摘要和共同消费文件的摘要。
+- **Kind**：judgement。
+- **Why**：T13 的生命周期与浏览器分别打包。两份结果虽来自同一提交，ZIP 与 Index 原生库摘要仍不同，不能满足同包串联要求。
+- **Evidence**：[#17 的负责人验收要求](https://github.com/DingJWuyu/Typelay/issues/17#issuecomment-6868644052)；`5c0bf79d` 的两份 Windows 结果记录了不同的 `packageSha256` 和 `typelay_index.dll` 摘要。
+- **Seen**：1，2026-11-14。

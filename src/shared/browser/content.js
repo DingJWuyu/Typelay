@@ -131,6 +131,11 @@
     if (overlay) send("ui", {target: overlay.field.id, operation, revision: overlay.revision,
       generation: overlay.generation, value});
   };
+  // JSON consumers require Unicode scalars; the DOM can temporarily contain
+  // half of a supplementary character. Preserve every draft update losslessly,
+  // without treating its transport representation as permission to write it.
+  const draftText = text => text.isWellFormed() ? text
+    : {utf16: Array.from({length: text.length}, (_, index) => text.charCodeAt(index))};
   // Configuration is Applied only by this document's installed source/editor
   // listeners. A native-host or another document's ACK cannot grant capability.
   const shortcutDispatch = () => configuration?.shortcutDispatch === undefined
@@ -1134,7 +1139,7 @@
         section[data-material=solid]{--surface:light-dark(#faf9f5,#262624);backdrop-filter:none}
         header{flex:none;display:flex;align-items:center;gap:6px;color:var(--muted)}
         header{min-height:28px;padding:0 8px 8px 10px;flex-wrap:wrap}
-        header .status{flex:1;min-width:0;text-align:right;overflow-wrap:anywhere;font-size:11.5px}
+        header .status{flex:1 0 auto;min-width:0;max-width:100%;text-align:right;overflow-wrap:anywhere;font-size:11.5px}
         header .language{display:inline-flex;align-items:center;gap:7px;border-radius:999px;
           padding:0 10px 0 9px;height:26px;min-height:26px;color:var(--ink-2);font:500 12px/1 var(--ui-font);white-space:nowrap}
         header .language:hover{background:var(--fill-2);color:var(--ink)}
@@ -1273,7 +1278,7 @@
           closeRegenerate(overlay);
           overlay.draftRevision = (overlay.draftRevision || 0) + 1;
           ui("draft", overlay.editorReturn?.actionId
-            ? {actionId: overlay.editorReturn.actionId, text: editor.value} : editor.value);
+            ? {actionId: overlay.editorReturn.actionId, text: draftText(editor.value)} : draftText(editor.value));
           if (overlay?.editor === editor) refreshTextActions(overlay);
           sizeEditor(); position();
         }
@@ -1759,7 +1764,7 @@
           || current.draftRevision !== echo.draftRevision || current.editor.value !== echo.draft) return;
         current.editorReturn = {token: current.viewToken, tokenKey: JSON.stringify(current.viewToken),
           revision: current.revision, queuedAtMs, actionId: null, operation: null, returned: false, echo};
-        ui("regenerate", {draft: echo.draft, queuedAtMs});
+        ui("regenerate", {draft: draftText(echo.draft), queuedAtMs});
       } else ui("regenerate");
     }
     if (overlay === current) position();
@@ -1811,7 +1816,7 @@
       && !field.dead && !field.quarantined && approved(field, data.authority) && issued(field, data.authority)
       && field.ime === "Clear" && document.hasFocus() && editorFocused();
     const response = returned => ({returned, editorReturn: request,
-      contextLost: !returned && !editorLegal(), editorFocused: editorFocused(), draft: current.editor.value});
+      contextLost: !returned && !editorLegal(), editorFocused: editorFocused(), draft: draftText(current.editor.value)});
     const expires = {expiresAtPerformanceMs: deadline(request.expiresAtMs, 500),
       expiresAtWallMs: request.expiresAtMs - clock?.upperWall};
     if (!sessionCurrent(data.generation) || !editorConfigured(field) || !approved(field, data.authority)

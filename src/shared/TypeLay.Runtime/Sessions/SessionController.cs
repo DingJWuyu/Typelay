@@ -805,7 +805,37 @@ public sealed partial class SessionController : IDisposable
                 var pendingWake = _pendingWakeCapture;
                 if (result.Snapshot is null && !result.ForegroundExpired && SuspendManualObservation(now))
                     return;
-                StopSession("capture-empty");
+                // Preserve the failed editor-read boundary on the existing trace.
+                // This non-atomic snapshot follows the decision, not its short-circuit reads.
+                object? editorRead = !string.IsNullOrWhiteSpace(_tracePath)
+                    && _session.State == SessionState.EditingTranslation && _session.Current is { } editorSource
+                    ? new
+                    {
+                        timing = "after-decision-non-atomic",
+                        captureGeneration = generation,
+                        currentGeneration = _generation,
+                        captureCommandGeneration = request.SessionShortcuts?.Generation,
+                        commandGeneration = _hook.CommandGeneration,
+                        captureWindowEpoch = windowEpoch,
+                        windowEpoch = _hook.WindowEpoch,
+                        captureContentEpoch = contentEpoch,
+                        contentEpoch = _hook.ContentEpoch,
+                        captureForegroundEpoch = request.ForegroundEpoch,
+                        foregroundEpoch = _hook.ForegroundEpoch,
+                        resultForegroundEpoch = result.ForegroundEpoch,
+                        configurationMatches = configurationRevision == _configurationRevision,
+                        connectionMatches = connectionId == _hook.ConnectionId,
+                        boundTargetMatches = request.BoundTarget == editorSource.Target,
+                        hookReady = _hook.Ready,
+                        brokerAvailable = _broker.Available,
+                        hasSnapshot = result.Snapshot is not null,
+                        resultFocus = result.Focus.ToString(),
+                        result.ForegroundExpired,
+                        hasSessionShortcuts = result.SessionShortcuts is not null,
+                        hasOwnedSource = result.OwnedSource is not null,
+                        hasFencedPracticeRead = result.FencedPracticeRead is not null
+                    } : null;
+                StopSession("capture-empty", editorRead);
                 if (result.Snapshot is null && pendingWake is not null && pendingWake.Generation == generation
                     && pendingWake.FeedbackRevision == _commandFeedbackRevision
                     && pendingWake.CommandGeneration == _hook.CommandGeneration)
@@ -1896,7 +1926,7 @@ public sealed partial class SessionController : IDisposable
     }
 
     public void StopSession() => StopSession("stop-session");
-    private void StopSession(string reason)
+    private void StopSession(string reason, object? traceDetail = null)
     {
         _ownedSource.RetireSession();
         RetireInteraction();
@@ -1904,7 +1934,7 @@ public sealed partial class SessionController : IDisposable
         _manualObservation = null;
         _styleObservation = null;
         if (_session.Current is not null)
-            Trace(reason);
+            Trace(reason, detail: traceDetail);
         _activation.End();
         _pendingWakeCapture = null;
         _onDemandPractice.RetirePreview();

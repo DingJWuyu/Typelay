@@ -1,5 +1,6 @@
 using System.Text.Json;
 using TypeLay.Core;
+using TypeLay.Protocol;
 using TypeLay.Runtime;
 using TypeLay.Windows;
 
@@ -277,7 +278,7 @@ internal sealed partial class BrowserSessionView : ISessionView, ISourceInteract
             case "draft":
                 if (_input.GlossaryFocus is not null)
                     break;
-                if (value.ValueKind == JsonValueKind.String && value.GetString() is { Length: <= Limits.MaxTextUnits } text)
+                if (EditorDraftText.TryRead(value, out string text))
                     DraftChanged?.Invoke(text);
                 break;
             case "composition":
