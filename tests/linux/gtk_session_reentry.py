@@ -153,7 +153,16 @@ def run_reentry_checks(command, environment, output, send_accept, *, gtk4, neste
             )
     # Both cases dispatch the same real configure command inside the callback.
     # Only the generation changes, so nested IME dispatch cannot fake a pass.
-    stages = ["delete", "insert", "selection", "footer", "expand"]
+    stages = [
+        "delete",
+        "insert",
+        "selection",
+        "footer",
+        "expand",
+        "ordered-retirement",
+        "ordered-refresh",
+        "ordered-change",
+    ]
     if gtk4:
         stages.extend(["controller-source", "controller-editor"])
     for stage in stages:
@@ -304,9 +313,11 @@ def run_case(
                         return {}
 
                 dimensions = None
-                if stage in ("expand", "resume-editor", "language-options") or stage.startswith(
-                    "language-retention-"
-                ):
+                if stage in (
+                    "expand",
+                    "resume-editor",
+                    "language-options",
+                ) or stage.startswith(("language-retention-", "ordered-")):
                     geometry = dict(
                         line.split("=", 1)
                         for line in subprocess.check_output(
@@ -360,6 +371,21 @@ def run_case(
                     "editorReady": False,
                 }
                 assert source["authority"]["sessionBindings"] == source["sessionBindings"]
+                if stage.startswith("ordered-"):
+                    from gtk_write_retirement import check_ordered_retirement
+
+                    check_ordered_retirement(
+                        client,
+                        capture,
+                        state,
+                        initial,
+                        nested,
+                        dimensions,
+                        generation,
+                        output,
+                        stage,
+                    )
+                    return
                 if stage.startswith("language-retention-"):
                     check_language_retention_refusal(
                         client,

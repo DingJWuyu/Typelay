@@ -51,6 +51,7 @@ FCITX_BUILD_INPUTS = (
     "src/linux/native/common/gtk-textbuffer-write.inc",
     "src/linux/native/common/presentation-identity.h",
     "src/linux/native/common/write-settlement.h",
+    "src/linux/native/common/ordered-publication.h",
     "src/linux/native/common/overlay-design.h",
     *(
         str(path.relative_to(ROOT))

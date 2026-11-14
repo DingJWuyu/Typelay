@@ -68,6 +68,8 @@ Preconditions: 对本次合成字段有明确写回验收意图，实验选项�
 
   重入检查另外覆盖先连接输入法、后映射窗口的启动顺序。受控 GTK4 字段先 realize，收到原 context 的 Binding 通知后才首次 present；没有补按键或再次 grab_focus。检查 `gtk4-connected-before-map/gtk-reentry-delete-unchanged.json`，确认 `connectedBeforeMapAtUs` 早于实际 `firstEntry.focusInAtUs`，并保留原 5 秒源字段就绪期限。该场景须完成真实源捕获和唯一 Verified 写入回执，原有自然启动及失效拒绝场景继续执行。
 
+  GTK3 与 GTK4 的重入检查还通过真实 Fcitx 和原生协议覆盖 Ctrl 持有期间的候选刷新。检查 `gtk-ordered-retirement.json`，确认第二次发布发生于原 100 毫秒许可内，换框后的 F7 透传且零写入，两个原许可各退休一次，随后原字段独立 Tab 只写入一次。`gtk-ordered-refresh.json` 要求等价刷新保留原计划，`gtk-ordered-change.json` 要求正文改变撤销旧按次资格。这些受控协议场景不使用模型，不能代替完整桌面旅程；2 秒退休期限和 Unknown 隔离保持原要求。
+
 普通网页完整旅程使用同一桌面 runner 的 `browser-index` 范围。先按 build.md 准备当前干净提交的完整包、合作包和 Index 下载缓存，再从新私有会话执行：
 
 ```bash

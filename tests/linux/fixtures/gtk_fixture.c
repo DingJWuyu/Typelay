@@ -35,9 +35,14 @@ static JsonObject *first_insert_context, *first_delete_context;
 #include "gtk_input_notifications.inc"
 #include "gtk_direct_epoch.inc"
 
+static guint control_down, control_up;
 static guint function_down[24], function_up[24];
 static gboolean observe_key(GtkWidget *widget, GdkEventKey *event, gpointer data) {
     (void)widget; (void)data;
+    if (event->keyval == GDK_KEY_Control_L || event->keyval == GDK_KEY_Control_R) {
+        if (event->type == GDK_KEY_PRESS) control_down++;
+        else control_up++;
+    }
     if (event->keyval >= GDK_KEY_F1 && event->keyval <= GDK_KEY_F24) {
         guint index = event->keyval - GDK_KEY_F1;
         if (event->type == GDK_KEY_PRESS) function_down[index]++;
@@ -920,6 +925,11 @@ static gboolean report_state(gpointer unused) {
         }
     }
     json_builder_end_array(builder);
+    json_builder_set_member_name(builder, "controlKeys");
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "down"); json_builder_add_int_value(builder, control_down);
+    json_builder_set_member_name(builder, "up"); json_builder_add_int_value(builder, control_up);
+    json_builder_end_object(builder);
     json_builder_set_member_name(builder, "functionKeys");
     json_builder_begin_array(builder);
     for (guint index = 0; index < G_N_ELEMENTS(function_down); index++) {

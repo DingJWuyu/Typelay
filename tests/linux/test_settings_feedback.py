@@ -184,10 +184,17 @@ class GtkFeedbackTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_apps_connection_entry_stays_inside_its_card(self):
         settings = await self.open_settings()
+        entry = settings.application_support.next_button
+        drawn = asyncio.Event()
+        handler = entry.connect("draw", lambda *_: drawn.set())
         settings.configure({**SETTINGS, "uiLanguage": "en"})
         settings.sidebar.select_row(settings.nav_rows["application-support"])
-        entry = settings.application_support.next_button
-        await self.wait_for(lambda: entry.get_mapped(), "connection entry")
+        try:
+            await self.wait_for(
+                lambda: entry.get_mapped() and drawn.is_set(), "rendered connection entry"
+            )
+        finally:
+            entry.disconnect(handler)
         card = settings.applications.summary
         position = entry.translate_coordinates(card, 0, 0)
         self.assertIsNotNone(position)
