@@ -23,7 +23,7 @@ Preconditions: 本次任务允许准备模型，固定模型缓存已按 build.m
 
 - **默认 CLI。** Launch 的 GTK 旅程执行 `"$TYPELAY_VERIFY_PACKAGE/typelay" --install-models`。观察真实双向自检和服务握手成功、`doctor-ready.json` 的 `modelReady=true`，并保存 `installed.json`。正式安装器自行生成激活记录。
 - **生命周期回归。** 在私有旅程文件内执行 `/usr/bin/python3 tests/linux/index_package_e2e.py --package "$TYPELAY_VERIFY_PACKAGE" --cache "$PWD/artifacts/index-model-download" --output "$TYPELAY_VERIFY_OUTPUT/index-lifecycle"`。缓存可替换为已验证下载缓存的绝对路径，输出目录须不存在。逐项读取 `result.json` 的阶段状态，核对正式安装、激活、连续推理和结构、冷启、失败与取消保旧代、Repair、安装 Argos、切回 Index、再切回 Argos 和移除 Index。要求 `cleanup=[]`、`allOwnedSupervisorsExited=true`，再核对外层 `cleanup.json` 的 `remainingPids=[]`。不能用整体退出码抹去 not-run。
-- **失败定位。** `failureContext.modelPhase` 区分 `host-start`、`activation`、`generation` 与 `ready`；`activationOutcome` 和 `modelFailureCode` 只保留固定枚举。`protocolPhase` 与退出码记录清理前观察。安装失败另读 `preparationFailures`，其内容限于正式安装器已验证的阶段诊断，不把 stdout、异常原文或模型正文塞入结果。
+- **失败定位。** `failureContext.modelPhase` 区分 `host-start`、`activation`、`generation` 与 `ready`；`activationOutcome` 和 `modelFailureCode` 只保留固定枚举。冷启、失败修复与取消候选后的代身份分别保留固定失败原因，Ready 超时记录 `model-ready-timeout`。`protocolPhase` 与退出码记录清理前观察。安装失败另读 `preparationFailures`，其内容限于正式安装器已验证的阶段诊断，不把 stdout、异常原文或模型正文塞入结果。
 - **模型页。** 启动 `"$TYPELAY_VERIFY_PACKAGE/typelay" --settings`，通过 `tests/linux/support/gtk_accessibility.py` 的 `select_settings_page(pid, "本地模型")` 进入实际页面。对当次控件树中的下载或切换动作调用公开 AT-SPI Action。保留确认对话框、取消后库存不变、明确确认后进度与库存变化的证据。
 - **完整模型 UI 回归。** 既有 `tests/linux/native_e2e.py --inside --desktop --desktop-scope model-packages` 需要单独准备 Hy/Argos 库存和缓存。按 `tests/linux/hy_package_e2e.py` 的参数与仓库模型事务要求准备后，仍在本技能私有会话中调用，并提供 `--package "$TYPELAY_VERIFY_PACKAGE" --native "$PWD/artifacts/linux/native" --output "$TYPELAY_VERIFY_OUTPUT/model-packages"`。这不是默认 Index 旅程的附带通过项。
 

@@ -128,6 +128,9 @@ def main():
         return inside(output, command)
     if not args.package or not args.cooperative:
         parser.error("--package and --cooperative are required")
+    source_package = args.package.resolve()
+    if output.is_relative_to(source_package):
+        parser.error("output must be outside the source package")
     for tool in ("Xvfb", "xvfb-run", "xauth", "dbus-run-session", "niri", "grim", "xdotool"):
         if not shutil.which(tool):
             parser.error(f"missing tool: {tool}; read references/build.md")
@@ -148,7 +151,7 @@ def main():
         if args.package_filesystem == "tmpfs":
             fs = subprocess.check_output(["stat", "-f", "-c", "%T", runtime], text=True).strip()
             assert fs == "tmpfs", "diagnostic package path requires executable tmpfs"
-        shutil.copytree(args.package.resolve(), package)
+        shutil.copytree(source_package, package)
         # Keep tool paths, but inherit no desktop, input method, model or Python state.
         env = {key: os.environ[key] for key in ("PATH", "LD_LIBRARY_PATH") if key in os.environ}
         for key, name in (

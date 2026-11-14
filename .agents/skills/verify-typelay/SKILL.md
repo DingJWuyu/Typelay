@@ -13,7 +13,7 @@ description: 验证 TypeLay 的 Linux 原生桌面、普通 GTK 输入框翻译�
 
 从新工作树开始，先按[构建与依赖准备](references/build.md)完成当前提交的主包、合作包和模型下载缓存。该文档也说明如何发现这台机器上的用户级工具，不依赖其它工作树的 `artifacts/`。启动前检查包的 `build-info.json`，将实际提交与本次代码差异一起记录。
 
-在仓库根目录执行以下完整流程。`--output` 必须不存在；重复执行时换一个名称。
+在仓库根目录执行以下完整流程。`--output` 必须不存在，且解析符号链接后须位于源包目录外。重复执行时换一个名称。
 
 ```bash
 skill="$PWD/.agents/skills/verify-typelay"

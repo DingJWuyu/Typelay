@@ -90,6 +90,12 @@ class Check:
         path = self.data / "components/current"
         return os.readlink(path) if path.is_symlink() else None
 
+    def require_generation(self, expected, reason):
+        self.model_phase = "generation"
+        if self.current() != expected:
+            raise LifecycleFailure(reason)
+        self.model_phase = None
+
     def inventory(self):
         return json.loads(
             (self.data / "components" / self.current() / "models/installed.json").read_text()
@@ -246,9 +252,7 @@ class Check:
         )
         if result != "confirmed":
             raise LifecycleFailure("model-activation-refused")
-        self.model_phase = "generation"
-        if self.current() != generation:
-            raise LifecycleFailure("activated-generation-mismatch")
+        self.require_generation(generation, "activated-generation-mismatch")
         await self.ready(active)
 
     async def stop(self):
@@ -311,7 +315,7 @@ class Check:
         self.passed()
         self.begin("prepare-default")
         generation = await self.prepare()
-        assert self.current() is None, "preparation-published-current"
+        self.require_generation(None, "preparation-published-current")
         self.passed()
         self.begin("activate-index")
         await self.start()
@@ -329,17 +333,18 @@ class Check:
         await self.stop()
         await self.start()
         await self.ready([INDEX])
-        assert self.current() == generation
+        self.require_generation(generation, "cold-start-generation-mismatch")
         self.passed()
         self.begin("failed-repair-retains-current")
         await self.prepare(
             self.request("Repair", [INDEX], [INDEX], current="0" * 32), expect_failure=True
         )
-        assert self.current() == generation
+        self.require_generation(generation, "failed-repair-generation-mismatch")
         await self.ready([INDEX])
         self.passed()
         self.begin("cancelled-candidate-retains-current")
         abandoned = await self.prepare(self.request("Repair", [INDEX], [INDEX]))
+        self.model_phase = "activation"
         self.sequence += 1
         reply, identity = self.sequence, uuid.uuid4().hex
         await self.send(
@@ -352,7 +357,13 @@ class Check:
         await self.send({"event": "cancelModelActivation", "data": identity})
         async with asyncio.timeout(60):
             response = await self.receive(lambda value: value.get("reply") == reply)
-        assert response["data"] == "unchanged" and self.current() == generation
+        result = response["data"]
+        self.activation_outcome = (
+            result if result in ("confirmed", "unchanged", "unconfirmed") else "unrecognized"
+        )
+        if result != "unchanged":
+            raise LifecycleFailure("model-cancellation-not-retained")
+        self.require_generation(generation, "cancelled-generation-mismatch")
         await self.ready([INDEX])
         self.passed()
         for name, operation, packages, active in (
