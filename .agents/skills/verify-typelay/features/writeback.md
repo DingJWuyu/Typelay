@@ -12,6 +12,7 @@
 - `writeback/undo` 与目标控件自己的原生替换和撤销行为比较。
 - `writeback/browser-undo-index` 是 [Linux 原生 Undo 必过旅程](undo.md)。它在 Tiptap 中接受真实 Index 候选，再用宿主快捷键撤销和重做。
 - `writeback/browser-index` 使用正式默认 Index，验证普通网页的人工稿、两次默认 Tab、UTF-16 选区与后台直接替换。
+- `writeback/gtk4-interaction` 在真实 Index 和合作 GTK4 控件中执行成功交互及原生 Undo。
 
 ## How to get to it (user POV)
 
@@ -50,6 +51,20 @@ Preconditions: 对本次合成字段有明确写回验收意图，实验选项�
 - **直接入口。** 在原字段聚焦时执行 `"$TYPELAY_VERIFY_PACKAGE/typelay" --direct`，另一次独立运行投递 `ctrl+shift+F10`。操作前冻结原字段身份与正文，操作后检查该字段与其它字段，不能用后来聚焦的字段代替原目标。
 - **既有原生合同。** 在私有会话里执行 `DISPLAY="$TYPELAY_VERIFY_XDISPLAY" /usr/bin/python3 tests/linux/native_e2e.py --inside --gtk-refusal --native "$PWD/artifacts/linux/native" --output "$TYPELAY_VERIFY_OUTPUT/refusal"`，先创建输出目录。这条受控链验证 Unknown 拒绝与按键透传，不能算成功写回。
 - **真实合作回归。** 正式模型安装后，可运行 `native_e2e.py --inside --desktop --desktop-scope gtk`，提供私有 `--package`、`--fcitx-cooperative "$TYPELAY_VERIFY_COOPERATIVE"`、`--native "$PWD/artifacts/linux/native"` 和新的 `--output`，并设置私有 DISPLAY。该入口使用受控 GTK fixture 与初始化设置，保留其候选、Verified 回执和计数判据，单独标明证据边界。
+- **GTK4 独立交互。** 在同一私有会话通过正式安装器准备模型后，运行下面的现役交互段。`--native` 须包含与产品源码匹配的 GTK4 fixture。该 scope 独立执行预览、接受、编辑回源、选区、原生 Undo、输入法拒绝和后台直接替换；它使用受控字段和初始设置，不证明物理键盘输入。它不执行[GTK4 配置](settings.md#driving-it-with-private-niri)，不能替代默认 `gtk4` 完整 scope 或改变 CI 必过集合。
+
+  ```bash
+  mkdir -p "$TYPELAY_VERIFY_OUTPUT/gtk4-interaction"
+  DISPLAY="$TYPELAY_VERIFY_XDISPLAY" TMPDIR=/tmp timeout 240 \
+    /usr/bin/python3 tests/linux/native_e2e.py --inside --desktop \
+    --desktop-scope gtk4-interaction --gtk-session-bindings \
+    --package "$TYPELAY_VERIFY_PACKAGE" \
+    --fcitx-cooperative "$TYPELAY_VERIFY_COOPERATIVE" \
+    --native "$PWD/artifacts/linux/native" \
+    --output "$TYPELAY_VERIFY_OUTPUT/gtk4-interaction"
+  ```
+
+  `--inside` 复用技能的 niri；外层 `timeout 240` 保留原桌面总预算。短 `TMPDIR` 仅供该 runner 的小型配置与 socket，包和正式模型仍放在 Btrfs。保留 `gtk-fixture-identity.json`、`gtk-acceptance-phases.json`、`gtk-control-*.json`、原字段状态、截图和完整日志。按实际到达的阶段报告 `passed`、`failed`、`not-run`，不能用整条旅程的失败覆盖此前已通过阶段，也不能将未到达的 Undo 或 Direct 记作失败。核对原字段的精确人工稿、选区外正文和唯一回执，再核对撤销轨迹及新焦点字段。
 
 普通网页完整旅程使用同一桌面 runner 的 `browser-index` 范围。先按 build.md 准备当前干净提交的完整包、合作包和 Index 下载缓存，再从新私有会话执行：
 

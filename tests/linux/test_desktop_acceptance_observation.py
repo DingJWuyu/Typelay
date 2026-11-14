@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 from desktop_e2e import (  # noqa: E402
     acceptance_observation_current,
     background_direct_rejection_current,
+    background_direct_settlement,
     gtk_candidate_observation_current,
 )
 
@@ -148,6 +149,38 @@ class GtkCandidateObservationTests(unittest.TestCase):
                 snapshot.update(change)
                 self.assertIsNone(gtk_candidate_observation_current(snapshot, source, 120))
         self.assertIsNone(gtk_candidate_observation_current({}, "source", 120))
+
+
+class BackgroundDirectSettlementTests(unittest.TestCase):
+    def rows(self):
+        return [
+            {"operation": "direct-write-start", "planId": "direct-plan"},
+            {"operation": "write-Verified-None", "planId": "direct-plan"},
+            {
+                "operation": "direct-write-result",
+                "planId": "direct-plan",
+                "detail": {"status": "Verified", "reason": "None"},
+            },
+        ]
+
+    def test_direct_result_matches_its_single_common_settlement(self):
+        rows = self.rows()
+        self.assertEqual(background_direct_settlement(rows), rows[-1])
+
+    def test_partial_duplicate_other_plan_and_tab_submission_do_not_complete(self):
+        rows = self.rows()
+        for invalid in (
+            [],
+            rows[:2],
+            [rows[0], rows[-1]],
+            rows + [rows[1]],
+            list(reversed(rows)),
+            [rows[0], {**rows[1], "planId": "other-plan"}, rows[-1]],
+            [rows[0], {**rows[1], "operation": "write-OutcomeUnknown-None"}, rows[-1]],
+            [{"operation": "write-start", "planId": "tab-plan"}, *rows],
+        ):
+            with self.subTest(rows=invalid):
+                self.assertIsNone(background_direct_settlement(invalid))
 
 
 class BackgroundDirectRefusalTests(unittest.TestCase):

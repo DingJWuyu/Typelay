@@ -296,7 +296,8 @@ def session(out: Path, core_version: str, deadline: float, glossary_toolkit=None
         (config / "conf").mkdir()
         (config / "conf/imselector.conf").write_text("[TriggerKey]\n0=Control+Alt+I\n")
         env.update(
-            LD_LIBRARY_PATH=f"{out / 'lib'}:{prefix / 'lib'}",
+            LD_LIBRARY_PATH=f"{out / 'lib'}:{prefix / 'lib'}"
+            + (f":{env['LD_LIBRARY_PATH']}" if env.get("LD_LIBRARY_PATH") else ""),
             FCITX_ADDON_DIRS=f"{out / 'lib'}:{prefix / 'lib/fcitx5'}",
             TYPELAY_FCITX_AUDITED_ADDON_DIRS=f"{out / 'lib'}:{prefix / 'lib/fcitx5'}",
             FCITX_CONFIG_HOME=str(config),

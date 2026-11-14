@@ -1378,12 +1378,24 @@
  #ifdef GDK_WINDOWING_X11
      Display *display = NULL;
      if (context->client_widget) {
-@@ -1291,8 +1540,11 @@
+@@ -1290,9 +1539,22 @@
+ #endif
  
      _fcitx_im_context_set_capability(context, TRUE);
-     if (context->has_focus && _focus_im_context == (GtkIMContext *)context &&
+-    if (context->has_focus && _focus_im_context == (GtkIMContext *)context &&
 -        fcitx_g_client_is_valid(context->client))
-+        fcitx_g_client_is_valid(context->client)) {
++    // During startup two windows can focus before either client connects.
++    // The last owner can then disappear while GTK retains the first real focus.
++    // Restore only that exact active binding; inspect still requires server proof.
++    GtkRoot *root = context->client_widget ? gtk_widget_get_root(context->client_widget) : nullptr;
++    const gboolean current_widget = context->client_widget && root && GTK_IS_WINDOW(root) &&
++        gtk_window_is_active(GTK_WINDOW(root)) &&
++        gtk_root_get_focus(root) == context->client_widget &&
++        gtk_widget_has_focus(context->client_widget) &&
++        g_object_get_data(G_OBJECT(context->client_widget), TL_FCITX_CONTEXT_V1) == context;
++    const gboolean focused = get_boolean_env("TYPELAY_FCITX_COOPERATIVE", FALSE)
++        ? current_widget : _focus_im_context == (GtkIMContext *)context;
++    if (context->has_focus && focused && fcitx_g_client_is_valid(context->client)) {
 +        typelay_remember_focus(context, "connected-focus-in-call");
          fcitx_g_client_focus_in(context->client);
 +    }
@@ -1391,7 +1403,7 @@
      /* set_cursor_location_internal() will get origin from X server,
       * it blocks UI. So delay it to idle callback. */
      g_idle_add_full(G_PRIORITY_DEFAULT_IDLE,
-@@ -1432,3 +1684,234 @@
+@@ -1432,3 +1694,234 @@
  }
  
  // kate: indent-mode cstyle; replace-tabs on;
