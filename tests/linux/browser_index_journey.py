@@ -479,6 +479,9 @@ def run(arguments):
             stages[stage] = "passed"
 
             stage = "draft"
+            # A screenshot can span an overlay refresh. Resolve the current
+            # accessible candidate immediately before its actual click.
+            _, node = wait(candidate, "current Index candidate did not render for editing", 60)
             quad = cdp.send("DOM.getBoxModel", {"backendNodeId": node["backendDOMNodeId"]})[
                 "model"
             ]["border"]
