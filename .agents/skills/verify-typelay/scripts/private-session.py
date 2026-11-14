@@ -328,7 +328,7 @@ def main():
                 "dbus-run-session",
                 "--",
                 "xvfb-run",
-                "-a",
+                "-d",
                 "-s",
                 "-screen 0 1280x960x24 -nolisten tcp",
                 "sh",
