@@ -16,6 +16,7 @@ from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
 
+from support.settings_commit import SAVE_UNCONFIRMED_MESSAGE
 from support.settings_commit import saved as commit_saved
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1475,7 +1476,7 @@ def main():
                             self.held_tray_id is not None
                             and frame.get("reply") == self.held_tray_id
                         ):
-                            assert frame["data"] is True, (
+                            assert commit_saved(frame["data"]) is True, (
                                 "the queued tray save did not really succeed"
                             )
                             self.held_tray_reply = frame
@@ -2421,7 +2422,42 @@ def main():
                     assert (
                         picker.get_active_id() == replacement and picker.caption.get_text() == label
                     )
-                    assert "未保存" in settings_surface.message.get_text()
+                    observation = {
+                        "message": settings_surface.message.get_text(),
+                        "messageMapped": settings_surface.message.get_mapped(),
+                        "savedValue": state[key],
+                        "shownValue": picker.get_active_id(),
+                        "settingsUnchanged": settings_file.read_bytes() == before_failure,
+                        "pickerFocused": picker.has_focus(),
+                    }
+                    print(
+                        "SETTINGS SAVE FAILURE",
+                        json.dumps(observation, ensure_ascii=False),
+                        flush=True,
+                    )
+                    if options.output:
+                        options.output.mkdir(parents=True, exist_ok=True)
+                        (options.output / f"language-{key}-save-failure.json").write_text(
+                            json.dumps(observation, ensure_ascii=False, indent=2)
+                        )
+                        painted = asyncio.Event()
+                        clock = settings_surface.window.get_frame_clock()
+                        watch = clock.connect("after-paint", lambda *_: painted.set())
+                        try:
+                            settings_surface.window.queue_draw()
+                            await asyncio.wait_for(painted.wait(), 3)
+                        finally:
+                            clock.disconnect(watch)
+                        width, height = settings_surface.window.get_size()
+                        shot = Gdk.pixbuf_get_from_window(
+                            settings_surface.window.get_window(), 0, 0, width, height
+                        )
+                        shot.savev(
+                            str(options.output / f"language-{key}-save-failure.png"), "png", [], []
+                        )
+                    assert settings_surface.message.get_mapped()
+                    assert settings_surface.message.get_text() == SAVE_UNCONFIRMED_MESSAGE
+                    assert state[key] == replacement
                     assert settings_file.read_bytes() == before_failure
                     assert picker.has_focus()
                 finally:
@@ -2469,7 +2505,7 @@ def main():
             host.settings_after_tray_reply = dict(state)
             tray.enabled.set_active(not tray.enabled.get_active())
             await settled()
-            assert await asyncio.wait_for(host.following_save, 3) is True
+            assert commit_saved(await asyncio.wait_for(host.following_save, 3)) is True
             jobs.discard(host.following_save)
             assert host.held_tray_reply is None and host.settings_after_tray_reply is None
             assert state["enabled"] is True

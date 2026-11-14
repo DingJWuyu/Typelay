@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 
 import design  # noqa: E402
-from gi.repository import Pango, PangoCairo  # noqa: E402
+from gi.repository import Gtk, Pango, PangoCairo  # noqa: E402
 
 
 class BundledUiFonts(unittest.TestCase):
@@ -153,11 +153,31 @@ class BundledUiFonts(unittest.TestCase):
                             break
                     self.assertIn(families[1], selected_families)
 
-    def test_system_preference_does_not_force_a_bundled_content_family(self):
-        for role in ("display", "content"):
-            self.assertEqual(
-                design.font_families({"font": "system", "target": "ja"}, role), ("sans-serif",)
+    def test_system_preference_follows_the_gtk_font_for_every_role(self):
+        settings = Gtk.Settings.get_default()
+        original = settings.get_property("gtk-font-name") if settings else None
+        choices = (
+            (
+                (original, Pango.FontDescription.from_string(original).get_family()),
+                ("Adwaita Sans 11", "Adwaita Sans"),
+                ("serif 12", "serif"),
             )
+            if settings
+            else ((None, "sans-serif"),)
+        )
+        try:
+            for preference, expected in choices:
+                if settings:
+                    settings.set_property("gtk-font-name", preference)
+                for role in ("ui", "display", "content"):
+                    with self.subTest(preference=preference, role=role):
+                        self.assertEqual(
+                            design.font_families({"font": "system", "target": "ja"}, role),
+                            (expected,),
+                        )
+        finally:
+            if settings:
+                settings.set_property("gtk-font-name", original)
 
 
 if __name__ == "__main__":

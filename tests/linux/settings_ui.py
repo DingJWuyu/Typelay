@@ -18,7 +18,10 @@ import time
 from collections import deque
 from pathlib import Path
 
-from support.settings_commit import saved as commit_saved
+# The production runner uses -I, which omits the script directory. Admit only
+# this checkout's test helpers; desktop modules still come from --package.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support.settings_commit import saved as commit_saved  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -2380,7 +2383,16 @@ def main(arguments=None):
             assert set(pane.rows) == {"editor", "mail", "terminal", "private-editor"}
             assert surface.application_controls["editor"][1].get_active_id() == "Natural"
             assert surface.application_controls["mail"][1].get_active_id() == "Formal"
-            assert len(pane.summary.get_children()) == 2
+            connections = [
+                widget.get_accessible().get_name()
+                for widget in descendants(pane.summary)
+                if isinstance(widget, Gtk.Button)
+                and widget.get_accessible().get_name().startswith("应用连接：")
+            ]
+            assert len(connections) == 2 and set(connections) == {
+                "应用连接：桌面应用",
+                "应用连接：浏览器扩展",
+            }
             assert surface.window.get_size() == (900, 660)
             assert all(row.get_allocated_height() == 44 for row in pane.rows.values())
             assert (pane.add.get_allocated_width(), pane.add.get_allocated_height()) == (28, 24)
@@ -2588,8 +2600,12 @@ def main(arguments=None):
             # selected component directory. A later current chooser still works.
             from application_support import ApplicationSupport
 
+            # This scenario exercises choosing absent components, including
+            # when the real Host comes from a complete desktop package.
+            missing_components = directory / "package-without-components"
+            missing_components.mkdir()
             connection_support = ApplicationSupport(
-                SimpleNamespace(home=options.host.parent.parent, data=directory / "data")
+                SimpleNamespace(home=missing_components, data=directory / "data")
             )
             support = surface.application_support
             support.render(await support_refresh())

@@ -183,6 +183,14 @@ class GtkVisibleLookupTests(unittest.TestCase):
                 with patch.object(retired, operation, side_effect=AccessibilityError(VANISHED)):
                     self.assertIs(self.observe(live, retired), live)
 
+    def test_retirement_during_child_enumeration_keeps_live_siblings(self):
+        for operation in ("get_child_count", "get_child_at_index"):
+            with self.subTest(operation=operation):
+                live = Node("button", name="仍然使用")
+                retired = Node("panel", children=[Node("label")])
+                with patch.object(retired, operation, side_effect=AccessibilityError(VANISHED)):
+                    self.assertIs(self.observe(live, retired), live)
+
     def test_retired_node_alone_is_not_a_confirmation(self):
         self.assertIsNone(self.observe(Node("panel", error=AccessibilityError(VANISHED))))
 

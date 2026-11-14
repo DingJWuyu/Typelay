@@ -40,7 +40,7 @@ window.typelay-surface.typelay-settings.settings-dark > headerbar.titlebar.defau
 .typelay-surface .settings-sidebar { background: #eeece5; border: 1px solid rgba(20,20,19,.085); border-radius: 12px; padding: 14px 10px 10px; margin: 8px; }
 .typelay-surface .settings-brand { font-size: 13px; font-weight: 600; }
 .typelay-surface .settings-navigation, .typelay-surface .settings-navigation list { background: transparent; border: 0; }
-.typelay-surface .settings-navigation row { border: 0; border-radius: 8px; padding: 0 8px; min-height: 32px; margin: 0 0 1px; }
+.typelay-surface .settings-navigation row { border: 0; border-radius: 8px; padding: 0 8px; min-height: 32px; margin: 0 0 1px; color: #141413; }
 .typelay-surface .settings-navigation row:selected { background: rgba(20,20,19,.08); color: #141413; font-weight: 600; }
 .typelay-surface .settings-navigation row:hover { background: rgba(20,20,19,.045); }
 .typelay-surface .settings-search-results, .typelay-surface .settings-search-results viewport { background: transparent; }
@@ -175,6 +175,7 @@ window.typelay-surface.typelay-settings.settings-dark > headerbar.titlebar.defau
 .typelay-surface .application-connection-icon { min-width: 24px; min-height: 24px; border-radius: 6px; color: white; }
 .typelay-surface .application-connection-icon.desktop-icon { background: #5f5e5a; }
 .typelay-surface .application-connection-icon.browser-icon { background: #3478f6; }
+.typelay-surface .application-connection-footer { padding: 12px 14px; }
 .typelay-surface .application-line { min-height: 28px; padding: 8px 14px; box-shadow: inset 0 -1px rgba(20,20,19,.06); }
 .typelay-surface.settings-dark .application-line { box-shadow: inset 0 -1px rgba(255,255,255,.07); }
 .typelay-surface .application-tone button { min-height: 24px; padding: 0 9px; font-size: 12px; }

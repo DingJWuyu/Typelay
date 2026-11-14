@@ -6,6 +6,7 @@
 
 - `settings/direction` 保存源语言与目标语言，并影响实际翻译。
 - `settings/appearance` 调整浮层主题、字体和字号，重开后保留。
+- `settings/apps-readability` 在英文 Apps 页读取连接名称、状态和按钮，并检查浅色侧栏文字。
 - `settings/draft` 修改快捷键或排除列表，保存、取消和跨页保留草稿。
 - `settings/pause` 暂停与恢复，并核对设置文件和真实浮层变化。
 
@@ -22,10 +23,14 @@ Preconditions: 私有会话内已有真实桌面进程。语言功能需要正�
 
 - **语言保存。** 执行 Launch 的 `gtk-preview.py` 旅程。它通过实际设置 UI 选择英文到中文，读取 `settings-saved.json`，并用该方向生成真实 GTK 译文。重开 `"$TYPELAY_VERIFY_PACKAGE/typelay" --settings` 后，还应核对所选语言的显示。
 - **设置导航。** 使用公开辅助函数 `select_settings_page(pid, "外观")` 或 `select_settings_page(pid, "快捷键")`。`pid` 必须来自本次 niri 窗口记录。`visible_named(pid, "外观：浅色")` 定位显示控件，`Atspi.Action.do_action(node.get_action_iface(), 0)` 触发真实动作。读取 `$XDG_CONFIG_HOME/typelay/settings.json` 核对保存，再重开核对显示。
+- **Apps 可读性。** 在新私有会话运行 `/usr/bin/python3 "$PWD/.agents/skills/verify-typelay/scripts/settings-apps.py"`。该旅程只用初始配置跳过教程，再从真实设置的外观页选择浅色和 English，经侧栏进入 Apps。它分别将窗口设为 900、740 像素，在浅色和深色下保存 `apps-<主题>-<宽度>.png`。`text-geometry.json` 检查名称和状态中的英文单词未被拆行。`*-connection-card.json` 和 `*-buttons.json` 记录连接入口与卡片的边界，以及两个操作按钮的尺寸。`layout-issues.json` 必须为空：连接入口下方须有卡片内边距，两个按钮须等宽，100% 缩放下按钮不能出现三行文案，顶部托盘提示须为英文。旅程还打开桌面连接按钮对应的组件选择或安装确认窗口，保存 `apps-connection-action.png`，取消后保存 `apps-after-action.png`，核对设置未变。逐张打开 PNG，检查名称、状态、按钮、图标和未选中的侧栏文字。此入口不需要模型，不证明组件安装或真实应用接入。
+- **Apps 原型对照。** 在本地浏览器打开 `docs/design/TypeLay_Tray_Settings_Prototype.html?page=apps&uiLang=en&theme=light&connection=disconnected`，再检查 `theme=dark`。离线时删除临时预览副本中的外部字体链接，并用本机已有字体字节声明同名字体；不修改确认原型。浏览器也放在断网命名空间。保存完整原型截图，按相同窗口宽度与上述产品截图并排比较。逐项核对连接卡片、状态、操作按钮、应用列表和侧栏。原型使用演示应用与模拟连接状态，产品使用真实安装应用及连接事实；保留这些差异，并注明产品额外显示的准备提示和连接入口。
+- **系统字体与侧栏回归。** 在私有会话中设置 `TYPELAY_UI_FONT_ROOT="$TYPELAY_VERIFY_PACKAGE/fonts"`，执行 `/usr/bin/python3 tests/linux/test_ui_fonts.py -v` 和 `/usr/bin/python3 tests/linux/test_settings_feedback.py -v`。字体检查读取真实 GTK 系统字体，并在同一测试进程验证 Adwaita Sans 和另一系统字体偏好；侧栏检查真实标签在浅色、深色下的墨色。无显示的字体检查只证明通用字体回退，不能代替这条桌面语义检查。
 - **暂停 CLI。** 执行 `"$TYPELAY_VERIFY_PACKAGE/typelay" --toggle-pause`。先观察原浮层消失和持久化的 Enabled 变化，再执行相同命令恢复。重新输入合成文本确认翻译恢复，不能只看开关外观。
 - **快捷面板。** 执行 `"$TYPELAY_VERIFY_PACKAGE/typelay" --quick-panel`，保存实际面板截图和控件树，通过面板中的暂停动作验证同一行为，单独记录该入口。
-- **既有设置回归。** 在私有旅程脚本内执行 `DISPLAY="$TYPELAY_VERIFY_XDISPLAY" /usr/bin/python3 tests/linux/native_e2e.py --inside --desktop --desktop-scope settings-ui --package "$TYPELAY_VERIFY_PACKAGE" --native "$PWD/artifacts/linux/native" --output "$TYPELAY_VERIFY_OUTPUT/settings-ui"`，先创建其输出目录。该测试使用真实 GTK 设置和受控宿主，报告其范围，不替代真实模型、普通字段排除或写回。
-- **托盘合同。** 在私有旅程脚本内执行 `DISPLAY="$TYPELAY_VERIFY_XDISPLAY" GDK_BACKEND=x11 /usr/bin/python3 tests/linux/tray_e2e.py --package "$TYPELAY_VERIFY_PACKAGE"`。该入口不需要模型，验证 GTK/Ayatana 注册、菜单、暂停恢复和持久化，不证明真实 Waybar 的点击和视觉。
+- **既有设置回归。** 在私有旅程脚本内执行 `DISPLAY="$TYPELAY_VERIFY_XDISPLAY" /usr/bin/python3 tests/linux/native_e2e.py --desktop --desktop-scope settings-ui --package "$TYPELAY_VERIFY_PACKAGE" --native "$PWD/artifacts/linux/native" --output "$XDG_RUNTIME_DIR/settings-ui"`。退出前将该输出目录复制到 `$TYPELAY_VERIFY_OUTPUT/settings-ui`，保留原退出码。入口会创建自己的捕获会话，并用 `python -I -B` 加载设置驱动；短输出路径用于避免捕获 socket 超过 Unix 路径长度限制。该测试使用正式包的真实 GTK 设置和受控宿主，报告其范围，不替代真实模型、普通字段排除或写回。
+- **Apps 交互合同。** 在私有会话中，以系统 GTK Python 执行 `tests/linux/settings_ui.py --dotnet <本机 dotnet 绝对路径> --host "$TYPELAY_VERIFY_PACKAGE/app/TypeLay.Linux.dll" --applications-only --output "$TYPELAY_VERIFY_OUTPUT/apps"`，再用新输出目录执行 `--connection-only`。保留 Wayland 环境并设置 `TYPELAY_UI_FONT_ROOT="$TYPELAY_VERIFY_PACKAGE/fonts"`。先在本次 `$TYPELAY_VERIFY_OUTPUT/niri.kdl` 增加 `window-rule { match title="^TypeLay.*"; open-floating true; }`，执行 `niri msg action load-config-file`，使合同取得其要求的 900×660 窗口和真实模态焦点。裸 Xvfb 没有窗口管理器，不能证明模态激活。这两个入口使用当前工作树的 GTK 代码、包内生产宿主、受控应用目录及明确缺少组件的目录，分别验证应用列表操作、组件选择器及连接入口的焦点交接。它们不证明真实应用接入；包内 GTK 的实际 Apps 页仍由上述 `settings-apps.py` 旅程取证。
+- **托盘合同。** 在私有旅程脚本内执行 `DISPLAY="$TYPELAY_VERIFY_XDISPLAY" GDK_BACKEND=x11 /usr/bin/python3 tests/linux/tray_e2e.py --package "$TYPELAY_VERIFY_PACKAGE" --output "$TYPELAY_VERIFY_OUTPUT/tray"`。该入口使用当前工作树的 GTK 代码与包内宿主，不需要模型，验证 GTK/Ayatana 注册、菜单、暂停恢复和持久化，不证明真实 Waybar 的点击和视觉。语言保存失败时检查 `language-<source/target>-save-failure.json` 和 PNG，确认底部反馈可见、磁盘旧值不变、控件回滚且焦点保留。
 
 ## Gotchas
 

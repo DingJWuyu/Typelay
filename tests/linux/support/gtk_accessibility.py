@@ -80,6 +80,7 @@ def visible_named(pid, name, *, role=None, root=None):
                 and (role is None or node.get_role() == role)
                 and node.get_state_set().contains(Atspi.StateType.SHOWING)
             )
+            children = [node.get_child_at_index(index) for index in range(node.get_child_count())]
         except GLib.Error as error:
             if (
                 "as object /org/a11y/atspi/accessible/" not in error.message
@@ -91,7 +92,7 @@ def visible_named(pid, name, *, role=None, root=None):
             continue
         if matches_name:
             matches.append(node)
-        pending.extend(node.get_child_at_index(index) for index in range(node.get_child_count()))
+        pending.extend(children)
     else:
         assert not pending, "owned GTK accessibility tree exceeds 4096 nodes"
     assert len(matches) <= 1, "ambiguous visible GTK control: " + name

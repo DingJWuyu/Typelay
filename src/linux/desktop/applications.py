@@ -10,7 +10,7 @@ from gi.repository import Gdk, Gio, Gtk, Pango  # noqa: E402
 class ApplicationsPane:
     """One page owns its catalogue, projection and retired GTK peers."""
 
-    def __init__(self, owner):
+    def __init__(self, owner, connection_footer):
         self.owner = owner
         self.box = box(0)
         self.catalog = None
@@ -30,6 +30,9 @@ class ApplicationsPane:
         self.summary_signature = None
         self.rows = {}
         self.summary = group()
+        self.connection_rows = []
+        self.connection_footer = style(connection_footer, "application-connection-footer")
+        self.summary.pack_start(self.connection_footer, False, False, 0)
         self.box.pack_start(self.summary, False, False, 0)
         heading = style(label(), "group-title")
         heading.set_margin_top(20)
@@ -694,8 +697,9 @@ class ApplicationsPane:
         if signature == self.summary_signature:
             return
         self.summary_signature = signature
-        for child in self.summary.get_children():
+        for child in self.connection_rows:
             child.destroy()
+        self.connection_rows.clear()
         desktop = next((row for row in facts if row["id"] == "desktop-text"), None)
         browsers = [row for row in facts if row["id"] != "desktop-text"]
         # Prefer a live connection; otherwise present the first actual browser
@@ -704,6 +708,7 @@ class ApplicationsPane:
             (row for row in browsers if row.get("state") in ("Connected", "BuiltInAvailable")),
             browsers[0] if browsers else None,
         )
+        action_sizes = Gtk.SizeGroup(mode=Gtk.SizeGroupMode.HORIZONTAL)
         for row, zh, en, symbol in (
             (desktop, "桌面应用", "Desktop apps", "keyboard"),
             (browser, "浏览器扩展", "Browser extension", "globe"),
@@ -715,8 +720,10 @@ class ApplicationsPane:
                 "desktop-icon" if symbol == "keyboard" else "browser-icon",
             )
             mark.add(design_icon(symbol, 15))
+            mark.set_size_request(26, 26)
+            mark.set_valign(Gtk.Align.CENTER)
             line.pack_start(mark, False, False, 0)
-            line.pack_start(label(owner.tr(zh, en)), True, True, 0)
+            line.pack_start(label(owner.tr(zh, en), wrap=False), True, True, 0)
             status = (
                 owner.localizer.text(row["statusText"])
                 if row
@@ -731,11 +738,25 @@ class ApplicationsPane:
                 style(dot, "attention")
             line.pack_start(dot, False, False, 0)
             caption = label(status, muted=True)
+            caption.set_line_wrap_mode(Pango.WrapMode.WORD)
             line.pack_start(caption, False, False, 0)
             action = row.get("primaryAction") if row else None
-            button = Gtk.Button(
-                label=owner.localizer.text(action["label"]) if action else owner.tr("查看", "View")
+            action_label = (
+                owner.localizer.text(action["label"]) if action else owner.tr("查看", "View")
             )
+            # The summary uses the prototype's compact install label. Keep the
+            # full action description available without expanding the column.
+            button = Gtk.Button(
+                label=owner.tr("安装…", "Install…")
+                if action and action["id"] == "Install"
+                else action_label
+            )
+            button.get_child().set_line_wrap(True)
+            button.get_child().set_line_wrap_mode(Pango.WrapMode.WORD)
+            button.get_child().set_justify(Gtk.Justification.CENTER)
+            button.set_tooltip_text(action_label)
+            action_sizes.add_widget(button)
+            button.set_valign(Gtk.Align.CENTER)
             button.set_sensitive(not support.busy)
             button.get_accessible().set_name(
                 owner.tr("应用连接：", "App connection: ") + owner.tr(zh, en)
@@ -769,4 +790,6 @@ class ApplicationsPane:
             button.connect("clicked", activate)
             line.pack_end(button, False, False, 0)
             self.summary.pack_start(line, False, False, 0)
+            self.connection_rows.append(line)
+        self.summary.reorder_child(self.connection_footer, -1)
         self.summary.show_all()

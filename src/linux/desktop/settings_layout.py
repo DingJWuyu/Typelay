@@ -792,12 +792,8 @@ def build(
     page.remove(support.box)
     from applications import ApplicationsPane
 
-    owner.applications = ApplicationsPane(owner)
+    owner.applications = ApplicationsPane(owner, connection_heading)
     page.pack_start(owner.applications.box, False, False, 0)
-    # Keep the real next-connection action beside the two summaries, not
-    # below an unbounded management list. Reuse its existing callback/identity.
-    owner.applications.box.pack_start(connection_heading, False, False, 0)
-    owner.applications.box.reorder_child(connection_heading, 1)
     support.connection_cards = owner.applications.summary
     support.connection_cards_signature = None
     support.connection_details = Gtk.Expander(label="连接详情")
