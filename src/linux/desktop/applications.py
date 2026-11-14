@@ -751,6 +751,9 @@ class ApplicationsPane:
                 if action and action["id"] == "Install"
                 else action_label
             )
+            button.get_child().set_line_wrap(True)
+            button.get_child().set_line_wrap_mode(Pango.WrapMode.WORD)
+            button.get_child().set_justify(Gtk.Justification.CENTER)
             button.set_tooltip_text(action_label)
             action_sizes.add_widget(button)
             button.set_valign(Gtk.Align.CENTER)
