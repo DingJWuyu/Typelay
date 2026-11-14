@@ -944,6 +944,14 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
 
     def test_source_command_rejected_by_identical_layout_needs_a_new_owner_and_source(self):
+        self.assert_source_command_recovers_after_rejection(text_change=True)
+
+    def test_source_command_rejected_by_identical_layout_can_recover_after_a_real_selection_click(
+        self,
+    ):
+        self.assert_source_command_recovers_after_rejection(text_change=False)
+
+    def assert_source_command_recovers_after_rejection(self, *, text_change):
         self.type_source()
         scripts = []
         paused = []
@@ -977,7 +985,8 @@ class BrowserContract(unittest.TestCase):
                   const a=result.authority;
                   proof.preparationCount++;
                   if (proof.preparations.length<2) proof.preparations.push({ownerId:result.ownerId,token:a.token,
-                    target:a.target,content:a.contentRevision,input:a.inputRevision,focus:a.focusRevision});
+                    target:a.target,content:a.contentRevision,input:a.inputRevision,focus:a.focusRevision,
+                    selectionStart:document.activeElement.selectionStart,selectionEnd:document.activeElement.selectionEnd});
                   if (proof.hits) return false;
                   const fields=[document.body,document.activeElement];
                   proof.before=fields.map(f=>f.getAttribute('style'));
@@ -1024,7 +1033,15 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(rejected["ack"]["state"], "rejected")
         self.assertEqual(rejected["ack"]["diagnostic"]["firstReason"], "Calibration")
         self.assertEqual(rejected["ack"]["diagnostic"]["lastClockReason"], "authorityMissing")
-        self.page.keyboard.insert_text(" changed")
+        if text_change:
+            self.page.keyboard.insert_text(" changed")
+        else:
+            self.page.evaluate("""() => source.addEventListener('mousedown', event => {
+              window.recoveryClick = {trusted:event.isTrusted,target:event.target===source};
+            }, {once:true})""")
+            self.page.locator("#source").click(position={"x": 12, "y": 12})
+            self.assertEqual(self.page.evaluate("recoveryClick"), {"trusted": True, "target": True})
+            self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         renewed = self.page.evaluate("""() => {
           const prepared = fixtureCommand({id: 8904, op: 'prepare-command-owner',
             data: {ownerId: 'new-owner', generation: rejectedOwner.generation}});
@@ -1043,9 +1060,14 @@ class BrowserContract(unittest.TestCase):
         self.assertGreater(
             renewed["prepared"]["inputRevision"], rejected["prepared"]["inputRevision"]
         )
-        self.assertGreater(
-            renewed["prepared"]["contentRevision"], rejected["prepared"]["contentRevision"]
-        )
+        if text_change:
+            self.assertGreater(
+                renewed["prepared"]["contentRevision"], rejected["prepared"]["contentRevision"]
+            )
+        else:
+            self.assertEqual(
+                renewed["prepared"]["contentRevision"], rejected["prepared"]["contentRevision"]
+            )
         self.assertEqual(
             renewed["prepared"]["focusRevision"], rejected["prepared"]["focusRevision"]
         )
@@ -1056,12 +1078,21 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(len(injection["preparations"]), 2)
         self.assertEqual(injection["preparationCount"], 2)
         self.assertEqual(paused, [])
+        previous, current = injection["preparations"]
+        self.assertNotEqual(
+            (previous["selectionStart"], previous["selectionEnd"]),
+            (current["selectionStart"], current["selectionEnd"]),
+        )
+        self.assertEqual(current["input"], renewed["prepared"]["inputRevision"])
+        self.assertEqual(current["content"], renewed["prepared"]["contentRevision"])
+        self.assertEqual(current["target"], previous["target"])
         self.page.keyboard.press("F10")
         commands = self.source_commands()
         self.assertEqual(len(commands), 1)
         self.assertEqual(commands[0]["data"]["ownerId"], "new-owner")
-        self.assertEqual(commands[0]["data"]["native"]["text"], "Hello changed")
-        self.assertEqual(self.page.locator("#source").input_value(), "Hello changed")
+        expected_text = "Hello changed" if text_change else "Hello"
+        self.assertEqual(commands[0]["data"]["native"]["text"], expected_text)
+        self.assertEqual(self.page.locator("#source").input_value(), expected_text)
 
     def test_source_command_requires_new_policy_after_focus_change(self):
         self.type_source()

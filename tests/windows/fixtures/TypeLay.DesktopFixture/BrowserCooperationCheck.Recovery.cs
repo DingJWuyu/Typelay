@@ -23,6 +23,10 @@ internal static partial class BrowserCooperationCheck
         {
             get; set;
         }
+        public string? SourceChange
+        {
+            get; set;
+        }
         public bool Verified
         {
             get; set;
@@ -58,6 +62,18 @@ internal static partial class BrowserCooperationCheck
         return RecoveryText(entry, "operation") == "browser-owner" && RecoveryText(detail, "stage") == stage
             && RecoveryText(detail, "firstReason") == reason && (owner is null || RecoveryText(detail, "ownerId") == owner);
     }
+    private static int RestoredRejectedOwnerAt(JsonElement[] events, JsonElement original)
+    {
+        string owner = original.GetProperty("ownerId").GetString()!;
+        int rejection = Array.FindIndex(events, entry => RecoveryStage(entry, "InitialAck", "PageNotActive", owner)
+            && RecoveryText(entry.GetProperty("detail"), "pageReason") == "Calibration"
+            && RecoveryText(entry.GetProperty("detail"), "clockReason") == "AuthorityMissing"
+            && RecoveryText(entry.GetProperty("detail"), "preparationToken") == RecoveryText(original, "token"));
+        int retirement = rejection < 0 ? -1
+            : Array.FindIndex(events, rejection + 1, entry => RecoveryStage(entry, "RetireAck", "Ready", owner));
+        return retirement < 0 ? -1
+            : Array.FindIndex(events, retirement + 1, entry => RecoveryStage(entry, "Restore", "Ready"));
+    }
     private static async Task WaitRejectedOwnerAsync(Cdp cdp, string trace, long offset, OwnerRecoveryObservation observation, CancellationToken ct)
     {
         while (true)
@@ -71,19 +87,9 @@ internal static partial class BrowserCooperationCheck
                     && JsonElement.DeepEquals(injection.GetProperty("before"), injection.GetProperty("after")),
                     "owner-rejection-style-injection-invalid");
                 var original = injection.GetProperty("preparations")[0];
-                string owner = original.GetProperty("ownerId").GetString()!;
-                var events = observation.HostEvents;
-                int rejection = Array.FindIndex(events, entry => RecoveryStage(entry, "InitialAck", "PageNotActive", owner)
-                    && RecoveryText(entry.GetProperty("detail"), "pageReason") == "Calibration"
-                    && RecoveryText(entry.GetProperty("detail"), "clockReason") == "AuthorityMissing"
-                    && RecoveryText(entry.GetProperty("detail"), "preparationToken") == RecoveryText(original, "token"));
-                int retirement = rejection < 0 ? -1
-                    : Array.FindIndex(events, rejection + 1, entry => RecoveryStage(entry, "RetireAck", "Ready", owner));
-                int restore = retirement < 0 ? -1
-                    : Array.FindIndex(events, retirement + 1, entry => RecoveryStage(entry, "Restore", "Ready"));
-                Require(!events.Any(entry => RecoveryText(entry, "operation") == "browser-owner-source-refresh"),
-                    "owner-recovered-before-new-source-input");
-                if (rejection >= 0 && retirement > rejection && restore > retirement)
+                // The original source click can already change the selection.
+                // Verify its actual version and selection in the completed chain.
+                if (RestoredRejectedOwnerAt(observation.HostEvents, original) >= 0)
                     return;
             }
             await Task.Delay(10, ct);
@@ -103,23 +109,39 @@ internal static partial class BrowserCooperationCheck
             && RecoveryText(original, "token") != RecoveryText(fresh, "token")
             && RecoveryText(original, "target") == RecoveryText(fresh, "target")
             && fresh.GetProperty("input").GetInt64() > original.GetProperty("input").GetInt64()
-            && fresh.GetProperty("content").GetInt64() > original.GetProperty("content").GetInt64()
+            && fresh.GetProperty("content").GetInt64() >= original.GetProperty("content").GetInt64()
             && fresh.GetProperty("focus").GetInt64() == original.GetProperty("focus").GetInt64(),
             "owner-recovery-new-source-unconfirmed");
         var events = observation.HostEvents;
+        int restore = RestoredRejectedOwnerAt(events, original);
         int refresh = Array.FindIndex(events, entry => RecoveryText(entry, "operation") == "browser-owner-source-refresh"
             && RecoveryText(entry.GetProperty("detail"), "previousToken") == RecoveryText(original, "token"));
         int preparation = Array.FindIndex(events, entry => RecoveryStage(entry, "Prepare", "Ready", RecoveryText(fresh, "ownerId"))
             && RecoveryText(entry.GetProperty("detail"), "preparationToken") == RecoveryText(fresh, "token"));
         int ack = Array.FindIndex(events, entry => RecoveryStage(entry, "InitialAck", "Ready", RecoveryText(fresh, "ownerId"))
             && RecoveryText(entry.GetProperty("detail"), "preparationToken") == RecoveryText(fresh, "token"));
-        Require(refresh >= 0 && preparation > refresh && ack > preparation, "owner-recovery-host-chain-unconfirmed");
+        Require(restore >= 0 && refresh > restore && preparation > refresh && ack > preparation,
+            "owner-recovery-host-chain-unconfirmed");
         var change = events[refresh].GetProperty("detail");
+        bool contentChanged = change.GetProperty("currentContent").GetInt64() > original.GetProperty("content").GetInt64();
+        bool selectionChanged = fresh.GetProperty("selectionStart").GetInt64() != original.GetProperty("selectionStart").GetInt64()
+            || fresh.GetProperty("selectionEnd").GetInt64() != original.GetProperty("selectionEnd").GetInt64();
+        // An input-only change needs the actual changed selection from that
+        // exact version; later typing cannot supply evidence for an earlier ACK.
+        bool selectedSourceChanged = !contentChanged && selectionChanged
+            && fresh.GetProperty("content").GetInt64() == original.GetProperty("content").GetInt64()
+            && fresh.GetProperty("content").GetInt64() == change.GetProperty("currentContent").GetInt64()
+            && fresh.GetProperty("input").GetInt64() == change.GetProperty("currentInput").GetInt64();
         Require(change.GetProperty("previousContent").GetInt64() == original.GetProperty("content").GetInt64()
             && change.GetProperty("previousInput").GetInt64() == original.GetProperty("input").GetInt64()
-            && change.GetProperty("currentContent").GetInt64() > change.GetProperty("previousContent").GetInt64()
-            && change.GetProperty("currentInput").GetInt64() > change.GetProperty("previousInput").GetInt64(),
+            && change.GetProperty("previousFocus").GetInt64() == original.GetProperty("focus").GetInt64()
+            && change.GetProperty("currentFocus").GetInt64() == original.GetProperty("focus").GetInt64()
+            && change.GetProperty("currentInput").GetInt64() > change.GetProperty("previousInput").GetInt64()
+            && fresh.GetProperty("input").GetInt64() >= change.GetProperty("currentInput").GetInt64()
+            && fresh.GetProperty("content").GetInt64() >= change.GetProperty("currentContent").GetInt64()
+            && (contentChanged || selectedSourceChanged),
             "owner-recovery-host-source-change-unconfirmed");
+        observation.SourceChange = contentChanged ? "text-input" : "selection-change";
         observation.Verified = true;
     }
     private sealed partial class Cdp
@@ -178,7 +200,8 @@ internal static partial class BrowserCooperationCheck
                       const a=result.authority;
                       proof.preparationCount++;
                       if (proof.preparations.length<2) proof.preparations.push({ownerId:result.ownerId,token:a.token,
-                        target:a.target,content:a.contentRevision,input:a.inputRevision,focus:a.focusRevision});
+                        target:a.target,content:a.contentRevision,input:a.inputRevision,focus:a.focusRevision,
+                        selectionStart:document.activeElement.selectionStart,selectionEnd:document.activeElement.selectionEnd});
                       if (proof.hits) return false;
                       const fields=[document.body,document.activeElement];
                       proof.before=fields.map(f=>f.getAttribute('style'));
