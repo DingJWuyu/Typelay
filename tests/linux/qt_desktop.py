@@ -2757,7 +2757,29 @@ def run_qt(
                     assert changed["secondFocused"] and changed["secondText"] == other
                     assert changed["focusTransitions"] == after["focusTransitions"]
                     assert native_verified_count() == before_verified + succeeds
-                    assert not new_write_outcomes(before_write)
+                    assert after["first"]["selectionLength"] == 0
+                    assert (
+                        after["first"]["cursor"]
+                        == len(after["first"]["text"].encode("utf-16-le")) // 2
+                    )
+                    with (arguments.output / "controller.jsonl").open("rb") as trace:
+                        trace.seek(before_write)
+                        records = trace.read()
+                    rows = [
+                        json.loads(line)
+                        for line in records[: records.rfind(b"\n") + 1].splitlines()
+                    ]
+                    outcome = direct_settlement(rows)
+                    expected = (
+                        {"status": "Verified", "reason": "None"}
+                        if succeeds
+                        else {"status": "RejectedBeforeMutation", "reason": "EpochChanged"}
+                    )
+                    assert outcome is not None and outcome["detail"] == expected, rows
+                    (arguments.output / f"qt-background-direct-{action}.json").write_text(
+                        json.dumps({"outcome": outcome, "before": before, "after": after}, indent=2)
+                        + "\n"
+                    )
                     if succeeds:
                         assert after["first"]["text"] != background_source
                         assert re.search(r"[\u3400-\u9fff]", after["first"]["text"])

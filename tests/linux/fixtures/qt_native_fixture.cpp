@@ -33,6 +33,7 @@
 #include <QTextFrame>
 #include <QTextList>
 #include <QTextLayout>
+#include <QThread>
 #include <QSaveFile>
 #include <QSocketNotifier>
 #include <QStyleHints>
@@ -344,13 +345,20 @@ public:
                 observeOverlay(configurationMouseTarget);
                 configurationMouseInstance = overlayObjects.value(configurationMouseTarget).instance;
             }
-            if (configurationMouseTracing && qobject_cast<QWindow *>(object)) {
+            if (configurationMouseTracing && QThread::currentThread() == thread()
+                && object->thread() == thread() && qobject_cast<QWindow *>(object)) {
+                const auto *recipient = static_cast<QWindow *>(object);
+                const auto geometry = recipient->geometry();
                 const auto point = window->mapFromGlobal(mouse->globalPosition().toPoint());
                 configurationMouseEvent(type == QEvent::MouseButtonPress ? "window-mouse-press" : "window-mouse-release",
                     {QStringLiteral("window"), 0, window->rect()},
                     {{"x", point.x()}, {"y", point.y()}, {"button", int(mouse->button())},
                         {"buttons", int(mouse->buttons())}, {"spontaneous", event->spontaneous()},
-                        {"sameWindow", object == window->windowHandle()}});
+                        {"sameWindow", object == window->windowHandle()},
+                        {"recipientClass", recipient->metaObject()->className()},
+                        {"recipientGeometry", QJsonObject{{"x", geometry.x()}, {"y", geometry.y()},
+                            {"width", geometry.width()}, {"height", geometry.height()}}},
+                        {"transientParentIsSource", recipient->transientParent() == window->windowHandle()}});
             }
         }
         if (configurationMouseTracing && type == QEvent::KeyPress) {

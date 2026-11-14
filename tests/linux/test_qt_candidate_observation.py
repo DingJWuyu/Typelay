@@ -21,6 +21,27 @@ from qt_desktop import (  # noqa: E402
 
 
 class QtDirectSettlementTests(unittest.TestCase):
+    def test_background_success_has_one_original_plan_and_one_verified_receipt(self):
+        # Public trace from 52e82ba1's real background Qt source write.
+        plan = "2368c517-216a-4375-b60c-a8cd6b3094fb"
+        rows = [
+            {"atMs": 1185872, "operation": "direct-write-start", "planId": plan},
+            {"atMs": 1185876, "operation": "write-Verified-None", "planId": plan},
+            {
+                "atMs": 1185876,
+                "operation": "direct-write-result",
+                "planId": plan,
+                "detail": {"status": "Verified", "reason": "None"},
+            },
+        ]
+        self.assertEqual(background_direct_settlement(rows), rows[-1])
+        for index in range(3):
+            changed = copy.deepcopy(rows)
+            changed[index]["planId"] = "different-plan"
+            self.assertIsNone(background_direct_settlement(changed))
+        for incomplete in (rows[:2], rows[1:], rows[::-1], [*rows, rows[1]]):
+            self.assertIsNone(background_direct_settlement(incomplete))
+
     def test_source_change_rejection_has_one_original_plan_and_no_success_receipt(self):
         # Public trace from PR40's Qt post-snapshot source-change scene.
         plan = "42df515e-d5c0-40a2-aed0-e0fb08e07325"

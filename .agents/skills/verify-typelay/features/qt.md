@@ -78,6 +78,8 @@ DISPLAY="$TYPELAY_VERIFY_XDISPLAY" timeout --kill-after=10s 240s \
 
 核对人工稿恢复时，同时检查完整来源版本和新计划。过期接受保持零写入；新捕获只能在原生内容、选区、文档、焦点、上下文、字段和完整性版本均相等时恢复稿件，新接受必须是独立动作。合作 probe 的 `sourceObservationVersions` 记录原生捕获及正文、选区、只读和焦点 ABA 的版本变化。共享控制器回归不代替这组原生证据。
 
+后台 Direct 同样进入写回结算。`qt-background-direct-*.json` 保存原字段、仍有焦点的另一字段和原计划回执。成功须有同一计划的 start、唯一 Verified 和 result；源字段被应用改写时，须唯一结算为 `RejectedBeforeMutation/EpochChanged`。两种结果都保留原字段变更次数与另一字段不变的断言，成功还须原生撤销恢复原文。
+
 人工稿二次编辑仍由编辑焦点交接和回源确认路径负责。待接受状态的来源连续性检查不得提前结束这两个过程；回源未确认时不能发布接受许可。
 
 减少动画与恢复应用样式只改变显示，`sourceObservationVersions` 应保持相等。真实桌面中的长人工稿在两次样式变化前后都必须保留；机器译文替代稿件属于丢稿，不能解释成高度采样差异。
