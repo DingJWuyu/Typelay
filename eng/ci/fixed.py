@@ -17,11 +17,60 @@ def key(kind):
         files = ["eng/fonts/prepare.py", "eng/fonts/fonts.lock.json", "eng/requirements.txt"]
         environment = b""
     else:
-        from eng.linux.cooperative.inputs import FCITX_BUILD_INPUTS
+        from eng.linux.cooperative.inputs import FCITX_BUILD_INPUTS, QT_BUILD_INPUTS
 
-        files = [*FCITX_BUILD_INPUTS, "eng/ci/fixed.py", ".github/actions/linux-tools/action.yml"]
-        # The exact compiler and linked system libraries are build inputs too.
-        environment = subprocess.check_output(["pacman", "-Q"])
+        files = [
+            *FCITX_BUILD_INPUTS,
+            *QT_BUILD_INPUTS,
+            "eng/ci/fixed.py",
+            ".github/actions/linux-tools/action.yml",
+        ]
+        # Compiler and native SDK changes invalidate the build. Browsers and
+        # editors are test consumers, not inputs to the cooperation binaries.
+        environment = subprocess.check_output(
+            [
+                "pacman",
+                "-Q",
+                "gcc",
+                "gcc-libs",
+                "glibc",
+                "cmake",
+                "ninja",
+                "python",
+                "pkgconf",
+                "patch",
+                "fmt",
+                "glib2",
+                "glib2-devel",
+                "gtk3",
+                "gtk4",
+                "libxkbcommon",
+                "libxkbcommon-x11",
+                "wayland",
+                "wayland-protocols",
+                "plasma-wayland-protocols",
+                "extra-cmake-modules",
+                "libxcb",
+                "xcb-util-keysyms",
+                "systemd-libs",
+                "boost",
+                "boost-libs",
+                "opencc",
+                "icu",
+                "expat",
+                "libxml2",
+                "iso-codes",
+                "xkeyboard-config",
+                "zlib",
+                "zstd",
+                "libffi",
+                "pcre2",
+                "gettext",
+                "fcitx5",
+                "libime",
+                "qt6-base",
+            ]
+        )
     digest = hashlib.sha256(environment)
     for name in sorted(files):
         digest.update(name.encode() + b"\0" + (ROOT / name).read_bytes() + b"\0")
@@ -30,7 +79,7 @@ def key(kind):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("key", "restore", "publish"))
+    parser.add_argument("action", choices=("key", "lookup", "restore", "publish"))
     parser.add_argument("kind", choices=("fonts", "fcitx"))
     parser.add_argument("--tag")
     args = parser.parse_args()
@@ -41,7 +90,7 @@ def main():
     archive = ROOT / "artifacts" / (args.kind + (".tar.gz" if args.kind == "fonts" else ".tar.zst"))
     archive.parent.mkdir(exist_ok=True)
     repo = os.environ["GITHUB_REPOSITORY"]
-    if args.action == "restore":
+    if args.action in ("lookup", "restore"):
         result = subprocess.run(
             ["gh", "api", f"repos/{repo}/releases/tags/{tag}"], capture_output=True, text=True
         )
@@ -53,6 +102,10 @@ def main():
             return
         release = json.loads(result.stdout)
         asset = next(a for a in release["assets"] if a["name"] == archive.name)
+        if args.action == "lookup":
+            with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
+                stream.write("hit=true\n")
+            return
         subprocess.run(
             [
                 "gh",
@@ -81,10 +134,10 @@ def main():
         with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
             stream.write("hit=true\n")
     else:
-        directory = (
-            "artifacts/ui-fonts"
+        directories = (
+            ["artifacts/ui-fonts"]
             if args.kind == "fonts"
-            else "artifacts/linux/fcitx-cooperative-5.1.22"
+            else ["artifacts/linux/fcitx-cooperative-5.1.22", "artifacts/linux/qt-cooperative"]
         )
         subprocess.run(
             [
@@ -93,9 +146,10 @@ def main():
                 "--exclude=core-build",
                 "--exclude=libime-build",
                 "--exclude=fcitx5-chinese-addons-build",
+                "--exclude=artifacts/linux/qt-cooperative/build",
                 "-cf",
                 str(archive),
-                directory,
+                *directories,
             ],
             cwd=ROOT,
             check=True,

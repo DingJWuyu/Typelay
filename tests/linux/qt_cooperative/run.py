@@ -140,9 +140,12 @@ def prepare_source_glossary_capture_basis(describe, settled, expected_field):
     return wait(observe, "genuine source IM Clear before original glossary publication")
 
 
-def build(out, forced_sync_diagnostic=False):
+def build(out, forced_sync_diagnostic=False, reuse=False):
     inputs = hashes(TEST_INPUTS)
-    qt_build.build(out)
+    if reuse:
+        qt_build.verify_build(out)
+    else:
+        qt_build.build(out)
     if forced_sync_diagnostic:
         # Compile the unmodified control only for this optional comparison.
         with tempfile.TemporaryDirectory(prefix="typelay-qt-stock-", dir=out) as temporary:
@@ -4416,6 +4419,11 @@ if __name__ == "__main__":
         help="Require matching local Fcitx production and fixture build inputs",
     )
     parser.add_argument("--session", action="store_true")
+    parser.add_argument(
+        "--reuse-build",
+        action="store_true",
+        help="Verify production bytes, rebuild fixtures and rerun probes",
+    )
     parser.add_argument("--forced-sync-diagnostic", action="store_true")
     parser.add_argument("--language-options-only", action="store_true")
     args = parser.parse_args()
@@ -4434,7 +4442,7 @@ if __name__ == "__main__":
             verified_fcitx_build=args.verify_fcitx_build,
         )
     else:
-        build(out, args.forced_sync_diagnostic)
+        build(out, args.forced_sync_diagnostic, args.reuse_build)
         subprocess.run(
             [
                 "xvfb-run",

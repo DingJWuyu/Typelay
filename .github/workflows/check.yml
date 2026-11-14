@@ -53,7 +53,7 @@ jobs:
         TAG: ${{ steps.key.outputs.tag }}
   fcitx-build:
     runs-on: ubuntu-latest
-    container: &id001
+    container: &id002
       image: archlinux:base-devel
       options: --shm-size=1g --security-opt seccomp=unconfined
     permissions:
@@ -70,7 +70,8 @@ jobs:
       with:
         persist-credentials: false
     - uses: ./.github/actions/linux-tools
-    - name: Record tested commit
+    - &id001
+      name: Record tested commit
       run: |-
         mkdir -p artifacts/ci
         python -c 'import json,os,subprocess,pathlib; pathlib.Path("artifacts/ci/source.json").write_text(json.dumps(dict(tested_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),event=os.environ["GITHUB_EVENT_NAME"],run_id=os.environ["GITHUB_RUN_ID"],attempt=os.environ["GITHUB_RUN_ATTEMPT"])))'
@@ -78,14 +79,16 @@ jobs:
     - name: Hash native inputs and installed SDK
       run: echo "tag=$(python eng/ci/fixed.py key fcitx)" >> "$GITHUB_OUTPUT"
       id: key
-    - name: Restore fixed Fcitx build
-      run: python eng/ci/fixed.py restore fcitx --tag "$TAG"
+    - name: Find fixed Fcitx build
+      run: python eng/ci/fixed.py lookup fcitx --tag "$TAG"
       id: restore
       env:
         GH_TOKEN: ${{ github.token }}
         TAG: ${{ steps.key.outputs.tag }}
     - name: Build Fcitx once per input and SDK hash
-      run: python eng/linux/cooperative/fcitx.py
+      run: |
+        python eng/linux/cooperative/fcitx.py
+        python eng/linux/cooperative/qt.py
       if: steps.restore.outputs.hit != 'true'
     - name: Publish fixed Fcitx build
       run: python eng/ci/fixed.py publish fcitx --tag "$TAG"
@@ -102,11 +105,7 @@ jobs:
       id: checkout
       with:
         persist-credentials: false
-    - name: Record tested commit
-      run: |-
-        mkdir -p artifacts/ci
-        python -c 'import json,os,subprocess,pathlib; pathlib.Path("artifacts/ci/source.json").write_text(json.dumps(dict(tested_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),event=os.environ["GITHUB_EVENT_NAME"],run_id=os.environ["GITHUB_RUN_ID"],attempt=os.environ["GITHUB_RUN_ATTEMPT"])))'
-      shell: bash
+    - *id001
     - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
       if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
       with:
@@ -176,11 +175,7 @@ jobs:
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         'C:\Program Files\LLVM\bin' >> $env:GITHUB_PATH
       shell: pwsh
-    - name: Record tested commit
-      run: |-
-        mkdir -p artifacts/ci
-        python -c 'import json,os,subprocess,pathlib; pathlib.Path("artifacts/ci/source.json").write_text(json.dumps(dict(tested_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),event=os.environ["GITHUB_EVENT_NAME"],run_id=os.environ["GITHUB_RUN_ID"],attempt=os.environ["GITHUB_RUN_ATTEMPT"])))'
-      shell: bash
+    - *id001
     - name: Build the Windows workspace
       id: windows-build
       shell: pwsh
@@ -192,6 +187,12 @@ jobs:
       env:
         TYPELAY_TRACE: ${{ github.workspace }}/artifacts/controller-trace.jsonl
       run: python eng/windows/test_contracts.py --shard ${{ matrix.shard }} --configuration Release --results-directory artifacts/test-results
+    - name: Package and smoke the isolated physical Tab handoff
+      id: physical-tab-package
+      if: ${{ !cancelled() && matrix.shard == 2 && steps.windows-build.outcome == 'success' }}
+      timeout-minutes: 2
+      shell: pwsh
+      run: python eng/windows/package-physical-tab.py
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       if: always()
       with:
@@ -199,6 +200,16 @@ jobs:
         path: |-
           artifacts/test-results/
           artifacts/ci/
+          artifacts/physical-tab-package/
+        if-no-files-found: warn
+        retention-days: 14
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      if: inputs.upload_packages && matrix.shard == 2
+      with:
+        name: windows-physical-tab-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |-
+          artifacts/TypeLay-Windows-physical-Tab-validation.zip
+          artifacts/TypeLay-Windows-physical-Tab-validation.zip.sha256
         if-no-files-found: warn
         retention-days: 14
   windows-tools:
@@ -222,11 +233,7 @@ jobs:
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         'C:\Program Files\LLVM\bin' >> $env:GITHUB_PATH
       shell: pwsh
-    - name: Record tested commit
-      run: |-
-        mkdir -p artifacts/ci
-        python -c 'import json,os,subprocess,pathlib; pathlib.Path("artifacts/ci/source.json").write_text(json.dumps(dict(tested_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),event=os.environ["GITHUB_EVENT_NAME"],run_id=os.environ["GITHUB_RUN_ID"],attempt=os.environ["GITHUB_RUN_ATTEMPT"])))'
-      shell: bash
+    - *id001
     - name: Build the Windows workspace
       id: windows-build
       shell: pwsh
@@ -255,12 +262,6 @@ jobs:
       if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
       shell: pwsh
       run: ./dev.ps1 native-e2e
-    - name: Package and smoke the isolated physical Tab handoff
-      id: physical-tab-package
-      if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-      timeout-minutes: 2
-      shell: pwsh
-      run: python eng/windows/package-physical-tab.py
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       if: always()
       with:
@@ -270,26 +271,11 @@ jobs:
           artifacts/physical-tab*/
         if-no-files-found: warn
         retention-days: 14
-    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-      if: inputs.upload_packages
-      with:
-        name: windows-physical-tab-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-        path: |-
-          artifacts/TypeLay-Windows-physical-Tab-validation.zip
-          artifacts/TypeLay-Windows-physical-Tab-validation.zip.sha256
-        if-no-files-found: warn
-        retention-days: 14
   windows-desktop:
-    name: Windows desktop / ${{ matrix.scene }}
+    name: Windows desktop
     needs: fonts
     runs-on: windows-latest
     timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        scene:
-        - ordinary
-        - hy
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
@@ -307,11 +293,7 @@ jobs:
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         'C:\Program Files\LLVM\bin' >> $env:GITHUB_PATH
       shell: pwsh
-    - name: Record tested commit
-      run: |-
-        mkdir -p artifacts/ci
-        python -c 'import json,os,subprocess,pathlib; pathlib.Path("artifacts/ci/source.json").write_text(json.dumps(dict(tested_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),event=os.environ["GITHUB_EVENT_NAME"],run_id=os.environ["GITHUB_RUN_ID"],attempt=os.environ["GITHUB_RUN_ATTEMPT"])))'
-      shell: bash
+    - *id001
     - name: Build the Windows workspace
       id: windows-build
       shell: pwsh
@@ -332,14 +314,14 @@ jobs:
       run: ./dev.ps1 pack -HyRuntime artifacts/hy-runtime
     - name: Verify continuous translation with the real local model
       id: windows-continuous
-      if: ${{ matrix.scene == 'ordinary' && !cancelled() && steps.windows-build.outcome == 'success' }}
+      if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
       timeout-minutes: 25
       shell: pwsh
       run: |
         dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-continuous artifacts/continuous-translation src/shared/TypeLay.Worker/run_worker.py tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll
         exit $LASTEXITCODE
     - name: Verify and prepare Chrome for Testing for the cooperative product path
-      if: ${{ matrix.scene == 'ordinary' && !cancelled() && steps.windows-build.outcome == 'success' }}
+      if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
       id: cooperative-browser-prepare
       shell: pwsh
       run: |
@@ -362,8 +344,8 @@ jobs:
         "chrome=$chrome" >> $env:GITHUB_OUTPUT
     - name: Verify cooperative browser input with the shipped app and real model
       id: windows-browser
-      if: ${{ matrix.scene == 'ordinary' && !cancelled() && steps.windows-package.outcome == 'success' && steps.cooperative-browser-prepare.outcome
-        == 'success' }}
+      if: ${{ !cancelled() && steps.windows-package.outcome == 'success' && steps.cooperative-browser-prepare.outcome == 'success'
+        }}
       timeout-minutes: 10
       shell: pwsh
       env:
@@ -376,8 +358,8 @@ jobs:
         exit $LASTEXITCODE
     - name: Verify prior model consumers have exited before Notepad
       id: notepad-consumer-exit
-      if: ${{ matrix.scene == 'ordinary' && !cancelled() && steps.windows-package.outcome == 'success' && (steps.windows-browser.outcome
-        == 'success' || steps.windows-browser.outcome == 'failure') }}
+      if: ${{ !cancelled() && steps.windows-package.outcome == 'success' && (steps.windows-browser.outcome == 'success' ||
+        steps.windows-browser.outcome == 'failure') }}
       shell: pwsh
       env:
         CONTINUOUS_NONCE: ${{ steps.windows-continuous.outputs.consumer_exit_nonce }}
@@ -390,15 +372,27 @@ jobs:
         exit $LASTEXITCODE
     - name: Verify real classic Notepad through shipped app Settings
       id: windows-ordinary-notepad
-      if: ${{ matrix.scene == 'ordinary' && !cancelled() && steps.notepad-consumer-exit.outcome == 'success' }}
+      if: ${{ !cancelled() && steps.notepad-consumer-exit.outcome == 'success' }}
       timeout-minutes: 10
       shell: pwsh
       run: |
         ./dev.ps1 package-e2e -Scenario ordinary-notepad
         exit $LASTEXITCODE
+    - name: Verify all prior model consumers have exited
+      id: hy-consumer-exit
+      if: ${{ !cancelled() && steps.windows-package.outcome == 'success' }}
+      shell: pwsh
+      env:
+        CONTINUOUS_NONCE: ${{ steps.windows-continuous.outputs.consumer_exit_nonce }}
+        BROWSER_NONCE: ${{ steps.windows-browser.outputs.consumer_exit_nonce }}
+        NOTEPAD_NONCE: ${{ steps.windows-ordinary-notepad.outputs.consumer_exit_nonce }}
+        WORKFLOW_CANCELLED: ${{ job.status != 'success' && job.status != 'failure' }}
+      run: |
+        python eng/windows/verify-consumer-exit.py --continuous-proof artifacts/continuous-translation/consumer-exit.json --browser-proof artifacts/browser-cooperation/consumer-exit.json --notepad-proof artifacts/ordinary-notepad/consumer-exit.json --continuous-nonce "$env:CONTINUOUS_NONCE" --browser-nonce "$env:BROWSER_NONCE" --notepad-nonce "$env:NOTEPAD_NONCE" --run-id "$env:GITHUB_RUN_ID" --run-attempt "$env:GITHUB_RUN_ATTEMPT" --head "$env:GITHUB_SHA" --workflow-cancelled "$env:WORKFLOW_CANCELLED"
+        exit $LASTEXITCODE
     - name: Verify the shipped Hy ABI5 worker and production process owner
       id: hy-production
-      if: ${{ !cancelled() && matrix.scene == 'hy' && steps.windows-package.outcome == 'success' }}
+      if: ${{ !cancelled() && steps.windows-package.outcome == 'success' && steps.hy-consumer-exit.outcome == 'success' }}
       timeout-minutes: 6
       shell: pwsh
       run: |
@@ -407,8 +401,7 @@ jobs:
         exit $LASTEXITCODE
     - name: Verify Hy install select preview and remove through Settings
       id: hy-packages
-      if: ${{ !cancelled() && matrix.scene == 'hy' && steps.windows-package.outcome == 'success' && steps.hy-production.outcome
-        == 'success' }}
+      if: ${{ !cancelled() && steps.windows-package.outcome == 'success' && steps.hy-production.outcome == 'success' }}
       timeout-minutes: 16
       shell: pwsh
       run: |
@@ -418,7 +411,7 @@ jobs:
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       if: always()
       with:
-        name: windows-${{ matrix.scene }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        name: windows-desktop-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
         path: |-
           artifacts/ci/
           artifacts/continuous-translation/*.json
@@ -437,7 +430,7 @@ jobs:
         if-no-files-found: warn
         retention-days: 14
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-      if: inputs.upload_packages && matrix.scene == 'ordinary'
+      if: inputs.upload_packages
       with:
         name: windows-package-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
         path: |-
@@ -453,11 +446,7 @@ jobs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         persist-credentials: false
-    - name: Record tested commit
-      run: |-
-        mkdir -p artifacts/ci
-        python -c 'import json,os,subprocess,pathlib; pathlib.Path("artifacts/ci/source.json").write_text(json.dumps(dict(tested_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),event=os.environ["GITHUB_EVENT_NAME"],run_id=os.environ["GITHUB_RUN_ID"],attempt=os.environ["GITHUB_RUN_ATTEMPT"])))'
-      shell: bash
+    - *id001
     - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
       with:
         global-json-file: global.json
@@ -516,11 +505,7 @@ jobs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         persist-credentials: false
-    - name: Record tested commit
-      run: |-
-        mkdir -p artifacts/ci
-        python -c 'import json,os,subprocess,pathlib; pathlib.Path("artifacts/ci/source.json").write_text(json.dumps(dict(tested_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),event=os.environ["GITHUB_EVENT_NAME"],run_id=os.environ["GITHUB_RUN_ID"],attempt=os.environ["GITHUB_RUN_ATTEMPT"])))'
-      shell: bash
+    - *id001
     - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
       with:
         global-json-file: global.json
@@ -571,11 +556,9 @@ jobs:
         retention-days: 14
   linux:
     name: Linux / ${{ matrix.group }}
-    needs:
-    - fonts
-    - fcitx-build
+    needs: fonts
     runs-on: ubuntu-latest
-    container: *id001
+    container: *id002
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -583,9 +566,8 @@ jobs:
         group:
         - contracts
         - browser
-        - native
         - settings
-    env:
+    env: &id003
       TYPELAY_EXPECT_QT_VERSION: 6.11.2
       GTK4_PACKAGE_SHA256: 7386543a425d523b76f08a8269b530dcbebc45a53a68cfdef5251e8238d60dc9
       GTK4_SIGNATURE_SHA256: 894fd81f845eb49137d73056f62b27f2d194d2990ebe6dfdc956cd678db76048
@@ -593,18 +575,14 @@ jobs:
       QT_SIGNATURE_SHA256: abf939ab10c2d7f28af81e5230c72e2acbd803fe43590fda331f474ec871dcfb
       LIBIME_PACKAGE_SHA256: adacfc6243df2544665a1d4cc8f2bf2ee6d4966fc2c5f2a37a3ff579134b6c67
       CHINESE_PACKAGE_SHA256: cc03b9d1d0bb921d88130e4ef17a4162a1037f6dbb0a165f6a73b83236f06ec4
-    steps:
+    steps: &id004
     - name: Install checkout prerequisite
       run: pacman -Sy --noconfirm git
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         persist-credentials: false
     - uses: ./.github/actions/linux-tools
-    - name: Record tested commit
-      run: |-
-        mkdir -p artifacts/ci
-        python -c 'import json,os,subprocess,pathlib; pathlib.Path("artifacts/ci/source.json").write_text(json.dumps(dict(tested_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),event=os.environ["GITHUB_EVENT_NAME"],run_id=os.environ["GITHUB_RUN_ID"],attempt=os.environ["GITHUB_RUN_ATTEMPT"])))'
-      shell: bash
+    - *id001
     - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
       with:
         global-json-file: global.json
@@ -617,18 +595,22 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
         TAG: ${{ needs.fcitx-build.outputs.tag }}
+      if: matrix.group == 'native'
     - name: Prepare the fixed official Linux Hy CPU closure
       id: hy-cpu
       timeout-minutes: 3
       run: |
         python eng/linux/hy/prepare_runtime.py --cache artifacts/linux/hy-cpu-download --output artifacts/linux/hy-cpu-runtime
+      if: ${{ !cancelled() }}
     - name: Build the relocatable Linux client
       id: build
       run: python eng/linux/build.py --with-test-fixture --hy-runtime artifacts/linux/hy-cpu-runtime
+      if: ${{ !cancelled() && steps.hy-cpu.outcome == 'success' }}
     - name: Start the disposable X11 display
       id: display
       run: |
         Xvfb :99 -screen 0 1280x960x24 -nolisten tcp &
+      if: ${{ !cancelled() }}
     - name: Install and verify actual local translation components
       id: models
       if: ${{ !cancelled() && matrix.group != 'contracts' && steps.build.outcome == 'success' }}
@@ -894,7 +876,7 @@ jobs:
       shell: bash
       run: |
         set -o pipefail
-        python tests/linux/qt_cooperative/run.py --fcitx-root artifacts/linux/fcitx-cooperative-5.1.22 --verify-fcitx-build 2>&1 | tee artifacts/linux/qt-cooperative-probe.log
+        python tests/linux/qt_cooperative/run.py --reuse-build --fcitx-root artifacts/linux/fcitx-cooperative-5.1.22 --verify-fcitx-build 2>&1 | tee artifacts/linux/qt-cooperative-probe.log
     - name: Package and relocate the optional Fcitx cooperation runtime
       id: fcitx-package
       if: ${{ matrix.group == 'native' && !cancelled() && (steps.fcitx.outcome == 'success' || steps.fcitx.outcome == 'failure')
@@ -1074,3 +1056,18 @@ jobs:
           artifacts/TypeLay-Fcitx-cooperative.tar.gz
         if-no-files-found: warn
         retention-days: 14
+  linux-native:
+    name: Linux / ${{ matrix.group }}
+    needs:
+    - fonts
+    - fcitx-build
+    runs-on: ubuntu-latest
+    container: *id002
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        group:
+        - native
+    env: *id003
+    steps: *id004
