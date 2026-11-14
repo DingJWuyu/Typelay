@@ -175,6 +175,7 @@ window.typelay-surface.typelay-settings.settings-dark > headerbar.titlebar.defau
 .typelay-surface .application-connection-icon { min-width: 24px; min-height: 24px; border-radius: 6px; color: white; }
 .typelay-surface .application-connection-icon.desktop-icon { background: #5f5e5a; }
 .typelay-surface .application-connection-icon.browser-icon { background: #3478f6; }
+.typelay-surface .application-connection-footer { padding: 12px 14px; }
 .typelay-surface .application-line { min-height: 28px; padding: 8px 14px; box-shadow: inset 0 -1px rgba(20,20,19,.06); }
 .typelay-surface.settings-dark .application-line { box-shadow: inset 0 -1px rgba(255,255,255,.07); }
 .typelay-surface .application-tone button { min-height: 24px; padding: 0 9px; font-size: 12px; }

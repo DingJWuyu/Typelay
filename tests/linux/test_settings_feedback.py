@@ -82,7 +82,7 @@ class Host:
             return {
                 "statusText": "尚未准备模型",
                 "guidance": "",
-                "primaryAction": {"id": "NextStep", "label": "下一步", "enabled": False},
+                "primaryAction": {"id": "NextStep", "label": "选择接入方式", "enabled": False},
                 "secondaryActions": [],
                 "directions": [],
                 "canSelectDirections": False,
@@ -181,6 +181,53 @@ class GtkFeedbackTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(settings.message.get_text(), "")
         return settings
+
+    async def test_apps_connection_entry_stays_inside_its_card(self):
+        settings = await self.open_settings()
+        settings.configure({**SETTINGS, "uiLanguage": "en"})
+        settings.sidebar.select_row(settings.nav_rows["application-support"])
+        entry = settings.application_support.next_button
+        await self.wait_for(lambda: entry.get_mapped(), "connection entry")
+        card = settings.applications.summary
+        position = entry.translate_coordinates(card, 0, 0)
+        self.assertIsNotNone(position)
+        self.assertGreaterEqual(position[0], 8)
+        self.assertGreaterEqual(position[1], 8)
+        self.assertLessEqual(
+            position[0] + entry.get_allocated_width() + 8, card.get_allocated_width()
+        )
+        self.assertLessEqual(
+            position[1] + entry.get_allocated_height() + 8, card.get_allocated_height()
+        )
+
+    async def test_tray_notice_tracks_language_and_connection_state(self):
+        settings = await self.open_settings()
+        for available, english, chinese in (
+            (
+                True,
+                "Tray is not connected. Open Settings from the application menu.",
+                "托盘未连接，可从应用菜单打开设置。",
+            ),
+            (
+                False,
+                "The desktop tray service is unavailable. Settings and translation still work.",
+                "桌面托盘服务不可用，设置和翻译仍可使用。",
+            ),
+        ):
+            with self.subTest(available=available):
+                settings.report_tray(available, False)
+                settings.configure({**SETTINGS, "uiLanguage": "en"})
+                self.assertEqual(settings.tray_notice.get_text(), english)
+                detail = settings.tray_notice.get_tooltip_text()
+                self.assertEqual(settings.tray_notice.get_accessible().get_description(), detail)
+                self.assertFalse(any("\u4e00" <= char <= "\u9fff" for char in detail))
+                settings.configure(deepcopy(SETTINGS))
+                self.assertEqual(settings.tray_notice.get_text(), chinese)
+                self.assertTrue(settings.tray_notice.get_visible())
+        settings.report_tray(True, True)
+        settings.configure({**SETTINGS, "uiLanguage": "en"})
+        self.assertEqual(settings.tray_notice.get_text(), "")
+        self.assertFalse(settings.tray_notice.get_visible())
 
     async def test_language_swap_shows_notification_warning_after_committing(self):
         settings = await self.open_settings()

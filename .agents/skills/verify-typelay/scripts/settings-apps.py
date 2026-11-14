@@ -41,7 +41,7 @@ def main():
     # Controlled initial state only skips the tutorial. Preferences below are
     # changed through the actual accessible controls.
     config.write_text(json.dumps({"OnboardingComplete": True}))
-    actions, geometry = [], []
+    actions, geometry, layout_issues = [], [], []
 
     def save(name, value):
         (output / name).write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
@@ -111,6 +111,44 @@ def main():
             "Apps split an English word; inspect text-geometry.json and the screenshot"
         )
 
+    def observe_connection_card(name):
+        title = visible_named(pid, "Desktop apps", role=Atspi.Role.LABEL)
+        card = title.get_parent().get_parent()
+        # Connection rows and the next-step action belong to the same card.
+        # Inspect the actual accessible rectangle, including its bottom inset.
+        area = Atspi.Component.get_extents(card.get_component_iface(), Atspi.CoordType.WINDOW)
+        entry = visible_named(pid, "Choose a connection", role=Atspi.Role.PUSH_BUTTON)
+        entry_area = Atspi.Component.get_extents(
+            entry.get_component_iface(), Atspi.CoordType.WINDOW
+        )
+        save(
+            name + "-connection-card.json",
+            {
+                "card": [area.x, area.y, area.width, area.height],
+                "entry": [entry_area.x, entry_area.y, entry_area.width, entry_area.height],
+            },
+        )
+        if entry_area.y + entry_area.height + 8 > area.y + area.height:
+            layout_issues.append(name + ": connection entry is outside its card padding")
+        buttons = []
+        for title in ("Desktop apps", "Browser extension"):
+            button = visible_named(pid, "App connection: " + title, role=Atspi.Role.PUSH_BUTTON)
+            bounds = Atspi.Component.get_extents(
+                button.get_component_iface(), Atspi.CoordType.WINDOW
+            )
+            buttons.append({"title": title, "width": bounds.width, "height": bounds.height})
+        save(name + "-buttons.json", buttons)
+        if len({button["width"] for button in buttons}) != 1:
+            layout_issues.append(name + ": connection actions have different widths")
+        if any(button["height"] > 44 for button in buttons):
+            layout_issues.append(name + ": connection action wraps beyond two lines")
+        if (
+            visible_named(pid, "Tray is not connected. Open Settings from the application menu.")
+            is None
+        ):
+            layout_issues.append(name + ": English tray notice is missing")
+        save("layout-issues.json", layout_issues)
+
     try:
         with (output / "typelay.log").open("w") as log:
             subprocess.Popen([app, "--settings"], stdout=log, stderr=subprocess.STDOUT)
@@ -164,6 +202,9 @@ def main():
                 save(name + "-window.json", observed_window)
                 capture(name)
                 observe_words(name)
+                observe_connection_card(name)
+
+        assert not layout_issues, "Apps layout: " + "; ".join(layout_issues)
 
         # Open and cancel the actual component chooser or install confirmation.
         saved_before_action = json.loads(config.read_text())

@@ -3726,6 +3726,8 @@ class Settings:
 
     def localize(self):
         self.localizer.refresh()
+        if hasattr(self, "tray_state"):
+            self.report_tray(*self.tray_state)
         self.render_download_progress()
         was_configuring = self.configuring
         self.configuring = True
@@ -4957,14 +4959,27 @@ class Settings:
         }
 
     def report_tray(self, available, connected):
+        self.tray_state = (available, connected)
         if connected:
             message, detail = "", ""
         elif available:
-            message = "托盘未连接，可从应用菜单打开设置。"
-            detail = "未连接托盘面板；可从应用菜单打开设置。Waybar 需启用 tray 模块。"
+            message = self.tr(
+                "托盘未连接，可从应用菜单打开设置。",
+                "Tray is not connected. Open Settings from the application menu.",
+            )
+            detail = self.tr(
+                "未连接托盘面板；可从应用菜单打开设置。Waybar 需启用 tray 模块。",
+                "No tray panel is connected. Open Settings from the application menu. Enable the tray module in Waybar.",
+            )
         else:
-            message = "桌面托盘服务不可用，设置和翻译仍可使用。"
-            detail = "无法连接 StatusNotifier 桌面会话服务；可运行 typelay --quick-panel 打开原生快捷面板。"
+            message = self.tr(
+                "桌面托盘服务不可用，设置和翻译仍可使用。",
+                "The desktop tray service is unavailable. Settings and translation still work.",
+            )
+            detail = self.tr(
+                "无法连接 StatusNotifier 桌面会话服务；可运行 typelay --quick-panel 打开原生快捷面板。",
+                "Cannot connect to the StatusNotifier desktop session service. Run typelay --quick-panel to open the native quick panel.",
+            )
         self.tray_notice.set_text(message)
         self.tray_notice.set_tooltip_text(detail)
         self.tray_notice.get_accessible().set_description(detail)
