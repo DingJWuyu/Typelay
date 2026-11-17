@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-DOWNLOAD_SECONDS = 180
+DOWNLOAD_SECONDS = 600
 DOWNLOAD_ATTEMPTS = 3
 # libcurl connection, HTTP/2, partial-file, timeout, empty-reply and socket errors.
 TRANSIENT_CURL_ERRORS = {6, 7, 16, 18, 28, 52, 55, 56, 92}
@@ -109,17 +109,20 @@ def download_verified(repo, tag, archive, asset):
                     "--output",
                     str(partial),
                     "--write-out",
-                    "%{response_code}",
+                    "%{response_code} %{http_connect}",
                     url,
                 ],
+                env=os.environ | {"LC_ALL": "C"},
                 input=f"Authorization: Bearer {token}\nAccept: application/octet-stream\n",
                 capture_output=True,
                 text=True,
                 errors="replace",
             )
-            status = int(result.stdout or 0) or None
+            status, proxy_status = (
+                int(value) or None for value in (result.stdout or "0 0").split()
+            )
             received = partial.stat().st_size if partial.exists() else 0
-            fields.update(http_status=status, received_bytes=received)
+            fields.update(http_status=status, proxy_status=proxy_status, received_bytes=received)
             if not result.returncode and status == 200:
                 log_event("download", "complete", tag, **fields)
                 if archive_digest(partial) != asset["digest"]:
@@ -132,10 +135,15 @@ def download_verified(repo, tag, archive, asset):
             error = re.sub(r"https?://[^\s]+", "<url>", result.stderr.strip(), flags=re.I)
             error = error.replace(token, "<redacted>")
             log_event("download", "failed", tag, **fields, curl_code=result.returncode, error=error)
-            if status is not None and 400 <= status < 600:
+            if proxy_status is not None and not 200 <= proxy_status < 300:
+                transient = 500 <= proxy_status < 600
+            elif status is not None and 400 <= status < 600:
                 transient = status >= 500
             else:
-                transient = result.returncode in TRANSIENT_CURL_ERRORS
+                transient = result.returncode in TRANSIENT_CURL_ERRORS or (
+                    result.returncode == 35
+                    and result.stderr.rstrip().endswith("Recv failure: Connection reset by peer")
+                )
             delay = 2 ** (attempt - 1)
             if (
                 not transient

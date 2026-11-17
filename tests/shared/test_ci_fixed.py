@@ -15,15 +15,20 @@ import time
 import unittest
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, redirect_stderr
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from unittest.mock import patch
+
+from eng.ci import fixed
 
 ROOT = Path(__file__).resolve().parents[2]
 SHIM = """import json,os,sys,time
 from pathlib import Path
-if sys.argv[1] == "api":
+if sys.argv[1:] == ["auth", "token"] and not (os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN")):
+    print("fixture-consumer")
+elif sys.argv[1] == "api":
     mode = os.environ["FIXED_CASE"]
     stage = 'jobs' if sys.argv[2].endswith('/jobs?per_page=100') else 'release'
     if mode.startswith(stage + '-'):
@@ -59,11 +64,15 @@ else:
 
 
 @contextmanager
-def asset_api(read_asset, responses=None):
+def asset_api(read_asset, responses=None, proxy_status=None):
     """Serve actual HTTP bodies, including failures after the response headers."""
     calls = Counter()
 
     class Handler(BaseHTTPRequestHandler):
+        def do_CONNECT(self):
+            calls["CONNECT"] += 1
+            self.send_error(proxy_status or 405)
+
         def do_GET(self):
             token = self.headers.get("Authorization", "").removeprefix("Bearer ")
             if (
@@ -118,6 +127,39 @@ def events(result, stage, event):
     return [record for record in records if record["stage"] == stage and record["event"] == event]
 
 
+class CurlTransferTests(unittest.TestCase):
+    def test_only_recoverable_curl_failures_get_another_request(self):
+        cases = [
+            (92, "200 200", "HTTP/2 stream 1 reset by server (error 0x1 PROTOCOL_ERROR)", 3),
+            (16, "000 000", "Error in the HTTP2 framing layer", 3),
+            (35, "000 000", "Recv failure: Connection reset by peer", 3),
+            (35, "000 000", "TLS alert handshake failure", 1),
+            (60, "000 000", "SSL certificate problem: self-signed certificate", 1),
+            (56, "000 403", "CONNECT tunnel failed, response 403", 1),
+            (56, "000 407", "CONNECT tunnel failed, response 407", 1),
+        ]
+        for code, statuses, error, attempts in cases:
+            with (
+                self.subTest(code=code, statuses=statuses, error=error),
+                tempfile.TemporaryDirectory() as directory,
+                patch.dict(os.environ, GH_TOKEN="fixture-token"),
+                patch.object(subprocess, "run") as curl,
+                patch.object(time, "sleep"),
+                patch.object(time, "monotonic", return_value=0),
+                redirect_stderr(io.StringIO()),
+            ):
+                curl.return_value = subprocess.CompletedProcess(
+                    [], code, statuses, f"curl: ({code}) {error}"
+                )
+                archive = Path(directory) / "index.tar"
+                with self.assertRaises(RuntimeError):
+                    fixed.download_verified("test/repo", "ci-test", archive, {"id": 78})
+                self.assertEqual(curl.call_count, attempts)
+                # A model transfer can use the full warm-run budget.
+                args = curl.call_args_list[0].args[0]
+                self.assertEqual(float(args[args.index("--max-time") + 1]), 600)
+
+
 class FixedBuildTransportTests(unittest.TestCase):
     def run_transport(
         self,
@@ -129,6 +171,8 @@ class FixedBuildTransportTests(unittest.TestCase):
         cold_build=False,
         responses=(),
         download_seconds=None,
+        proxy_status=None,
+        token_source="GH_TOKEN",
     ):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -213,7 +257,32 @@ class FixedBuildTransportTests(unittest.TestCase):
                 self.assertEqual(asset_id, 78)
                 return archive.read_bytes()
 
-            api, calls = self.enterContext(asset_api(read_asset, {"fixture-consumer": responses}))
+            api, calls = self.enterContext(
+                asset_api(read_asset, {"fixture-consumer": responses}, proxy_status)
+            )
+            env = os.environ | {
+                "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                "GITHUB_REPOSITORY": "test/repo",
+                "GITHUB_RUN_ID": "123",
+                "GITHUB_OUTPUT": str(output),
+                "FIXED_CASE": mode,
+                "FIXED_METADATA": str(metadata),
+                "GITHUB_API_URL": api,
+                "no_proxy": "127.0.0.1",
+                "NO_PROXY": "127.0.0.1",
+            }
+            for key in ("GH_TOKEN", "GITHUB_TOKEN"):
+                env.pop(key, None)
+            if token_source:
+                env[token_source] = "fixture-consumer"
+            if proxy_status:
+                env.update(
+                    GITHUB_API_URL=api.replace("http:", "https:"),
+                    https_proxy=api,
+                    HTTPS_PROXY=api,
+                    NO_PROXY="",
+                    no_proxy="",
+                )
             result = subprocess.run(
                 command
                 + [str(script), action, kind, "--tag", "ci-test"]
@@ -222,18 +291,7 @@ class FixedBuildTransportTests(unittest.TestCase):
                 cwd=root,
                 capture_output=True,
                 text=True,
-                env=os.environ
-                | {
-                    "PATH": str(root) + os.pathsep + os.environ["PATH"],
-                    "GITHUB_REPOSITORY": "test/repo",
-                    "GITHUB_RUN_ID": "123",
-                    "GITHUB_OUTPUT": str(output),
-                    "FIXED_CASE": mode,
-                    "FIXED_METADATA": str(metadata),
-                    "GITHUB_API_URL": api,
-                    "GH_TOKEN": "fixture-consumer",
-                    "NO_PROXY": "127.0.0.1",
-                },
+                env=env,
                 timeout=20 if wait else 10,
             )
             self.assertEqual(
@@ -326,6 +384,16 @@ class FixedBuildTransportTests(unittest.TestCase):
                 (failure,) = events(result, "download", "failed")
                 self.assertEqual(failure["http_status"], 302 if outcome == "redirect" else outcome)
 
+    def test_connect_proxy_denial_stops_before_origin_transfer(self):
+        for status in (403, 407):
+            with self.subTest(status=status):
+                result, count = self.run_transport("download-failed", proxy_status=status)
+                self.assertEqual(count, 1)
+                (failed,) = events(result, "download", "failed")
+                self.assertIsNone(failed["http_status"])
+                self.assertEqual(failed["proxy_status"], status)
+                self.assertEqual(failed["received_bytes"], 0)
+
     def test_stalled_transfer_stops_at_the_total_deadline(self):
         result, count = self.run_transport(
             "download-failed", responses=["stall"], download_seconds=0.25
@@ -375,8 +443,10 @@ class FixedBuildTransportTests(unittest.TestCase):
     def test_changed_archive_fails_before_extracting(self):
         self.run_transport("corrupt")
 
-    def test_verified_archive_is_extracted(self):
-        self.run_transport("valid")
+    def test_verified_archive_is_extracted_without_gh_token(self):
+        for source in ("GITHUB_TOKEN", None):
+            with self.subTest(source=source):
+                self.run_transport("valid", token_source=source)
 
     def test_lookup_does_not_download_existing_builds(self):
         self.run_transport("valid", "lookup")
@@ -415,6 +485,7 @@ class FixedBuildPublicationTests(unittest.TestCase):
             "GITHUB_API_URL": api,
             "GITHUB_RUN_ID": "123",
             "NO_PROXY": "127.0.0.1",
+            "no_proxy": "127.0.0.1",
             "PATH": str(self.root) + os.pathsep + os.environ["PATH"],
             "GITHUB_REPOSITORY": "test/repo",
             "GITHUB_SHA": "current-commit",
@@ -487,6 +558,7 @@ class FixedBuildPublicationTests(unittest.TestCase):
                 failures = events(result, "download", "failed")
                 self.assertEqual([e["attempt"] for e in starts], list(range(1, i + 2)))
                 self.assertEqual(len(failures), i)
+                self.assertEqual(self.calls["fixture-" + name], i + 1)
                 for start, end in zip(starts, [*failures, complete], strict=True):
                     for event in (start, end):
                         self.assertEqual(
@@ -495,11 +567,13 @@ class FixedBuildPublicationTests(unittest.TestCase):
                     self.assertLessEqual(
                         datetime.fromisoformat(start["time"]), datetime.fromisoformat(end["time"])
                     )
-                for failed, next_start in zip(failures, starts[1:], strict=True):
+                for expected_seconds, failed, next_start in zip(
+                    (1, 2)[:i], failures, starts[1:], strict=True
+                ):
                     delay = datetime.fromisoformat(next_start["time"]) - datetime.fromisoformat(
                         failed["time"]
                     )
-                    self.assertGreaterEqual(delay.total_seconds(), 0.9)
+                    self.assertGreaterEqual(delay.total_seconds(), expected_seconds - 0.1)
                 self.assertNotIn("fixture-" + name, result.stderr)
 
     def test_existing_winner_is_reused_without_repacking_uploading_or_overwriting_it(self):
