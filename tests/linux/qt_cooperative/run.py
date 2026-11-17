@@ -119,16 +119,27 @@ def wait_for_display(fixture, env, deadline, atom):
         raise RuntimeError(
             f"X11 readiness on {env.get('DISPLAY')} exited {probe.returncode}: {probe.stderr.strip()}"
         )
+    if probe.stderr.strip():
+        print(
+            f"qt-x11 display={env.get('DISPLAY')} before readiness: {probe.stderr.strip()}",
+            flush=True,
+        )
     print(probe.stdout.strip(), flush=True)
 
 
-def record_unmapped(out, mode, stage, display, error):
-    scenes = (mode, "unmodified_reentry", "ordered", "ordered_delayed", "language_options")
+def record_unmapped(out, remaining_modes, stage, display, error):
+    scenes = (
+        *remaining_modes,
+        "unmodified_reentry",
+        "ordered",
+        "ordered_delayed",
+        "language_options",
+    )
     (out / "result.json").write_text(
         json.dumps(
             {
                 "passed": False,
-                "stage": f"{mode}-{stage}",
+                "stage": f"{remaining_modes[0]}-{stage}",
                 "display": display,
                 "error": str(error),
                 "subsequentScenes": dict.fromkeys(scenes, "not-run"),
@@ -136,6 +147,16 @@ def record_unmapped(out, mode, stage, display, error):
             indent=2,
         )
         + "\n"
+    )
+
+
+def log_fixture_exit(client, log_path):
+    # Observe the real child before the session's cleanup can terminate it.
+    code = client.poll()
+    print(
+        f"qt-x11 fixture pid={client.pid} exit={code if code is not None else 'running'} "
+        f"before_cleanup=true log={log_path}",
+        flush=True,
     )
 
 
@@ -4238,6 +4259,8 @@ def observe_font_order(out, env):
     expected = {}
     path = out / "font-order-result.json"
     try:
+        for region in ("SC", "JP"):
+            (out / f"font-order-{region}.json").unlink(missing_ok=True)
         verify_bundle(font_root)
         expected = {
             region: font_table_hashes(font_root / f"noto-serif/NotoSerif{region}-Regular.otf")
@@ -4389,7 +4412,8 @@ def session(
                     if forced_sync_diagnostic
                     else {"status": "not-run", "supported": False}
                 )
-                for mode in ("async", "sync") if forced_sync_diagnostic else ("async",):
+                modes = ("async", "sync") if forced_sync_diagnostic else ("async",)
+                for index, mode in enumerate(modes):
                     state_file = out / f"{mode}-state.json"
 
                     def state():
@@ -4412,9 +4436,10 @@ def session(
                     try:
                         wait_for_display(out / "fixture", env, deadline, atom)
                     except (RuntimeError, OSError) as error:
-                        record_unmapped(out, mode, "display", display, error)
+                        record_unmapped(out, modes[index:], "display", display, error)
                         raise
-                    with (out / f"{mode}-client.log").open("w") as clientlog:
+                    client_log = out / f"{mode}-client.log"
+                    with client_log.open("w") as clientlog, ExitStack() as observations:
                         client = subprocess.Popen(
                             [str(out / "fixture"), "--require-display", atom],
                             stdin=subprocess.PIPE,
@@ -4429,6 +4454,7 @@ def session(
                             stderr=subprocess.STDOUT,
                         )
                         children.append(client)
+                        observations.callback(log_fixture_exit, client, client_log)
 
                         first_query = True
 
@@ -4458,17 +4484,19 @@ def session(
                             OSError,
                             subprocess.SubprocessError,
                         ) as error:
-                            tail = (out / f"{mode}-client.log").read_text(errors="replace")[-4096:]
+                            tail = client_log.read_text(errors="replace")[-4096:]
+                            code = client.poll()
                             message = (
                                 f"{mode} window mapping on {display}: {error}; "
-                                f"child_status={client.poll()}\n{tail}"
+                                f"child_status={code}\n{tail}"
                             )
                             stage = (
                                 "fixture-exit"
                                 if isinstance(error, ChildProcessError)
+                                or (isinstance(error, AssertionError) and code is not None)
                                 else "window-search"
                             )
-                            record_unmapped(out, mode, stage, display, message)
+                            record_unmapped(out, modes[index:], stage, display, message)
                             raise RuntimeError(message) from error
                         print(
                             f"qt-x11 mapped display={display} pid={client.pid} window={window}",

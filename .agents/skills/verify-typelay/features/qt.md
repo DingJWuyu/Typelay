@@ -48,7 +48,7 @@ TMPDIR=/tmp /usr/bin/python3 tests/linux/qt_cooperative/run.py \
 
 async fixture 在首次窗口查询发出时可能仍在进行 X11 握手。私有 Xvfb 使用 `-noreset`，首个查询退出后仍保留同一代显示服务。就绪客户端在原 15 秒映射期限内完成实际 XCB 握手并创建本次特有的 atom，Qt fixture 用自己的连接核对该 atom 后才建窗。两步共用原期限。
 
-发生映射故障时，从 `font-order-SC.json` 和 `font-order-JP.json` 读取较早客户端的 PID，再按日志的 `qt-x11` 阶段、显示号和 PID 对照 `x11-server.log` 的连接、断开及拒绝记录。服务端审计记录认证协议和连接身份，排查时不读取认证 cookie。`result.json` 记录失败阶段、错误和后续场景的 `not-run`。`async-client.log` 保留 Qt 自身诊断。
+发生映射故障时，从 `font-order-SC.json` 和 `font-order-JP.json` 读取较早客户端的 PID，再按日志的 `qt-x11` 阶段、显示号和 PID 对照 `x11-server.log` 的连接、断开及拒绝记录。服务端审计记录认证协议和连接身份，排查时不读取认证 cookie。就绪前的握手错误与恢复结果都保留在命令日志中。每个实际 fixture 在清理前报告 PID、当时的退出码或仍在运行的状态，以及对应日志路径。`result.json` 记录失败阶段、错误和后续场景的 `not-run`。`async-client.log` 保留 Qt 自身诊断。
 
 完整 probe 也覆盖单行与多行字段的术语表取消、回源及来源失效。核对源版本、选区或文档变化后零写入。该入口使用受控 Host，不证明正式词条持久化或真实模型的术语质量。
 
