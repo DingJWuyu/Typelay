@@ -55,7 +55,7 @@ pwsh -File ./dev.ps1 shared-check
 
 该入口执行 Core、Runtime、Protocol、Windows.Contracts 的 .NET 回归，以及共享 Python 套件。`test_ci_artifacts.py` 在其中读取真实 `check.yml`，为各上传步骤和矩阵分组创建本地合成证据，核对必需文件、载荷排除、生产归属和安装包开关。该回归不启动桌面或模型，也不传输工件。
 
-`test_linux_ci_coverage.py` 核对默认发现范围内的 Linux 测试模块。新增模块须在 `check.yml` 中有直接执行命令。仅供独立私有会话运行的模块，在该回归的 `PRIVATE_SESSION_ONLY` 中注明原因；当前没有例外。检查只读取文件路径和工作流，不导入 Linux 测试。`Linux / contracts` 执行 discovery 入口的无显示回归，完整私有桌面验收仍使用独立入口。
+`test_linux_ci_coverage.py` 核对默认发现范围内的 Linux 测试模块。新增模块须在 `check.yml` 中通过标准 `unittest discover` 按文件执行，确保没有 `unittest.main()` 的模块也会运行。检查只认现有的成功路径条件和顺序执行命令，禁用步骤及无法解释的条件不能计为覆盖。仅供独立私有会话运行的模块，在该回归的 `PRIVATE_SESSION_ONLY` 中注明原因；当前没有例外。检查只读取文件路径和工作流，不导入 Linux 测试。`Linux / contracts` 执行 discovery 入口的无显示回归，完整私有桌面验收仍使用独立入口。
 
 一个套件失败后，其余套件继续执行；入口在全部套件结束后返回失败。它使用 locked restore，不需要 Windows SDK、桌面或翻译模型。Windows.Contracts 虽可跨平台执行，仍属于 Windows 的契约。
 
