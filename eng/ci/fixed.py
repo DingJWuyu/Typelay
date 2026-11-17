@@ -5,14 +5,22 @@ import hashlib
 import json
 import math
 import os
+import re
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+
+DOWNLOAD_SECONDS = 600
+DOWNLOAD_ATTEMPTS = 3
+# libcurl connection, HTTP/2, partial-file, timeout, empty-reply and socket errors.
+TRANSIENT_CURL_ERRORS = {6, 7, 16, 18, 28, 52, 55, 56, 92}
 
 
 def key(kind):
@@ -47,30 +55,104 @@ def release_asset(release, archive, *, published=True):
     if published and release.get("draft", False):
         raise RuntimeError("Fixed build has not been published")
     assets = [a for a in release["assets"] if a["name"] == archive.name]
-    if len(assets) != 1 or not assets[0].get("digest", "").startswith("sha256:"):
+    if len(assets) != 1 or not re.fullmatch(r"sha256:[0-9a-f]{64}", assets[0].get("digest") or ""):
         raise RuntimeError("Fixed build is missing its complete, checksummed asset")
     return assets[0]
 
 
-def download_verified(repo, tag, archive, asset):
-    subprocess.run(
-        [
-            "gh",
-            "release",
-            "download",
-            tag,
-            "--repo",
-            repo,
-            "--pattern",
-            archive.name,
-            "--dir",
-            str(archive.parent),
-            "--clobber",
-        ],
-        check=True,
+def log_event(stage, event, tag, **fields):
+    print(
+        json.dumps(
+            dict(time=datetime.now(UTC).isoformat(), stage=stage, event=event, tag=tag, **fields)
+        ),
+        file=sys.stderr,
+        flush=True,
     )
-    if archive_digest(archive) != asset["digest"]:
-        raise ValueError("Release asset digest mismatch")
+
+
+def download_verified(repo, tag, archive, asset):
+    # Fetch these exact bytes by asset ID. Looking the tag up a second time can
+    # fail independently of the transfer whose digest we already hold.
+    asset_id = int(asset["id"])
+    api = os.environ.get("GITHUB_API_URL", "https://api.github.com")
+    url = f"{api}/repos/{repo}/releases/assets/{asset_id}"
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not token:
+        token = subprocess.check_output(["gh", "auth", "token"], text=True).strip()
+    deadline = time.monotonic() + DOWNLOAD_SECONDS
+    archive.unlink(missing_ok=True)
+    with tempfile.TemporaryDirectory(dir=archive.parent) as directory:
+        partial = Path(directory) / archive.name
+        for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            partial.unlink(missing_ok=True)
+            fields = dict(asset_id=asset_id, asset=archive.name, attempt=attempt)
+            log_event("download", "start", tag, **fields)
+            result = subprocess.run(
+                [
+                    "curl",
+                    "--disable",
+                    "--silent",
+                    "--show-error",
+                    "--fail",
+                    "--location",
+                    "--proto",
+                    "=http,https",
+                    "--proto-redir",
+                    "=https",
+                    "--max-time",
+                    f"{max(0.001, remaining):.3f}",
+                    "--header",
+                    "@-",
+                    "--output",
+                    str(partial),
+                    "--write-out",
+                    "%{response_code} %{http_connect}",
+                    url,
+                ],
+                env=os.environ | {"LC_ALL": "C"},
+                input=f"Authorization: Bearer {token}\nAccept: application/octet-stream\n",
+                capture_output=True,
+                text=True,
+                errors="replace",
+            )
+            status, proxy_status = (
+                int(value) or None for value in (result.stdout or "0 0").split()
+            )
+            received = partial.stat().st_size if partial.exists() else 0
+            fields.update(http_status=status, proxy_status=proxy_status, received_bytes=received)
+            if not result.returncode and status == 200:
+                log_event("download", "complete", tag, **fields)
+                if archive_digest(partial) != asset["digest"]:
+                    log_event("digest", "failed", tag, **fields)
+                    raise ValueError("Release asset digest mismatch")
+                partial.replace(archive)
+                return
+            # libcurl diagnostics may include a signed redirect URL. Keep the
+            # error text and code, never the URL or the authorization header.
+            error = re.sub(r"https?://[^\s]+", "<url>", result.stderr.strip(), flags=re.I)
+            error = error.replace(token, "<redacted>")
+            log_event("download", "failed", tag, **fields, curl_code=result.returncode, error=error)
+            if proxy_status is not None and not 200 <= proxy_status < 300:
+                transient = 500 <= proxy_status < 600
+            elif status is not None and 400 <= status < 600:
+                transient = status >= 500
+            else:
+                transient = result.returncode in TRANSIENT_CURL_ERRORS or (
+                    result.returncode == 35
+                    and result.stderr.rstrip().endswith("Recv failure: Connection reset by peer")
+                )
+            delay = 2 ** (attempt - 1)
+            if (
+                not transient
+                or attempt == DOWNLOAD_ATTEMPTS
+                or time.monotonic() + delay >= deadline
+            ):
+                break
+            time.sleep(delay)
+    raise RuntimeError(f"Failed to download verified {archive.name} for {tag}")
 
 
 def archive_digest(archive):
@@ -107,6 +189,7 @@ def main():
     if args.action in ("lookup", "restore"):
         deadline = time.monotonic() + args.wait_seconds if args.wait_for_job else None
         producer_ended = None
+        logged_wait = False
 
         def remaining():
             if deadline is None:
@@ -137,6 +220,9 @@ def main():
             )
             if not (unavailable and args.wait_for_job):
                 break
+            if not logged_wait:
+                log_event("release", "waiting", tag, asset=archive.name)
+                logged_wait = True
             if producer_ended is not None:
                 raise RuntimeError(
                     f"Fixed producer ended ({producer_ended}) without publishing {tag}"
@@ -166,12 +252,26 @@ def main():
                 time.sleep(min(5, remaining()))
         if result.returncode:
             if "HTTP 404" not in result.stderr:
+                log_event("release", "failed", tag, asset=archive.name)
                 raise RuntimeError(result.stderr)
+            log_event("release", "missing", tag, asset=archive.name)
             with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
                 stream.write("hit=false\n")
             return
         release = json.loads(result.stdout)
-        asset = release_asset(release, archive)
+        try:
+            asset = release_asset(release, archive)
+        except RuntimeError:
+            log_event("release", "failed", tag, asset=archive.name)
+            raise
+        log_event(
+            "release",
+            "ready",
+            tag,
+            asset=archive.name,
+            asset_id=asset["id"],
+            published_at=release.get("published_at"),
+        )
         if args.action == "lookup":
             with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
                 stream.write("hit=true\n")
@@ -197,6 +297,7 @@ def main():
             print(f"Reused verified fixed build {tag} from release {winner['id']}")
             return
         if "HTTP 404" not in existing.stderr:
+            log_event("release", "failed", tag, asset=archive.name)
             raise RuntimeError(existing.stderr)
         directories = {
             "fonts": ["artifacts/ui-fonts"],
@@ -256,13 +357,13 @@ def main():
                     ["gh", "api", f"repos/{repo}/releases/{draft['id']}"], text=True
                 )
             )
-            if release_asset(uploaded, archive, published=False)["digest"] != archive_digest(
-                archive
-            ):
+            asset = release_asset(uploaded, archive, published=False)
+            if asset["digest"] != archive_digest(archive):
                 raise ValueError("Release asset digest mismatch")
             # A lost response does not prove publication failed. Do not delete a
             # potentially public release when this request is interrupted.
             delete_draft = False
+            log_event("publish", "start", tag, asset=archive.name, asset_id=asset["id"])
             result = subprocess.run(
                 [
                     "gh",
@@ -284,7 +385,16 @@ def main():
                 status in result.stderr for status in ("HTTP 422", "HTTP 403")
             )
             if not result.returncode:
+                log_event(
+                    "publish",
+                    "complete",
+                    tag,
+                    asset=archive.name,
+                    asset_id=asset["id"],
+                    published_at=json.loads(result.stdout).get("published_at"),
+                )
                 return
+            log_event("publish", "failed", tag, asset=archive.name, asset_id=asset["id"])
             if "HTTP 422" in result.stderr and any(
                 error.get("resource") == "Release"
                 and error.get("code") == "already_exists"

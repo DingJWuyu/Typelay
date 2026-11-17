@@ -5,19 +5,30 @@ import io
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import unittest
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing, contextmanager, redirect_stderr
+from datetime import datetime
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from unittest.mock import patch
+
+from eng.ci import fixed
 
 ROOT = Path(__file__).resolve().parents[2]
-SHIM = """import json,os,shutil,sys,time
+SHIM = """import json,os,sys,time
 from pathlib import Path
-if sys.argv[1] == "api":
+if sys.argv[1:] == ["auth", "token"] and not (os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN")):
+    print("fixture-consumer")
+elif sys.argv[1] == "api":
     mode = os.environ["FIXED_CASE"]
     stage = 'jobs' if sys.argv[2].endswith('/jobs?per_page=100') else 'release'
     if mode.startswith(stage + '-'):
@@ -48,13 +59,120 @@ if sys.argv[1] == "api":
         sys.exit(1)
     print(Path(os.environ["FIXED_METADATA"]).read_text())
 else:
-    shutil.copyfile(os.environ["FIXED_ARCHIVE"], Path(sys.argv[sys.argv.index("--dir") + 1]) / os.environ["FIXED_NAME"])
+    raise AssertionError(sys.argv)
 """
+
+
+@contextmanager
+def asset_api(read_asset, responses=None, proxy_status=None):
+    """Serve actual HTTP bodies, including failures after the response headers."""
+    calls = Counter()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_CONNECT(self):
+            calls["CONNECT"] += 1
+            self.send_error(proxy_status or 405)
+
+        def do_GET(self):
+            token = self.headers.get("Authorization", "").removeprefix("Bearer ")
+            if (
+                not token.startswith("fixture-")
+                or self.headers.get("Accept") != "application/octet-stream"
+            ):
+                self.send_error(403)
+                return
+            prefix = "/repos/test/repo/releases/assets/"
+            if not self.path.startswith(prefix):
+                self.send_error(404)
+                return
+            data = read_asset(int(self.path.removeprefix(prefix)))
+            outcomes = (responses or {}).get(token, ())
+            calls[token] += 1
+            outcome = outcomes[calls[token] - 1] if calls[token] <= len(outcomes) else 200
+            if outcome == "no-response":
+                return
+            if outcome == "stall":
+                # Release the handler when the client's bounded transfer closes.
+                self.connection.settimeout(5)
+                self.connection.recv(1)
+                return
+            if outcome == "redirect":
+                self.send_response(302)
+                self.send_header("Location", "file:///signed?secret=private-signature")
+                self.end_headers()
+                return
+            if outcome != 200 and outcome != "interrupt":
+                self.send_error(outcome)
+                return
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data[:20] if outcome == "interrupt" else data)
+
+        def log_message(self, *args):
+            pass
+
+    with HTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.02})
+        thread.start()
+        try:
+            yield f"http://127.0.0.1:{server.server_port}", calls
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+
+
+def events(result, stage, event):
+    records = [json.loads(line) for line in result.stderr.splitlines() if line.startswith("{")]
+    return [record for record in records if record["stage"] == stage and record["event"] == event]
+
+
+class CurlTransferTests(unittest.TestCase):
+    def test_only_recoverable_curl_failures_get_another_request(self):
+        cases = [
+            (92, "200 200", "HTTP/2 stream 1 reset by server (error 0x1 PROTOCOL_ERROR)", 3),
+            (16, "000 000", "Error in the HTTP2 framing layer", 3),
+            (35, "000 000", "Recv failure: Connection reset by peer", 3),
+            (35, "000 000", "TLS alert handshake failure", 1),
+            (60, "000 000", "SSL certificate problem: self-signed certificate", 1),
+            (56, "000 403", "CONNECT tunnel failed, response 403", 1),
+            (56, "000 407", "CONNECT tunnel failed, response 407", 1),
+        ]
+        for code, statuses, error, attempts in cases:
+            with (
+                self.subTest(code=code, statuses=statuses, error=error),
+                tempfile.TemporaryDirectory() as directory,
+                patch.dict(os.environ, GH_TOKEN="fixture-token"),
+                patch.object(subprocess, "run") as curl,
+                patch.object(time, "sleep"),
+                patch.object(time, "monotonic", return_value=0),
+                redirect_stderr(io.StringIO()),
+            ):
+                curl.return_value = subprocess.CompletedProcess(
+                    [], code, statuses, f"curl: ({code}) {error}"
+                )
+                archive = Path(directory) / "index.tar"
+                with self.assertRaises(RuntimeError):
+                    fixed.download_verified("test/repo", "ci-test", archive, {"id": 78})
+                self.assertEqual(curl.call_count, attempts)
+                # A model transfer can use the full warm-run budget.
+                args = curl.call_args_list[0].args[0]
+                self.assertEqual(float(args[args.index("--max-time") + 1]), 600)
 
 
 class FixedBuildTransportTests(unittest.TestCase):
     def run_transport(
-        self, mode, action="restore", wait=False, kind="fonts", extra_args=(), cold_build=False
+        self,
+        mode,
+        action="restore",
+        wait=False,
+        kind="fonts",
+        extra_args=(),
+        cold_build=False,
+        responses=(),
+        download_seconds=None,
+        proxy_status=None,
+        token_source="GH_TOKEN",
     ):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -82,6 +200,7 @@ class FixedBuildTransportTests(unittest.TestCase):
                     {
                         "assets": [
                             {
+                                "id": 78,
                                 "name": name,
                                 "digest": "sha256:" + ("0" * 64 if mode == "corrupt" else digest),
                             }
@@ -89,6 +208,13 @@ class FixedBuildTransportTests(unittest.TestCase):
                     }
                 )
             )
+            if mode in ("missing-asset", "missing-digest", "malformed-digest"):
+                release = json.loads(metadata.read_text())
+                if mode == "missing-asset":
+                    release["assets"].clear()
+                else:
+                    release["assets"][0]["digest"] = None if mode == "missing-digest" else "sha256:"
+                metadata.write_text(json.dumps(release))
             port = root / "gh-port.py"
             port.write_text(SHIM)
             shim = root / ("gh.cmd" if sys.platform == "win32" else "gh")
@@ -115,6 +241,48 @@ class FixedBuildTransportTests(unittest.TestCase):
                     "patch('time.sleep', finish_cold_build):\n"
                     "    runpy.run_path(sys.argv[0], run_name='__main__')\n",
                 ]
+            if download_seconds is not None:
+                command += [
+                    "-c",
+                    "from pathlib import Path\n"
+                    "import sys\n"
+                    "sys.argv = sys.argv[1:]\n"
+                    "sys.path.insert(0, str(Path(sys.argv[0]).parent))\n"
+                    "import fixed\n"
+                    f"fixed.DOWNLOAD_SECONDS = {download_seconds}\n"
+                    "fixed.main()\n",
+                ]
+
+            def read_asset(asset_id):
+                self.assertEqual(asset_id, 78)
+                return archive.read_bytes()
+
+            api, calls = self.enterContext(
+                asset_api(read_asset, {"fixture-consumer": responses}, proxy_status)
+            )
+            env = os.environ | {
+                "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                "GITHUB_REPOSITORY": "test/repo",
+                "GITHUB_RUN_ID": "123",
+                "GITHUB_OUTPUT": str(output),
+                "FIXED_CASE": mode,
+                "FIXED_METADATA": str(metadata),
+                "GITHUB_API_URL": api,
+                "no_proxy": "127.0.0.1",
+                "NO_PROXY": "127.0.0.1",
+            }
+            for key in ("GH_TOKEN", "GITHUB_TOKEN"):
+                env.pop(key, None)
+            if token_source:
+                env[token_source] = "fixture-consumer"
+            if proxy_status:
+                env.update(
+                    GITHUB_API_URL=api.replace("http:", "https:"),
+                    https_proxy=api,
+                    HTTPS_PROXY=api,
+                    NO_PROXY="",
+                    no_proxy="",
+                )
             result = subprocess.run(
                 command
                 + [str(script), action, kind, "--tag", "ci-test"]
@@ -123,17 +291,7 @@ class FixedBuildTransportTests(unittest.TestCase):
                 cwd=root,
                 capture_output=True,
                 text=True,
-                env=os.environ
-                | {
-                    "PATH": str(root) + os.pathsep + os.environ["PATH"],
-                    "GITHUB_REPOSITORY": "test/repo",
-                    "GITHUB_RUN_ID": "123",
-                    "GITHUB_OUTPUT": str(output),
-                    "FIXED_CASE": mode,
-                    "FIXED_METADATA": str(metadata),
-                    "FIXED_ARCHIVE": str(archive),
-                    "FIXED_NAME": name,
-                },
+                env=env,
                 timeout=20 if wait else 10,
             )
             self.assertEqual(
@@ -150,6 +308,10 @@ class FixedBuildTransportTests(unittest.TestCase):
                     "jobs-failed",
                     "release-stalled",
                     "jobs-stalled",
+                    "download-failed",
+                    "missing-asset",
+                    "missing-digest",
+                    "malformed-digest",
                 ),
                 result.stderr,
             )
@@ -180,8 +342,66 @@ class FixedBuildTransportTests(unittest.TestCase):
                     self.assertIn("HTTP 503: " + stage + " query failed", result.stderr)
             if mode == "producer-absent":
                 self.assertIn("Fixed producer job not found", result.stderr)
-            if action == "lookup":
-                self.assertFalse((root / "artifacts/fonts.tar.gz").exists())
+            self.assertFalse((root / "artifacts" / name).exists())
+            if action == "lookup" or mode in ("missing", "denied"):
+                self.assertEqual(calls.total(), 0)
+            if mode == "corrupt":
+                self.assertEqual(calls.total(), 1)
+                self.assertEqual(len(events(result, "digest", "failed")), 1)
+            self.assertNotIn("fixture-consumer", result.stderr)
+            self.assertNotIn("private-signature", result.stderr)
+            return result, calls.total()
+
+    def test_published_release_requires_its_named_asset_and_complete_digest(self):
+        for mode in ("missing-asset", "missing-digest", "malformed-digest"):
+            with self.subTest(mode=mode):
+                result, count = self.run_transport(mode)
+                self.assertEqual(count, 0)
+                self.assertEqual(len(events(result, "release", "failed")), 1)
+
+    def test_persistent_interruptions_report_received_bytes_and_leave_no_archive(self):
+        result, count = self.run_transport("download-failed", responses=["interrupt"] * 4)
+        self.assertEqual(count, 3)
+        failures = events(result, "download", "failed")
+        self.assertEqual([event["attempt"] for event in failures], [1, 2, 3])
+        for event in failures:
+            self.assertEqual((event["http_status"], event["received_bytes"]), (200, 20))
+            self.assertTrue(event["error"])
+
+    def test_transient_server_error_and_absent_response_recover(self):
+        result, count = self.run_transport("valid", responses=[503, "no-response"])
+        self.assertEqual(count, 3)
+        failures = events(result, "download", "failed")
+        self.assertEqual([event["http_status"] for event in failures], [503, None])
+        self.assertEqual([event["received_bytes"] for event in failures], [0, 0])
+        self.assertTrue(all(event["error"] for event in failures))
+
+    def test_terminal_http_or_redirect_failure_stops_before_extraction(self):
+        for outcome in (403, 404, "redirect"):
+            with self.subTest(outcome=outcome):
+                result, count = self.run_transport("download-failed", responses=[outcome])
+                self.assertEqual(count, 1)
+                (failure,) = events(result, "download", "failed")
+                self.assertEqual(failure["http_status"], 302 if outcome == "redirect" else outcome)
+
+    def test_connect_proxy_denial_stops_before_origin_transfer(self):
+        for status in (403, 407):
+            with self.subTest(status=status):
+                result, count = self.run_transport("download-failed", proxy_status=status)
+                self.assertEqual(count, 1)
+                (failed,) = events(result, "download", "failed")
+                self.assertIsNone(failed["http_status"])
+                self.assertEqual(failed["proxy_status"], status)
+                self.assertEqual(failed["received_bytes"], 0)
+
+    def test_stalled_transfer_stops_at_the_total_deadline(self):
+        result, count = self.run_transport(
+            "download-failed", responses=["stall"], download_seconds=0.25
+        )
+        self.assertEqual(count, 1)
+        (failure,) = events(result, "download", "failed")
+        self.assertIsNone(failure["http_status"])
+        self.assertEqual(failure["curl_code"], 28)
 
     def test_only_404_is_a_cache_miss(self):
         for mode in ("missing", "denied"):
@@ -223,8 +443,10 @@ class FixedBuildTransportTests(unittest.TestCase):
     def test_changed_archive_fails_before_extracting(self):
         self.run_transport("corrupt")
 
-    def test_verified_archive_is_extracted(self):
-        self.run_transport("valid")
+    def test_verified_archive_is_extracted_without_gh_token(self):
+        for source in ("GITHUB_TOKEN", None):
+            with self.subTest(source=source):
+                self.run_transport("valid", token_source=source)
 
     def test_lookup_does_not_download_existing_builds(self):
         self.run_transport("valid", "lookup")
@@ -249,28 +471,46 @@ class FixedBuildPublicationTests(unittest.TestCase):
             else f"#!{sys.executable}\n" + port.read_text()
         )
         shim.chmod(0o700)
+        self.responses = {}
+        database = self.root / "releases.sqlite"
+
+        def read_asset(asset_id):
+            with closing(sqlite3.connect(database)) as connection:
+                return connection.execute(
+                    "SELECT data FROM releases WHERE id=? AND draft=0", (asset_id,)
+                ).fetchone()[0]
+
+        api, self.calls = self.enterContext(asset_api(read_asset, self.responses))
         self.env = os.environ | {
+            "GITHUB_API_URL": api,
+            "GITHUB_RUN_ID": "123",
+            "NO_PROXY": "127.0.0.1",
+            "no_proxy": "127.0.0.1",
             "PATH": str(self.root) + os.pathsep + os.environ["PATH"],
             "GITHUB_REPOSITORY": "test/repo",
             "GITHUB_SHA": "current-commit",
-            "FIXED_DATABASE": str(self.root / "releases.sqlite"),
+            "FIXED_DATABASE": str(database),
         }
 
-    def command(self, caller, action, extra_env=None, *, prepare=True):
+    def command(self, caller, action, extra_env=None, *, prepare=True, kind="fonts", wait=False):
         root = self.root / caller
         script = root / "eng/ci/fixed.py"
         if not script.exists():
             script.parent.mkdir(parents=True)
             shutil.copyfile(ROOT / "eng/ci/fixed.py", script)
-        payload = root / "artifacts/ui-fonts/test.bin"
+        folder = "linux/fcitx-cooperative-5.1.22" if kind == "fcitx" else "ui-fonts"
+        payload = root / "artifacts" / folder / "test.bin"
         if action == "publish" and prepare:
             payload.parent.mkdir(parents=True, exist_ok=True)
             payload.write_text(caller)
         return subprocess.run(
-            [sys.executable, str(script), action, "fonts", "--tag", "ci-test"],
+            [sys.executable, str(script), action, kind, "--tag", "ci-test"]
+            + (["--wait-for-job", "fcitx-build"] if wait else []),
             capture_output=True,
             text=True,
-            env=self.env | {"GITHUB_OUTPUT": str(root / "output")} | (extra_env or {}),
+            env=self.env
+            | {"GITHUB_OUTPUT": str(root / "output"), "GH_TOKEN": "fixture-" + caller}
+            | (extra_env or {}),
             timeout=20,
         )
 
@@ -280,6 +520,61 @@ class FixedBuildPublicationTests(unittest.TestCase):
                 ["gh", "api", "repos/test/repo/releases"], env=self.env, text=True, timeout=10
             )
         )
+
+    def test_cold_fcitx_consumers_recover_after_the_same_asset_is_published(self):
+        names = ["native", "native-gtk", "native-gtk4"]
+        with ThreadPoolExecutor(max_workers=len(names)) as pool:
+            consumers = []
+            for i, name in enumerate(names):
+                self.responses["fixture-" + name] = ["interrupt"] * i
+                consumers.append(
+                    pool.submit(self.command, name, "restore", kind="fcitx", wait=True)
+                )
+            deadline = time.monotonic() + 8
+            while not all((self.root / name / "waiting").exists() for name in names):
+                self.assertLess(
+                    time.monotonic(), deadline, "Consumers did not all observe a missing tag"
+                )
+                time.sleep(0.02)
+            producer = self.command("producer", "publish", kind="fcitx")
+            self.assertEqual(producer.returncode, 0, producer.stderr)
+            (published,) = events(producer, "publish", "complete")
+            (publishing,) = events(producer, "publish", "start")
+            self.assertEqual(published["asset_id"], publishing["asset_id"])
+            for i, (name, future) in enumerate(zip(names, consumers)):
+                result = future.result(timeout=20)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                root = self.root / name
+                self.assertEqual((root / "output").read_text(), "hit=true\n")
+                self.assertEqual(
+                    (root / "artifacts/linux/fcitx-cooperative-5.1.22/test.bin").read_text(),
+                    "producer",
+                )
+                self.assertEqual(len(events(result, "release", "waiting")), 1)
+                (ready,) = events(result, "release", "ready")
+                self.assertEqual(ready["published_at"], published["published_at"])
+                (complete,) = events(result, "download", "complete")
+                starts = events(result, "download", "start")
+                failures = events(result, "download", "failed")
+                self.assertEqual([e["attempt"] for e in starts], list(range(1, i + 2)))
+                self.assertEqual(len(failures), i)
+                self.assertEqual(self.calls["fixture-" + name], i + 1)
+                for start, end in zip(starts, [*failures, complete], strict=True):
+                    for event in (start, end):
+                        self.assertEqual(
+                            (event["tag"], event["asset_id"]), ("ci-test", published["asset_id"])
+                        )
+                    self.assertLessEqual(
+                        datetime.fromisoformat(start["time"]), datetime.fromisoformat(end["time"])
+                    )
+                for expected_seconds, failed, next_start in zip(
+                    (1, 2)[:i], failures, starts[1:], strict=True
+                ):
+                    delay = datetime.fromisoformat(next_start["time"]) - datetime.fromisoformat(
+                        failed["time"]
+                    )
+                    self.assertGreaterEqual(delay.total_seconds(), expected_seconds - 0.1)
+                self.assertNotIn("fixture-" + name, result.stderr)
 
     def test_existing_winner_is_reused_without_repacking_uploading_or_overwriting_it(self):
         first = self.command("winner", "publish")
