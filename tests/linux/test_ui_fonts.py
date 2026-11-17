@@ -12,6 +12,12 @@ import sys
 import unittest
 from pathlib import Path
 
+import gi
+
+# Pango/fontconfig need no display. PyGObject's legacy GTK import otherwise
+# connects to the caller's desktop before any test has started.
+gi.disable_legacy_autoinit()
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 

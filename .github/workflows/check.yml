@@ -780,7 +780,9 @@ jobs:
     - name: Verify Linux test_ui_fonts
       id: test-ui-fonts
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: TYPELAY_UI_FONT_ROOT="$PWD/artifacts/ui-fonts" python tests/linux/test_ui_fonts.py -v
+      run: |
+        TYPELAY_UI_FONT_ROOT="$PWD/artifacts/ui-fonts" python tests/linux/test_ui_fonts.py -v
+        python tests/linux/test_display_isolation.py -v
     - name: Verify Linux test_build_bundle
       id: test-build-bundle
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
@@ -918,7 +920,7 @@ jobs:
     - name: Verify GTK settings feedback
       id: settings-feedback
       if: ${{ matrix.group == 'contracts' && !cancelled() && steps.display.outcome == 'success' }}
-      run: DISPLAY=:99 GDK_BACKEND=x11 dbus-run-session -- python tests/linux/test_settings_feedback.py -v
+      run: TYPELAY_TEST_CI_DISPLAY=1 DISPLAY=:99 GDK_BACKEND=x11 dbus-run-session -- python tests/linux/test_settings_feedback.py -v
     - name: Verify GTK unknown-IME refusal
       id: gtk-refusal
       if: ${{ matrix.group == 'contracts' && !cancelled() && steps.build.outcome == 'success' && steps.display.outcome ==
