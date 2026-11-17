@@ -141,6 +141,34 @@ pwsh -File ./dev.ps1 shared-check
 
 共享 Runtime 回归使用生产编排和受控系统端口，不证明原生 GTK/Qt、输入法或实际模型可用。只有文档改动时，不为此启动桌面或安装模型。
 
+### 运行 Linux 单元套件
+
+完成字体准备后，使用系统 Python 发现单元测试：
+
+```sh
+/usr/bin/python3 -m unittest discover -s tests/linux -v
+```
+
+普通桌面中的这条命令不启动 GTK 窗口。`test_settings_feedback.py` 的 `GtkFeedbackTests` 会报告 `skipped`，并注明需要 verify-typelay 私有会话；同文件的两个浮层协议测试继续执行。`skipped` 表示未运行，不能算作 GUI 验收通过。字体测试关闭 PyGObject 的导入自动初始化，继续验证真实 Pango 字体和字节，不连接调用者的显示服务。
+
+需要执行 GTK 用例时，将同一命令交给 [verify-typelay 私有会话](../../../.agents/skills/verify-typelay/SKILL.md#launch)。只运行反馈用例可添加 `-p test_settings_feedback.py`。测试在导入 GTK 前核对本次 `session.json`、桌面环境和私有 socket；已有 `DISPLAY` 或 `WAYLAND_DISPLAY` 不代表隔离完成。身份不符或显示不可用时，测试失败。CI 在自己的临时 Xvfb 上保留全部反馈用例，并显式设置 `TYPELAY_TEST_CI_DISPLAY=1`；这个标记仅供 GitHub Actions 使用。
+
+`tests/linux` 的显示与输入入口分为以下几类。默认发现模式只匹配 `test*.py`，不会执行下表的显式桌面脚本。
+
+| 入口 | 显示与输入行为 |
+| --- | --- |
+| `test_settings_feedback.py` | 六个 GTK 用例创建设置、教程或托盘窗口，并请求焦点；私有会话外明确跳过。两个 `OverlayFeedbackTests` 使用受控 Host，不依赖显示。 |
+| `test_ui_fonts.py` | Pango/fontconfig 验证在外层继续执行。GTK 导入不初始化显示；私有套件已初始化 GTK 时，还检查真实 GTK 字体偏好。 |
+| `test_vscode_notifications.py` | 显式启动 headless Chromium，检查 DOM 通知，不创建桌面窗口。需要现有 Chromium 和 Playwright。 |
+| 其余 `test*.py` | 不启动真实桌面。AT-SPI、几何、截图和输入合同使用受控对象或命令；`GdkPixbuf` 处理图像，`XStringToKeysym` 只查符号表。显示隔离回归用自有 Unix socket 观察连接，不发送桌面输入。 |
+| `desktop_e2e.py`、`native_e2e.py`、`settings_ui.py`、`tray_e2e.py`、`practice_window.py`、`quit_ui.py` | 创建或观察原生窗口，部分路径请求焦点或合成输入。 |
+| `fcitx_probe.py`、`fcitx_cooperative/run.py`、`qt_cooperative/run.py` | 启动输入法或 GTK/Qt fixture，连接显示并驱动输入。`qt_cooperative/desktop_admission.py` 只做无显示的准入合同。 |
+| `browser_e2e.py`、`browser_native_e2e.py`、`firefox_native_e2e.py`、`editor_probe.py`、`vscode_e2e.py` | 启动浏览器或编辑器；有界面模式连接显示，脚本驱动应用输入。 |
+| `gtk_index_e2e.py`、`gtk_session_reentry.py`、`gtk_write_retirement.py`、`qt_desktop.py`、`ordinary_gimp.py`、`browser_index_journey.py`、`hy_package_e2e.py` | 由桌面旅程调用，观察真实窗口并通过 AT-SPI、XTest 或应用接口操作输入。 |
+| `support/gtk_accessibility.py`、`support/xtest.py` 与 GTK/Qt/Fcitx fixtures | 供上述桌面入口使用。真实调用会连接可访问性服务或显示，发送输入或创建窗口。 |
+
+显式桌面入口仍须通过私有会话运行。单元发现命令的保护不授权在用户桌面直接运行这些脚本。`test_display_isolation.py` 验证反馈与字体入口在导入和执行阶段均不接触调用者的显示，同时确认无显示用例继续执行。
+
 ### 从实际归档检查安装生命周期
 
 ```sh

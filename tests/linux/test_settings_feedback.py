@@ -5,6 +5,7 @@ widgets, not physical input, a desktop notification server, or real persistence.
 """
 
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -14,17 +15,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import gi
-
-gi.require_version("Gtk", "3.0")
-gi.require_version("Gdk", "3.0")
-from gi.repository import Gdk, GLib, Gtk  # noqa: E402
-
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 from overlay import Overlay  # noqa: E402
-from tray import Tray  # noqa: E402
-from ui import Settings  # noqa: E402
 
 NOTICE = "已保存，请重新打开设置确认当前状态。"
 LANGUAGES = {
@@ -104,6 +97,44 @@ class Host:
 class GtkFeedbackTests(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls):
+        # Check before importing GTK: PyGObject otherwise connects on import.
+        output = os.environ.get("TYPELAY_VERIFY_OUTPUT")
+        if output:
+            session = json.loads((Path(output) / "session.json").read_text())
+            for key in (
+                "XDG_RUNTIME_DIR",
+                "NIRI_SOCKET",
+                "WAYLAND_DISPLAY",
+                "DBUS_SESSION_BUS_ADDRESS",
+            ):
+                if not session.get(key) or session[key] != os.environ.get(key):
+                    raise RuntimeError(f"private desktop identity mismatch: {key}")
+            if os.environ.get("GDK_BACKEND") != "wayland" or "WAYLAND_SOCKET" in os.environ:
+                raise RuntimeError("private session requires its recorded Wayland connection")
+            runtime = Path(session["XDG_RUNTIME_DIR"])
+            niri = Path(session["NIRI_SOCKET"])
+            if not niri.is_relative_to(runtime) or not niri.is_socket():
+                raise RuntimeError("private niri socket missing or outside runtime")
+            if not (runtime / session["WAYLAND_DISPLAY"]).is_socket():
+                raise RuntimeError("private Wayland socket missing")
+        elif os.environ.get("GITHUB_ACTIONS") == "true":
+            if os.environ.get("TYPELAY_TEST_CI_DISPLAY") != "1":
+                raise RuntimeError("CI must explicitly provide its disposable test display")
+        else:
+            raise unittest.SkipTest(
+                "GTK feedback not run: requires verify-typelay private session; "
+                "ordinary display variables do not authorize windows"
+            )
+
+        global Gdk, GLib, Gtk, Tray, Settings
+        import gi
+
+        gi.require_version("Gtk", "3.0")
+        gi.require_version("Gdk", "3.0")
+        from gi.repository import Gdk, GLib, Gtk
+        from tray import Tray
+        from ui import Settings
+
         private = tempfile.TemporaryDirectory(prefix="typelay-settings-feedback-")
         cls.addClassCleanup(private.cleanup)
         root = Path(private.name)
