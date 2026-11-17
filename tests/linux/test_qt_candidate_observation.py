@@ -2,6 +2,7 @@
 
 import copy
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -12,6 +13,7 @@ from unittest.mock import Mock, call, patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 from desktop_e2e import background_direct_settlement  # noqa: E402
+from qt_cooperative import run as qt_probe  # noqa: E402
 from qt_cooperative.run import prepare_source_glossary_capture_basis  # noqa: E402
 from qt_desktop import (  # noqa: E402
     configured_acceptance_settlement,
@@ -19,6 +21,184 @@ from qt_desktop import (  # noqa: E402
     observe_qt_processes,
     settled_overlay_motion,
 )
+
+
+class QtWindowSearchTests(unittest.TestCase):
+    """Real command exits at the runner boundary, without an X server or Qt."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="typelay-qt-search-")
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+        self.environment = os.environ | {
+            "PATH": str(self.directory) + os.pathsep + os.environ["PATH"],
+        }
+        self.calls = self.directory / "search-calls.jsonl"
+        self.responses = self.directory / "search-responses.json"
+        self.executable(
+            "xdotool",
+            "import json, sys\nfrom pathlib import Path\n"
+            f"calls = Path({str(self.calls)!r})\n"
+            "previous = calls.read_text().splitlines() if calls.exists() else []\n"
+            "with calls.open('a') as stream:\n"
+            "    stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "if sys.argv[1] == 'windowfocus':\n"
+            "    sys.exit(73)  # Stop at the next external command, before any input.\n"
+            f"responses = json.loads(Path({str(self.responses)!r}).read_text())\n"
+            "code, output, error = responses[min(len(previous), len(responses) - 1)]\n"
+            "sys.stdout.write(output)\nsys.stderr.write(error)\nsys.exit(code)\n",
+        )
+        self.executable("dbus-monitor", "print('header', flush=True)\n")
+        self.executable("fixture", "import sys\nsys.stdin.read()\n")
+        self.executable("fcitx5", "import signal\nsignal.pause()\n")
+        self.executable("qpa_ack", "pass\n")
+        self.executable("font-order", "pass\n")
+        self.executable(
+            "native/qt-native-fixture",
+            "import hashlib, json, os, socket, struct, sys\nfrom pathlib import Path\n"
+            "identity = os.environ.get('WAYLAND_DISPLAY', '') + '\\n' + "
+            "os.environ.get('NIRI_SOCKET', '')\n"
+            "path = Path(os.environ['XDG_RUNTIME_DIR']) / 'typelay' / "
+            "hashlib.sha256(identity.encode()).hexdigest()[:16] / 'native.sock'\n"
+            "body = json.dumps({'event': 'hello', 'data': {'protocol': 2, "
+            "'presentationVersion': 1}}).encode()\n"
+            "with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:\n"
+            "    connection.connect(str(path))\n"
+            "    connection.sendall(struct.pack('<I', len(body)) + body)\n"
+            "    sys.stdin.read()\n",
+        )
+
+    def executable(self, name, body):
+        path = self.directory / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"#!{sys.executable}\n" + body)
+        path.chmod(0o700)
+
+    def run_until_search(self, mode):
+        children = []
+        self.addCleanup(self.close_children, children)
+        spawn = subprocess.Popen
+
+        def start(*args, **kwargs):
+            child = spawn(*args, **kwargs)
+            children.append(child)
+            return child
+
+        # The real session's AF_UNIX socket must fit even under a long private TMPDIR.
+        with (
+            tempfile.TemporaryDirectory(prefix="tlqs-", dir="/tmp") as session_root,
+            patch.object(tempfile, "tempdir", session_root),
+            patch.dict(os.environ, self.environment),
+            patch.object(subprocess, "Popen", side_effect=start),
+        ):
+            if mode == "stock":
+                result = qt_probe.stock_sync(self.directory, self.environment, [])
+                error = result.get("error", "")
+            else:
+                with self.assertRaises((RuntimeError, subprocess.CalledProcessError)) as raised:
+                    qt_probe.session(
+                        self.directory, self.directory, language_options_only=mode == "native"
+                    )
+                error = str(raised.exception)
+        self.assertTrue(all(child.poll() is not None for child in children))
+        return error
+
+    def test_each_window_wait_reports_first_tool_failure_and_cleans_its_children(self):
+        failure = "xdotool: error while loading shared libraries: libxdo.so.4\n"
+        self.responses.write_text(json.dumps([[127, "", failure]]))
+        for mode in ("stock", "async", "native"):
+            with self.subTest(mode=mode):
+                self.calls.unlink(missing_ok=True)
+                error = self.run_until_search(mode)
+                self.assertIn("xdotool search --onlyvisible --pid", error)
+                self.assertIn("127", error)
+                self.assertIn(failure, error)
+                self.assertNotIn("Timed out", error)
+                self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+
+    def test_each_window_wait_can_find_a_window_after_normal_no_match(self):
+        for mode in ("stock", "async", "native"):
+            with self.subTest(mode=mode):
+                self.calls.unlink(missing_ok=True)
+                windows = "101\n" if mode == "native" else "101\n202\n"
+                self.responses.write_text(json.dumps([[1, "", ""], [0, windows, ""]]))
+                error = self.run_until_search(mode)
+                self.assertIn("73", error)
+                calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
+                self.assertEqual(
+                    [command[0] for command in calls], ["search", "search", "windowfocus"]
+                )
+                self.assertEqual(calls[-1], ["windowfocus", "--sync", "101"])
+                if mode == "native":
+                    self.assertEqual(calls[0][-2:], ["--name", "^TypeLay Qt native fixture$"])
+
+    def test_normal_no_match_remains_bounded_by_the_original_window_deadline(self):
+        self.responses.write_text(json.dumps([[1, "", ""]]))
+        with (
+            patch.object(qt_probe.time, "monotonic", side_effect=[100, 100, 114, 115]),
+            patch.object(qt_probe.time, "sleep"),
+            self.assertRaisesRegex(AssertionError, "Timed out: mapped Qt window"),
+        ):
+            qt_probe.wait(
+                lambda: qt_probe.search_windows(123, self.environment), "mapped Qt window"
+            )
+        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+
+    def test_other_exits_and_output_cannot_borrow_the_no_match_result(self):
+        for code, output, error in (
+            (2, "", ""),
+            (1, "", "Can't open display\n"),
+            (1, "101\n", ""),
+            (1, "\n", ""),
+            (1, "", "\n"),
+            (0, "", ""),
+            (0, "\n", ""),
+        ):
+            with self.subTest(code=code, output=output, error=error):
+                self.calls.unlink(missing_ok=True)
+                self.responses.write_text(json.dumps([[code, output, error]]))
+                with self.assertRaises(RuntimeError) as raised:
+                    qt_probe.wait(
+                        lambda: qt_probe.search_windows(123, self.environment), "mapped Qt window"
+                    )
+                message = str(raised.exception)
+                self.assertIn(f"exit code {code}", message)
+                self.assertIn("xdotool search --onlyvisible --pid 123", message)
+                self.assertIn(error, message)
+                self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+
+    def test_missing_executable_preserves_the_process_start_exception(self):
+        with self.assertRaises(FileNotFoundError) as raised:
+            qt_probe.search_windows(
+                123, self.environment | {"PATH": str(self.directory / "absent")}
+            )
+        self.assertEqual(raised.exception.filename, "xdotool")
+        self.assertFalse(self.calls.exists())
+
+    def test_search_timeout_preserves_the_failure_and_reaps_the_command(self):
+        self.executable("xdotool", "import time\ntime.sleep(60)\n")
+        children = []
+        self.addCleanup(self.close_children, children)
+        spawn = subprocess.Popen
+
+        def start(*args, **kwargs):
+            child = spawn(*args, **kwargs)
+            children.append(child)
+            return child
+
+        with patch.object(subprocess, "Popen", side_effect=start):
+            with self.assertRaises(subprocess.TimeoutExpired) as raised:
+                qt_probe.search_windows(123, self.environment)
+        self.assertEqual(raised.exception.timeout, 5)
+        self.assertEqual(len(children), 1)
+        self.assertIsNotNone(children[0].poll())
+
+    @staticmethod
+    def close_children(children):
+        for child in children:
+            qt_probe.stop_child(child)
+            if child.stdin is not None:
+                child.stdin.close()
 
 
 class ConfiguredAcceptanceSettlementTests(unittest.TestCase):

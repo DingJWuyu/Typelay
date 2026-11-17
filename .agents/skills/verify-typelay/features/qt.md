@@ -24,7 +24,7 @@ set -euo pipefail
 fcitx="$PWD/artifacts/verification-build/fcitx"
 ```
 
-本机的 `xdotool` 解包在用户工具前缀，`libxdo.so.4` 也在该前缀的 `lib/`。Qt runner 会把 `LD_LIBRARY_PATH` 换成 Fcitx 库目录，导致这个工具以 exit 127 退出，而只读取 stdout 的窗口等待器会表现为超时。使用这种布局时，在私有旅程中、运行 Qt runner 之前加入以下设置。技能入口只为 `xdotool` 恢复其工具库，不修改 Qt 或 Fcitx 进程的库路径。
+本机的 `xdotool` 解包在用户工具前缀，`libxdo.so.4` 也在该前缀的 `lib/`。Qt runner 会把 `LD_LIBRARY_PATH` 换成 Fcitx 库目录，导致这个工具以 exit 127 退出。三处窗口等待会立即报告命令、退出码和原始 stderr。只有退出码 1 且 stdout、stderr 都为空，才作为正常无匹配继续等待。使用这种布局时，在私有旅程中、运行 Qt runner 之前加入以下设置。技能入口只为 `xdotool` 恢复其工具库，不修改 Qt 或 Fcitx 进程的库路径。
 
 ```bash
 export TYPELAY_VERIFY_XDOTOOL="$(command -v xdotool)"
