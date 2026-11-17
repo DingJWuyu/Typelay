@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Read and operate the actual Apps page in the owned verification session."""
 
+import argparse
 import json
 import os
 import re
@@ -61,6 +62,9 @@ def wait(observe, description):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--invalid-component", action="store_true")
+    args = parser.parse_args()
     output = Path(os.environ["TYPELAY_VERIFY_OUTPUT"])
     session = json.loads((output / "session.json").read_text())
     assert session["NIRI_SOCKET"] == os.environ["NIRI_SOCKET"]
@@ -79,6 +83,18 @@ def main():
     def record(**value):
         actions.append(value)
         save("actions.json", actions)
+
+    if args.invalid_component:
+        # Exercise the actual corrupt-package observation, without replacing
+        # the application-support port or modifying the source package.
+        package = Path(os.environ["TYPELAY_VERIFY_PACKAGE"]).resolve()
+        assert package.is_relative_to(Path(os.environ["TYPELAY_VERIFY_SCRATCH"]).resolve())
+        descriptor = package / "support/desktop/component.json"
+        value = json.loads(descriptor.read_text())
+        save("component-descriptor-before.json", value)
+        value["schemaVersion"] = 0
+        descriptor.write_text(json.dumps(value) + "\n")
+        save("component-descriptor-fixture.json", value)
 
     def windows():
         return json.loads(
@@ -118,7 +134,13 @@ def main():
         record(action="screenshot", path=name + ".png")
 
     def install_confirmation(language, theme):
-        expected = INSTALL_CONFIRMATION[language]
+        expected = INSTALL_CONFIRMATION[language].copy()
+        if args.invalid_component:
+            expected["body"] += "\n" + (
+                "Component verification failed. Retry with a complete TypeLay package from a trusted source."
+                if language == "en"
+                else "组件校验未通过，请使用完整可信的 TypeLay 主包重试。"
+            )
         saved_before = config.read_bytes()
         component = Path(os.environ["XDG_DATA_HOME"]) / "typelay/components/desktop-text"
         assert not component.exists(), "this journey requires uninstalled desktop components"
@@ -329,7 +351,12 @@ def main():
             {
                 "status": "passed",
                 "features": ["settings/apps-readability", "settings/apps-install-confirmation"],
-                "initialFixture": {"OnboardingComplete": True},
+                "initialFixture": {
+                    "OnboardingComplete": True,
+                    "desktopComponent": (
+                        "invalid-descriptor" if args.invalid_component else "not-installed"
+                    ),
+                },
                 "modelValidation": "not-run",
             },
         )

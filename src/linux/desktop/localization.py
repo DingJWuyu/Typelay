@@ -255,6 +255,7 @@ ENGLISH.update(
         "安装接入组件…": "Install connection components…",
         "将安装所选应用的 TypeLay 接入组件。安装完成后仍须检查实际连接；不会自动切换输入法或结束应用进程。": "TypeLay connection components will be installed for the selected app. Check the actual connection after installation; the input method will not be switched and app processes will not be terminated automatically.",
         "安装将从当前 TypeLay 主包校验并展开桌面接入组件到用户目录，保留原始压缩包、源码与许可证。来源信任继承于你取得的主包；自带文件哈希不是发布者签名。只准备文件，不运行包内程序、切换输入法或打开应用。": "Installation verifies and extracts desktop connection components from the current TypeLay package into your user directory, retaining the original archive, source code and licenses. Trust in the components comes from the package you obtained; bundled file hashes are not a publisher signature. This only prepares files. It does not run bundled programs, switch input methods or open apps.",
+        "组件校验未通过，请使用完整可信的 TypeLay 主包重试。": "Component verification failed. Retry with a complete TypeLay package from a trusted source.",
         "连接应用…": "Connect app…",
         "修复连接…": "Repair connection…",
         "结束本次连接…": "End this connection…",
