@@ -1236,6 +1236,7 @@ def language_configuration(native, generation, state, window, environment, fixtu
         change_focus_on_hide=False,
         disabled=False,
         replace_configuration=False,
+        catalog=choices,
     ):
         nonlocal revision, source_selection
         fixture("focus", field="first")
@@ -1259,7 +1260,7 @@ def language_configuration(native, generation, state, window, environment, fixtu
             "sourceLanguage": "en",
             "targetLanguage": "ja",
             "languageChoices": {
-                side: [{"code": choice["code"], "label": choice["label"]} for choice in choices]
+                side: [{"code": choice["code"], "label": choice["label"]} for choice in catalog]
                 for side in ("source", "target")
             },
             "presentation": {"visible": True, "editorOwnsText": False},
@@ -1351,7 +1352,7 @@ def language_configuration(native, generation, state, window, environment, fixtu
             "sourceLabel": "英语",
             "targetLabel": "日语",
             "swapAllowed": True,
-            "choices": choices,
+            "choices": catalog,
             "theme": theme,
             "appearance": {"uiLanguage": "en"},
         }
@@ -1584,6 +1585,15 @@ def language_configuration(native, generation, state, window, environment, fixtu
     key("Return")
     assert len(events("languageConfigurationSave", opening)) == 1
     close(opening)
+    # Keep the original three rows for comparison. A second opening enables
+    # Korean and adds a native name wider than the old cap and a true overflow.
+    extended = [
+        *choices[:2],
+        {**choices[2], "selectable": True},
+        {"code": "pt", "label": "葡语", "nativeLabel": "Português do Brasil", "selectable": True},
+        {"code": "de", "label": "德语", "nativeLabel": "Langbezeichnung" * 4, "selectable": True},
+    ]
+    row_results = {}
     for theme in ("light", "dark"):
         opening, _ = begin(theme=theme)
 
@@ -1602,14 +1612,37 @@ def language_configuration(native, generation, state, window, environment, fixtu
             )
             fixture("observe")
 
-        def photograph(scene):
+        def photograph(scene, rows=()):
             fixture(
                 "configuration-screenshot",
                 path=str(out / f"language-configuration-{theme}-{scene}.png"),
+                rows={row["code"]: {**row, "overflow": row["code"] == "de"} for row in rows},
+                dark=theme == "dark",
             )
+            if rows:
+                snapshot = state()
+                painted = snapshot["configurationPaint"]["paintedNativeNames"]
+                results = {}
+                for row in rows:
+                    code, native_name = row["code"], row["nativeLabel"]
+                    enabled = snapshot["overlayControls"][f"typelay-language-choice-{code}"][
+                        "enabled"
+                    ]
+                    observed = painted.get(code, "")
+                    matches = (
+                        observed.endswith("…") and native_name.startswith(observed[:-1])
+                        if code == "de"
+                        else observed == native_name
+                    )
+                    results[code] = {
+                        "paintedNativeName": observed,
+                        "enabled": enabled,
+                        "passed": matches and enabled == row["selectable"],
+                    }
+                row_results[f"{theme}-{scene}"] = results
 
         move_to(configuration()["searchGeometry"])
-        photograph("normal")
+        photograph("normal", choices)
         paint = state()["configurationPaint"]
         surface = "#282724" if theme == "dark" else "#fbfaf7"
         assert paint["surface"] == surface, (theme, paint)
@@ -1626,9 +1659,19 @@ def language_configuration(native, generation, state, window, environment, fixtu
         key("Down")
         photograph("keyboard-highlight")
         query("ko")
-        photograph("disabled")
+        photograph("disabled", [choices[2]])
+        close(opening)
+        opening, _ = begin(theme=theme, catalog=extended)
+        move_to(configuration()["searchGeometry"])
+        photograph("selectable", extended)
         close(opening)
     unchanged()
+    (out / "language-options-paint.json").write_text(
+        json.dumps(row_results, ensure_ascii=False, indent=2) + "\n"
+    )
+    assert all(row["passed"] for scene in row_results.values() for row in scene.values()), (
+        row_results
+    )
     return {
         "passed": True,
         "scope": "actual Qt/Fcitx search, rows, original key ownership and controlled config Host; Unicode queries use clipboard paste, not physical Unicode keys; no model",

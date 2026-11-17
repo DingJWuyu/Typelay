@@ -209,15 +209,20 @@ protected:
             QPainterPath check; check.moveTo(11, 15); check.lineTo(15, 19); check.lineTo(22, 11); paint.drawPath(check);
         }
         auto font = this->font(); font.setPixelSize(13); paint.setFont(font); paint.setPen(text);
-        const int start = 34, available = qMax(0, width() - start - 10);
         auto endFont = font; endFont.setPixelSize(12);
-        const QFontMetrics endMetrics(endFont);
-        const int endWidth = qMin(available * 45 / 100, endMetrics.horizontalAdvance(native_));
-        const QRect labelRect(start, 0, qMax(0, available - endWidth - 10), height());
+        const QFontMetricsF labelMetrics(font), endMetrics(endFont);
+        const int start = 34, gap = 10, rightPadding = 10;
+        const qreal available = qMax(0, width() - start - rightPadding);
+        const qreal textWidth = qMax(0., available - gap);
+        // Keep the usual split under pressure, but let a short label give
+        // its unused space to the native name. Keep subpixel advances intact.
+        const qreal endWidth = qMin(endMetrics.horizontalAdvance(native_),
+            qMax(available * .45, textWidth - labelMetrics.horizontalAdvance(label_)));
+        const QRectF labelRect(start, 0, qMax(0., textWidth - endWidth), height());
         paint.drawText(labelRect, Qt::AlignLeft | Qt::AlignVCenter,
-            QFontMetrics(font).elidedText(label_, Qt::ElideRight, labelRect.width()));
+            labelMetrics.elidedText(label_, Qt::ElideRight, labelRect.width()));
         paint.setFont(endFont); paint.setOpacity(.6);
-        paint.drawText(QRect(width() - 10 - endWidth, 0, endWidth, height()), Qt::AlignRight | Qt::AlignVCenter,
+        paint.drawText(QRectF(width() - rightPadding - endWidth, 0, endWidth, height()), Qt::AlignRight | Qt::AlignVCenter,
             endMetrics.elidedText(native_, Qt::ElideRight, endWidth));
     }
 private:

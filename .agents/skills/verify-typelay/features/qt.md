@@ -54,6 +54,8 @@ async fixture 在首次窗口查询发出时可能仍在进行 X11 握手。私�
 
 **独立语言搜索。** 完整 probe 成功时，其中的语言入口已经完成。CI 将本次 `language-options-*.json`、日志、配置截图和 `versions.json` 复制到独立证据目录，不再构建或重复输入。完整 probe 失败时仍执行下列独立入口。新目录只复制本轮生产源码和二进制，`--reuse-build` 复验身份后重建 fixture。不要在完整 probe 的输出上重跑 `--session`，该入口会清除原来的异步资格结果。
 
+检查文字省略时，对照 `language-options-paint.json` 和同主题、同状态的 `language-configuration-*.png`。明暗主题的可选行和禁用行都应完整显示“韩语”和 `한국어`。`selectable` 截图还包含能放下的葡语名称和确实放不下的长名称。夹具将截图中的两列文字、列间留白和右侧内边距与同字体绘制的参考行逐像素比较。长名称须保留可见前缀和省略号。
+
 ```bash
 qt="$PWD/artifacts/linux/qt-cooperative"
 language="$PWD/artifacts/linux/qt-language-options"
