@@ -29,6 +29,10 @@ proof="$PWD/artifacts/verification/gtk-$(date +%Y%m%d-%H%M%S)"
 
 可用状态要求 `doctor-ready.json` 中 `session.modelReady=true`，设置窗口可操作。普通 GTK 字段接入后，还需观察 `sourceSupported=true`、实际源文和可见译文。仅 socket 存在、进程存活或 doctor 退出码为零，都不算就绪。单次流程默认限时 1200 秒，安装限时 600 秒，翻译限时 90 秒；超时保存日志和证据，停止本次自有进程并清理安装副本。
 
+执行方式须容纳单次旅程最长 1200 秒及其后的清理时间。持续跟踪同一条旅程，直到取得退出码与清理回执；一次工具调用返回不代表旅程结束。执行器的总执行期限须覆盖这一过程，产品断言的期限保持不变。
+
+收到终止信号时，先保留事件、命令退出码和清理回执，再查明发送端。原因未明时保持失败；确认信号由执行器发出后，记录为执行方式导致的中断，不能归为产品失败。查明触发原因并修正执行方式后，再运行完整旅程，保留前后两份证据。最终仍以 `exit.json`、场景结果和 `cleanup.json` 判断完成。
+
 ## Network and caches
 
 默认每条私有会话离线运行。`private-session.py` 使用独立用户及网络命名空间，仅启用本次 loopback，供浏览器本地 fixture 使用。命名空间创建或核验失败时立即停止，不能回退到主机网络。正式安装器仅透传 `UV_OFFLINE` 与 `UV_PYTHON_INSTALL_MIRROR` 两个字节来源选项；私有会话同时设置 `UV_OFFLINE=1`，但所有下载路径仍由网络命名空间约束。
@@ -102,5 +106,8 @@ Windows 无法在这台机器驱动。按[Windows 证据](references/windows.md)
 
 - `scripts/private-session.py --package PATH --cooperative PATH --output PATH -- COMMAND...` 运行一条私有桌面旅程并负责清理。
 - `scripts/gtk-preview.py` 仅在上述会话内部运行，完成正式模型准备、语言设置和普通 GTK 预览。
+- `scripts/settings-apps.py` 仅在上述会话内部运行，检查 Apps 页的布局和连接入口。完整调用与证据要求见[设置](features/settings.md#driving-it-with-private-niri)。
+- `scripts/offline-fcitx-build.py --cache-build PATH --output PATH` 从本机原始归档供给正式合作构建器。它只用于构建准备，不启动桌面；完整环境与调用见[离线构建](references/build.md#构建当前源码)。
+- `scripts/qt-tools/xdotool` 为用户目录中的工具恢复其自身的动态库路径。它只供 Qt 私有旅程通过 PATH 调用，须先设置真实工具与库目录；完整用法见 [Qt 前提](features/qt.md#driving-it-with-private-niri)。
 
-两个脚本都可执行，并在 Launch 中给出完整调用。它们不构建产品、不安装系统包，也不改产品代码。需要更新地图时使用 `/maintain-verification-skill`；若机器未安装该技能，直接按当前功能文件更新行为和证据要求。
+脚本均可执行。桌面入口和 Qt 工具通过 Launch 的私有会话运行，构建入口另在断网命名空间内运行。它们不安装系统包，也不改产品代码。需要更新地图时使用 `/maintain-verification-skill`；若机器未安装该技能，直接按当前功能文件更新行为和证据要求。

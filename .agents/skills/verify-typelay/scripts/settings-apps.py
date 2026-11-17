@@ -37,7 +37,7 @@ def main():
     app = str(Path(os.environ["TYPELAY_VERIFY_PACKAGE"]) / "typelay")
     config = Path(os.environ["XDG_CONFIG_HOME"]) / "typelay/settings.json"
     assert not config.exists(), "this journey requires an empty private profile"
-    config.parent.mkdir(parents=True)
+    config.parent.mkdir(parents=True, exist_ok=True)
     # Controlled initial state only skips the tutorial. Preferences below are
     # changed through the actual accessible controls.
     config.write_text(json.dumps({"OnboardingComplete": True}))

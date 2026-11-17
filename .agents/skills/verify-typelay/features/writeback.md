@@ -7,6 +7,7 @@
 - `writeback/gtk3-index` 从空数据目录正式准备默认 Index，完成普通 GTK3 Entry 与 TextView 的预览、人工稿、默认两次 Tab、Unicode 选区和后台 Direct。
 - `writeback/accept` 在当前资格有效时用 Tab 接受，并观察原字段只发生一次替换。
 - `writeback/draft` 编辑译文后回源零写，再独立接受人工稿。
+- `writeback/regenerate` 编辑态重新翻译前确认是否替换人工稿，保留与替换分别取证。
 - `writeback/direct` 通过直接替换快捷键或 CLI 操作原字段。
 - `writeback/refusal` 在输入法未知、源文改变或目标变化时拒绝不安全写入。
 - `writeback/undo` 与目标控件自己的原生替换和撤销行为比较。
@@ -16,14 +17,15 @@
 
 ## How to get to it (user POV)
 
-- 在设置的通用页明确开启默认关闭的“原生输入框替换”实验选项。
+- 需要实验写回的入口，在设置通用页明确开启默认关闭的“原生输入框替换”。普通网页的源端 Tab 接受可保持该选项关闭；Tiptap 原生 Undo 旅程另行开启。
 - 在已连接的普通字段输入，看到当前译文后按接受键，默认 Tab。
 - 点击浮层译文进入编辑，第一次接受回源，释放整组按键后再独立接受。
-- 使用保存的直接替换快捷键，默认 `Ctrl+Shift+F10`，或 niri 绑定的 `typelay --direct`。
+- 编辑态从“更多”选择“重新翻译”，在“替换你修改过的译文？”中选择“保留”或“替换”。这个确认针对浮层人工稿，不是接受并写入原字段。
+- 先切换到按需模式，再使用保存的直接替换快捷键，默认 `Ctrl+Shift+F10`，或 niri 绑定的 `typelay --direct`。
 
 ## Driving it with private niri
 
-Preconditions: 对本次合成字段有明确写回验收意图，实验选项通过真实设置 UI 开启，Fcitx 提供已确认状态。缺少任意条件时保持拒绝。
+Preconditions: 对本次合成字段有明确写回验收意图，接入端提供已确认的输入法、焦点和写入资格。GTK/Qt 使用合作 Fcitx；浏览器使用正式扩展链。实验选项按具体入口准备，`browser-index` 保持关闭，`browser-undo-index` 通过设置 UI 开启。未知状态仍须拒绝。
 
 - **GTK3 默认 Index 完整旅程。** 在本技能的私有会话内运行下列现役 runner。`--native` 指向当前源码以 `--with-test-fixture` 构建的 fixture；产品模块从私有正式包加载。`--model-cache` 只复用官方下载缓存，每次会话都在最终数据目录重新正式安装。输出目录须先创建。
 
@@ -64,6 +66,7 @@ Preconditions: 对本次合成字段有明确写回验收意图，实验选项�
   ```
 
 - **Windows 合作浏览器。** 本机只按 [Windows 证据](../references/windows.md)读取 Actions。对应入口覆盖默认 Index、人工稿两次独立 Tab 和原字段直接替换，不能用 Linux 旅程替代。
+- **编辑态重新翻译。** Windows 合作浏览器的 `browser-editing-regenerate-confirmation` 场景使用实际确认控件，分别记录保留、替换与原字段未改写。读取 `editorRegenerateObservation`，再结合原动作及回源记录判断。Linux 须另行驱动同一用户入口；新译文出现不能替代原确认操作成功。
 - **浏览器草稿传输。** 在私有会话运行 `tests/linux/browser_e2e.py`，检查暂时不完整的 UTF-16 编辑仍逐次传递，补齐 emoji 后保留完整稿。结合共享 Protocol 与 Core 回归，检查非法载荷被拒、非法最终稿不能写入。该受控 DOM 契约不替代 Windows 的真实 Index 旅程。
 - **浏览器拒绝后恢复。** 同一 DOM 套件覆盖真实选区点击后重新准备 owner，包括选区已提交而 `selectionchange` 尚未处理的顺序。新 authority 必须携带增长的输入版本，迟到旧 owner 仍被拒绝，独立 F10 使用新 owner 与当前选区。此入口不证明 Windows 宿主的续租与恢复已通过。
 - **窄浏览器浮层。** 同一 DOM 契约在 180、320 和 520 像素宽度、亮色与暗色下保存编辑截图。检查“编辑中”完整显示在一行，语言、操作与回源提示均在浮层内；Windows 仍须核对真实人工稿场景截图。
