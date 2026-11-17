@@ -1,0 +1,93 @@
+name: PR candidate
+'on':
+  pull_request:
+    branches: [hitl]
+    types: [opened, reopened, synchronize, edited]
+  workflow_call:
+    inputs:
+      base:
+        required: true
+        type: string
+      head:
+        required: true
+        type: string
+permissions:
+  contents: read
+env:
+  BASE: ${{ inputs.base || github.event.pull_request.base.sha }}
+  HEAD_SHA: ${{ inputs.head || github.event.pull_request.head.sha }}
+jobs:
+  shared:
+    name: hitl shared / ${{ inputs.base || github.event.pull_request.base.sha }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ env.HEAD_SHA }}
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Check out the merge of the two event commits
+      id: candidate
+      shell: bash
+      run: |
+        printf 'PR head: `%s`\n\nhitl base: `%s`\n\n' "$HEAD_SHA" "$BASE" | tee -a "$GITHUB_STEP_SUMMARY"
+        tree=$(git merge-tree --write-tree "$BASE" "$HEAD_SHA") || { echo "$tree"; exit 1; }
+        export GIT_AUTHOR_DATE="$(git show -s --format=%cI "$BASE")"
+        export GIT_COMMITTER_DATE="$GIT_AUTHOR_DATE"
+        commit=$(git -c user.name=TypeLay -c user.email=ci@localhost commit-tree \
+          "$tree" -p "$BASE" -p "$HEAD_SHA" -m 'TypeLay PR candidate')
+        git checkout --detach "$commit"
+        git show -s --format='Tested commit: `%H`%n%nSource tree: `%T`' | tee -a "$GITHUB_STEP_SUMMARY"
+    - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+      with:
+        global-json-file: global.json
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: '3.13'
+    - name: Run the shared check as an unprivileged user
+      shell: bash
+      run: |
+        sudo useradd --create-home typelay-test
+        sudo -Hu typelay-test mkdir /home/typelay-test/source
+        tar cf - . | sudo -Hu typelay-test tar xf - -C /home/typelay-test/source
+        sudo -u typelay-test env -i HOME=/home/typelay-test PATH="$PATH" \
+          DOTNET_ROOT="$DOTNET_ROOT" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" bash -ec '
+            cd "$HOME/source"
+            python -m venv "$HOME/venv"
+            source "$HOME/venv/bin/activate"
+            python -m pip install -r eng/requirements.txt -r tests/shared/requirements.txt
+            pwsh -NoProfile -File ./dev.ps1 shared-check
+          '
+  pending:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    env:
+      RESULT: pending
+    steps: &status-steps
+    - name: Attach the shared check status to this head and base
+      id: publish
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        case "$RESULT" in
+          pending|success|failure) state=$RESULT ;;
+          *) state=error ;;
+        esac
+        gh api --silent "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" \
+          -f state="$state" -f context="hitl shared / $BASE" \
+          -f description="Shared check of PR head $HEAD_SHA with hitl" \
+          -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT"
+  report:
+    if: ${{ always() && github.event_name == 'push' }}
+    needs: [shared, pending]
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    env:
+      RESULT: ${{ needs.shared.result }}
+    steps: *status-steps
