@@ -191,19 +191,73 @@ public sealed partial class SessionController
             if (!AwaitingCapture || !owner.InteractionIsCurrent(this))
                 return false;
             owner._interaction = null; // Fresh source consumes this action, including refusal.
-            bool sameOperation = Operation is { } operation && request.EditorReturn == operation
-                && operation.Operation.Revision == owner._generation && operation.Operation.CommandGeneration == owner._hook.CommandGeneration
-                && SettingsRevision == owner._settings.Revision && ConfigurationRevision == owner._configurationRevision
-                && ConnectionId == owner._hook.ConnectionId && ReturnedWindowEpoch == owner._hook.WindowEpoch
-                && result.Focus == FocusMember.Source && !result.ForegroundExpired && !owner._overlay.EditingComposition
-                && result.Snapshot is { Ime: ImeState.Clear } source && source.Target == Action.Token.Target
-                && source.ObservedAtMs >= ReturnedAt && source.ObservedAtMs <= now
-                && now - source.ObservedAtMs <= Limits.ObservationMaxAgeMs
-                && request.SourceUserEpoch == owner._hook.SourceUserEpoch && result.UserEpoch == owner._hook.UserEpoch
-                && result.ForegroundEpoch == owner._hook.ForegroundEpoch && owner._hook.GetFocus(source.Target) == FocusMember.Source;
-            if (!sameOperation)
+            long? observedAt = null, currentGeneration = null, currentWindowEpoch = null;
+            long? currentSourceEpoch = null, currentUserEpoch = null, currentForegroundEpoch = null;
+            string? Refusal()
             {
-                owner.StopSession("editor-regenerate-source-changed");
+                // Preserve the original short-circuit order. Values below are
+                // sampled only by their original guard, never re-read for logging.
+                if (Operation is not { } operation)
+                    return "operation-missing";
+                if (request.EditorReturn != operation)
+                    return "request-operation";
+                if (operation.Operation.Revision != (currentGeneration = owner._generation))
+                    return "revision";
+                if (operation.Operation.CommandGeneration != owner._hook.CommandGeneration)
+                    return "command-generation";
+                if (SettingsRevision != owner._settings.Revision)
+                    return "settings";
+                if (ConfigurationRevision != owner._configurationRevision)
+                    return "configuration";
+                if (ConnectionId != owner._hook.ConnectionId)
+                    return "connection";
+                if (ReturnedWindowEpoch != (currentWindowEpoch = owner._hook.WindowEpoch))
+                    return "window-epoch";
+                if (result.Focus != FocusMember.Source)
+                    return "capture-focus";
+                if (result.ForegroundExpired)
+                    return "foreground-expired";
+                if (owner._overlay.EditingComposition)
+                    return "composition";
+                if (result.Snapshot is not { Ime: ImeState.Clear } source)
+                    return "source-not-clear";
+                if (source.Target != Action.Token.Target)
+                    return "target";
+                if ((observedAt = source.ObservedAtMs) < ReturnedAt)
+                    return "before-return";
+                if (source.ObservedAtMs > now)
+                    return "future-observation";
+                if (now - source.ObservedAtMs > Limits.ObservationMaxAgeMs)
+                    return "expired-observation";
+                if (request.SourceUserEpoch != (currentSourceEpoch = owner._hook.SourceUserEpoch))
+                    return "source-epoch";
+                if (result.UserEpoch != (currentUserEpoch = owner._hook.UserEpoch))
+                    return "user-epoch";
+                if (result.ForegroundEpoch != (currentForegroundEpoch = owner._hook.ForegroundEpoch))
+                    return "foreground-epoch";
+                if (owner._hook.GetFocus(source.Target) != FocusMember.Source)
+                    return "source-focus";
+                return null;
+            }
+            if (Refusal() is { } reason)
+            {
+                owner.StopSession("editor-regenerate-source-changed", new
+                {
+                    reason,
+                    returnedAtMs = ReturnedAt,
+                    observedAtMs = observedAt,
+                    nowMs = now,
+                    operationRevision = Operation?.Operation.Revision,
+                    currentGeneration,
+                    returnedWindowEpoch = ReturnedWindowEpoch,
+                    currentWindowEpoch,
+                    requestSourceEpoch = request.SourceUserEpoch,
+                    currentSourceEpoch,
+                    resultUserEpoch = result.UserEpoch,
+                    currentUserEpoch,
+                    resultForegroundEpoch = result.ForegroundEpoch,
+                    currentForegroundEpoch
+                });
                 return true;
             }
             // Core may already have retired the old edit basis and scheduled the

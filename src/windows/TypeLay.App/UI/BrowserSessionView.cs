@@ -180,11 +180,16 @@ internal sealed partial class BrowserSessionView : ISessionView, ISourceInteract
         _renewing = true;
         try
         {
+            _input.TraceEditorDisplay(BrowserInput.EditorDisplayStage.RenewalRequested, WindowsInterruptClock.NowMs - _renewed);
             var authority = await _input.DescribeEditorAsync(record, token, _excluded);
             if (_context?.Token != token || _record?.Peer != record.Peer || _record.Route != record.Route)
+            {
+                _input.TraceEditorDisplay(BrowserInput.EditorDisplayStage.RenewalSuperseded, WindowsInterruptClock.NowMs - _renewed);
                 return;
+            }
             if (authority is null)
             {
+                _input.TraceEditorDisplay(BrowserInput.EditorDisplayStage.RenewalRejected, WindowsInterruptClock.NowMs - _renewed);
                 HideQuietly();
                 return;
             }
@@ -198,12 +203,15 @@ internal sealed partial class BrowserSessionView : ISessionView, ISourceInteract
                 expiresAtMs = _renewed + 800,
                 metadataOnly = true
             });
+            _input.TraceEditorDisplay(BrowserInput.EditorDisplayStage.RenewalSent, 0);
         }
         finally { _renewing = false; }
     }
     public void RenderPaused(PauseAnchor anchor, long revision, PresentationIdentity? identity = null) => HideQuietly();
     public void HideQuietly()
     {
+        if (_record is not null && _state == SessionState.EditingTranslation)
+            _input.TraceEditorDisplay(BrowserInput.EditorDisplayStage.Hidden, WindowsInterruptClock.NowMs - _renewed);
         RetireEditorRegenerate();
         if (_glossary is { } entry)
             CloseGlossary(entry.FormId);
