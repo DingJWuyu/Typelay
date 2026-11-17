@@ -469,10 +469,6 @@ LINUX_TOOLS = yaml.safe_load(
 )
 
 
-def summary_step(job):
-    return next(step for step in JOBS[job]["steps"] if step.get("id") == "fixed-summary")
-
-
 class FixedSummaryTests(unittest.TestCase):
     def test_incomplete_evidence_never_identifies_a_cold_build(self):
         for kind in ("fonts", "linux-tools", "hy", "index", "fcitx"):
@@ -508,36 +504,6 @@ class FixedSummaryTests(unittest.TestCase):
                     self.assertNotIn(
                         "| 本轮冷建 |", fixed_summary.summary_row(kind, steps, records)
                     )
-
-    @unittest.skipUnless(
-        sys.platform.startswith("linux"), "The checkout fallback runs on Linux producers"
-    )
-    def test_checkout_failure_still_lists_each_unavailable_tag(self):
-        for job, kinds in (
-            ("fonts", ("fonts",)),
-            ("fcitx-build", ("linux-tools", "hy", "index", "fcitx")),
-        ):
-            step = summary_step(job)
-            with self.subTest(job=job), tempfile.TemporaryDirectory() as directory:
-                destination = Path(directory) / "summary.md"
-                subprocess.run(
-                    [step["shell"], "-eo", "pipefail", "-c", step["run"]],
-                    cwd=directory,
-                    env=os.environ
-                    | JOBS[job]["env"]
-                    | {
-                        "GITHUB_STEP_SUMMARY": str(destination),
-                        "PRODUCER_STATUS": "failure",
-                        "FIXED_REPORT": step["env"]["FIXED_REPORT"],
-                    },
-                    capture_output=True,
-                    encoding="utf-8",
-                    check=True,
-                    timeout=5,
-                )
-                summary = destination.read_text(encoding="utf-8")
-                for kind in kinds:
-                    self.assertIn(f"`{kind}` 的 tag 和生产阶段均未知（生产者 failure）", summary)
 
 
 class FixedBuildPublicationTests(unittest.TestCase):
@@ -637,8 +603,7 @@ class FixedBuildPublicationTests(unittest.TestCase):
 
     def summary(self, job, steps, status="success"):
         self.assertLessEqual(steps.keys(), {s.get("id") for s in JOBS[job]["steps"]})
-        step = summary_step(job)
-        self.assertEqual(step["if"], "always()")
+        step = next(s for s in JOBS[job]["steps"] if s.get("id") == "fixed-summary")
         github_env = self.root / (job + ".env")
         reported = (
             dict(line.split("=", 1) for line in github_env.read_text(encoding="utf-8").splitlines())

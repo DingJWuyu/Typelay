@@ -197,6 +197,9 @@ jobs:
       id: python-format
       if: ${{ !cancelled() && steps.python-tools.outcome == 'success' }}
       run: python -m ruff format --check --diff .
+    - name: Verify fixed artifact summaries without a checkout
+      if: ${{ !cancelled() && steps.python-tools.outcome == 'success' }}
+      run: python -m unittest discover -s tests/linux -p test_ci_fixed_summary.py -v
     - name: Verify Linux input feedback contracts
       id: input-feedback
       if: ${{ !cancelled() && steps.python.outcome == 'success' }}
