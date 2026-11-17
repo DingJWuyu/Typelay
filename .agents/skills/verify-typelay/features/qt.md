@@ -82,6 +82,8 @@ DISPLAY="$TYPELAY_VERIFY_XDISPLAY" timeout --kill-after=10s 240s \
 
 此入口注入初始语言、模式和实验写回设置，并使用标准 Qt 控件 fixture。读取 `qt-desktop-runtime.json` 核对实际 Qt 版本、加载库和 Wayland 平台。保留候选、编辑、按键时序、源字段和唯一写回回执。失败时保留 `failure-status.json`、`failure.png`、`inside.log` 和原始 controller trace，后续未执行项目记为 `not-run`。
 
+真实 Host 的空源语言搜索沿用 `dormant_source("")` 准备字段。每轮先观察清空后的新 supported capture、源焦点、隐藏浮层及 Qt 队列退休，再发送一次唤醒快捷键。`qt-configuration-wake-en.json` 和 `qt-configuration-wake-zh.json` 保存各轮准备帧。Qt 队列为空不证明 Host 已观察新源；准备条件也不授予写入权限。实际命令仍须通过原生版本检查，保留原 150ms 期限及失败结果。
+
 人工稿回源后的首次 Ctrl 接受使用临时 `DEBUG-t11-permit` 记录原计划的发布、撤销、检查失败和未用退休。它只在实际编辑回源后启用，最多记录 96 条元数据。将原生 hook、`qt-manual-acceptance-timing.json` 与 Host 原计划对齐；到达时没有发布许可不等于许可超时。确定原因并完成回归后删除这组临时诊断。
 
 同一 timing 文件保存原释放调用的返回时间，以及原 readiness 和写前读取的 fixture 帧时间与三个队列计数。先判断该帧是否晚于释放，再解释 `settled`；这些记录复用原读取，不增加输入、捕获或等待。
