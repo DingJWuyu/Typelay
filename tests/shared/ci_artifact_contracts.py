@@ -34,6 +34,18 @@ class Upload:
 
 
 source = Evidence("Record tested commit", (SOURCE,))
+# shared-check uses the TRX logger's default host/timestamp/TFM names for Core,
+# Runtime, Protocol and Windows.Contracts, in that order.
+shared_trx = Evidence(
+    "shared-behavior",
+    files(
+        "artifacts/shared-test-results/",
+        "_runner_2026-11-17_06_06_28_net10.0.trx "
+        "_runner_2026-11-17_06_06_30_net10.0.trx "
+        "_runner_2026-11-17_06_06_44_net10.0.trx "
+        "_runner_2026-11-17_06_06_46_net10.0.trx",
+    ),
+)
 windows_package = Evidence("windows-package", ("artifacts/TypeLay-Windows-preview.zip.sha256",))
 linux_build = Evidence("build", (LINUX + "package/build-info.json",))
 trx = Evidence(
@@ -190,11 +202,7 @@ LINUX_UPLOADS = {
     "linux-package": Upload(linux_packages, ("native",), packages=True),
 }
 UPLOADS = {
-    "shared": {
-        "shared": Upload(
-            (source, Evidence("shared-behavior", ("artifacts/shared-test-results/core.trx",)))
-        )
-    },
+    "shared": {"shared": Upload((source, shared_trx))},
     "windows-contracts": {
         "windows-trx-${{ matrix.shard }}": Upload(
             (trx,), outcome="windows-contracts", missing="error"
@@ -297,8 +305,14 @@ PAYLOADS = (
     "artifacts/package/TypeLay/TypeLay.exe",
     "artifacts/package/TypeLay/build-info.json",
     "artifacts/hy-runtime/llama.dll",
+    "artifacts/hy-download/Hy-MT2-1.8B-Q4_K_M.gguf",
+    "artifacts/hy-cpu-download/llama-b11717-bin-win-cpu-x64.zip",
     "artifacts/index-runtime/llama.dll",
-    "artifacts/index-model-download/model.gguf",
+    "artifacts/index-runtime/libllama.so",
+    "artifacts/index-runtime-download/llama-b11913-bin-win-cpu-x64.zip",
+    "artifacts/index-runtime-download/llama-b11913-bin-ubuntu-x64.tar.gz",
+    "artifacts/index-model-download/Index-Translate-2B.Q4_K_M.gguf",
+    "artifacts/browser-download/chrome-win64.zip",
     "artifacts/index-package/app/TypeLay.Linux",
     LINUX + "package/typelay",
     LINUX + "package/worker/catalog.json",
@@ -307,6 +321,14 @@ PAYLOADS = (
     LINUX + "desktop-data/typelay/components/argos/model.bin",
     LINUX + "desktop-data/typelay/components/argos/tokenizer.json",
     LINUX + "hy-cpu-runtime/libllama.so",
+    LINUX + "hy-cpu-download/llama-b11717-bin-ubuntu-x64.tar.gz",
+    LINUX + "index-cpu-runtime/libllama.so",
+    LINUX + "index-cpu-download/llama-b11913-bin-ubuntu-x64.tar.gz",
+    LINUX + "uv-download/uv-0.13.6-x86_64-unknown-linux-gnu.tar.gz",
+    LINUX + "desktop-cache/typelay/components/zh_en-1.9.argosmodel",
+    LINUX + "ordinary-gimp-cache/typelay/components/zh_en-1.9.argosmodel",
+    LINUX + "hy-model-cache/typelay/components/hy-mt2-1-8b-q4-k-m/"
+    "a0c709d9fac510f2c807aa3af52872340dc37a4a/Hy-MT2-1.8B-Q4_K_M.gguf",
     LINUX + "qt-cooperative/fcitx5-qt.tar.gz",
     LINUX + "qt-cooperative/plugins/platforms/libqxcb.so",
     LINUX + "qt-language-options/fcitx5-qt.tar.gz",

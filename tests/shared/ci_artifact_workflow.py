@@ -3,6 +3,7 @@
 import ast
 import re
 import tempfile
+from itertools import pairwise, product
 from pathlib import Path
 
 import yaml
@@ -16,7 +17,7 @@ def require(condition, message):
         raise AssertionError(message)
 
 
-def selected_files(root, patterns, windows=False):
+def selected_files(file_paths, patterns, windows=False):
     """Match the baseline's literals, directory descendants and segment-local *.
 
     The pinned action's src/shared/search.ts and bundled @actions/glob 0.6.1
@@ -25,6 +26,9 @@ def selected_files(root, patterns, windows=False):
     https://github.com/actions/upload-artifact/tree/cf430e030ddbb5b0abf93d22962f4752f3646cd9
     These fixtures contain regular files only; no symlink or archive layout is simulated.
     """
+    visible_paths = tuple(
+        path for path in file_paths if not any(part.startswith(".") for part in path.split("/"))
+    )
     selected = set()
     for pattern in patterns.splitlines():
         pattern = pattern.strip()
@@ -37,11 +41,7 @@ def selected_files(root, patterns, windows=False):
         expression = re.escape(pattern.rstrip("/")).replace(r"\*", "[^/]*")
         descendants = r"/.*\Z" if pattern.endswith("/") else r"(?:/.*)?\Z"
         matcher = re.compile(expression + descendants, re.I if windows else 0)
-        for path in root.rglob("*"):
-            relative = path.relative_to(root)
-            if path.is_file() and not any(part.startswith(".") for part in relative.parts):
-                if matcher.fullmatch(relative.as_posix()):
-                    selected.add(relative.as_posix())
+        selected.update(path for path in visible_paths if matcher.fullmatch(path))
     return selected
 
 
@@ -72,6 +72,9 @@ def verify_workflow(path):
             target = root / sample
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text("synthetic evidence\n", encoding="utf-8")
+        file_paths = tuple(
+            path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()
+        )
         for job_id in sorted(actual_jobs):
             job = jobs[job_id]
             matrix = job.get("strategy", {}).get("matrix", {})
@@ -105,8 +108,9 @@ def verify_workflow(path):
                     and options["retention-days"] == 14,
                     f"Upload options changed in {label}",
                 )
-                verify_conditions(job_id, job, name, upload, contract, groups)
-                selected = selected_files(root, options["path"], "windows" in job_id)
+                verify_upload_conditions(job_id, job, name, upload, contract, groups)
+                verify_producers(job_id, job, name, upload, contract, groups)
+                selected = selected_files(file_paths, options["path"], "windows" in job_id)
                 required = {p for evidence in contract.evidence for p in evidence.paths}
                 require(
                     required <= selected,
@@ -123,10 +127,33 @@ def condition_matches(
     expression, *, group, step_ids, status="success", packages=False, outcomes=None, ready=True
 ):
     """Evaluate only current check.yml atoms, rejecting unknown syntax before evaluation."""
-    original = expression or "success()"
+    original = "success()" if expression is None else expression
+    require(isinstance(original, str), f"Unsupported if: {original}")
     expression = original.strip()
     if expression.startswith("${{") and expression.endswith("}}"):
         expression = expression[3:-2].strip()
+    # Validate the original Actions tokens before translating to Python AST.
+    # In particular Python's and/or, True/False and None are not baseline syntax.
+    tokens = (
+        r"(?:always|cancelled|success)\(\)",
+        re.escape("startsWith(matrix.group, 'native')"),
+        re.escape("hashFiles('artifacts/linux/qt-cooperative/fcitx5-qt.tar.gz')"),
+        r"inputs\.upload_packages",
+        r"matrix\.(?:group|shard)",
+        r"steps\.[a-zA-Z0-9-]+\.(?:outcome|outputs\.core-ready)",
+        r"'(?:success|failure|skipped|cancelled|true|contracts|browser|settings|native(?:-gtk4?|-qt)?|ordinary|hy)?'",
+        r"2|&&|\|\||==|!=|!|\(|\)",
+    )
+    require(
+        re.fullmatch(r"(?:\s*(?:" + "|".join(tokens) + r"))+\s*", expression),
+        f"Unsupported if: {original}",
+    )
+    operators = {"&&", "||", "==", "!=", "!", "(", ")"}
+    atoms = [token not in operators for token in re.findall("|".join(tokens), expression)]
+    require(
+        not any(left and right for left, right in pairwise(atoms)),
+        f"Unsupported if: {original}",
+    )
     has_status = bool(re.search(r"\b(always|cancelled|success)\(\)", expression))
     expression = (
         expression.replace("always()", "True")
@@ -186,77 +213,102 @@ def condition_matches(
     return bool(result) and (has_status or status == "success")
 
 
-def verify_conditions(job_id, job, name, upload, contract, groups):
+def verify_upload_conditions(job_id, job, name, upload, contract, groups):
+    step_ids = {step["id"] for step in job["steps"] if "id" in step}
+    label = f"{job_id}/{name}"
+    expression = upload.get("if")
+    require(expression is None or isinstance(expression, str), f"Unsupported if: {expression}")
+    referenced = set(re.findall(r"steps\.([a-zA-Z0-9-]+)\.", expression or ""))
+    allowed = {contract.outcome} if contract.outcome else set()
+    require(
+        referenced <= allowed,
+        f"Upload condition in {label} has unsupported producer dependencies: {sorted(referenced - allowed)}",
+    )
+    if contract.outcome:
+        referenced.add(contract.outcome)
+    # Baseline uploads depend on at most one producer. New combinations need a
+    # reviewed contract, rather than an unbounded workflow state simulation.
+    outcomes = [{}] + [
+        {step: outcome}
+        for step, outcome in product(sorted(referenced), ("failure", "skipped", "cancelled"))
+    ]
+    for group, status, packages, changed in product(
+        groups, ("success", "failure", "cancelled"), (False, True), outcomes
+    ):
+        active = not contract.groups or group in contract.groups
+        expected = active
+        if contract.packages:
+            expected = active and packages and status == "success"
+        elif contract.outcome:
+            expected = (
+                active
+                and status != "cancelled"
+                and changed.get(contract.outcome, "success") in ("success", "failure")
+            )
+        actual = condition_matches(
+            upload.get("if"),
+            group=group,
+            step_ids=step_ids,
+            status=status,
+            packages=packages,
+            outcomes=changed,
+        )
+        require(
+            actual == expected,
+            f"Upload condition mismatch in {label}, group={group}, status={status}, packages={packages}, producers={changed}: expected {expected}, got {actual}",
+        )
+
+
+def verify_producers(job_id, job, name, upload, contract, groups):
     steps = {step.get("id", step.get("name")): step for step in job["steps"]}
     step_ids = {step["id"] for step in job["steps"] if "id" in step}
     label = f"{job_id}/{name}"
-    for group in groups:
-        active = not contract.groups or group in contract.groups
-        for status in ("success", "failure", "cancelled"):
-            for packages in (False, True):
-                for outcome in ("success", "failure", "skipped", "cancelled"):
-                    expected = active
-                    if contract.packages:
-                        expected = expected and packages and status == "success"
-                    elif contract.outcome:
-                        expected = (
-                            expected and status != "cancelled" and outcome in ("success", "failure")
-                        )
-                    actual = condition_matches(
-                        upload.get("if"),
-                        group=group,
-                        step_ids=step_ids,
-                        status=status,
-                        packages=packages,
-                        outcomes={contract.outcome: outcome},
-                    )
-                    require(
-                        actual == expected,
-                        f"Upload condition mismatch in {label}, group={group}, status={status}, packages={packages}, producer={outcome}: expected {expected}, got {actual}",
-                    )
-        for evidence in contract.evidence:
-            require(evidence.producer in steps, f"Missing producer {evidence.producer} for {label}")
-            producer = steps[evidence.producer]
+    for group, evidence in product(groups, contract.evidence):
+        require(evidence.producer in steps, f"Missing producer {evidence.producer} for {label}")
+        producer = steps[evidence.producer]
+        require(
+            job["steps"].index(producer) < job["steps"].index(upload),
+            f"Upload precedes producer in {label}/{evidence.producer}",
+        )
+        expected = not evidence.groups or group in evidence.groups
+        # fcitx's script selects GTK scenarios after the shared core step.
+        if evidence.producer == "fcitx":
+            expected = str(group).startswith("native")
             require(
-                job["steps"].index(producer) < job["steps"].index(upload),
-                f"Upload precedes producer in {label}/{evidence.producer}",
+                producer.get("env", {}).get("CI_LINUX_GROUP") == "${{ matrix.group }}"
+                and 'case "$CI_LINUX_GROUP" in' in producer["run"]
+                and "native-gtk) scope=gtk3 ;;" in producer["run"]
+                and "native-gtk4) scope=gtk4 ;;" in producer["run"],
+                "Unsupported fcitx production scope",
             )
-            expected = not evidence.groups or group in evidence.groups
-            # fcitx's script selects GTK scenarios after the shared core step.
-            if evidence.producer == "fcitx":
-                expected = str(group).startswith("native")
-                require(
-                    "native-gtk) scope=gtk3 ;;" in producer["run"]
-                    and "native-gtk4) scope=gtk4 ;;" in producer["run"],
-                    "Unsupported fcitx production scope",
-                )
-            if evidence.producer == "build" and evidence.groups:
-                # The build step runs everywhere but builds Fcitx only in native groups.
-                expected = True
-                require(
-                    'if [[ "$CI_LINUX_GROUP" == native* ]]; then' in producer["run"]
-                    and "python eng/linux/cooperative/fcitx.py --reuse-third-party &"
-                    in producer["run"],
-                    "Unsupported Fcitx build production scope",
-                )
-            if evidence.producer == "qt-language-options":
-                # A failed Qt probe is intentionally still allowed to produce language evidence.
-                for outcome in ("success", "failure", "skipped", "cancelled"):
-                    actual = condition_matches(
-                        producer.get("if"), group=group, step_ids=step_ids, outcomes={"qt": outcome}
-                    )
-                    require(
-                        actual == (expected and outcome in ("success", "failure")),
-                        f"Producer condition mismatch in {label}/{evidence.producer}",
-                    )
-                require(
-                    not condition_matches(
-                        producer.get("if"), group=group, step_ids=step_ids, ready=False
-                    ),
-                    f"Producer missing dependency guard in {label}",
-                )
-            actual = condition_matches(producer.get("if"), group=group, step_ids=step_ids)
+        if evidence.producer == "build" and evidence.groups:
+            # The build step runs everywhere but builds Fcitx only in native groups.
+            expected = True
             require(
-                actual == expected,
-                f"Producer group mismatch in {label}/{evidence.producer}, group={group}: expected {expected}, got {actual}",
+                producer.get("env", {}).get("CI_LINUX_GROUP") == "${{ matrix.group }}"
+                and 'if [[ "$CI_LINUX_GROUP" == native* ]]; then' in producer["run"]
+                and "python eng/linux/cooperative/fcitx.py --reuse-third-party &"
+                in producer["run"],
+                "Unsupported Fcitx build production scope",
             )
+        if evidence.producer == "qt-language-options":
+            # A failed Qt probe is intentionally still allowed to produce language evidence.
+            for outcome in ("success", "failure", "skipped", "cancelled"):
+                actual = condition_matches(
+                    producer.get("if"), group=group, step_ids=step_ids, outcomes={"qt": outcome}
+                )
+                require(
+                    actual == (expected and outcome in ("success", "failure")),
+                    f"Producer condition mismatch in {label}/{evidence.producer}",
+                )
+            require(
+                not condition_matches(
+                    producer.get("if"), group=group, step_ids=step_ids, ready=False
+                ),
+                f"Producer missing dependency guard in {label}",
+            )
+        actual = condition_matches(producer.get("if"), group=group, step_ids=step_ids)
+        require(
+            actual == expected,
+            f"Producer group mismatch in {label}/{evidence.producer}, group={group}: expected {expected}, got {actual}",
+        )
