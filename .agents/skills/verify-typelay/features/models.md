@@ -21,7 +21,7 @@
 
 Preconditions: 本次任务允许准备模型，本机 uv 与模型下载缓存已按 build.md 检查。所有入口默认离线，缓存缺失必须失败。安装目录为空且位于最终使用路径。
 
-`models/index-lifecycle` 还会安装 Argos。除 Index 权重外，私有安装缓存须包含 Argos 归档及其运行依赖。缺少这些字节时，后续切换和移除阶段无法完成。
+`models/index-lifecycle` 还会安装中译英 Argos。安装器从 `--install-cache` 所指目录的根部读取 `zh_en-1.9.argosmodel`（74,481,402 字节）。双向 `--install-models argos` 还需要同目录的 `en_zh-1.9.argosmodel`（70,743,021 字节）。在启动相应旅程前核对归档及本地运行依赖，缺项时记录文件名和路径。默认 Index CLI 可以独立验证。
 
 - **默认 CLI。** Launch 的 GTK 旅程执行 `"$TYPELAY_VERIFY_PACKAGE/typelay" --install-models`。观察真实双向自检和服务握手成功、`doctor-ready.json` 的 `modelReady=true`，并保存 `installed.json`。正式安装器自行生成激活记录。
 - **生命周期回归。** 在私有旅程文件内执行 `/usr/bin/python3 tests/linux/index_package_e2e.py --package "$TYPELAY_VERIFY_PACKAGE" --cache "$TYPELAY_VERIFY_MODEL_CACHE" --output "$TYPELAY_VERIFY_OUTPUT/index-lifecycle"`。缓存可替换为已验证下载缓存的绝对路径，输出目录须不存在。逐项读取 `result.json` 的阶段状态，核对正式安装、激活、连续推理和结构、冷启、失败与取消保旧代、Repair、安装 Argos、切回 Index、再切回 Argos 和移除 Index。要求 `cleanup=[]`、`allOwnedSupervisorsExited=true`，再核对外层 `cleanup.json` 的 `remainingPids=[]`。不能用整体退出码抹去 not-run。
