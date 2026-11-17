@@ -341,6 +341,7 @@ def run_phase(directory, phase, timeout):
         }
         # Retain real, isolated display sockets, making an unsafe new test visible.
         environment["DISPLAY"] = os.environ["TYPELAY_VERIFY_XDISPLAY"]
+    environment["TYPELAY_FINALIZE_EVIDENCE"] = str(directory / "finalize-signals")
     save(
         directory / "admission.json",
         {

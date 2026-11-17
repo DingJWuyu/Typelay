@@ -233,6 +233,40 @@ skill="$PWD/.agents/skills/verify-typelay"
 
 `not-run` 表示测试未执行。读取 JSON 时同时核对 `cleanup.json` 的 `remainingPids=[]`、`scratchRemoved=true` 和 `runtimeRemoved=true`。清理失败会使会话返回失败。既有字体、反馈和 Unix socket 隔离回归仍保留，完整观察会自动包含以后新增的默认发现测试。
 
+### 重放被信号终止的打包测试
+
+`MainBundleTests` 在失败信息中给出信号名和 `finalize-*.tar` 的路径。本地单测把现场写到 `artifacts/linux/finalize-signals/`。完整 discovery 把现场写到相应阶段的 `outer/finalize-signals/` 或 `private/finalize-signals/`，私有会话清理后仍可读取。在 Actions 的 `Linux / contracts` 运行页下载 `linux-finalize-signals-*`，解开 ZIP 和其中的 `finalize-signals.tar.xz` 后可取得每次受信号影响的调用。
+
+选取失败信息中的 tar，在空目录中还原这次调用。使用与 `invocation.json` 中 `pythonVersion` 一致的 Python 版本。
+
+```sh
+tar --no-same-owner -xpf /path/to/finalize-PLACEHOLDER.tar
+timeout 30s git clone fixture.bundle checkout
+if test -f worktree.patch; then timeout 30s git -C checkout apply ../worktree.patch; fi
+mv artifacts checkout/
+python - <<'PYTHON'
+import json, os, signal, subprocess, sys
+from pathlib import Path
+
+call = json.loads(Path("invocation.json").read_text())
+result = subprocess.run(
+    [sys.executable, *call["argv"][1:]], cwd=call["cwd"],
+    env={"PATH": os.environ["PATH"], **call["environment"]}, timeout=call["timeoutSeconds"],
+)
+if result.returncode < 0:
+    number = -result.returncode
+    try:
+        name = signal.Signals(number).name
+    except ValueError:
+        name = signal.strsignal(number)
+    print(f"finalize received {name} ({number})", file=sys.stderr)
+    sys.exit(128 + number)
+sys.exit(result.returncode)
+PYTHON
+```
+
+`artifacts/package/` 保存子进程启动前的主包。如果原调用缺少合作包，现场也保留该缺项。环境记录仅保存调用实际设置的 `SOURCE_DATE_EPOCH`。
+
 ### 从实际归档检查安装生命周期
 
 ```sh

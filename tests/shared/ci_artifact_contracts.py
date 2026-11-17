@@ -31,6 +31,8 @@ class Upload:
     packages: bool = False
     outcome: str | None = None
     missing: str = "warn"
+    outcomes: tuple[str, ...] = ("success", "failure")
+    compression_level: int | None = None
 
 
 source = Evidence("Record tested commit", (SOURCE,))
@@ -189,6 +191,14 @@ linux_diagnostics = (
 )
 
 LINUX_UPLOADS = {
+    "linux-finalize-signals": Upload(
+        (Evidence("test-build-bundle", (LINUX + "finalize-signals.tar.xz",), ("contracts",)),),
+        ("contracts",),
+        outcome="test-build-bundle",
+        outcomes=("failure",),
+        missing="ignore",
+        compression_level=0,
+    ),
     "typelay-linux-qt-language-options-${{ matrix.group }}": Upload(
         (qt_language,), ("native", "native-qt"), outcome="qt-language-options"
     ),

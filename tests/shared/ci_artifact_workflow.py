@@ -99,13 +99,15 @@ def verify_workflow(path):
                     f"Unsupported upload action in {label}: {upload['uses']}",
                 )
                 options = upload["with"]
+                expected_options = {"if-no-files-found": contract.missing, "retention-days": 14}
+                if contract.compression_level is not None:
+                    expected_options["compression-level"] = contract.compression_level
                 require(
-                    set(options) == {"name", "path", "if-no-files-found", "retention-days"},
+                    set(options) == {"name", "path", *expected_options},
                     f"Unsupported upload options in {label}: {set(options)}",
                 )
                 require(
-                    options["if-no-files-found"] == contract.missing
-                    and options["retention-days"] == 14,
+                    all(options[key] == value for key, value in expected_options.items()),
                     f"Upload options changed in {label}",
                 )
                 verify_upload_conditions(job_id, job, name, upload, contract, groups)
@@ -243,7 +245,7 @@ def verify_upload_conditions(job_id, job, name, upload, contract, groups):
             expected = (
                 active
                 and status != "cancelled"
-                and changed.get(contract.outcome, "success") in ("success", "failure")
+                and changed.get(contract.outcome, "success") in contract.outcomes
             )
         actual = condition_matches(
             upload.get("if"),
