@@ -1141,8 +1141,8 @@ while True:
                     self.assertFalse(Path(f"/proc/{root.joinpath('pid').read_text()}").exists())
 
     def editor_environment(self):
-        runtime = self.home / "run"
-        runtime.mkdir(exist_ok=True)
+        # Keep this fixture's control socket within sun_path under a long TMPDIR.
+        runtime = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="tled-", dir="/tmp")))
         session = runtime / "typelay" / hashlib.sha256(b"\n").hexdigest()[:16]
         session.mkdir(parents=True, exist_ok=True)
         return {

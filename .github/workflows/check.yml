@@ -802,6 +802,30 @@ jobs:
         mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR"
         chmod 700 "$XDG_RUNTIME_DIR"
         artifacts/linux/package/typelay --install-models argos
+    - name: Set the default temporary root for headless contracts
+      id: headless-tmpdir
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: |
+        previous=$(python -c 'import tempfile; print(tempfile.gettempdir())')
+        root=$(mktemp -d /tmp/typelay-linux-contracts-headless.XXXXXXXX)
+        printf 'previous=%s\nroot=%s\n' "$previous" "$root" >> "$GITHUB_OUTPUT"
+        printf 'TMPDIR=%s\n' "$root" >> "$GITHUB_ENV"
+    - name: Verify the temporary root inherited by headless test processes
+      id: check-tmpdir
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      shell: python
+      run: |
+        import os
+        import tempfile
+
+        root = tempfile.gettempdir()
+        length = len(os.fsencode(root))
+        print(f"Headless contracts tempfile.gettempdir()={root!r} ({length} bytes)")
+        if root != os.environ.get("TMPDIR"):
+            raise SystemExit("Python fell back from the configured TMPDIR")
+        # Before #77 the fixture appended 82 bytes. Linux accepts 107 pathname bytes.
+        if length + 82 <= 107:
+            raise SystemExit("TMPDIR is too short to exercise the native socket regression")
     - name: Verify Linux Hy preparation contracts
       id: hy-preparation-contracts
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
@@ -985,6 +1009,15 @@ jobs:
       id: host-protocol
       if: ${{ matrix.group == 'contracts' && !cancelled() && steps.build.outcome == 'success' }}
       run: python tests/linux/session_host_protocol.py --host artifacts/linux/package/app/TypeLay.Linux -v
+    - name: Restore the original temporary root before the desktop checks
+      id: restore-tmpdir
+      if: ${{ always() && matrix.group == 'contracts' && steps.headless-tmpdir.outcome == 'success' }}
+      env:
+        ORIGINAL_TMPDIR: ${{ steps.headless-tmpdir.outputs.previous }}
+        HEADLESS_TMPDIR: ${{ steps.headless-tmpdir.outputs.root }}
+      run: |
+        printf 'TMPDIR=%s\n' "$ORIGINAL_TMPDIR" >> "$GITHUB_ENV"
+        rm -rf -- "$HEADLESS_TMPDIR"
     - name: Verify GTK settings feedback
       id: settings-feedback
       if: ${{ matrix.group == 'contracts' && !cancelled() && steps.display.outcome == 'success' }}

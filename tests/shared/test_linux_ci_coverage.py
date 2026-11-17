@@ -1,6 +1,7 @@
 """Keep default Linux discovery modules connected to actual Check commands."""
 
 import fnmatch
+import os
 import re
 import shlex
 import shutil
@@ -137,6 +138,47 @@ class LinuxCiCoverageTests(unittest.TestCase):
 
     def test_default_discovery_modules_run_in_ci_or_have_a_private_session_reason(self):
         self.check_coverage(ROOT)
+
+    def test_long_tmpdir_covers_contracts_checks_until_the_display_tests(self):
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/check.yml").read_text(encoding="utf-8")
+        )
+        headless = False
+        for step in workflow["jobs"]["linux"]["steps"]:
+            step_id = step.get("id")
+            if step_id in ("headless-tmpdir", "restore-tmpdir"):
+                headless = step_id == "headless-tmpdir"
+                continue
+            guard = step.get("if", "")
+            if "tests/linux" not in step.get("run", ""):
+                continue
+            if "matrix.group" in guard and "matrix.group == 'contracts'" not in guard:
+                continue
+            self.assertEqual(
+                headless, "steps.display.outcome" not in guard, step.get("name", step["run"])
+            )
+
+    def test_headless_check_reports_the_effective_root_and_rejects_tempfile_fallback(self):
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/check.yml").read_text(encoding="utf-8")
+        )
+        step = next(s for s in workflow["jobs"]["linux"]["steps"] if s.get("id") == "check-tmpdir")
+        with tempfile.TemporaryDirectory(prefix="typelay-headless-contracts-") as directory:
+            for root in (directory, os.path.join(directory, "missing")):
+                with self.subTest(root=root):
+                    result = subprocess.run(
+                        [sys.executable, "-c", step["run"]],
+                        env={**os.environ, "TMPDIR": root},
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    if root == directory:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertIn(repr(root), result.stdout)
+                        self.assertIn(f"{len(os.fsencode(root))} bytes", result.stdout)
+                    else:
+                        self.assertNotEqual(result.returncode, 0, result.stdout)
 
     def test_new_module_fails_until_a_ci_command_runs_it_without_importing_it(self):
         with tempfile.TemporaryDirectory() as temporary:
