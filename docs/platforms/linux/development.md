@@ -191,6 +191,8 @@ skill="$PWD/.agents/skills/verify-typelay"
 
 窗口观察在测试导入前订阅 niri 事件流和 Xvfb 的直接 X11 窗口事件。两路观察开始前和结束后分别创建一个受控 GTK 窗口，确认观察器仍能检测开窗。校准窗口具有独立身份，原始记录保留。观察器启动失败、提前退出或超时都会让该项失败。
 
+每轮校准只匹配启动后的新事件。Xvfb 复用窗口 ID 时，后一轮仍须取得新的观察记录。进程清理失败会保存在该项 `result.json` 的 `cleanupErrors` 中，其余自有进程继续清理，该项保持失败。
+
 每次 discovery 默认限时 300 秒，可向 `verify_discovery.py` 传入 `--timeout`。外层私有会话仍保留自己的总期限。结果位于本次输出的 `discovery/`：
 
 | 原件 | 内容 |

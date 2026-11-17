@@ -226,6 +226,7 @@ def calibrate(directory, label, observer, events, allowed):
             title,
         ]
         with (directory / f"calibration-{label}-{backend}.log").open("w") as log:
+            started = time.monotonic()
             process = subprocess.Popen(
                 command, stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT, text=True
             )
@@ -235,6 +236,8 @@ def calibrate(directory, label, observer, events, allowed):
 
                 def detected():
                     for record in records(events):
+                        if record["monotonic"] < started:
+                            continue
                         if record["kind"] == backend + "-window" and (
                             record.get("title") == title
                             if backend == "wayland"
@@ -430,16 +433,31 @@ def run_phase(directory, phase, timeout):
         result["reason"] = f"{type(error).__name__}: {error}"
         result["timedOut"] = isinstance(error, (TimeoutError, subprocess.TimeoutExpired))
     finally:
+        cleanup_errors = []
         for process in (child, observer):
             if process is not None:
-                stop(process)
+                try:
+                    stop(process)
+                except Exception as error:
+                    cleanup_errors.append(
+                        {"pid": process.pid, "reason": f"{type(error).__name__}: {error}"}
+                    )
         if child is not None:
             result["exitCode"] = child.returncode
             if result["testsStatus"] == "not-run":
                 result["testsStatus"] = "failed"
         if observer is not None:
-            observer.stdin.close()
+            try:
+                observer.stdin.close()
+            except Exception as error:
+                cleanup_errors.append(
+                    {"pid": observer.pid, "reason": f"{type(error).__name__}: {error}"}
+                )
             result["observerExitCode"] = observer.returncode
+        if cleanup_errors:
+            result["status"] = "failed"
+            result["cleanupErrors"] = cleanup_errors
+            result.setdefault("reason", "owned process cleanup failed")
         result["finishedAt"] = time.monotonic()
         save(directory / "result.json", result)
     return result
@@ -480,7 +498,7 @@ def main():
         return discover(args.start_directory, args.result)
     if args.observer_child:
         private_session()
-        from support.window_observation import observe
+        from window_observation import observe
 
         observe()
         return 0
