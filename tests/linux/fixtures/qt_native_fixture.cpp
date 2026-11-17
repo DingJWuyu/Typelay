@@ -20,6 +20,7 @@
 #include <QLineEdit>
 #include <QMimeData>
 #include <QMouseEvent>
+#include <QPainter>
 #include <QPalette>
 #include <QPlainTextDocumentLayout>
 #include <QPlainTextEdit>
@@ -47,11 +48,60 @@
 #include <time.h>
 #include <utility>
 #include <unistd.h>
+#include "../../../src/linux/native/common/overlay-design.h"
 
 qint64 observedAtMs() {
     timespec value{};
     if (clock_gettime(CLOCK_BOOTTIME, &value) != 0) qFatal("Fixture clock unavailable");
     return qint64(value.tv_sec) * 1000 + value.tv_nsec / 1000000;
+}
+
+// Compare the captured row with literal, unelided text drawn at its two
+// outer edges. The reference has no column allocation or elision algorithm.
+static QJsonObject matchLanguageRow(const QImage &pixels, QWidget *row, const QJsonObject &expected,
+                                    const TlOverlayPalette &palette) {
+    const QString label = expected.value("label").toString();
+    const QString native = expected.value("nativeLabel").toString();
+    const auto elided = expected.value("elidedColumns").toArray();
+    auto font = row->font(), nativeFont = font;
+    font.setPixelSize(13);
+    nativeFont.setPixelSize(12);
+    const QFontMetricsF labelMetrics(font), nativeMetrics(nativeFont);
+    const QRect area = row->rect().adjusted(34, 0, -10, 0);
+    const int room = area.width() - 10;
+    const bool fits = labelMetrics.horizontalAdvance(label) + nativeMetrics.horizontalAdvance(native) <= room;
+    if (fits != elided.isEmpty()) return {};
+
+    const auto candidates = [&](const QString &text, const char *column) {
+        if (!elided.contains(QLatin1String(column))) return QStringList{text};
+        QStringList prefixes;
+        for (qsizetype i = text.size() - 1; i > 0; --i) prefixes.append(text.left(i) + QChar(0x2026));
+        return prefixes;
+    };
+    const auto labels = candidates(label, "label"), names = candidates(native, "nativeLabel");
+    // Include both margins around the text and the whitespace between columns.
+    // The checkmark is separate ink in the first 24 logical pixels.
+    const QRect region = pixels.rect().adjusted(qRound(24 * pixels.devicePixelRatio()), 0, 0, 0);
+    const auto actual = pixels.copy(region);
+    for (const auto &left : labels) {
+        const qreal remaining = room - labelMetrics.horizontalAdvance(left);
+        for (const auto &right : names) {
+            if (nativeMetrics.horizontalAdvance(right) > remaining) continue;
+            QImage reference = pixels.copy();
+            reference.fill(QColor(palette.surface));
+            QPainter paint(&reference);
+            paint.setRenderHint(QPainter::Antialiasing);
+            paint.setPen(QColor(row->isEnabled() ? palette.ink : palette.tertiary));
+            paint.setFont(font);
+            paint.drawText(area, Qt::AlignLeft | Qt::AlignVCenter, left);
+            paint.setOpacity(.6);
+            paint.setFont(nativeFont);
+            paint.drawText(area, Qt::AlignRight | Qt::AlignVCenter, right);
+            paint.end();
+            if (actual == reference.copy(region)) return {{"label", left}, {"nativeLabel", right}};
+        }
+    }
+    return {};
 }
 
 using FontIdentities = QList<QPair<QRawFont, QJsonObject>>;
@@ -1079,13 +1129,21 @@ int main(int argc, char **argv) {
                     const auto scale = screenshot.devicePixelRatioF();
                     return pixels.pixelColor(qFloor(logical.x() * scale), qFloor(logical.y() * scale)).name();
                 };
-                QJsonObject backgrounds;
+                QJsonObject backgrounds, paintedNames;
+                const auto expectedRows = command.value("rows").toObject();
+                const auto palette = tl_overlay_palette(command.value("dark").toBool(), nullptr, true);
                 for (auto *row : panel->findChildren<QAbstractButton *>()) {
                     if (!row->isVisible() || !row->objectName().startsWith(QStringLiteral("typelay-language-choice-"))) continue;
                     backgrounds.insert(row->objectName(), colorAt(row->mapTo(panel, QPoint(row->width() - 2, row->height() / 2))));
+                    const auto code = row->property("languageCode").toString();
+                    if (expectedRows.contains(code)) {
+                        const auto scale = screenshot.devicePixelRatioF();
+                        const auto bounds = QRect(row->mapTo(panel, QPoint()) * scale, row->size() * scale);
+                        paintedNames.insert(code, matchLanguageRow(pixels.copy(bounds), row, expectedRows[code].toObject(), palette));
+                    }
                 }
                 configurationPaint = {{"surface", colorAt(QPoint(panel->width() / 2, panel->height() - 3))},
-                    {"rowBackgrounds", backgrounds}};
+                    {"rowBackgrounds", backgrounds}, {"paintedRows", paintedNames}};
             }
             else if (op == "configuration-clipboard") {
                 // MIME reads may run a nested event loop. No stdin command may
