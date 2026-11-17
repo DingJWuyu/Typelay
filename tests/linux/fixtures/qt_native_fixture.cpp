@@ -58,41 +58,48 @@ qint64 observedAtMs() {
 
 // Compare the captured row with literal, unelided text drawn at its two
 // outer edges. The reference has no column allocation or elision algorithm.
-static QString matchLanguageRow(const QImage &pixels, QWidget *row, const QJsonObject &expected,
-                                const TlOverlayPalette &palette) {
+static QJsonObject matchLanguageRow(const QImage &pixels, QWidget *row, const QJsonObject &expected,
+                                    const TlOverlayPalette &palette) {
     const QString label = expected.value("label").toString();
     const QString native = expected.value("nativeLabel").toString();
-    const bool overflow = expected.value("overflow").toBool();
+    const auto elided = expected.value("elidedColumns").toArray();
     auto font = row->font(), nativeFont = font;
     font.setPixelSize(13);
     nativeFont.setPixelSize(12);
-    const QRect textArea = row->rect().adjusted(34, 0, -10, 0);
-    const qreal room = textArea.width() - 10 - QFontMetricsF(font).horizontalAdvance(label);
-    const QFontMetricsF nativeMetrics(nativeFont);
-    if (overflow != (nativeMetrics.horizontalAdvance(native) > room)) return {};
+    const QFontMetricsF labelMetrics(font), nativeMetrics(nativeFont);
+    const QRect area = row->rect().adjusted(34, 0, -10, 0);
+    const int room = area.width() - 10;
+    const bool fits = labelMetrics.horizontalAdvance(label) + nativeMetrics.horizontalAdvance(native) <= room;
+    if (fits != elided.isEmpty()) return {};
 
-    // Compare all pixels beyond the checkmark, including whitespace between
-    // the columns and the right padding. Accept any fitting prefix for overflow.
-    const auto scale = pixels.devicePixelRatio();
-    const QRect region = pixels.rect().adjusted(qRound(24 * scale), 0, 0, 0);
+    const auto candidates = [&](const QString &text, const char *column) {
+        if (!elided.contains(QLatin1String(column))) return QStringList{text};
+        QStringList prefixes;
+        for (qsizetype i = text.size() - 1; i > 0; --i) prefixes.append(text.left(i) + QChar(0x2026));
+        return prefixes;
+    };
+    const auto labels = candidates(label, "label"), names = candidates(native, "nativeLabel");
+    // Include both margins around the text and the whitespace between columns.
+    // The checkmark is separate ink in the first 24 logical pixels.
+    const QRect region = pixels.rect().adjusted(qRound(24 * pixels.devicePixelRatio()), 0, 0, 0);
     const auto actual = pixels.copy(region);
-    for (qsizetype count = overflow ? native.size() - 1 : native.size(); count > 0; --count) {
-        const auto candidate = overflow ? native.left(count) + QChar(0x2026) : native;
-        if (nativeMetrics.horizontalAdvance(candidate) <= room) {
+    for (const auto &left : labels) {
+        const qreal remaining = room - labelMetrics.horizontalAdvance(left);
+        for (const auto &right : names) {
+            if (nativeMetrics.horizontalAdvance(right) > remaining) continue;
             QImage reference = pixels.copy();
             reference.fill(QColor(palette.surface));
             QPainter paint(&reference);
             paint.setRenderHint(QPainter::Antialiasing);
             paint.setPen(QColor(row->isEnabled() ? palette.ink : palette.tertiary));
             paint.setFont(font);
-            paint.drawText(textArea, Qt::AlignLeft | Qt::AlignVCenter, label);
+            paint.drawText(area, Qt::AlignLeft | Qt::AlignVCenter, left);
             paint.setOpacity(.6);
             paint.setFont(nativeFont);
-            paint.drawText(textArea, Qt::AlignRight | Qt::AlignVCenter, candidate);
+            paint.drawText(area, Qt::AlignRight | Qt::AlignVCenter, right);
             paint.end();
-            if (actual == reference.copy(region)) return candidate;
+            if (actual == reference.copy(region)) return {{"label", left}, {"nativeLabel", right}};
         }
-        if (!overflow) break;
     }
     return {};
 }
@@ -1136,7 +1143,7 @@ int main(int argc, char **argv) {
                     }
                 }
                 configurationPaint = {{"surface", colorAt(QPoint(panel->width() / 2, panel->height() - 3))},
-                    {"rowBackgrounds", backgrounds}, {"paintedNativeNames", paintedNames}};
+                    {"rowBackgrounds", backgrounds}, {"paintedRows", paintedNames}};
             }
             else if (op == "configuration-clipboard") {
                 // MIME reads may run a nested event loop. No stdin command may

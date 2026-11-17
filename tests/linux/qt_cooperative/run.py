@@ -1592,7 +1592,14 @@ def language_configuration(native, generation, state, window, environment, fixtu
         {**choices[2], "selectable": True},
         {"code": "pt", "label": "葡语", "nativeLabel": "Português do Brasil", "selectable": True},
         {"code": "de", "label": "德语", "nativeLabel": "Langbezeichnung" * 4, "selectable": True},
+        {
+            "code": "sr",
+            "label": "塞尔维亚语（波斯尼亚和黑塞哥维那，拉丁字母）",
+            "nativeLabel": "srpski (latinica, Bosna i Hercegovina)",
+            "selectable": True,
+        },
     ]
+    elided_columns = {"de": ["nativeLabel"], "sr": ["label", "nativeLabel"]}
     row_results = {}
     for theme in ("light", "dark"):
         opening, _ = begin(theme=theme)
@@ -1616,30 +1623,30 @@ def language_configuration(native, generation, state, window, environment, fixtu
             fixture(
                 "configuration-screenshot",
                 path=str(out / f"language-configuration-{theme}-{scene}.png"),
-                rows={row["code"]: {**row, "overflow": row["code"] == "de"} for row in rows},
+                rows={
+                    row["code"]: {**row, "elidedColumns": elided_columns.get(row["code"], [])}
+                    for row in rows
+                },
                 dark=theme == "dark",
             )
             if rows:
                 snapshot = state()
-                painted = snapshot["configurationPaint"]["paintedNativeNames"]
                 results = {}
                 for row in rows:
-                    code, native_name = row["code"], row["nativeLabel"]
+                    code = row["code"]
                     enabled = snapshot["overlayControls"][f"typelay-language-choice-{code}"][
                         "enabled"
                     ]
-                    observed = painted.get(code, "")
-                    matches = (
-                        observed.endswith("…") and native_name.startswith(observed[:-1])
-                        if code == "de"
-                        else observed == native_name
-                    )
+                    painted = snapshot["configurationPaint"]["paintedRows"].get(code, {})
                     results[code] = {
-                        "paintedNativeName": observed,
+                        "painted": painted,
                         "enabled": enabled,
-                        "passed": matches and enabled == row["selectable"],
+                        "passed": bool(painted) and enabled == row["selectable"],
                     }
                 row_results[f"{theme}-{scene}"] = results
+                (out / "language-options-paint.json").write_text(
+                    json.dumps(row_results, ensure_ascii=False, indent=2) + "\n"
+                )
 
         move_to(configuration()["searchGeometry"])
         photograph("normal", choices)
@@ -1666,9 +1673,6 @@ def language_configuration(native, generation, state, window, environment, fixtu
         photograph("selectable", extended)
         close(opening)
     unchanged()
-    (out / "language-options-paint.json").write_text(
-        json.dumps(row_results, ensure_ascii=False, indent=2) + "\n"
-    )
     assert all(row["passed"] for scene in row_results.values() for row in scene.values()), (
         row_results
     )
@@ -4829,7 +4833,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
     out, fcitx = args.out.resolve(), args.fcitx_root.resolve()
     out.mkdir(parents=True, exist_ok=True)
-    # Invalidate this output's previous async qualification before build/validation too.
+    # Invalidate previous evidence even if this run fails during build/validation.
+    (out / "language-options-paint.json").unlink(missing_ok=True)
+    (out / "language-options-result.json").unlink(missing_ok=True)
+    for screenshot in out.glob("language-configuration-*.png"):
+        screenshot.unlink()
     (out / "async-result.json").unlink(missing_ok=True)
     if args.verify_fcitx_build:
         verify_fcitx_inputs(fcitx)
