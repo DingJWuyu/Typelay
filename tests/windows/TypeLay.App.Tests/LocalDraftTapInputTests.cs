@@ -129,7 +129,7 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                 && Native.GetForegroundWindow() == hwnd && editor.IsKeyboardFocused);
             Assert.All(new[] { 9, 0x77, 0x10, 0x11, 0x12, 0x5b, 0x5c }, key => Assert.False(Native.GetAsyncKeyState(key) < 0));
             stage = "anchor-open";
-            hook.BeginLocalDraftAnchor(opening, hwnd, hwnd, id =>
+            hook.BeginLocalDraftAnchor(opening, hwnd, hwnd, (id, original) =>
             {
                 if (Interlocked.Increment(ref cancellations) != 1 || change != "unarmed-prefix")
                     return;
@@ -141,6 +141,7 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                     {
                         observedAtTimestamp,
                         openingMatches = id == opening,
+                        originalEvent = DescribeCancellationEvent(original, hwnd),
                         foreground = foreground == hwnd ? "overlay" : foreground == 0 ? "none" : "other"
                     });
                 }
@@ -161,9 +162,7 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                 {
                     try
                     {
-                        // This is a public cancellation callback, not the original
-                        // WinEvent. Its foreground and these reads are not atomic
-                        // observations or proof of the cancellation cause.
+                        // The callback foreground is sampled separately from the original event.
                         TestContext.Current.TestOutputHelper?.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
                         {
                             operation = "local-draft-unarmed-prefix-anchor-retired",
@@ -226,7 +225,7 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
             var press = captures.FirstOrDefault();
             Guid newer = Guid.NewGuid();
             if (change is "new-opening")
-                hook.BeginLocalDraftAnchor(newer, hwnd, hwnd, _ => { });
+                hook.BeginLocalDraftAnchor(newer, hwnd, hwnd, (_, _) => { });
             else if (change is "retired-after-up")
                 hook.EndLocalDraftAnchor(opening);
             else if (change == "expired")
@@ -419,8 +418,8 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
         var replace = new Button { Content = "Replace" };
         var window = new Window { Content = replace, Width = 420, Height = 160 };
         window.Show();
-        Assert.True(window.Activate());
-        Assert.True(replace.Focus());
+        Assert.True(window.Activate(), "Expected the replace window to activate, but Activate returned false.");
+        Assert.True(replace.Focus(), "Expected the replace button to take focus, but Focus returned false.");
         nint hwnd = new WindowInteropHelper(window).Handle;
         using var hook = new KeyboardHook(allowInjectedInput: true, editorHwnd: hwnd);
         hook.ConfigureShortcuts(false, "Ctrl+Shift+F9", "Ctrl+Shift+F10", SessionShortcutBindings.Default, true);
@@ -430,6 +429,11 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
         long observationSequence = 0;
         object? firstCancellation = null, beforeExpiredClaim = null, afterExpiredClaim = null;
         bool? expiredClaimReturned = null, anchorAtAssertion = null;
+        object? beforeArming = null;
+        uint? armStartedTick = null, armCompletedTick = null;
+        string? waitingFor = null;
+        var sends = new List<object>(2);
+        var claims = new List<object>(4);
         string stage = "ready";
         var captures = new List<KeyboardHook.LocalDraftPress?>();
         var ups = new List<uint>();
@@ -462,48 +466,57 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
         window.AddHandler(Keyboard.PreviewKeyUpEvent, up, true);
         try
         {
-            await Until(() => hook.ShortcutsReady && Native.GetForegroundWindow() == hwnd && replace.IsKeyboardFocused);
-            hook.BeginLocalDraftAnchor(opening, hwnd, hwnd, id =>
+            await Until(() => hook.ShortcutsReady && Native.GetForegroundWindow() == hwnd && replace.IsKeyboardFocused,
+                "Hook ready, replace window in the foreground and button focused");
+            beforeArming = new
+            {
+                foregroundWindow = (long)Native.GetForegroundWindow(),
+                replaceFocused = replace.IsKeyboardFocused
+            };
+            armStartedTick = GetTickCount();
+            hook.BeginLocalDraftAnchor(opening, hwnd, hwnd, (id, original) =>
             {
                 if (Interlocked.Increment(ref cancellations) != 1)
                     return;
-                // This observes the existing cancellation callback, not the
-                // native foreground event that may have preceded it.
                 Volatile.Write(ref firstCancellation, new
                 {
                     openingMatches = id == opening,
-                    state = ObserveState()
+                    state = ObserveState(),
+                    originalEvent = DescribeCancellationEvent(original, hwnd)
                 });
             });
+            armCompletedTick = GetTickCount();
             hook.SetLocalDraftPrompt(opening, confirmation, replaceFocused: true);
             stage = "original-pair";
             SendPair();
-            await Until(() => ups.Count == 1);
+            await Until(() => ups.Count == 1, "exactly one Enter release");
             var expired = Assert.IsType<KeyboardHook.LocalDraftPress>(captures.Single());
-            Assert.True(WindowsInterruptClock.NowMs < expired.ExpiresAtMs); // Original LL down/up was timely.
+            long observedPairAtMs = WindowsInterruptClock.NowMs;
+            Assert.True(observedPairAtMs < expired.ExpiresAtMs,
+                $"Expected the original pair before expiry at {expired.ExpiresAtMs} ms, observed at {observedPairAtMs} ms.");
             stage = "await-expiry";
-            await Until(() => WindowsInterruptClock.NowMs >= expired.ExpiresAtMs);
+            await Until(() => WindowsInterruptClock.NowMs >= expired.ExpiresAtMs, "permit clock at or after expiry");
             stage = "expired-claim";
             beforeExpiredClaim = ObserveState();
-            var rejected = hook.ClaimLocalDraftReplaceTap(expired, ups[0]);
+            var rejected = Claim("expired", expired, ups[0], expected: false);
             expiredClaimReturned = rejected is not null;
             afterExpiredClaim = ObserveState();
             Assert.Null(rejected); // Delayed consumer, not a held key.
             stage = "anchor-after-expired-claim";
             bool anchorCurrent = hook.LocalDraftAnchorCurrent(opening);
             anchorAtAssertion = anchorCurrent;
-            Assert.True(anchorCurrent);
+            Assert.True(anchorCurrent, "Expected the edit anchor to remain current after the expired claim, actual false.");
             stage = "first-fresh-pair";
             SendPair(); // The very first new real action must work, not only a second retry.
-            await Until(() => ups.Count == 2);
+            await Until(() => ups.Count == 2, "exactly two Enter releases");
             var fresh = Assert.IsType<KeyboardHook.LocalDraftPress>(captures[1]);
             Assert.NotSame(expired, fresh);
             Assert.Equal(fresh.ReceivedAtMs + 500, fresh.ExpiresAtMs);
             stage = "fresh-claim";
-            Assert.Null(hook.ClaimLocalDraftReplaceTap(expired, ups[0]));
-            var claimed = Assert.IsType<KeyboardHook.LocalDraftTap>(hook.ClaimLocalDraftReplaceTap(fresh, ups[1]));
+            Assert.Null(Claim("stale-after-fresh-pair", expired, ups[0], expected: false));
+            var claimed = Assert.IsType<KeyboardHook.LocalDraftTap>(Claim("first-fresh", fresh, ups[1], expected: true));
             Assert.Same(fresh, claimed.Press);
-            Assert.Null(hook.ClaimLocalDraftReplaceTap(fresh, ups[1]));
+            Assert.Null(Claim("duplicate", fresh, ups[1], expected: false));
             Assert.Equal(0, Volatile.Read(ref cancellations));
             Assert.False(hook.TryRead(out _));
         }
@@ -515,14 +528,28 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                 {
                     operation = "local-draft-replace-expiry-failed",
                     failure = error.GetType().Name,
+                    assertion = error.Message,
                     stage,
+                    overlayWindow = (long)hwnd,
+                    beforeArming,
+                    armStartedTick,
+                    armCompletedTick,
+                    waitingFor,
+                    sends,
+                    observedUps = ups.Count,
+                    shortcutsReady = hook.ShortcutsReady,
                     timestampFrequency = Stopwatch.Frequency,
                     beforeExpiredClaim,
                     afterExpiredClaim,
                     expiredClaimReturned,
+                    claims,
                     anchorAtAssertion,
                     cancelCallbacksAtFailure = Volatile.Read(ref cancellations),
-                    firstCancellation = Volatile.Read(ref firstCancellation),
+                    firstCancellation = Volatile.Read(ref firstCancellation) ?? new
+                    {
+                        origin = "unknown",
+                        observed = false
+                    },
                     inputObservations,
                     inputObservationsDropped,
                     captures = captures.Take(2).Select(press => press is null ? null : new
@@ -548,6 +575,24 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
             window.RemoveHandler(Keyboard.PreviewKeyUpEvent, up);
             hook.EndLocalDraftAnchor(opening);
         }
+        KeyboardHook.LocalDraftTap? Claim(string attempt, KeyboardHook.LocalDraftPress press, uint upTime, bool expected)
+        {
+            long beforeMs = WindowsInterruptClock.NowMs;
+            var result = hook.ClaimLocalDraftReplaceTap(press, upTime);
+            long afterMs = WindowsInterruptClock.NowMs;
+            claims.Add(new
+            {
+                attempt,
+                press.Sequence,
+                upTime,
+                beforeMs,
+                afterMs,
+                press.ExpiresAtMs,
+                expectedClaimed = expected,
+                actualClaimed = result is not null
+            });
+            return result;
+        }
         object? ObserveState()
         {
             try
@@ -567,6 +612,8 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                     observedAtMs,
                     anchorCurrent = current,
                     inputSequence,
+                    pairedRelease = hook.ObserveLocalDraftRelease(),
+                    foregroundWindow = (long)foreground,
                     foreground = foreground == hwnd ? "overlay" : foreground == 0 ? "none" : "other"
                 };
             }
@@ -587,10 +634,12 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                 state = ObserveState()
             });
         }
-        async Task Until(Func<bool> condition)
+        async Task Until(Func<bool> condition, string expectation)
         {
+            waitingFor = expectation;
             while (!condition())
                 await Task.Delay(5, deadline.Token);
+            waitingFor = null;
         }
         void SendPair()
         {
@@ -598,12 +647,50 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
             Assert.Same(replace, Keyboard.FocusedElement);
             Assert.False(Native.GetAsyncKeyState(13) < 0);
             deadline.Token.ThrowIfCancellationRequested();
+            long beforeSendTimestamp = Stopwatch.GetTimestamp();
             uint sent = SendInput(2, [Edge(enter, false), Edge(enter, true)], Marshal.SizeOf<Input>());
+            sends.Add(new
+            {
+                stage,
+                beforeSendTimestamp,
+                afterSendTimestamp = Stopwatch.GetTimestamp(),
+                requested = 2,
+                sent
+            });
             if (sent == 1)
                 Assert.Equal(1u, SendInput(1, [Edge(enter, true)], Marshal.SizeOf<Input>())); // Own partial-send cleanup only.
             Assert.Equal(2u, sent);
         }
     });
+
+    private static object DescribeCancellationEvent(KeyboardHook.LocalDraftForegroundEvent? original, nint overlay)
+    {
+        if (original is not { } ev)
+            return new
+            {
+                origin = "non-WinEvent"
+            };
+
+        // The handle and event thread come from the winning WinEvent. Its window
+        // might already be gone or reused when this separate process lookup runs.
+        uint process = 0;
+        uint windowThread = ev.Window == 0 ? 0 : Native.GetWindowThreadProcessId(ev.Window, out process);
+        return new
+        {
+            origin = "WinEvent",
+            ev.EventType,
+            originalWindow = (long)ev.Window,
+            windowIdentity = ev.Window == 0 ? "unknown" : ev.Window == overlay ? "overlay" : "other",
+            ev.EventThread,
+            ev.EventTime,
+            windowThreadAtCallback = windowThread == 0 ? (uint?)null : windowThread,
+            windowProcessAtCallback = process == 0 ? (uint?)null : process
+        };
+    }
+
+    // Same 32-bit system tick domain as the original WinEvent and input timestamps.
+    [DllImport("kernel32.dll")]
+    private static extern uint GetTickCount();
 
     private static ushort Scan(uint key)
     {

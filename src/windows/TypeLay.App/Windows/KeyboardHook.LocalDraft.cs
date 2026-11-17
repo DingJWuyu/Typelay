@@ -6,13 +6,15 @@ namespace TypeLay.App;
 
 internal sealed partial class KeyboardHook
 {
+    internal readonly record struct LocalDraftForegroundEvent(uint EventType, nint Window, uint EventThread, uint EventTime);
+
     // Revocation-only local window anchor. Never an owned editor/source lease.
-    private sealed class LocalDraftAnchor(Guid opening, nint overlay, nint source, Action<Guid> cancel)
+    private sealed class LocalDraftAnchor(Guid opening, nint overlay, nint source, Action<Guid, LocalDraftForegroundEvent?> cancel)
     {
         public Guid Opening { get; } = opening;
         public nint Overlay { get; } = overlay;
         public nint Source { get; } = source;
-        public Action<Guid> Cancel { get; } = cancel;
+        public Action<Guid, LocalDraftForegroundEvent?> Cancel { get; } = cancel;
         public int Invalid, Returning;
         public object? EditorFocus;
         public LocalDraftPrompt? Prompt;
@@ -30,6 +32,13 @@ internal sealed partial class KeyboardHook
         public bool Injected => Key?.Injected ?? Mouse!.Injected;
     }
     internal sealed record LocalDraftTap(LocalDraftPress Press, long UpSequence, long ReleasedAtMs, uint NativeUpTime);
+    internal readonly record struct LocalDraftReleaseObservation(long PressSequence, uint NativeDownTime,
+        long UpSequence, uint NativeUpTime, long ReleasedAtMs);
+
+    // Report the matched LL edges without publishing a claimable tap.
+    internal LocalDraftReleaseObservation? ObserveLocalDraftRelease() => Volatile.Read(ref _localDraftTap) is { } tap
+        ? new(tap.Press.Sequence, tap.Press.NativeTime, tap.UpSequence, tap.NativeUpTime, tap.ReleasedAtMs) : null;
+
     private LocalDraftAnchor? _localDraftAnchor;
     private LocalDraftPress? _localDraftPress;
     private LocalDraftTap? _localDraftTap;
@@ -56,7 +65,7 @@ internal sealed partial class KeyboardHook
         });
     }
 
-    internal void BeginLocalDraftAnchor(Guid opening, nint overlay, nint source, Action<Guid> cancel)
+    internal void BeginLocalDraftAnchor(Guid opening, nint overlay, nint source, Action<Guid, LocalDraftForegroundEvent?> cancel)
     {
         Interlocked.Exchange(ref _localDraftTraceSamples, 0);
         Interlocked.Exchange(ref _localDraftPress, null);
@@ -86,7 +95,7 @@ internal sealed partial class KeyboardHook
             Interlocked.Exchange(ref anchor.EditorFocus, null);
         if (!focused && Volatile.Read(ref _localDraftPress) is not null
             && Interlocked.Exchange(ref anchor.Invalid, 1) == 0)
-            anchor.Cancel(anchor.Opening);
+            anchor.Cancel(anchor.Opening, null);
     }
 
     // The real WPF down binds this particular native down, even if LL already
@@ -210,7 +219,7 @@ internal sealed partial class KeyboardHook
             // A second down (even at the same native timestamp), repeat,
             // wrong/extra up or intervening input cannot replace this candidate.
             if (Interlocked.Exchange(ref anchor.Invalid, 1) == 0)
-                anchor.Cancel(anchor.Opening);
+                anchor.Cancel(anchor.Opening, null);
             return;
         }
         var keys = Volatile.Read(ref _sessionKeys);
@@ -231,7 +240,7 @@ internal sealed partial class KeyboardHook
             // editor already retired. Never reset an existing candidate here.
             if (keep && !ReferenceEquals(Volatile.Read(ref anchor.EditorFocus), editorFocus)
                 && Interlocked.Exchange(ref anchor.Invalid, 1) == 0)
-                anchor.Cancel(anchor.Opening);
+                anchor.Cancel(anchor.Opening, null);
         }
         if (data.Key == 9)
             TraceLocalDraftKey(down ? "tab-down" : "unmatched-tab-up", Volatile.Read(ref _localDraftPress), now);
@@ -348,13 +357,13 @@ internal sealed partial class KeyboardHook
                 null, prompt.Id, new(data.Point.X, data.Point.Y, injected)));
     }
 
-    private void ObserveLocalDraftForeground(nint foreground)
+    private void ObserveLocalDraftForeground(LocalDraftForegroundEvent original)
     {
         if (Volatile.Read(ref _localDraftAnchor) is not { } anchor)
             return;
-        bool retained = foreground == anchor.Overlay || Volatile.Read(ref anchor.Returning) != 0
-            && (foreground == anchor.Source || foreground == 0);
+        bool retained = original.Window == anchor.Overlay || Volatile.Read(ref anchor.Returning) != 0
+            && (original.Window == anchor.Source || original.Window == 0);
         if (!retained && Interlocked.Exchange(ref anchor.Invalid, 1) == 0)
-            anchor.Cancel(anchor.Opening);
+            anchor.Cancel(anchor.Opening, original);
     }
 }
