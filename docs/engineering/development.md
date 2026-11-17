@@ -101,20 +101,34 @@ Python 开发工具进入 [eng/requirements.txt](../../eng/requirements.txt)。�
 
 ## 判断 CI 实际检查了什么
 
-主工作流是 [check.yml](../../.github/workflows/check.yml)。每次向工作分支或 `hitl` 推送都会执行完整检查。`main`、`trunk` 不触发该工作流。仓库内 PR 直接展示 head 提交的 push 检查，避免同一提交再跑一次 PR 合并提交。堆叠 PR 的 base 变化后，需要 rebase 并推送新 head，才能取得新基底上的证据。
+每次向工作分支或 `hitl` 推送，[check.yml](../../.github/workflows/check.yml) 都会对推送的提交执行完整检查。`main`、`trunk` 不触发该工作流。
 
-审查堆叠 PR 时，重新读取远端 head 和紧邻 base，确认 head 已包含该 base。调整 base 或 PR 正文不会产生检查；同步栈并推送新 head 后，核对本次 push 的检查与源码 artifact。
+以 `hitl` 为目标的 PR 还有一项组合检查。PR 打开、重新打开、修改或更新 head 时，[pr-candidate.yml](../../.github/workflows/pr-candidate.yml) 合并事件中的 base 和 head，在该源码树执行 `./dev.ps1 shared-check`。运行摘要和日志记录两个父提交、实际检出的提交及其 tree。合并冲突会阻止共享检查。
+
+`hitl` 前进时，[hitl-candidates.yml](../../.github/workflows/hitl-candidates.yml) 枚举仍以它为目标的开放 PR，用新 base 和每个 PR 的 head 运行同一项检查。PR 的 Checks 显示 `hitl shared / <完整 base SHA>`。基底更新触发的检查先写入 pending，结束后把结果写到原 head 的同名状态。两个提交中任意一个变化，原结果即属于旧组合，迟到的结果也只更新旧组合。
+
+审查时按当前 head 和 base 查询组合检查。把 `72` 换成 PR 编号。结果为空表示当前组合待验证。只接受当前组合已完成的成功结果。完整 push 检查和组合检查分别验收。
+
+```bash
+gh pr view 72 --json headRefOid,baseRefOid,statusCheckRollup --jq '
+  .baseRefOid as $base |
+  {head: .headRefOid, base: $base, checks: [
+    .statusCheckRollup[] | select((.name // .context) == ("hitl shared / " + $base))
+  ]}'
+```
+
+以其他工作分支为 base 的堆叠 PR 仍按 push 检查审查。重新读取远端 head 和紧邻 base，确认 head 已包含该 base。同步栈并推送新 head 后，核对本次 push 的检查与源码 artifact。
 
 核对提交时，分别记录以下身份：
 
 | 身份 | 核对内容 |
 | --- | --- |
 | PR head 和 base | GitHub 当前的源分支提交和目标分支提交。旧 head 的成功不属于最新 head。 |
-| 实际被测提交 `tested_commit` | 运行实际检出的提交。当前 push 运行须与 PR head 相同，并确认该 head 包含最新 base。 |
+| 实际被测提交 `tested_commit` | 运行实际检出的提交。审查 PR 时，push 记录须与 head 相同。组合检查记录的是以 base 和 head 为双亲的实际检出提交。 |
 | tree | 用 `git rev-parse '<提交>^{tree}'` 核对源码树。tree 相同只能说明源码内容相同，不能证明某次检查实际执行。 |
 | 最终 `hitl` 提交 | 合入后的集成提交。最终综合验收须来自同一实际集成提交，不能拼接各层的旧结果。 |
 
-CI 使用以下固定检查名。矩阵展开后共 19 个 job，各组保留现役测试命令、断言和产品期限。工作流没有按事件添加前缀，自动 push 与手动取证使用相同 job 名称。保护配置仍须核对最终候选的实际 check name 和来源 app。
+完整 push 检查使用以下固定名称。矩阵展开后共 19 个 job，各组保留现役测试命令、断言和产品期限。工作流没有按事件添加前缀，自动 push 与手动取证使用相同 job 名称。保护配置仍须核对最终候选的实际 check name 和来源 app。
 
 | 检查名 | 执行范围 |
 | --- | --- |
