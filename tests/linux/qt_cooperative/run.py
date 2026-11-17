@@ -82,6 +82,21 @@ def wait(test, message):
     raise AssertionError("Timed out: " + message)
 
 
+def search_windows(pid, env, *, name=None):
+    command = ["xdotool", "search", "--onlyvisible", "--pid", str(pid)]
+    if name is not None:
+        command.extend(["--name", name])
+    result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=5)
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout
+    if result.returncode == 1 and result.stdout == "" and result.stderr == "":
+        return ""
+    raise RuntimeError(
+        f"{shlex.join(command)} failed with exit code {result.returncode}\n"
+        f"stderr:\n{result.stderr}\nstdout:\n{result.stdout}"
+    )
+
+
 def counter_exceeds(observation, name, baseline=0):
     # Null means the provider has not published an observation yet, never zero.
     value = observation.get(name)
@@ -345,13 +360,7 @@ def stock_sync(out, env, children):
             def mapped():
                 if client.poll() is not None:
                     raise RuntimeError(f"Stock Qt fixture exited: {client.returncode}")
-                return subprocess.run(
-                    ["xdotool", "search", "--onlyvisible", "--pid", str(client.pid)],
-                    env=env,
-                    text=True,
-                    capture_output=True,
-                    timeout=5,
-                ).stdout.split()
+                return search_windows(client.pid, env).split()
 
             window = wait(mapped, "stock Qt mapped window")[0]
             run(["xdotool", "windowfocus", "--sync", window], env=env)
@@ -1844,20 +1853,9 @@ def ordered_controls(
                 )
 
             window = wait(
-                lambda: subprocess.run(
-                    [
-                        "xdotool",
-                        "search",
-                        "--onlyvisible",
-                        "--pid",
-                        str(client.pid),
-                        "--name",
-                        "^TypeLay Qt native fixture$",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    env=environment,
-                ).stdout.strip(),
+                lambda: search_windows(
+                    client.pid, environment, name="^TypeLay Qt native fixture$"
+                ).strip(),
                 "actual native Qt window",
             )
             assert len(window.splitlines()) == 1
@@ -4382,13 +4380,7 @@ def session(
                                 raise RuntimeError(
                                     f"Qt fixture exited before mapping: code={code}\n{tail}"
                                 )
-                            return subprocess.run(
-                                ["xdotool", "search", "--onlyvisible", "--pid", str(client.pid)],
-                                env=env,
-                                text=True,
-                                capture_output=True,
-                                timeout=5,
-                            ).stdout.split()
+                            return search_windows(client.pid, env).split()
 
                         try:
                             window = wait(mapped_windows, "mapped Qt window")[0]
