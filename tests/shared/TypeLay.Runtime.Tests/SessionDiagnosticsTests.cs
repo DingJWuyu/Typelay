@@ -12,6 +12,103 @@ public sealed class SessionDiagnosticsCollection;
 public sealed class SessionDiagnosticsTests
 {
     [Theory]
+    [InlineData("before-return", true)]
+    [InlineData("source-epoch", true)]
+    [InlineData("user-epoch", true)]
+    [InlineData("foreground-epoch", true)]
+    [InlineData("current", true)]
+    [InlineData("before-return", false)]
+    [InlineData("source-epoch", false)]
+    [InlineData("user-epoch", false)]
+    [InlineData("foreground-epoch", false)]
+    [InlineData("current", false)]
+    public void EditorRegenerateReadDiagnosticsPreserveTheOriginalGuard(string boundary, bool tracing)
+    {
+        WithTrace(path =>
+        {
+            using var s = new SessionScenario(experimental: true);
+            s.ReadyCandidate();
+            Assert.True(s.View.BeginEditing!(s.View.Token));
+            s.Input.InEditor = true;
+            s.View.DraftChanged!("private-manual-draft");
+            var returned = s.Service.PendingReturn = new();
+            _ = s.View.EditorRegenerateRequested!(new(Guid.NewGuid(), s.View.Token, s.Loop.NowMs));
+            s.Service.PendingCapture = new();
+            InputContext? request = null;
+            s.Service.CaptureObserved = value => request = value;
+            long returnedAt = s.Loop.NowMs;
+            returned.SetResult(true);
+            s.Tick();
+            Assert.NotNull(request?.EditorReturn);
+            var capture = new InputCapture(s.Fresh, FocusMember.Source, "private-application",
+                s.Input.UserEpoch, s.Input.ForegroundEpoch);
+            if (boundary == "before-return")
+                capture = capture with
+                {
+                    Snapshot = s.Fresh with
+                    {
+                        ObservedAtMs = returnedAt - 1
+                    }
+                };
+            if (boundary == "source-epoch")
+            {
+                s.Input.SourceUserEpoch++;
+                s.Input.UserEpoch++; // The first failed predicate must remain the source epoch.
+            }
+            if (boundary == "user-epoch")
+                capture = capture with
+                {
+                    UserEpoch = s.Input.UserEpoch - 1
+                };
+            if (boundary == "foreground-epoch")
+                capture = capture with
+                {
+                    ForegroundEpoch = s.Input.ForegroundEpoch - 1
+                };
+            s.CompleteCapture(capture);
+            if (boundary == "current")
+            {
+                Assert.Equal(SessionState.Translating, s.View.State);
+                s.Tick(Limits.DebounceMs);
+                Assert.Equal(2, s.Model.Jobs.Count);
+            }
+            else
+            {
+                Assert.False(s.View.Visible);
+                Assert.Null(s.Input.Permit);
+                Assert.Single(s.Model.Jobs);
+            }
+            Assert.Empty(s.Service.Writes);
+            Assert.Empty(s.Service.DirectWrites);
+            if (!tracing)
+            {
+                Assert.False(File.Exists(path));
+                return;
+            }
+            string trace = File.ReadAllText(path);
+            Assert.DoesNotContain("private-", trace);
+            if (boundary == "current")
+            {
+                Assert.DoesNotContain("editor-regenerate-source-changed", trace);
+                return;
+            }
+            Assert.Single(File.ReadAllLines(path), line =>
+                line.Contains("\"operation\":\"editor-regenerate-source-changed\"", StringComparison.Ordinal));
+            using var failure = ReadOperation(trace, "editor-regenerate-source-changed");
+            var detail = failure.RootElement.GetProperty("detail");
+            Assert.Equal(boundary, detail.GetProperty("reason").GetString());
+            Assert.Equal(returnedAt, detail.GetProperty("returnedAtMs").GetInt64());
+            Assert.Equal(capture.Snapshot!.ObservedAtMs, detail.GetProperty("observedAtMs").GetInt64());
+            if (boundary == "source-epoch")
+            {
+                Assert.Equal(request!.SourceUserEpoch, detail.GetProperty("requestSourceEpoch").GetInt64());
+                Assert.Equal(s.Input.SourceUserEpoch, detail.GetProperty("currentSourceEpoch").GetInt64());
+                Assert.Equal(JsonValueKind.Null, detail.GetProperty("currentUserEpoch").ValueKind);
+            }
+        }, tracing);
+    }
+
+    [Theory]
     [InlineData("error", "structure-not-preserved", "error", "structure-not-preserved")]
     [InlineData("error", "invalid-output", "error", "invalid-output")]
     [InlineData("error", "private-error-content", "error", "other")]

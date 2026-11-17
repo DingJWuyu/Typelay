@@ -127,3 +127,4 @@ runner 通过正式 `install.py install` 安装当前包，再从空数据执行
 - 网页旅程的 Tab 使用私有 XTest；Unicode 文本使用浏览器可信输入，选区通过 DOM 设置。它不证明物理输入、任意站点或普通 textarea 的原生 Undo。Firefox、富文本和商店安装仍有各自入口。
 - Windows 逐 UTF-16 单元输入 emoji 时，编辑器可能短暂持有孤立代理码元。验收保留原输入和完整稿，核对第一次 Tab 前的浮层仍可见，回源零写与下一次独立接受分别有证据。不能删除 emoji 或改换输入入口来绕过断连。
 - Windows 编辑器断开时，将 `draftObservation.editorChanges` 与 `trace-app.jsonl` 中的 `browser-editor-display`、`EditorRenewal` 和 `capture-empty` 按时间对应。续租诊断沿用原 trace 总预算，只记录阶段、首个拒绝原因和耗时。日志耗尽或缺少页面端结果时，根因仍须标为未确认。
+- 编辑态重新翻译回源被拒绝时，读取 `editor-regenerate-source-changed.detail.reason` 及本次实际判定采样的时刻与 epoch。未走到的后续采样为 null，不代表匹配。旧编辑节点断开后出现新译文，不能替代原回源操作通过的证据。
