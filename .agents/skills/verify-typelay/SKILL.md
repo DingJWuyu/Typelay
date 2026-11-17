@@ -107,7 +107,7 @@ Windows 无法在这台机器驱动。按[Windows 证据](references/windows.md)
 - `scripts/private-session.py --package PATH --cooperative PATH --output PATH -- COMMAND...` 运行一条私有桌面旅程并负责清理。
 - `scripts/gtk-preview.py` 仅在上述会话内部运行，完成正式模型准备、语言设置和普通 GTK 预览。
 - `scripts/settings-apps.py` 仅在上述会话内部运行，检查 Apps 页的布局和连接入口。完整调用与证据要求见[设置](features/settings.md#driving-it-with-private-niri)。
-- `scripts/offline-fcitx-build.py --cache-build PATH --output PATH` 从本机原始归档供给正式合作构建器。它只用于构建准备，不启动桌面；完整环境与调用见[离线构建](references/build.md#构建当前源码)。
+- 正式合作构建器通过 `--archive-cache PATH` 读取本机原始归档。完整环境与调用见[离线构建](references/build.md#构建当前源码)。
 - `scripts/qt-tools/xdotool` 为用户目录中的工具恢复其自身的动态库路径。它只供 Qt 私有旅程通过 PATH 调用，须先设置真实工具与库目录；完整用法见 [Qt 前提](features/qt.md#driving-it-with-private-niri)。
 
 脚本均可执行。桌面入口和 Qt 工具通过 Launch 的私有会话运行，构建入口另在断网命名空间内运行。它们不安装系统包，也不改产品代码。需要更新地图时使用 `/maintain-verification-skill`；若机器未安装该技能，直接按当前功能文件更新行为和证据要求。

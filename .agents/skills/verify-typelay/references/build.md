@@ -118,7 +118,19 @@ dotnet --version
 
 主包和合作包都从当前工作树生成。保留构建日志；构建失败时保留输出，不把旧包填进新输出目录。若复用按下列命令生成的合作归档，必须经过 `pack.py` 的输入与二进制核验，以及 `--finalize` 对当前源码和归档闭包的核验；记录它的来源。
 
-本机所有合作构建，包括测试 fixture 和 Qt 插件，都使用 GCC 15 和 `taskset -c 10`。同一台机器上有多个任务并行时，所有任务须用同一把锁串行合作构建。锁的绝对路径由派任务的人提供，执行前将它赋给 `TYPELAY_COOP_LOCK`。下方两条合作构建命令使用这一路径。私有桌面内编译时，先在外层记录工具的绝对路径，再在旅程脚本中设置构建环境；私有 HOME 中没有宿主的工具目录。
+先准备一份[平铺原始归档缓存](../../../../docs/platforms/linux/development.md#合作构建的本地原始归档)。已有完整构建目录时，下面命令只复制原始归档，输出目录不参与缓存。两种构建器随后共用 `archives`。缓存缺项时停止，报告具体文件路径。
+
+```bash
+archives="$PWD/artifacts/cooperative-archives"
+mkdir -p "$archives"
+find /home/liam_t/项目/Typelay/artifacts/linux/fcitx-build-gcc15-cpu10 \
+  -type f \( -name '*.tar.gz' -o -name '*.tar.zst' \) \
+  -exec cp --reflink=auto -t "$archives" -- {} +
+cp --reflink=auto /home/liam_t/项目/Typelay/artifacts/linux/qt-cooperative/fcitx5-qt.tar.gz \
+  "$archives/"
+```
+
+本机所有合作构建，包括测试 fixture 和 Qt 插件，都使用 GCC 15 和 `taskset -c 10`。同一台机器上有多个任务并行时，所有任务须用同一把锁串行合作构建。锁的绝对路径由派任务的人提供，执行前将它赋给 `TYPELAY_COOP_LOCK`。下方合作构建命令使用这一路径。私有桌面内编译时，先在外层记录工具的绝对路径，再在旅程脚本中设置构建环境；私有 HOME 中没有宿主的工具目录。
 
 ```bash
 mkdir -p artifacts/verification-build
@@ -131,8 +143,7 @@ unshare --user --map-current-user --net \
 flock "${TYPELAY_COOP_LOCK:?请先设置派任务者提供的共享锁绝对路径}" taskset -c 10 \
   unshare --user --map-current-user --net \
   artifacts/build-tools/bin/python \
-  .agents/skills/verify-typelay/scripts/offline-fcitx-build.py \
-  --cache-build /home/liam_t/项目/Typelay/artifacts/linux/fcitx-build-gcc15-cpu10 \
+  eng/linux/cooperative/fcitx.py --archive-cache "$archives" \
   --output artifacts/verification-build/fcitx \
   > artifacts/verification-build/fcitx.log 2>&1
 flock "${TYPELAY_COOP_LOCK:?请先设置派任务者提供的共享锁绝对路径}" taskset -c 10 \
@@ -157,9 +168,21 @@ tar -xzf artifacts/verification-build/TypeLay-Fcitx-cooperative.tar.gz \
 
 CPU 10 是这台机器已成功完整构建的环境绕法，使用前以 `taskset -pc $$` 确认它在允许集合内。GCC 16、GCC 15 和 clang 都曾发生间歇性编译器崩溃，原因尚未确认。不能把编译器崩溃当作产品编译错误，也不能修改固定源码或补丁让环境绕法通过。其它机器不要求使用 CPU 10。
 
-离线重建 Fcitx 时，正式构建器会重新解压源码，因此预先放进输出源码树的数据归档会被删除。上方缓存入口在正式下载边界复制已有原始归档；源码补丁、构建配方与摘要校验仍由正式构建器执行。`--cache-build` 指向本机已有的完整归档来源，不复用其中的安装前缀或二进制。
+正式构建器从缓存复制、校验并解压原始归档，再应用当前补丁。缓存只读，缺项、未知归档或摘要不符均明确失败。拼写字典也由正式构建器供给并校验，无需向输出源码树预放文件。`cc` 与 `c++` 均须解析为 GCC 15。
 
-仍需上方 GCC 15 环境。构建器直接调用 `cc` 与 `c++`，这两个名称也须解析为 GCC 15。缓存入口遇到缺失或未知归档即失败，拼写字典仍由上游 CMake 核对固定摘要。随后以 `--reuse-build --build-only --scope core` 复验生产字节并编译核心 fixtures，供 Qt 的构建身份检查使用。这一步不执行桌面场景，也不证明合作测试通过。最后执行上方 `pack.py` 与 `--finalize`。
+上方 `--reuse-build --build-only --scope core` 复验生产字节并编译核心 fixtures，供 Qt 的构建身份检查使用。这一步不执行桌面场景，也不证明合作测试通过。
+
+需要 Qt 时，在全新输出目录调用相同的缓存参数：
+
+```bash
+flock "${TYPELAY_COOP_LOCK:?请先设置派任务者提供的共享锁绝对路径}" taskset -c 10 \
+  unshare --user --map-current-user --net \
+  artifacts/build-tools/bin/python eng/linux/cooperative/qt.py \
+  --archive-cache "$archives" --out artifacts/linux/qt-cooperative \
+  > artifacts/verification-build/qt.log 2>&1
+```
+
+随后按 [Qt 功能地图](../features/qt.md#driving-it-with-private-niri)运行 `--reuse-build` 完整 probe。该参数复验生产源码、ABI、补丁和二进制，并重新编译测试 fixture。
 
 `--finalize` 要求生产输入干净且与主包身份一致。文档或技能变更应先提交再构建，以便记录明确 SHA。生产代码未提交时，可以构建 setup-only 主包配合独立合作包定位问题，但报告必须保留 `sourceDirty`，不能宣称完整发行包已封装。
 

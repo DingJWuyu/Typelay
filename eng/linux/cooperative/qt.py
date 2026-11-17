@@ -14,11 +14,11 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
+from eng.linux.cooperative.archives import download, validate_cache  # noqa: E402
 from eng.linux.cooperative.inputs import (  # noqa: E402
     PATCHES,
     QT_BUILD_INPUTS,
@@ -98,16 +98,17 @@ def build_plugin(source, directory):
     subprocess.run(["cmake", "--build", directory, "--parallel", "2"], check=True, timeout=600)
 
 
-def build(out):
+def build(out, archive_cache=None):
+    archive_cache = validate_cache(archive_cache, out)
+    out.mkdir(parents=True, exist_ok=True)
     inputs = hashes(QT_BUILD_INPUTS)
     archive = out / "fcitx5-qt.tar.gz"
-    if not archive.exists():
-        with urllib.request.urlopen(
-            f"https://codeload.github.com/fcitx/fcitx5-qt/tar.gz/{QT_PIN}", timeout=180
-        ) as response:
-            archive.write_bytes(response.read())
-    if sha256(archive) != QT_SHA256:
-        raise RuntimeError("Official Fcitx Qt source checksum mismatch")
+    download(
+        f"https://codeload.github.com/fcitx/fcitx5-qt/tar.gz/{QT_PIN}",
+        archive,
+        QT_SHA256,
+        archive_cache,
+    )
     source = out / f"fcitx5-qt-{QT_PIN}"
     if source.exists():
         raise RuntimeError("Use a fresh output directory; never silently reuse modified source")
@@ -184,10 +185,14 @@ def build(out):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, default=ROOT / "artifacts/linux/qt-cooperative")
+    parser.add_argument(
+        "--archive-cache",
+        type=Path,
+        help="Read only this flat raw-archive directory; never download",
+    )
     args = parser.parse_args()
     out = args.out.resolve()
-    out.mkdir(parents=True, exist_ok=True)
-    build(out)
+    build(out, archive_cache=args.archive_cache)
 
 
 if __name__ == "__main__":

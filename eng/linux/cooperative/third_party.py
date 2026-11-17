@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -12,11 +11,13 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
+sys.path.insert(0, str(ROOT))
+from eng.linux.cooperative.archives import download, sha256, validate_cache  # noqa: E402
+
 PATCHES = HERE / "patches"
 CORE_VERSION = "5.1.22"
 SOURCE_VERSIONS = {
@@ -80,29 +81,24 @@ DATA = (
     ),
 )
 
+# The pinned Fcitx spell/CMakeLists.txt requests these same upstream bytes.
+SPELL = (
+    "fcitx5/src/modules/spell",
+    "en_dict-20121020.tar.gz",
+    "c44a5d7847925eea9e4d2d04748d442cd28dd9299a0b572ef7d91eac4f5a6ceb",
+)
+
 
 BUILD_INPUTS = (
+    "eng/linux/cooperative/archives.py",
     "eng/linux/cooperative/third_party.py",
     "eng/ci/arch-snapshot",
     *(f"eng/linux/cooperative/patches/{project}.patch" for project in PATCH_PROJECTS),
 )
 
 
-def sha256(path):
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
 def hashes(files):
     return {relative: sha256(ROOT / relative) for relative in files}
-
-
-def download(url, destination, digest):
-    if not destination.exists():
-        with urllib.request.urlopen(url, timeout=180) as response:
-            destination.write_bytes(response.read())
-    if sha256(destination) != digest:
-        raise RuntimeError(f"Official source/data checksum mismatch: {destination.name}")
 
 
 def run(args, **kwargs):
@@ -127,6 +123,9 @@ def verify(out):
     for project, (commit, digest) in FCITX_PINS.items():
         if sha256(out / f"{project}-{commit}.tar.gz") != digest:
             raise ValueError(f"Third-party source archive changed: {project}")
+    for directory, name, digest in (*DATA, SPELL):
+        if sha256(out / "sources" / directory / name) != digest:
+            raise ValueError(f"Third-party data archive changed: {name}")
     for project in PATCH_PROJECTS:
         run(
             [
@@ -143,7 +142,9 @@ def verify(out):
         )
 
 
-def build(out):
+def build(out, archive_cache=None):
+    archive_cache = validate_cache(archive_cache, out)
+    out.mkdir(parents=True, exist_ok=True)
     inputs = hashes(BUILD_INPUTS)
     (out / "third-party.json").unlink(missing_ok=True)
     core_version = CORE_VERSION
@@ -153,7 +154,12 @@ def build(out):
     for repo, (commit, digest) in pins.items():
         archive = out / f"{repo}-{commit}.tar.gz"
         owner = "kpu" if repo == "kenlm" else "fcitx"
-        download(f"https://codeload.github.com/{owner}/{repo}/tar.gz/{commit}", archive, digest)
+        download(
+            f"https://codeload.github.com/{owner}/{repo}/tar.gz/{commit}",
+            archive,
+            digest,
+            archive_cache,
+        )
         target = sources / repo
         if target.exists():
             shutil.rmtree(target)
@@ -168,8 +174,13 @@ def build(out):
     kenlm = sources / "libime/src/libime/core/kenlm"
     kenlm.rmdir()  # Empty gitlink directory from the official source archive.
     (sources / "kenlm").rename(kenlm)
-    for directory, name, digest in DATA:
-        download(f"https://download.fcitx-im.org/data/{name}", sources / directory / name, digest)
+    for directory, name, digest in (*DATA, SPELL):
+        download(
+            f"https://download.fcitx-im.org/data/{name}",
+            sources / directory / name,
+            digest,
+            archive_cache,
+        )
     prefix = out / "core-prefix"
     print(f"Configuring complete Fcitx {core_version} with official frontends", flush=True)
     run(
@@ -321,10 +332,14 @@ def build(out):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--archive-cache",
+        type=Path,
+        help="Read only this flat raw-archive directory; never download",
+    )
     args = parser.parse_args()
     out = (args.output or ROOT / "artifacts/linux" / f"fcitx-cooperative-{CORE_VERSION}").resolve()
-    out.mkdir(parents=True, exist_ok=True)
-    build(out)
+    build(out, archive_cache=args.archive_cache)
 
 
 if __name__ == "__main__":

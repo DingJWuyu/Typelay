@@ -823,6 +823,10 @@ jobs:
       id: test-fcitx-cooperative-session
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
       run: python -m unittest discover -s tests/linux -p test_fcitx_cooperative_session.py -v
+    - name: Verify Linux cooperative archive supply
+      id: cooperative-archives
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_cooperative_archives.py -v
     - name: Verify Linux test_input_notifications
       id: test-input-notifications
       if: ${{ matrix.group == 'contracts' && !cancelled() }}

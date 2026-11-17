@@ -20,6 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from eng.linux.cooperative import third_party  # noqa: E402
+from eng.linux.cooperative.archives import validate_cache  # noqa: E402
 from eng.linux.cooperative.inputs import (  # noqa: E402
     CORE_VERSION,
     DATA,
@@ -39,7 +40,11 @@ def flags(*packages):
     return shlex.split(run(["pkg-config", "--cflags", "--libs", *packages]))
 
 
-def build(out: Path, core_version: str, reuse_third_party=False):
+def build(out: Path, core_version: str, reuse_third_party=False, archive_cache=None):
+    archive_cache = validate_cache(archive_cache, out)
+    if archive_cache is not None and reuse_third_party:
+        raise ValueError("Local archive builds cannot reuse third-party binaries")
+    out.mkdir(parents=True, exist_ok=True)
     inputs = {"files": hashes(FCITX_BUILD_INPUTS)}
     # A new build cannot retain success or fixture provenance from an earlier run.
     for name in ("build-inputs.json", "versions.json", "test-inputs.json", "result.json"):
@@ -47,7 +52,7 @@ def build(out: Path, core_version: str, reuse_third_party=False):
     if reuse_third_party:
         third_party.verify(out)
     else:
-        third_party.build(out)
+        third_party.build(out, archive_cache=archive_cache)
     prefix = out / "core-prefix"
     gtk = out / "sources/fcitx5-gtk"
     lib = out / "lib"
@@ -288,10 +293,14 @@ def main():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--core-version", choices=(CORE_VERSION,), default=CORE_VERSION)
     parser.add_argument("--reuse-third-party", action="store_true")
+    parser.add_argument(
+        "--archive-cache",
+        type=Path,
+        help="Read only this flat raw-archive directory; never download",
+    )
     args = parser.parse_args()
     out = (args.output or ROOT / "artifacts/linux" / f"fcitx-cooperative-{CORE_VERSION}").resolve()
-    out.mkdir(parents=True, exist_ok=True)
-    build(out, args.core_version, args.reuse_third_party)
+    build(out, args.core_version, args.reuse_third_party, archive_cache=args.archive_cache)
 
 
 if __name__ == "__main__":

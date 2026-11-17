@@ -149,6 +149,7 @@ class BuildSafetyTests(unittest.TestCase):
         repository = Path(tempfile.mkdtemp(dir=self.directory))
         for relative in (
             "eng/linux/build.py",
+            "eng/linux/cooperative/archives.py",
             "eng/linux/cooperative/inputs.py",
             "eng/linux/cooperative/third_party.py",
             "eng/linux/index/prepare_runtime.py",

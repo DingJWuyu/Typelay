@@ -60,6 +60,7 @@ FCITX_BUILD_INPUTS = (
     ),
 )
 QT_BUILD_INPUTS = (
+    "eng/linux/cooperative/archives.py",
     "eng/linux/cooperative/inputs.py",
     "eng/linux/cooperative/third_party.py",
     "eng/linux/cooperative/qt.py",
