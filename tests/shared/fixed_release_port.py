@@ -29,10 +29,11 @@ def main():
             digest = hashlib.sha256(row["data"]).hexdigest()
             if os.environ.get("FIXED_CORRUPT") and not row["draft"]:
                 digest = "0" * 64
-            assets = [{"name": row["name"], "digest": "sha256:" + digest}]
+            assets = [{"id": row["id"], "name": row["name"], "digest": "sha256:" + digest}]
         return {
             "id": row["id"],
             "tag_name": row["tag"],
+            "published_at": None if row["draft"] else "2026-11-17T00:00:00Z",
             "draft": bool(row["draft"]),
             "assets": assets,
         }
@@ -56,6 +57,18 @@ def main():
             if row["draft"]:
                 fail(404, "Not Found")
             print(json.dumps(release(row)))
+        elif endpoint.endswith("/jobs?per_page=100"):
+            Path(os.environ["GITHUB_OUTPUT"]).with_name("waiting").touch()
+            published = database.execute("SELECT 1 FROM releases WHERE draft=0").fetchone()
+            print(
+                json.dumps(
+                    {
+                        "jobs": [
+                            {"name": "fcitx-build", "conclusion": "success" if published else None}
+                        ]
+                    }
+                )
+            )
         elif endpoint.endswith("/releases") and method == "POST":
             with database:
                 database.execute(
@@ -132,11 +145,6 @@ def main():
                     row["id"],
                 ),
             )
-    elif args[:2] == ["release", "download"]:
-        row = find(args[2])
-        if row["draft"]:
-            fail(404, "Not Found")
-        (Path(args[args.index("--dir") + 1]) / row["name"]).write_bytes(row["data"])
     else:
         raise AssertionError(args)
 
