@@ -9,7 +9,9 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -18,10 +20,12 @@ from pathlib import Path
 if sys.argv[1] == "api":
     mode = os.environ["FIXED_CASE"]
     if sys.argv[2].endswith('/jobs?per_page=100'):
-        print(json.dumps({'jobs': [{'name': 'fcitx-build', 'conclusion':
-            'failure' if mode == 'producer-failed' else None}]}))
+        conclusion = {'producer-failed': 'failure', 'producer-cancelled': 'cancelled',
+                      'publish-at-completion': 'success'}.get(mode)
+        print(json.dumps({'jobs': [] if mode == 'producer-absent' else
+            [{'name': 'fcitx-build', 'conclusion': conclusion}]}))
         sys.exit(0)
-    if mode in ('wait-valid', 'wait-draft'):
+    if mode in ('wait-valid', 'wait-draft', 'publish-at-completion'):
         attempt = Path(os.environ["FIXED_METADATA"]).with_suffix('.attempt')
         if not attempt.exists():
             attempt.touch()
@@ -29,7 +33,8 @@ if sys.argv[1] == "api":
                 print(json.dumps({'draft': True, 'assets': []}))
                 sys.exit(0)
             mode = 'missing'
-    if mode == 'producer-failed': mode = 'missing'
+    if mode in ('producer-failed', 'producer-cancelled', 'producer-running', 'producer-absent'):
+        mode = 'missing'
     if mode in ("missing", "denied"):
         print("HTTP " + ("404" if mode == "missing" else "403"), file=sys.stderr)
         sys.exit(1)
@@ -40,7 +45,7 @@ else:
 
 
 class FixedBuildTransportTests(unittest.TestCase):
-    def run_transport(self, mode, action="restore", wait=False, kind="fonts"):
+    def run_transport(self, mode, action="restore", wait=False, kind="fonts", extra_args=()):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             script = root / "eng/ci/fixed.py"
@@ -86,7 +91,8 @@ class FixedBuildTransportTests(unittest.TestCase):
             output = root / "output"
             result = subprocess.run(
                 [sys.executable, str(script), action, kind, "--tag", "ci-test"]
-                + (["--wait-for-job", "fcitx-build"] if wait else []),
+                + (["--wait-for-job", "fcitx-build"] if wait else [])
+                + list(extra_args),
                 cwd=root,
                 capture_output=True,
                 text=True,
@@ -105,23 +111,39 @@ class FixedBuildTransportTests(unittest.TestCase):
             )
             self.assertEqual(
                 result.returncode == 0,
-                mode not in ("denied", "corrupt", "producer-failed"),
+                mode
+                not in (
+                    "denied",
+                    "corrupt",
+                    "producer-failed",
+                    "producer-cancelled",
+                    "producer-running",
+                    "producer-absent",
+                ),
                 result.stderr,
             )
             self.assertEqual(
                 (root / payload).exists(),
-                mode in ("valid", "wait-valid", "wait-draft") and action == "restore",
+                mode in ("valid", "wait-valid", "wait-draft", "publish-at-completion")
+                and action == "restore",
             )
             self.assertEqual(
                 output.read_text() if output.exists() else "",
                 "hit=false\n"
                 if mode == "missing"
                 else "hit=true\n"
-                if mode in ("valid", "wait-valid", "wait-draft")
+                if mode in ("valid", "wait-valid", "wait-draft", "publish-at-completion")
                 else "",
             )
-            if mode == "producer-failed":
+            if mode in ("producer-failed", "producer-cancelled"):
                 self.assertIn("Fixed producer ended", result.stderr)
+                self.assertIn(
+                    "failure" if mode == "producer-failed" else "cancelled", result.stderr
+                )
+            if mode == "producer-running":
+                self.assertIn("Timed out waiting", result.stderr)
+            if mode == "producer-absent":
+                self.assertIn("Fixed producer job not found", result.stderr)
             if action == "lookup":
                 self.assertFalse((root / "artifacts/fonts.tar.gz").exists())
 
@@ -136,7 +158,18 @@ class FixedBuildTransportTests(unittest.TestCase):
                 self.run_transport(mode, wait=True)
 
     def test_failed_producer_does_not_leave_a_consumer_waiting(self):
-        self.run_transport("producer-failed", wait=True)
+        for mode in ("producer-failed", "producer-cancelled"):
+            with self.subTest(mode=mode):
+                self.run_transport(mode, wait=True)
+
+    def test_running_producer_wait_is_bounded(self):
+        self.run_transport("producer-running", wait=True, extra_args=("--wait-seconds", "0.1"))
+
+    def test_missing_producer_has_an_explicit_failure(self):
+        self.run_transport("producer-absent", wait=True)
+
+    def test_release_published_between_lookup_and_completion_is_consumed(self):
+        self.run_transport("publish-at-completion", wait=True)
 
     def test_changed_archive_fails_before_extracting(self):
         self.run_transport("corrupt")
@@ -152,6 +185,163 @@ class FixedBuildTransportTests(unittest.TestCase):
             for mode in ("valid", "corrupt"):
                 with self.subTest(kind=kind, mode=mode):
                     self.run_transport(mode, kind=kind)
+
+
+class FixedBuildPublicationTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        port = ROOT / "tests/shared/fixed_release_port.py"
+        shim = self.root / ("gh.cmd" if sys.platform == "win32" else "gh")
+        shim.write_text(
+            f'@echo off\n"{sys.executable}" "{port}" %*\nexit /b %errorlevel%\n'
+            if sys.platform == "win32"
+            else f"#!{sys.executable}\n" + port.read_text()
+        )
+        shim.chmod(0o700)
+        self.env = os.environ | {
+            "PATH": str(self.root) + os.pathsep + os.environ["PATH"],
+            "GITHUB_REPOSITORY": "test/repo",
+            "GITHUB_SHA": "current-commit",
+            "FIXED_DATABASE": str(self.root / "releases.sqlite"),
+        }
+
+    def command(self, caller, action, extra_env=None):
+        root = self.root / caller
+        script = root / "eng/ci/fixed.py"
+        if not script.exists():
+            script.parent.mkdir(parents=True)
+            shutil.copyfile(ROOT / "eng/ci/fixed.py", script)
+        payload = root / "artifacts/ui-fonts/test.bin"
+        if action == "publish":
+            payload.parent.mkdir(parents=True, exist_ok=True)
+            payload.write_text(caller)
+        return subprocess.run(
+            [sys.executable, str(script), action, "fonts", "--tag", "ci-test"],
+            capture_output=True,
+            text=True,
+            env=self.env | {"GITHUB_OUTPUT": str(root / "output")} | (extra_env or {}),
+            timeout=20,
+        )
+
+    def releases(self):
+        return json.loads(
+            subprocess.check_output(
+                ["gh", "api", "repos/test/repo/releases"], env=self.env, text=True, timeout=10
+            )
+        )
+
+    def test_duplicate_publisher_reuses_the_complete_winner_without_overwriting_it(self):
+        first = self.command("winner", "publish")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        duplicate = self.command("competitor", "publish")
+        self.assertEqual(duplicate.returncode, 0, duplicate.stderr)
+        consumer = self.command("consumer", "restore")
+        self.assertEqual(consumer.returncode, 0, consumer.stderr)
+        self.assertEqual((self.root / "consumer/artifacts/ui-fonts/test.bin").read_text(), "winner")
+        self.assertEqual([r["tag_name"] for r in self.releases()], ["ci-test"])
+
+    def test_concurrent_first_publish_is_invisible_until_complete_and_has_one_winner(self):
+        gate = self.root / "publish-gate"
+        gate.mkdir()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            producers = [
+                pool.submit(self.command, name, "publish", {"FIXED_PUBLISH_GATE": str(gate)})
+                for name in ("first", "second")
+            ]
+            try:
+                deadline = time.monotonic() + 10
+                while len(list(gate.iterdir())) != 2 and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(len(list(gate.iterdir())), 2, "Both publishers must overlap")
+                before = self.command("consumer", "lookup")
+                self.assertEqual(before.returncode, 0, before.stderr)
+                self.assertEqual((self.root / "consumer/output").read_text(), "hit=false\n")
+            finally:
+                (gate / "go").touch()
+            results = [producer.result(timeout=20) for producer in producers]
+        for result in results:
+            self.assertEqual(result.returncode, 0, result.stderr)
+        releases = self.releases()
+        self.assertEqual([r["tag_name"] for r in releases], ["ci-test"])
+        self.assertIn(
+            f"Reused verified fixed build ci-test from release {releases[0]['id']}",
+            "".join(result.stdout for result in results),
+        )
+        consumer = self.command("consumer", "restore")
+        self.assertEqual(consumer.returncode, 0, consumer.stderr)
+        winner = next(
+            name for name, result in zip(("first", "second"), results) if not result.stdout
+        )
+        self.assertEqual((self.root / "consumer/artifacts/ui-fonts/test.bin").read_text(), winner)
+
+    def test_failed_upload_deletes_its_draft_and_next_producer_can_publish(self):
+        interrupted = self.command("interrupted", "publish", {"FIXED_UPLOAD_FAILED": "1"})
+        self.assertNotEqual(interrupted.returncode, 0)
+        self.assertIn("Upload interrupted", interrupted.stderr)
+        self.assertEqual(self.releases(), [])
+        replacement = self.command("replacement", "publish")
+        self.assertEqual(replacement.returncode, 0, replacement.stderr)
+        self.assertEqual([r["tag_name"] for r in self.releases()], ["ci-test"])
+
+    def test_changed_upload_is_never_published(self):
+        failed = self.command("producer", "publish", {"FIXED_UPLOAD_CORRUPT": "1"})
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("Release asset digest mismatch", failed.stderr)
+        self.assertEqual(self.releases(), [])
+
+    def test_lost_publish_response_never_deletes_a_complete_release(self):
+        failed = self.command("producer", "publish", {"FIXED_PUBLISH_RESPONSE_LOST": "1"})
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("Publication response lost", failed.stderr)
+        consumer = self.command("consumer", "restore")
+        self.assertEqual(consumer.returncode, 0, consumer.stderr)
+        self.assertEqual(
+            (self.root / "consumer/artifacts/ui-fonts/test.bin").read_text(), "producer"
+        )
+
+    def test_permission_denial_and_corrupt_winner_are_not_successful_duplicates(self):
+        winner = self.command("winner", "publish")
+        self.assertEqual(winner.returncode, 0, winner.stderr)
+        for variable, diagnostic in (
+            ("FIXED_DENIED", "403"),
+            ("FIXED_PUBLISH_DENIED", "403"),
+            ("FIXED_CORRUPT", "Release asset digest mismatch"),
+        ):
+            with self.subTest(variable=variable):
+                failed = self.command(variable, "publish", {variable: "1"})
+                self.assertNotEqual(failed.returncode, 0)
+                self.assertIn(diagnostic, failed.stderr)
+                self.assertNotIn("Reused verified", failed.stdout)
+                self.assertEqual([r["tag_name"] for r in self.releases()], ["ci-test"])
+
+    def test_abandoned_private_draft_does_not_block_a_new_producer(self):
+        subprocess.run(
+            [
+                "gh",
+                "api",
+                "repos/test/repo/releases",
+                "--method",
+                "POST",
+                "-f",
+                "tag_name=ci-test-draft-abandoned",
+                "-F",
+                "draft=true",
+            ],
+            env=self.env,
+            capture_output=True,
+            check=True,
+            timeout=10,
+        )
+        replacement = self.command("replacement", "publish")
+        self.assertEqual(replacement.returncode, 0, replacement.stderr)
+        consumer = self.command("consumer", "restore")
+        self.assertEqual(consumer.returncode, 0, consumer.stderr)
+        self.assertEqual(
+            (self.root / "consumer/artifacts/ui-fonts/test.bin").read_text(), "replacement"
+        )
+        self.assertEqual(len([r for r in self.releases() if not r["draft"]]), 1)
 
 
 class FixedBuildKeyTests(unittest.TestCase):
