@@ -103,19 +103,28 @@ Python 开发工具进入 [eng/requirements.txt](../../eng/requirements.txt)。�
 
 每次向工作分支或 `hitl` 推送，[check.yml](../../.github/workflows/check.yml) 都会对推送的提交执行完整检查。`main`、`trunk` 不触发该工作流。
 
-以 `hitl` 为目标的 PR 还有一项组合检查。PR 打开、重新打开、修改或更新 head 时，[pr-candidate.yml](../../.github/workflows/pr-candidate.yml) 合并事件中的 base 和 head，在该源码树执行 `./dev.ps1 shared-check`。运行摘要和日志记录两个父提交、实际检出的提交及其 tree。合并冲突会阻止共享检查。
+以 `hitl` 为目标的 PR 打开、重新打开、更新 head，或从其他 base 改投 `hitl` 时，[pr-candidate.yml](../../.github/workflows/pr-candidate.yml) 合并事件中的 base 和 head，在检出的源码树执行 `./dev.ps1 shared-check`。只改标题或正文时，该 job 跳过。两端有冲突时，GitHub 可能不创建 `pull_request` 运行。该组合仍待验证；已启动的组合检查遇到冲突会失败。
 
-`hitl` 前进时，[hitl-candidates.yml](../../.github/workflows/hitl-candidates.yml) 枚举仍以它为目标的开放 PR，用新 base 和每个 PR 的 head 运行同一项检查。PR 的 Checks 显示 `hitl shared / <完整 base SHA>`。基底更新触发的检查先写入 pending，结束后把结果写到原 head 的同名状态。两个提交中任意一个变化，原结果即属于旧组合，迟到的结果也只更新旧组合。
+`hitl` 收到 push 后，[hitl-candidates.yml](../../.github/workflows/hitl-candidates.yml) 枚举仍以它为目标的开放 PR。枚举 job 在每个 head 发布 `hitl shared / <完整 base SHA>` 等待状态，链接指向该次运行。每个 PR 用新 base 和自己的 head 运行相同的共享检查。独立的报告 job 将最终状态写回同一组合。枚举失败或结果发布失败时，Actions 显示错误；缺少当前组合的有效结果时按待验证处理。
 
-审查时按当前 head 和 base 查询组合检查。把 `72` 换成 PR 编号。结果为空表示当前组合待验证。只接受当前组合已完成的成功结果。完整 push 检查和组合检查分别验收。
+**审查当前组合。** 在 PR 的 Checks 中打开与当前 base SHA 对应的详情。以下命令直接读取远端 `hitl` 和 PR head，列出该 head 的 PR 运行和当前 base 对应的 push 状态链接。把 `72` 换成实际 PR 编号。
 
 ```bash
-gh pr view 72 --json headRefOid,baseRefOid,statusCheckRollup --jq '
-  .baseRefOid as $base |
-  {head: .headRefOid, base: $base, checks: [
-    .statusCheckRollup[] | select((.name // .context) == ("hitl shared / " + $base))
-  ]}'
+set -euo pipefail
+pr=72
+base=$(gh api 'repos/{owner}/{repo}/git/ref/heads/hitl' --jq .object.sha)
+head=$(gh api "repos/{owner}/{repo}/pulls/$pr" --jq 'select(.state == "open" and .base.ref == "hitl") | .head.sha')
+test -n "$head"
+printf 'PR #%s  head=%s  hitl=%s\n' "$pr" "$head" "$base"
+gh api --paginate "repos/{owner}/{repo}/actions/runs?event=pull_request&head_sha=$head&per_page=100" \
+  --jq '.workflow_runs[] | select(.path == ".github/workflows/pr-candidate.yml") | [.display_title, .html_url] | @tsv'
+gh api --paginate "repos/{owner}/{repo}/commits/$head/statuses?per_page=100" \
+  | jq -r --arg context "hitl shared / $base" '.[] | select(.context == $context) | [.state, .target_url] | @tsv'
 ```
+
+1. 打开链接，在对应 PR 的共享 job 日志核对完整 head、base、实际检出的提交、tree 和共享检查的退出结果。运行摘要也记录这些源码身份及工作流的引用和提交。在已取得两个父提交的本地仓库，用 `git merge-tree --write-tree "$base" "$head"` 复核 tree。
+2. 在该次 Actions 运行打开 **Workflow file**，核对事件、工作流文件和版本。PR 事件使用候选合并提交中的工作流；push 事件应来自上述 `hitl` 提交的 `hitl-candidates.yml`，并调用同一版本的 `pr-candidate.yml`。对于 push 状态，还须确认该 PR 的报告 job 已发布这一对 SHA 的结果。同名检查、PR 总览或状态发布者本身都不足以确认这些事实。
+3. 对照当前 base 审查 PR 的改动。若 PR 修改工作流、`dev.ps1 shared-check` 的入口、依赖、测试发现或断言，先核对具体差异，再确认日志实际运行了预期检查。在审清前，该组合仍待验证。只有当前两端匹配、来源可核实且共享检查实际成功时，才可将组合记为通过。提交合并前重新读取两个 SHA；任何一端已变更都需查看新组合。完整 push 的结果另行验收。
 
 以其他工作分支为 base 的堆叠 PR 仍按 push 检查审查。重新读取远端 head 和紧邻 base，确认 head 已包含该 base。同步栈并推送新 head 后，核对本次 push 的检查与源码 artifact。
 
