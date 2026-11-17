@@ -59,11 +59,11 @@
 
 ### 待审提交仍须取得完整验收证据
 
-- **Rule**：在待审 head 上执行要求的完整验收，并保留每次结果。禁止把未解释的失败反复跑到通过后交差，不妨碍为当前 head 取证或复现失败。
+- **Rule**：在待审 head 上执行要求的完整验收，并保留每次结果。保留失败不妨碍为当前 head 取证或开展有界复现。对非确定性故障，先说明运行上限和停止条件，再通过重复、并行或压力提高复现机会。后续通过不能覆盖未解释的失败，也不能据此宣称修复。
 - **Kind**：judgement。
-- **Why**：#61 把“不准重试”理解成不能在新 head 上完整验收，只提交了定向回归，导致私有 GUI 的最新完整证据缺失。
-- **Evidence**：[PR #67 负责人审查](https://github.com/DingJWuyu/Typelay/pull/67#pullrequestreview-5939944553)。
-- **Seen**：1 次，2026-11-17。
+- **Why**：#61 把“不准重试”理解成不能在新 head 上完整验收，只提交了定向回归，导致私有 GUI 的最新完整证据缺失。#68 首轮诊断又把“不准重跑取绿”理解成应停止主动复现，在最小候选用例未复现后过早结束。负责人澄清后，诊断才继续执行有界压力对照。
+- **Evidence**：[PR #67 负责人审查](https://github.com/DingJWuyu/Typelay/pull/67#pullrequestreview-5939944553)；#68 的[首轮诊断](https://github.com/DingJWuyu/Typelay/issues/68#issuecomment-6953669245)与[澄清后的诊断](https://github.com/DingJWuyu/Typelay/issues/68#issuecomment-6954825624)。
+- **Seen**：2 次：#61，2026-11-17；#68，2026-11-17（多轮诊断只计一次）。
 
 ### 固定产物要按实际变更频率划分
 
