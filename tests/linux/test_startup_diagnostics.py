@@ -13,7 +13,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class StartupDiagnosticsTests(unittest.TestCase):
     def test_missing_gui_dependencies_have_actionable_diagnostics_without_display(self):
-        with tempfile.TemporaryDirectory(prefix="typelay-doctor-") as directory:
+        with (
+            tempfile.TemporaryDirectory(prefix="typelay-doctor-") as directory,
+            tempfile.TemporaryDirectory(prefix="tldoctor-", dir="/tmp") as runtime,
+        ):
             home = Path(directory)
             (home / "package/app").mkdir(parents=True)
             (home / "package/app/TypeLay.Linux").touch()
@@ -23,7 +26,7 @@ class StartupDiagnosticsTests(unittest.TestCase):
                 "XDG_CONFIG_HOME": str(home / "config"),
                 "XDG_DATA_HOME": str(home / "data"),
                 "XDG_CACHE_HOME": str(home / "cache"),
-                "XDG_RUNTIME_DIR": directory,
+                "XDG_RUNTIME_DIR": runtime,
                 "TYPELAY_HOME": str(home / "package"),
             }
             for name in ("DISPLAY", "WAYLAND_DISPLAY", "NIRI_SOCKET", "PYTHONPATH"):

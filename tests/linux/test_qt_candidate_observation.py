@@ -25,6 +25,19 @@ from qt_desktop import (  # noqa: E402
 )
 
 
+def setUpModule():
+    if "TYPELAY_CONTRACTS_TMPDIR" not in os.environ:
+        return
+    root = tempfile.gettempdir()
+    length = len(os.fsencode(root))
+    print(f"Qt discovery tempfile.gettempdir()={root!r} ({length} bytes)", flush=True)
+    if root != os.environ["TYPELAY_CONTRACTS_TMPDIR"] or root != os.environ.get("TMPDIR"):
+        raise RuntimeError("Qt discovery did not inherit the headless contracts TMPDIR")
+    # Before #77 the fixture appended 82 bytes. Linux accepts 107 pathname bytes.
+    if length + 82 <= 107:
+        raise RuntimeError("TMPDIR is too short to exercise the native socket regression")
+
+
 class QtWindowSearchTests(unittest.TestCase):
     """Real command exits at the runner boundary, without an X server or Qt."""
 

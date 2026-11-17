@@ -1140,21 +1140,29 @@ while True:
                     self.assertEqual((root / "requests").read_text().splitlines(), ["hello"])
                     self.assertFalse(Path(f"/proc/{root.joinpath('pid').read_text()}").exists())
 
-    def editor_environment(self):
+    def cli_environment(self):
         # Keep this fixture's control socket within sun_path under a long TMPDIR.
-        runtime = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="tled-", dir="/tmp")))
-        session = runtime / "typelay" / hashlib.sha256(b"\n").hexdigest()[:16]
-        session.mkdir(parents=True, exist_ok=True)
+        runtime = self.enterContext(tempfile.TemporaryDirectory(prefix="tlcli-", dir="/tmp"))
         return {
             **os.environ,
             "TYPELAY_HOME": str(self.home / "package"),
             "XDG_CONFIG_HOME": str(self.home / "cli-config"),
             "XDG_DATA_HOME": str(self.home / "cli-data"),
             "XDG_CACHE_HOME": str(self.home / "cli-cache"),
-            "XDG_RUNTIME_DIR": str(runtime),
+            "XDG_RUNTIME_DIR": runtime,
             "WAYLAND_DISPLAY": "",
             "NIRI_SOCKET": "",
-        }, session
+        }
+
+    def editor_environment(self):
+        environment = self.cli_environment()
+        session = (
+            Path(environment["XDG_RUNTIME_DIR"])
+            / "typelay"
+            / hashlib.sha256(b"\n").hexdigest()[:16]
+        )
+        session.mkdir(parents=True)
+        return environment, session
 
     async def launch_editor(self, environment):
         source = Path(__file__).resolve().parents[2] / "src/linux/desktop"
@@ -1329,8 +1337,7 @@ while True:
         (package / "desktop/setup.py").write_text(f"print('TYPELAY_MODEL_PREPARED={generation}')\n")
         (package / "app").mkdir()
         executable = package / "app/TypeLay.Linux"
-        runtime = self.home / "run"
-        runtime.mkdir()
+        environment = self.cli_environment()
         source = Path(__file__).resolve().parents[2] / "src/linux/desktop"
         for code, output, error, status, failure in (
             (1, "unchanged\n", "worker-not-ready\n", "unchanged", "worker-not-ready"),
@@ -1364,16 +1371,7 @@ while True:
                     "runpy.run_module('main',run_name='__main__')",
                     str(source),
                     "--install-models",
-                    env={
-                        **os.environ,
-                        "TYPELAY_HOME": str(package),
-                        "XDG_CONFIG_HOME": str(self.home / "cli-config"),
-                        "XDG_DATA_HOME": str(self.home / "cli-data"),
-                        "XDG_CACHE_HOME": str(self.home / "cli-cache"),
-                        "XDG_RUNTIME_DIR": str(runtime),
-                        "WAYLAND_DISPLAY": "",
-                        "NIRI_SOCKET": "",
-                    },
+                    env=environment,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )

@@ -805,27 +805,17 @@ jobs:
     - name: Set the default temporary root for headless contracts
       id: headless-tmpdir
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: |
-        previous=$(python -c 'import tempfile; print(tempfile.gettempdir())')
-        root=$(mktemp -d /tmp/typelay-linux-contracts-headless.XXXXXXXX)
-        printf 'previous=%s\nroot=%s\n' "$previous" "$root" >> "$GITHUB_OUTPUT"
-        printf 'TMPDIR=%s\n' "$root" >> "$GITHUB_ENV"
-    - name: Verify the temporary root inherited by headless test processes
-      id: check-tmpdir
-      if: ${{ matrix.group == 'contracts' && !cancelled() }}
       shell: python
       run: |
         import os
         import tempfile
 
-        root = tempfile.gettempdir()
-        length = len(os.fsencode(root))
-        print(f"Headless contracts tempfile.gettempdir()={root!r} ({length} bytes)")
-        if root != os.environ.get("TMPDIR"):
-            raise SystemExit("Python fell back from the configured TMPDIR")
-        # Before #77 the fixture appended 82 bytes. Linux accepts 107 pathname bytes.
-        if length + 82 <= 107:
-            raise SystemExit("TMPDIR is too short to exercise the native socket regression")
+        previous = tempfile.gettempdir()
+        root = tempfile.mkdtemp(prefix="typelay-contracts-headless.", dir=os.environ["RUNNER_TEMP"])
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+            print(f"previous={previous}", f"root={root}", sep="\n", file=output)
+        with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as environment:
+            print(f"TMPDIR={root}", file=environment)
     - name: Verify Linux Hy preparation contracts
       id: hy-preparation-contracts
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
@@ -965,6 +955,8 @@ jobs:
       run: python -m unittest discover -s tests/linux -p test_gtk_preview_contract.py -v
     - name: Verify Linux test_qt_candidate_observation
       id: test-qt-candidate-observation
+      env:
+        TYPELAY_CONTRACTS_TMPDIR: ${{ steps.headless-tmpdir.outputs.root }}
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
       run: python -m unittest discover -s tests/linux -p test_qt_candidate_observation.py -v
     - name: Verify native Qt source observation projection
@@ -1009,26 +1001,21 @@ jobs:
       id: host-protocol
       if: ${{ matrix.group == 'contracts' && !cancelled() && steps.build.outcome == 'success' }}
       run: python tests/linux/session_host_protocol.py --host artifacts/linux/package/app/TypeLay.Linux -v
-    - name: Restore the original temporary root before the desktop checks
-      id: restore-tmpdir
-      if: ${{ always() && matrix.group == 'contracts' && steps.headless-tmpdir.outcome == 'success' }}
-      env:
-        ORIGINAL_TMPDIR: ${{ steps.headless-tmpdir.outputs.previous }}
-        HEADLESS_TMPDIR: ${{ steps.headless-tmpdir.outputs.root }}
-      run: |
-        printf 'TMPDIR=%s\n' "$ORIGINAL_TMPDIR" >> "$GITHUB_ENV"
-        rm -rf -- "$HEADLESS_TMPDIR"
     - name: Verify GTK settings feedback
       id: settings-feedback
+      env: &contracts-desktop-tmpdir
+        TMPDIR: ${{ steps.headless-tmpdir.outputs.previous }}
       if: ${{ matrix.group == 'contracts' && !cancelled() && steps.display.outcome == 'success' }}
       run: TYPELAY_TEST_CI_DISPLAY=1 DISPLAY=:99 GDK_BACKEND=x11 dbus-run-session -- python -m unittest discover -s tests/linux -p test_settings_feedback.py -v
     - name: Verify GTK unknown-IME refusal
       id: gtk-refusal
+      env: *contracts-desktop-tmpdir
       if: ${{ matrix.group == 'contracts' && !cancelled() && steps.build.outcome == 'success' && steps.display.outcome ==
         'success' }}
       run: DISPLAY=:99 python tests/linux/native_e2e.py --gtk-refusal --native artifacts/linux/native --output artifacts/linux/nested
     - name: Verify tray controls without downloading models
       id: tray
+      env: *contracts-desktop-tmpdir
       if: ${{ matrix.group == 'contracts' && !cancelled() && steps.build.outcome == 'success' && steps.display.outcome ==
         'success' }}
       run: |
@@ -1036,6 +1023,7 @@ jobs:
         GDK_BACKEND=x11 dbus-run-session -- python tests/linux/tray_e2e.py --package artifacts/linux/package
     - name: Verify prototype tray panel without downloading models
       id: tray-panel
+      env: *contracts-desktop-tmpdir
       if: ${{ matrix.group == 'contracts' && !cancelled() && steps.build.outcome == 'success' && steps.display.outcome ==
         'success' }}
       timeout-minutes: 1
@@ -1045,6 +1033,7 @@ jobs:
         GDK_BACKEND=x11 dbus-run-session -- python tests/linux/tray_e2e.py --package artifacts/linux/package --panel-only --output artifacts/linux/tray-panel > artifacts/linux/tray-panel/inside.log 2>&1
     - name: Verify real download progress across three native surfaces
       id: download-progress
+      env: *contracts-desktop-tmpdir
       if: ${{ matrix.group == 'contracts' && !cancelled() && steps.build.outcome == 'success' && steps.display.outcome ==
         'success' && steps.model-downloads.outcome == 'success' }}
       timeout-minutes: 1
@@ -1053,6 +1042,7 @@ jobs:
         GDK_BACKEND=x11 dbus-run-session -- python tests/linux/tray_e2e.py --package artifacts/linux/package --progress-only --progress-records artifacts/linux/installation-progress/records.json --output artifacts/linux/installation-progress > artifacts/linux/installation-progress/inside.log 2>&1
     - name: Verify explicit quit confirmation without downloading models
       id: quit-ui
+      env: *contracts-desktop-tmpdir
       if: ${{ matrix.group == 'contracts' && !cancelled() && steps.build.outcome == 'success' && steps.display.outcome ==
         'success' }}
       timeout-minutes: 1
@@ -1062,6 +1052,7 @@ jobs:
         GDK_BACKEND=x11 dbus-run-session -- python tests/linux/quit_ui.py --package artifacts/linux/package --complete --output artifacts/linux/quit-ui > artifacts/linux/quit-ui/inside.log 2>&1
     - name: Verify native shortcut settings without downloading models
       id: shortcut-settings
+      env: *contracts-desktop-tmpdir
       if: ${{ matrix.group == 'contracts' && !cancelled() && steps.build.outcome == 'success' && steps.display.outcome ==
         'success' }}
       run: |
@@ -1450,6 +1441,17 @@ jobs:
           artifacts/TypeLay-Fcitx-cooperative.tar.gz
         if-no-files-found: warn
         retention-days: 14
+    - name: Clean up the headless contracts temporary root
+      id: cleanup-tmpdir
+      if: ${{ always() && matrix.group == 'contracts' && steps.headless-tmpdir.outcome == 'success' }}
+      shell: python
+      env:
+        HEADLESS_TMPDIR: ${{ steps.headless-tmpdir.outputs.root }}
+      run: |
+        import os
+        import shutil
+
+        shutil.rmtree(os.environ["HEADLESS_TMPDIR"])
   linux-native:
     name: Linux / ${{ matrix.group }}
     needs: fonts

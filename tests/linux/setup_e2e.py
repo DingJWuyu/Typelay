@@ -1803,8 +1803,7 @@ class ApplicationSupportTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory(prefix="typelay-support-中文 ")
         self.addCleanup(self.directory.cleanup)
         self.home = Path(self.directory.name)
-        runtime = self.home / "runtime"
-        runtime.mkdir(mode=0o700)
+        runtime = self.enterContext(tempfile.TemporaryDirectory(prefix="tlsupport-", dir="/tmp"))
         environment = patch.dict(
             os.environ,
             {
@@ -1812,7 +1811,7 @@ class ApplicationSupportTests(unittest.TestCase):
                 "XDG_CONFIG_HOME": str(self.home / "config"),
                 "XDG_DATA_HOME": str(self.home / "data"),
                 "XDG_CACHE_HOME": str(self.home / "cache"),
-                "XDG_RUNTIME_DIR": str(runtime),
+                "XDG_RUNTIME_DIR": runtime,
             },
         )
         environment.start()
