@@ -6,6 +6,10 @@
 
 先按任务授权检查网络预算。没有下载授权时，仅使用已存在的工具、SDK、字体、运行库与下载缓存；下方任何 curl、安装或首次构建步骤缺少本地字节时，停止并报告，不能自行下载。构建也可放进 `unshare --user --map-current-user --net`，以防工具隐式联网。
 
+NuGet 漏洞审计由每次 push 的 CI 执行。本机验证构建可仅关闭本次 restore 的审计，在断网命名空间内使用本地 NuGet 包缓存。其余警告仍视为错误，CI 配置保持审计开启。先准备本页要求的工具与原始下载缓存，再执行下方[构建当前源码](#构建当前源码)的离线命令。
+
+包缺失时停止并报告，不增加远端源。这里的成功只证明本机验证包构建，不代表 CI 漏洞审计通过。
+
 私有会话默认从 Git common directory 所属主检出的 `artifacts/` 复制下载缓存。在当前机器上，uv 位于 `/home/liam_t/项目/Typelay/artifacts/install-cache/uv`，Index 位于 `/home/liam_t/项目/Typelay/artifacts/index-model-download`。其他位置通过外层 `--install-cache` 与 `--model-cache` 指定。缓存无需复制进每个工作树，更不能复制已安装 venv。
 
 uv 不把 CPython 原始归档放入 wheels 缓存。已有原始归档应按上游 `<release>/<filename>` 布局放入 `artifacts/install-cache/python/`，私有会话会将其作为正式 uv 的本地文件镜像。只有 wheels 与模型仍不足以证明离线安装可行；运行正式安装器检查，缺少原始 Python 下载字节时保留失败。网络规则、opt-in 和证据见 [SKILL.md](../SKILL.md#network-and-caches)。
@@ -38,6 +42,10 @@ export CMAKE_PREFIX_PATH="$desktop_prefix${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PAT
 export PKG_CONFIG_PATH="$desktop_prefix/lib/pkgconfig:$desktop_prefix/share/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 export CC="$gcc_tool"
 export CXX="${gcc_tool%gcc-15}g++-15"
+mkdir -p artifacts/verification-tools/compiler
+ln -sf "$CC" artifacts/verification-tools/compiler/cc
+ln -sf "$CXX" artifacts/verification-tools/compiler/c++
+export PATH="$PWD/artifacts/verification-tools/compiler:$PATH"
 command -v Xvfb xvfb-run xdotool grim gtk3-demo glib-genmarshal
 "$CC" --version
 ```
@@ -83,7 +91,15 @@ uv pip install --offline --python artifacts/build-tools/bin/python \
 export PATH="$PWD/artifacts/build-tools/bin:$PATH"
 ```
 
-工程 uv 只用于创建构建工具环境。正式包在 `support/uv/` 携带固定私有 uv，模型安装器按绝对路径调用，无需升级系统 uv。构建会校验官方归档和二进制摘要，首次构建需要联网。GTK 旅程始终使用系统 `/usr/bin/python3`，工程虚拟环境没有系统 PyGObject。
+工程 uv 只用于创建构建工具环境。正式包在 `support/uv/` 携带固定私有 uv，模型安装器按绝对路径调用，无需升级系统 uv。构建会校验官方归档和二进制摘要。本机从主检出复制已有原始归档，不重新下载：
+
+```bash
+mkdir -p artifacts/linux/uv-download
+cp -a --reflink=auto /home/liam_t/项目/Typelay/artifacts/linux/uv-download/. \
+  artifacts/linux/uv-download/
+```
+
+GTK 旅程始终使用系统 `/usr/bin/python3`，工程虚拟环境没有系统 PyGObject。
 
 .NET SDK 必须满足 `global.json`。如果 `dotnet --version` 不匹配，在本工作树生成工具目录：
 
@@ -102,20 +118,36 @@ dotnet --version
 
 主包和合作包都从当前工作树生成。保留构建日志；构建失败时保留输出，不把旧包填进新输出目录。若复用按下列命令生成的合作归档，必须经过 `pack.py` 的输入与二进制核验，以及 `--finalize` 对当前源码和归档闭包的核验；记录它的来源。
 
+本机所有合作构建，包括测试 fixture 和 Qt 插件，都使用 GCC 15，并由 `flock /home/liam_t/tmp/hitl/coop.lock taskset -c 10` 包住。私有桌面内编译时，先在外层记录工具的绝对路径，再在旅程脚本中设置构建环境；私有 HOME 中没有宿主的工具目录。
+
 ```bash
 mkdir -p artifacts/verification-build
 artifacts/build-tools/bin/python eng/fonts/prepare.py
-artifacts/build-tools/bin/python eng/linux/build.py --with-test-fixture \
+unshare --user --map-current-user --net \
+  env NuGetAudit=false RestoreSources="$HOME/.nuget/packages" \
+  artifacts/build-tools/bin/python eng/linux/build.py --with-test-fixture --compression-level 1 \
   --output artifacts/verification-build/package \
   > artifacts/verification-build/main.log 2>&1
-taskset -c 10 artifacts/build-tools/bin/python eng/linux/cooperative/fcitx.py \
+flock /home/liam_t/tmp/hitl/coop.lock taskset -c 10 \
+  unshare --user --map-current-user --net \
+  artifacts/build-tools/bin/python \
+  .agents/skills/verify-typelay/scripts/offline-fcitx-build.py \
+  --cache-build /home/liam_t/项目/Typelay/artifacts/linux/fcitx-build-gcc15-cpu10 \
   --output artifacts/verification-build/fcitx \
   > artifacts/verification-build/fcitx.log 2>&1
-artifacts/build-tools/bin/python packaging/linux/fcitx-cooperative/pack.py \
+flock /home/liam_t/tmp/hitl/coop.lock taskset -c 10 \
+  unshare --user --map-current-user --net \
+  artifacts/build-tools/bin/python tests/linux/fcitx_cooperative/run.py \
+  --build-only --reuse-build --scope core --output artifacts/verification-build/fcitx \
+  > artifacts/verification-build/fcitx-fixtures.log 2>&1
+unshare --user --map-current-user --net \
+  artifacts/build-tools/bin/python packaging/linux/fcitx-cooperative/pack.py \
   --build-output artifacts/verification-build/fcitx \
   --output artifacts/verification-build/TypeLay-Fcitx-cooperative.tar.gz \
+  --compression-level 1 \
   > artifacts/verification-build/pack.log 2>&1
-artifacts/build-tools/bin/python eng/linux/build.py --finalize \
+unshare --user --map-current-user --net \
+  artifacts/build-tools/bin/python eng/linux/build.py --finalize --compression-level 1 \
   --output artifacts/verification-build/package \
   --cooperation-package artifacts/verification-build/TypeLay-Fcitx-cooperative.tar.gz
 mkdir -p artifacts/verification-build/cooperation
@@ -124,6 +156,10 @@ tar -xzf artifacts/verification-build/TypeLay-Fcitx-cooperative.tar.gz \
 ```
 
 CPU 10 是这台机器已成功完整构建的环境绕法，使用前以 `taskset -pc $$` 确认它在允许集合内。GCC 16、GCC 15 和 clang 都曾发生间歇性编译器崩溃，原因尚未确认。不能把编译器崩溃当作产品编译错误，也不能修改固定源码或补丁让环境绕法通过。其它机器不要求使用 CPU 10。
+
+离线重建 Fcitx 时，正式构建器会重新解压源码，因此预先放进输出源码树的数据归档会被删除。上方缓存入口在正式下载边界复制已有原始归档；源码补丁、构建配方与摘要校验仍由正式构建器执行。`--cache-build` 指向本机已有的完整归档来源，不复用其中的安装前缀或二进制。
+
+仍需上方 GCC 15 环境。构建器直接调用 `cc` 与 `c++`，这两个名称也须解析为 GCC 15。缓存入口遇到缺失或未知归档即失败，拼写字典仍由上游 CMake 核对固定摘要。随后以 `--reuse-build --build-only --scope core` 复验生产字节并编译核心 fixtures，供 Qt 的构建身份检查使用。这一步不执行桌面场景，也不证明合作测试通过。最后执行上方 `pack.py` 与 `--finalize`。
 
 `--finalize` 要求生产输入干净且与主包身份一致。文档或技能变更应先提交再构建，以便记录明确 SHA。生产代码未提交时，可以构建 setup-only 主包配合独立合作包定位问题，但报告必须保留 `sourceDirty`，不能宣称完整发行包已封装。
 

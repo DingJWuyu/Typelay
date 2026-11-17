@@ -4,7 +4,7 @@ Qt 的真实模型桌面交互和语言搜索使用不同入口。分别保留�
 
 ## Sub-features
 
-- `qt/cooperative` 验证真实 Fcitx provider、原按次所有权、捕获、编辑、写回及未用许可退休。
+- `qt/cooperative` 验证真实 Fcitx provider、原按次所有权、捕获、编辑、写回、术语表交互及未用许可退休。
 - `qt/language-search` 验证语言列表、搜索、保存和输入法组合期间的拒绝，使用受控配置 Host，不加载模型。
 - `qt/desktop` 验证真实 Host、模型和 Wayland 浮层，包括人工稿、两次接受、选区、直接替换与原生撤销。
 
@@ -13,6 +13,7 @@ Qt 的真实模型桌面交互和语言搜索使用不同入口。分别保留�
 - 用户通过合作包的 `launch --qt6` 打开应用，在标准 `QLineEdit` 或 `QPlainTextEdit` 输入。
 - 用户点击译文编辑，第一次接受回源，释放后第二次独立接受才写入。
 - 用户在按需模式唤醒空字段，打开语言菜单，进入目标语言搜索。组合输入期间，点击语言行或按 Return 都不能保存。
+- 用户从源端或编辑态的“更多”菜单打开术语表，按实际能力状态操作词条。
 
 ## Driving it with private niri
 
@@ -23,16 +24,29 @@ set -euo pipefail
 fcitx="$PWD/artifacts/verification-build/fcitx"
 ```
 
-**完整合作 probe。** 将本机已有的固定源码归档放入新的 `artifacts/linux/qt-cooperative/fcitx5-qt.tar.gz`，再运行下列命令。归档身份由 `eng/linux/cooperative/inputs.py` 定义，构建器复验摘要。归档或 SDK 缺失时停止该步，报告缺少的路径，不下载替代字节。
+本机的 `xdotool` 解包在用户工具前缀，`libxdo.so.4` 也在该前缀的 `lib/`。Qt runner 会把 `LD_LIBRARY_PATH` 换成 Fcitx 库目录，导致这个工具以 exit 127 退出，而只读取 stdout 的窗口等待器会表现为超时。使用这种布局时，在私有旅程中、运行 Qt runner 之前加入以下设置。技能入口只为 `xdotool` 恢复其工具库，不修改 Qt 或 Fcitx 进程的库路径。
 
 ```bash
-/usr/bin/python3 tests/linux/qt_cooperative/run.py \
+export TYPELAY_VERIFY_XDOTOOL="$(command -v xdotool)"
+export TYPELAY_VERIFY_XDOTOOL_LIB="$(dirname "$(dirname "$TYPELAY_VERIFY_XDOTOOL")")/lib"
+test -f "$TYPELAY_VERIFY_XDOTOOL_LIB/libxdo.so.4"
+export PATH="$PWD/.agents/skills/verify-typelay/scripts/qt-tools:$PATH"
+```
+
+系统安装的工具若无需该库路径，则不加这段。诊断窗口识别时同时保存 `xdotool` 的退出码、stderr 和 PID 搜索结果；工具加载失败不证明 Qt 窗口未映射。
+
+**完整合作 probe。** 用 `cp --reflink=auto` 将主检出的 `artifacts/linux/qt-cooperative/fcitx5-qt.tar.gz` 复制到本工作树同路径，再运行下列命令。归档身份由 `eng/linux/cooperative/inputs.py` 定义，构建器复验摘要。归档或 SDK 缺失时停止该步，报告缺少的路径，不下载替代字节。该入口包含编译，外层私有会话命令须带 `flock /home/liam_t/tmp/hitl/coop.lock taskset -c 10`，内部旅程须设置构建说明中的 GCC 15 环境。
+
+```bash
+TMPDIR=/tmp /usr/bin/python3 tests/linux/qt_cooperative/run.py \
   --fcitx-root "$fcitx" --verify-fcitx-build \
   --out "$PWD/artifacts/linux/qt-cooperative" \
   2>&1 | tee "$TYPELAY_VERIFY_OUTPUT/qt-cooperative.log"
 ```
 
-该入口在私有会话内再建 Xvfb、D-Bus 和 HOME，运行真实异步 Fcitx 输入。它使用 XCB 与受控源字段，不证明 Wayland 或模型交互。保留 `versions.json`、`async-*.json`、`ordered-*.json`、各模式日志和命令退出码。`rapid-control-result.json` 记录首个快速接受的原许可、投递时刻及动作后的 fixture，不补发输入。完整结果只在整条链成功后产生；缺少后续结果文件表示尚无执行完成证据。
+该入口在私有会话内再建 Xvfb、D-Bus 和 HOME，运行真实异步 Fcitx 输入。`TMPDIR=/tmp` 让内部随机临时目录保持短路径，避免语言入口的 Unix socket 超长；正式包与模型仍留在外层私有安装目录。它使用 XCB 与受控源字段，不证明 Wayland 或模型交互。保留 `versions.json`、`async-*.json`、`ordered-*.json`、各模式日志和命令退出码。`rapid-control-result.json` 记录首个快速接受的原许可、投递时刻及动作后的 fixture，不补发输入。完整结果只在整条链成功后产生；缺少后续结果文件表示尚无执行完成证据。
+
+完整 probe 也覆盖单行与多行字段的术语表取消、回源及来源失效。核对源版本、选区或文档变化后零写入。该入口使用受控 Host，不证明正式词条持久化或真实模型的术语质量。
 
 **独立语言搜索。** 完整 probe 成功时，其中的语言入口已经完成。CI 将本次 `language-options-*.json`、日志、配置截图和 `versions.json` 复制到独立证据目录，不再构建或重复输入。完整 probe 失败时仍执行下列独立入口。新目录只复制本轮生产源码和二进制，`--reuse-build` 复验身份后重建 fixture。不要在完整 probe 的输出上重跑 `--session`，该入口会清除原来的异步资格结果。
 
@@ -40,11 +54,11 @@ fcitx="$PWD/artifacts/verification-build/fcitx"
 qt="$PWD/artifacts/linux/qt-cooperative"
 language="$PWD/artifacts/linux/qt-language-options"
 mkdir "$language"
-cp -a "$qt"/fcitx5-qt.tar.gz "$qt"/fcitx5-qt-* "$qt"/plugins \
+cp -a --reflink=auto "$qt"/fcitx5-qt.tar.gz "$qt"/fcitx5-qt-* "$qt"/plugins \
   "$qt"/qt-runtime-probe "$qt"/versions.json "$language"/
 mkdir "$language/native"
-cp -a "$qt"/native/qt6 "$language/native/"
-/usr/bin/python3 tests/linux/qt_cooperative/run.py \
+cp -a --reflink=auto "$qt"/native/qt6 "$language/native/"
+TMPDIR=/tmp /usr/bin/python3 tests/linux/qt_cooperative/run.py \
   --reuse-build --fcitx-root "$fcitx" --verify-fcitx-build --language-options-only \
   --out "$language" \
   2>&1 | tee "$TYPELAY_VERIFY_OUTPUT/qt-language-options.log"
@@ -104,10 +118,11 @@ DISPLAY="$TYPELAY_VERIFY_XDISPLAY" timeout --kill-after=10s 240s \
 
 若完整 probe 失败，先运行 `tests/linux/qt_cooperative/desktop_admission.py`，参数沿 [Qt 平台说明](../../../../docs/platforms/linux/qt.md#部分-qt-检查不构成发行验收)。仅 `admitted-build-input` 允许独立桌面观察，此时把上方 `--fcitx-cooperative` 改为 `"$fcitx"`。保留 `distributionAcceptance=false`，该观察不改变完整 probe 的失败，也不证明搬迁发行包通过。
 
-每条私有旅程结束后，按 [Cleanup](../SKILL.md#cleanup)检查进程和安装副本清理，确认日志、截图和 JSON 仍在。Actions 使用同一 probe 与桌面 runner，并在独立 `qt-language-options` 步骤执行语言搜索。分别读取步骤 outcome、实际被测提交和小型 Qt artifact，不用工作流总状态替代场景结果。`typelay-linux-qt-desktop-events-*` 单独保存桌面日志和 JSON，原 `typelay-linux-desktop-diagnostics-*` 继续保存截图；事件证据不能替代实际视觉检查。
+每条私有旅程结束后，按 [Cleanup](../SKILL.md#cleanup)检查进程和安装副本清理，确认日志、截图和 JSON 仍在。Actions 使用同一 probe 与桌面 runner，并在独立 `qt-language-options` 步骤执行语言搜索。分别读取步骤 outcome、实际被测提交和小型 Qt artifact，不用工作流总状态替代场景结果。`typelay-linux-qt-desktop-events-*` 单独保存桌面日志和 JSON，截图位于 `linux-native-qt-<sha>-<run>-<attempt>`。下载前核对体积与本次网络预算；超过预算时须取得单独上传的小型截图工件。事件证据不能替代实际视觉检查。
 
 ## Gotchas
 
+- 真实模型桌面需要下载缓存中的 `zh_en-1.9.argosmodel`（74,481,402 byte）与 `en_zh-1.9.argosmodel`（70,743,021 byte），安装器从本次 `TYPELAY_VERIFY_INSTALL_CACHE` 读取。缺少归档且未获下载授权时，该入口为 `verified-unreachable`；合作 probe 和语言搜索仍独立验证。
 - 系统 Qt 插件没有合作补丁，不能替代固定 provider。Qt、Fcitx、主包和 fixture 的源码与二进制身份必须匹配。
 - 语言搜索的受控 Host 回执不能证明正式设置持久化。真实 Host 的保存由 `qt/desktop` 另验。
 - 原 100ms 接受许可、150ms 命令期限和单次按键保持不变。译文可见但安全拒绝仍是本次失败，不能补发按键或续期。

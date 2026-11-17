@@ -1,0 +1,11 @@
+#!/bin/sh
+# Qt probes replace LD_LIBRARY_PATH for their private Fcitx libraries.
+# Restore the unpacked tool's libraries for xdotool alone.
+: "${TYPELAY_VERIFY_XDOTOOL:?Set the absolute path to the real xdotool before prepending qt-tools}"
+: "${TYPELAY_VERIFY_XDOTOOL_LIB:?Set the directory containing the real xdotool's libxdo}"
+if [ "$TYPELAY_VERIFY_XDOTOOL" -ef "$0" ]; then
+    echo "TYPELAY_VERIFY_XDOTOOL points to the skill entry instead of the real tool" >&2
+    exit 2
+fi
+export LD_LIBRARY_PATH="$TYPELAY_VERIFY_XDOTOOL_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec "$TYPELAY_VERIFY_XDOTOOL" "$@"

@@ -22,7 +22,7 @@ Preconditions: 应用和输入法都位于本次私有会话，合作包预检�
 
 - **手动 GTK。** Launch 的 `gtk-preview.py` 先运行合作包 `preflight`，再启动 `daemon`，最后通过 `launch` 打开 TypeLay 与 `gtk3-demo`。观察真实字段 `sourceSupported=true`、`nativePeers=1` 及译文。该路径证明高级手动接入。
 - **应用页。** 另开全新私有会话，执行 `"$TYPELAY_VERIFY_PACKAGE/typelay" --settings`，通过 `select_settings_page(pid, "应用")` 选择实际页面。在私有会话没有原输入法的前提下，沿界面确认没有原输入法，再选择已注册应用并打开。观察连接状态与该应用实际输入框，结束连接后检查自有进程和回执。这里不预先运行手动 daemon。
-- **教程。** 执行 `"$TYPELAY_VERIFY_PACKAGE/typelay" --tutorial`，沿欢迎、语言选择、下载、本地试译与练习逐页操作。保留各页截图和真正输入、接受后的进度，不能仅打开教程就记录完成。
+- **教程。** 执行 `"$TYPELAY_VERIFY_PACKAGE/typelay" --tutorial`，依次操作欢迎、语言、模型和“试一试”四页。最后一页提供自动翻译与按需快捷键两种真实练习入口，练习在独立 GTK 输入框中完成。保留各页截图和真正输入、接受后的进度。点击“开始使用”只关闭首次配置，不证明练习完成。
 - **分开运行教程与设置。** 准备独立正式模型库存后，既有 `native_e2e.py --inside --desktop --desktop-scope setup-tutorial` 和 `--desktop-scope setup-settings` 分别验证各自链。为每次提供私有 `--package`、`--native "$PWD/artifacts/linux/native"`、新建的 `--output` 目录和私有 DISPLAY。分别用 `timeout --kill-after=10s 240s` 和 `timeout --kill-after=10s 360s` 包住命令，保留原有预算并逐项读取结果。两条链独立运行，任何一条失败都保留原件，不能算另一条已通过。
 - **扩展路径。** 按 `docs/platforms/linux/browser.md` 或 `vscode.md` 的扩展前提准备一次性浏览器/编辑器 profile。把对应真实扩展测试命令放入本技能的私有旅程脚本，所有浏览器、编辑器和其输入均留在私有显示中。浏览器要观察真实网页字段；VS Code 要观察明确选择、手动预览和确认替换。
 

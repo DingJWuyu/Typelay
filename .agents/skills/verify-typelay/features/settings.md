@@ -7,7 +7,11 @@
 - `settings/direction` 保存源语言与目标语言，并影响实际翻译。
 - `settings/appearance` 调整浮层主题、字体和字号，重开后保留。
 - `settings/apps-readability` 在英文 Apps 页读取连接名称、状态和按钮，并检查浅色侧栏文字。
-- `settings/draft` 修改快捷键或排除列表，保存、取消和跨页保留草稿。
+- `settings/draft` 修改快捷键后自动保存，冲突时确认，失败时保留草稿。
+- `settings/apps` 添加、移除应用，保存单应用启停和风格。
+- `settings/search` 搜索设置项并跳转到对应页面。
+- `settings/style` 保存全局自然或正式风格，并核对当前模型的能力限制。
+- `settings/glossary` 在独立术语表页新增、编辑、删除、搜索与撤销词条。
 - `settings/pause` 暂停与恢复，并核对设置文件和真实浮层变化。
 - `settings/gtk4-configuration` 验证源端语言配置的保存、退出、组合输入和失效拒绝。
 - `settings/gtk4-glossary` 验证源端术语菜单、表单和原源保护。
@@ -25,6 +29,8 @@ Preconditions: 私有会话内已有真实桌面进程。语言功能需要正�
 
 - **语言保存。** 执行 Launch 的 `gtk-preview.py` 旅程。它通过实际设置 UI 选择英文到中文，读取 `settings-saved.json`，并用该方向生成真实 GTK 译文。重开 `"$TYPELAY_VERIFY_PACKAGE/typelay" --settings` 后，还应核对所选语言的显示。
 - **设置导航。** 使用公开辅助函数 `select_settings_page(pid, "外观")` 或 `select_settings_page(pid, "快捷键")`。`pid` 必须来自本次 niri 窗口记录。`visible_named(pid, "外观：浅色")` 定位显示控件，`Atspi.Action.do_action(node.get_action_iface(), 0)` 触发真实动作。读取 `$XDG_CONFIG_HOME/typelay/settings.json` 核对保存，再重开核对显示。
+- **设置搜索。** 在“搜索设置”控件输入“字号”，从实际搜索结果进入外观页，核对目标控件与焦点。清空搜索后核对正常导航恢复。
+- **风格与术语表。** 从“语言与风格”页操作当前可用的风格，保存后重开核对。能力不足时记录实际禁用原因。在独立“术语表”页用合成词条完成新增、编辑、搜索、删除与撤销，核对列表和持久化结果。设置保存不证明真实译文采用了该风格或词条。
 - **Apps 可读性。** 在新私有会话运行 `/usr/bin/python3 "$PWD/.agents/skills/verify-typelay/scripts/settings-apps.py"`。该旅程只用初始配置跳过教程，再从真实设置的外观页选择浅色和 English，经侧栏进入 Apps。它分别将窗口设为 900、740 像素，在浅色和深色下保存 `apps-<主题>-<宽度>.png`。`text-geometry.json` 检查名称和状态中的英文单词未被拆行。`*-connection-card.json` 和 `*-buttons.json` 记录连接入口与卡片的边界，以及两个操作按钮的尺寸。`layout-issues.json` 必须为空：连接入口下方须有卡片内边距，两个按钮须等宽，100% 缩放下按钮不能出现三行文案，顶部托盘提示须为英文。旅程还打开桌面连接按钮对应的组件选择或安装确认窗口，保存 `apps-connection-action.png`，取消后保存 `apps-after-action.png`，核对设置未变。逐张打开 PNG，检查名称、状态、按钮、图标和未选中的侧栏文字。此入口不需要模型，不证明组件安装或真实应用接入。
 - **Apps 原型对照。** 在本地浏览器打开 `docs/design/TypeLay_Tray_Settings_Prototype.html?page=apps&uiLang=en&theme=light&connection=disconnected`，再检查 `theme=dark`。离线时删除临时预览副本中的外部字体链接，并用本机已有字体字节声明同名字体；不修改确认原型。浏览器也放在断网命名空间。保存完整原型截图，按相同窗口宽度与上述产品截图并排比较。逐项核对连接卡片、状态、操作按钮、应用列表和侧栏。原型使用演示应用与模拟连接状态，产品使用真实安装应用及连接事实；保留这些差异，并注明产品额外显示的准备提示和连接入口。
 - **系统字体与侧栏回归。** 在私有会话中设置 `TYPELAY_UI_FONT_ROOT="$TYPELAY_VERIFY_PACKAGE/fonts"`，执行 `/usr/bin/python3 tests/linux/test_ui_fonts.py -v` 和 `/usr/bin/python3 tests/linux/test_settings_feedback.py -v`。字体检查读取真实 GTK 系统字体，并在同一测试进程验证 Adwaita Sans 和另一系统字体偏好；侧栏检查真实标签在浅色、深色下的墨色。无显示的字体检查只证明通用字体回退，不能代替这条桌面语义检查。
@@ -55,7 +61,7 @@ Preconditions: 私有会话内已有真实桌面进程。语言功能需要正�
 
 ## Gotchas
 
-- 即时开关、语言和外观保存，与快捷键、排除列表的草稿保存不能混为一谈。保存失败时应保留草稿，不能手写文件消除失败。
+- Linux 的快捷键录入会自动保存；冲突确认与保存失败仍保留草稿。Apps 的单应用启停独立提交排除设置，不属于快捷键草稿。即时开关、语言和外观另行保存，不能手写文件消除失败。
 - 无面板的嵌套 niri 不显示真实 Waybar 托盘。CLI 和快捷面板通过不证明托盘点击、面板重启或图标视觉。
 - 本次基础旅程只证明语言设置及其翻译效果，其它页面、暂停、草稿和托盘入口须独立运行。
 - 公开 AT-SPI Action 不证明物理鼠标像素命中。视觉核对仍需实际截图。
