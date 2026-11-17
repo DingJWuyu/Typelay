@@ -5,11 +5,13 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Threading;
 using TypeLay.Core;
 using TypeLay.Runtime;
 using TypeLay.Windows;
+using TypeLay.Windows.Contracts;
 using Xunit;
 using N = TypeLay.Platform.Windows.NativeMethods;
 
@@ -28,6 +30,7 @@ public sealed partial class NativeSourceGlossaryTests
         var overlay = new OverlayWindow(clientAreaAnimation: () => false);
         var monitor = new KeyboardHook(allowInjectedInput: true, editorHwnd: overlay.Handle);
         SessionController? controller = null;
+        Action? reportFailure = null;
         try
         {
             while (!monitor.ShortcutsReady)
@@ -53,33 +56,110 @@ public sealed partial class NativeSourceGlossaryTests
                 : []);
             controller = new(settings, model.Client, view, monitor, input, new DesktopLoop(), translationRelease: release,
                 sourceInteraction: view);
+            var expected = new GlossaryRule("你好", "こんにちは");
+            ContextMenu? menu = null;
+            bool commandClicked = false, sourceFocused = false, beginRequested = false, saveClicked = false;
+            Guid? expectedForm = null, closedForm = null;
+            long? brokerCaptureAgeAtBegin = null;
+            string? settingsReasonAfterRejection = null;
+            (nint Root, nint Control)? clickFocus = null;
+            var begin = view.BeginGlossaryRequested!;
+            view.BeginGlossaryRequested = token =>
+            {
+                beginRequested = true;
+                brokerCaptureAgeAtBegin = WindowsInterruptClock.NowMs - broker.LastCapture?.Snapshot?.ObservedAtMs;
+                var entry = begin(token);
+                expectedForm = entry?.FormId;
+                if (entry is null)
+                    settingsReasonAfterRejection = controller.GetGlossarySettingsState().UnavailableReason;
+                return entry;
+            };
+            var close = view.CloseGlossaryRequested!;
+            view.CloseGlossaryRequested = form =>
+            {
+                closedForm = form;
+                close(form);
+            };
+            overlay.AddHandler(Keyboard.GotKeyboardFocusEvent, new KeyboardFocusChangedEventHandler((_, e) =>
+            {
+                if (e.NewFocus is TextBox field && AutomationProperties.GetName(field) == "术语源词")
+                    sourceFocused = true;
+            }), true);
+            string stage = "prepare-source", condition = "controller started and source field prepared";
+            reportFailure = () =>
+            {
+                var actual = N.ReadFocus();
+                var focus = view.GlossaryEntryFocus;
+                var field = Children(overlay).OfType<TextBox>().FirstOrDefault(item => AutomationProperties.GetName(item) == "术语源词");
+                var focused = Keyboard.FocusedElement as DependencyObject;
+                var capture = broker.LastCapture;
+                WindowsTarget? captured = capture?.Snapshot is { } snapshot && WindowsTarget.TryDecode(snapshot.Target, out var target)
+                    ? target : null;
+                TestContext.Current.TestOutputHelper?.WriteLine("Glossary controller before cleanup: " + JsonSerializer.Serialize(new
+                {
+                    Stage = stage == "open-form" && (field is not null || sourceFocused) ? "confirm-focus" : stage,
+                    Expected = condition, CommandClicked = commandClicked, MenuOpen = menu?.IsOpen,
+                    BeginRequested = beginRequested, ExpectedFormId = expectedForm, ClosedFormId = closedForm,
+                    BrokerCaptureAgeAtBeginMs = brokerCaptureAgeAtBegin, FreshnessLimitMs = Limits.ObservationMaxAgeMs,
+                    SettingsReasonAfterRejection = settingsReasonAfterRejection,
+                    RootAfterClick = clickFocus?.Root.ToInt64(), ControlAfterClick = clickFocus?.Control.ToInt64(),
+                    SourceFieldPresent = field is not null, SourceFieldEverFocused = sourceFocused,
+                    GlossaryEntryFocus = focus is not null, ActualFormId = focus?.FormId, ActualIme = focus?.Ime.ToString(),
+                    SourceRoot = native.Root.ToInt64(), SourceField = native.A.ToInt64(), OverlayRoot = overlay.Handle.ToInt64(),
+                    ActualRoot = actual.Root.ToInt64(), ActualControl = actual.Control.ToInt64(), actual.GuiThreadInfoSucceeded,
+                    ActualWpfControl = focused?.GetType().Name,
+                    SourceFieldHasFocus = field is not null && ReferenceEquals(field, focused),
+                    LastCaptureStatus = capture?.Status, LastCaptureFocus = capture?.Focus.ToString(),
+                    LastCaptureRoot = captured?.RootHwnd, LastCaptureField = captured?.ControlHwnd,
+                    SaveClicked = saveClicked, RuleInSettings = settings.Value.Glossary?.Rules.Contains(expected) == true,
+                    BrokerReturn = broker.ReturnStatus, broker.SourceWrites
+                }));
+            };
             await controller.StartAsync();
             await native.Prepare(native.A, "你好", new(0, 2));
+            condition = "controller has observed the fixture application";
             while (controller.LastApplication is null)
                 await Task.Delay(10, native.Token);
+            condition = "visible overlay contains the translated preview after the wake shortcut";
             SendKeys(0x11, 0x10, 0x78); // Actual configured Ctrl+Shift+F9 through the real hook.
             while (!overlay.IsVisible || !Children(overlay).OfType<TextBox>().Any(item => item.Text == "こんにちは"))
                 await Task.Delay(10, native.Token);
+            stage = "open-form";
+            condition = "original native field focused before opening MoreGlossary";
             Assert.Equal((native.Root, native.A), N.Focused());
+            condition = "MoreGlossary present and enabled in the open menu";
             Button(overlay, "更多翻译操作").RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
-            var menu = PresentationSource.CurrentSources.OfType<HwndSource>().Select(item => item.RootVisual)
+            menu = PresentationSource.CurrentSources.OfType<HwndSource>().Select(item => item.RootVisual)
                 .OfType<DependencyObject>().SelectMany(root => Children(root).Prepend(root))
                 .OfType<ContextMenu>().Single(item => item.IsOpen);
             var command = menu.Items.OfType<MenuItem>().Single(item => AutomationProperties.GetAutomationId(item) == "MoreGlossary");
             Assert.True(command.IsEnabled);
+            condition = "MoreGlossary Click observed and menu closed";
+            command.Click += (_, _) =>
+            {
+                commandClicked = true;
+                clickFocus = N.Focused();
+            };
             await InvokeGlossaryCommandAsync(command, native.Token);
             Assert.False(menu.IsOpen);
+            condition = "GlossaryEntryFocus present with overlay foreground and glossary source field focused";
             while (view.GlossaryEntryFocus is null)
                 await Task.Delay(10, native.Token);
+            stage = "save-rule";
+            condition = "explicit save button focused and invoked";
             Children(overlay).OfType<TextBox>().Single(item => AutomationProperties.GetName(item) == "术语源词").Text = "你好";
             Children(overlay).OfType<TextBox>().Single(item => AutomationProperties.GetName(item) == "术语译词").Text = "こんにちは";
             var save = Button(overlay, "保存术语");
             Assert.True(save.Focus());
+            save.Click += (_, _) => saveClicked = true;
             save.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
-            var expected = new GlossaryRule("你好", "こんにちは");
+            condition = "expected rule present in settings after explicit save";
             while (settings.Value.Glossary?.Rules.Contains(expected) != true)
                 await Task.Delay(10, native.Token);
+            condition = "saved rule reread from disk";
             Assert.Contains(expected, new SettingsStore(Path.Combine(directory, "settings.json")).Value.Glossary!.Rules);
+            stage = "verify-source-after-save";
+            condition = "release policy preserved, original source focused and unchanged, zero writes and submits";
             Assert.Equal(applicationReleased, controller.GetGlossarySettingsState().IsReleased);
             if (!applicationReleased)
                 Assert.False(controller.GetGlossarySettingsState().CanApply);
@@ -89,6 +169,15 @@ public sealed partial class NativeSourceGlossaryTests
             Assert.False(settings.Value.ExperimentalWriteback);
             native.AssertZeroSubmits();
             Assert.Equal(0, broker.SourceWrites);
+        }
+        catch
+        {
+            try { reportFailure?.Invoke(); }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                TestContext.Current.TestOutputHelper?.WriteLine("Glossary failure observation unavailable: " + error.GetType().Name);
+            }
+            throw;
         }
         finally
         {

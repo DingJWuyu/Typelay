@@ -429,7 +429,7 @@ public sealed partial class SettingsRenderingTests
             return Task.CompletedTask;
         }, pointerTarget: pointerTarget);
 
-    private static void ApplicationDialogActionAsync(SettingsWindow owner, Action open, string id, Func<Window, CancellationToken, Task> interact, bool awaitEntrance = true, bool observeNativeInput = false, FrameworkElement? pointerTarget = null)
+    private static void ApplicationDialogActionAsync(SettingsWindow owner, Action open, string id, Func<Window, CancellationToken, Task> interact, bool awaitEntrance = true, bool observeNativeInput = false, FrameworkElement? pointerTarget = null, int? retirementOpening = null)
     {
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         limit.CancelAfter(TimeSpan.FromSeconds(3));
@@ -437,9 +437,12 @@ public sealed partial class SettingsRenderingTests
         Exception? failure = null;
         bool observed = false, completed = false;
         Task? interaction = null;
+        Window? dialog = null;
+        long? lastHitWindow = null;
+        string stage = pointerTarget is null ? "dialog-appearance" : "target-row-hit";
         object? firstReadiness = null;
         int readinessObservations = 0, lastCandidateCount = 0;
-        int rightDowns = 0, rightUps = 0;
+        int rightDowns = 0, rightUps = 0, rowDowns = 0, rowUps = 0;
         object? lastRightDown = null, lastRightUp = null;
         bool failureRecorded = false;
         HwndSource? nativeSource = null;
@@ -493,6 +496,16 @@ public sealed partial class SettingsRenderingTests
             }
             catch (Exception error) when (error is not OutOfMemoryException) { }
         };
+        MouseButtonEventHandler rowReceipt = (_, e) =>
+        {
+            if (e.ChangedButton == MouseButton.Right)
+            {
+                if (e.RoutedEvent == Mouse.PreviewMouseDownEvent)
+                    rowDowns++;
+                else
+                    rowUps++;
+            }
+        };
         var previousOwned = owner.OwnedWindows.Cast<Window>().ToArray();
         object? ReadReadiness()
         {
@@ -500,6 +513,8 @@ public sealed partial class SettingsRenderingTests
             {
                 return new
                 {
+                    HitWindowNow = pointerTarget is { IsLoaded: true, IsVisible: true } && PresentationSource.FromVisual(pointerTarget) is not null
+                        ? WindowFromPoint(ApplicationRowPoint(pointerTarget)).ToInt64() : (long?)null,
                     Candidates = owner.OwnedWindows.Cast<Window>().Count(window => ReferenceEquals(window.Owner, owner)
                         && window.IsVisible && AutomationProperties.GetAutomationId(window) == id),
                     OwnerVisible = owner.IsVisible,
@@ -528,10 +543,28 @@ public sealed partial class SettingsRenderingTests
             failureRecorded = true;
             try
             {
+                string failureStage = stage == "right-click-delivery" && rowDowns > 0 && rowUps > 0
+                    ? "dialog-appearance" : stage;
                 TestContext.Current.TestOutputHelper?.WriteLine("Application dialog before cleanup: " + JsonSerializer.Serialize(new
                 {
                     Id = id,
-                    Stage = observed ? "dialog-observed" : "waiting-for-dialog",
+                    Opening = retirementOpening,
+                    Stage = failureStage,
+                    Expected = failureStage switch
+                    {
+                        "target-row-hit" => "visible loaded row whose native screen point hits the owner HWND",
+                        "right-click-delivery" => "target row receives the single right-button press and release",
+                        "dialog-appearance" => "one new visible owned dialog with the requested automation ID",
+                        "dialog-retirement" => "old dialog hidden and its backdrop detached",
+                        "stale-consent" => "new dialog visible with its own backdrop and settings unchanged after old consent",
+                        "dialog-close" => "dialog closed and its interaction completed",
+                        _ => "dialog entrance, geometry and interaction satisfy the current assertion"
+                    },
+                    TargetRow = pointerTarget is null ? null : AutomationProperties.GetAutomationId(pointerTarget),
+                    ExpectedHitWindow = pointerTarget is null ? (long?)null : new WindowInteropHelper(owner).Handle.ToInt64(),
+                    LastHitWindow = lastHitWindow, TargetLoaded = pointerTarget?.IsLoaded, TargetVisible = pointerTarget?.IsVisible,
+                    DialogObserved = observed, DialogVisible = dialog?.IsVisible,
+                    TargetRightDowns = rowDowns, TargetRightUps = rowUps,
                     At = Environment.TickCount64,
                     RightDowns = rightDowns,
                     RightUps = rightUps,
@@ -562,7 +595,6 @@ public sealed partial class SettingsRenderingTests
         }
         async Task InteractAsync()
         {
-            Window? dialog = null;
             try
             {
                 ct.ThrowIfCancellationRequested();
@@ -590,6 +622,7 @@ public sealed partial class SettingsRenderingTests
                 }
                 ct.ThrowIfCancellationRequested();
                 observed = true;
+                stage = "dialog-interaction";
                 dialog.UpdateLayout();
                 var title = Assert.IsType<TextBlock>(ApplicationElement(dialog, "ApplicationDialogTitle"));
                 Assert.Equal(18, title.FontSize);
@@ -611,7 +644,9 @@ public sealed partial class SettingsRenderingTests
                     "ApplicationPickerBrowse" or "ApplicationPickerCancel" or "ApplicationRemovalCancel" or "ApplicationRemovalConfirm"))
                     AssertApplicationActionSize(button);
                 ct.ThrowIfCancellationRequested();
+                stage = retirementOpening switch { 1 => "dialog-retirement", 2 => "stale-consent", _ => "dialog-interaction" };
                 await interact(dialog, ct);
+                stage = "dialog-close";
             }
             catch (Exception error)
             {
@@ -633,6 +668,8 @@ public sealed partial class SettingsRenderingTests
         };
         owner.AddHandler(Mouse.PreviewMouseDownEvent, rightDown, true);
         owner.AddHandler(Mouse.PreviewMouseUpEvent, rightUp, true);
+        pointerTarget?.AddHandler(Mouse.PreviewMouseDownEvent, rowReceipt, true);
+        pointerTarget?.AddHandler(Mouse.PreviewMouseUpEvent, rowReceipt, true);
         try
         {
             if (observeNativeInput)
@@ -696,8 +733,13 @@ public sealed partial class SettingsRenderingTests
                 // Loaded and arranged geometry do not prove native hit testing
                 // after Hide/Show. Wait for this exact row's screen point in the
                 // original dialog budget, then send the original click once.
-                bool RowReceivesClick() => pointerTarget.IsLoaded && pointerTarget.IsVisible
-                    && WindowFromPoint(ApplicationRowPoint(pointerTarget)) == handle;
+                bool RowReceivesClick()
+                {
+                    if (!pointerTarget.IsLoaded || !pointerTarget.IsVisible)
+                        return false;
+                    lastHitWindow = WindowFromPoint(ApplicationRowPoint(pointerTarget)).ToInt64();
+                    return lastHitWindow == handle.ToInt64();
+                }
                 if (!RowReceivesClick())
                 {
                     var frame = new DispatcherFrame();
@@ -736,9 +778,18 @@ public sealed partial class SettingsRenderingTests
                 }
             }
             ct.ThrowIfCancellationRequested();
+            if (pointerTarget is not null)
+                stage = "right-click-delivery";
             action = owner.Dispatcher.BeginInvoke(new Action(() => interaction = InteractAsync()), DispatcherPriority.ApplicationIdle);
             open();
             owner.Dispatcher.Invoke(() => { }, DispatcherPriority.SystemIdle);
+            if (!observed || !completed || interaction?.IsCompleted != true)
+                RecordBeforeCleanup();
+        }
+        catch
+        {
+            RecordBeforeCleanup();
+            throw;
         }
         finally
         {
@@ -756,6 +807,8 @@ public sealed partial class SettingsRenderingTests
                     timeout.Stop();
                     owner.RemoveHandler(Mouse.PreviewMouseDownEvent, rightDown);
                     owner.RemoveHandler(Mouse.PreviewMouseUpEvent, rightUp);
+                    pointerTarget?.RemoveHandler(Mouse.PreviewMouseDownEvent, rowReceipt);
+                    pointerTarget?.RemoveHandler(Mouse.PreviewMouseUpEvent, rowReceipt);
                 }
             }
             finally

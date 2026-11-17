@@ -386,6 +386,7 @@ public sealed partial class NativeSourceGlossaryTests(WpfDesktopFixture desktop)
         {
             get; private set;
         }
+        public BrokerResponse? LastCapture { get; private set; }
         public bool Available => true;
         public int ProcessId => native.BrokerProcessId;
         public Task StartAsync() => Task.CompletedTask;
@@ -394,6 +395,8 @@ public sealed partial class NativeSourceGlossaryTests(WpfDesktopFixture desktop)
             if (request.Op is "write" or "direct-write")
                 SourceWrites++;
             var response = await native.Call(request, request.Op == "return-glossary" ? () => ReturnDispatched.TrySetResult() : null);
+            if (request.Op is "capture" or "capture-wake")
+                LastCapture = response;
             if (request.Op == "return-glossary")
                 ReturnStatus = response.Status;
             return response;
