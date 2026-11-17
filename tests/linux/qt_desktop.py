@@ -2588,7 +2588,6 @@ def run_qt(
 
                 # The searchable shell has a separate configuration owner. Its
                 # real Host save can change language settings, never source text.
-                clear_source()
                 configuration_settings = json.loads(settings_path.read_text())
                 assert configuration_settings["Mode"] == 1 and configuration_settings["Enabled"]
                 configuration_write = trace_checkpoint()
@@ -2602,6 +2601,13 @@ def run_qt(
                     "edits",
                 )
                 for target in ("en", "zh"):
+                    # As for nonempty OnDemand sources, let the real Host
+                    # observe the prepared field before the one new command.
+                    # Empty Qt input queues alone do not acknowledge that read.
+                    dormant = dormant_source("")
+                    (arguments.output / f"qt-configuration-wake-{target}.json").write_text(
+                        json.dumps(dormant, indent=2) + "\n"
+                    )
                     key("ctrl+shift+F9")
                     wait_for(
                         lambda: state()["first"]["focused"]
