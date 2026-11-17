@@ -118,7 +118,7 @@ dotnet --version
 
 主包和合作包都从当前工作树生成。保留构建日志；构建失败时保留输出，不把旧包填进新输出目录。若复用按下列命令生成的合作归档，必须经过 `pack.py` 的输入与二进制核验，以及 `--finalize` 对当前源码和归档闭包的核验；记录它的来源。
 
-本机所有合作构建，包括测试 fixture 和 Qt 插件，都使用 GCC 15，并由 `flock /home/liam_t/tmp/hitl/coop.lock taskset -c 10` 包住。私有桌面内编译时，先在外层记录工具的绝对路径，再在旅程脚本中设置构建环境；私有 HOME 中没有宿主的工具目录。
+本机所有合作构建，包括测试 fixture 和 Qt 插件，都使用 GCC 15 和 `taskset -c 10`。同一台机器上有多个任务并行时，所有任务须用同一把锁串行合作构建。锁的绝对路径由派任务的人提供，执行前将它赋给 `TYPELAY_COOP_LOCK`。下方两条合作构建命令使用这一路径。私有桌面内编译时，先在外层记录工具的绝对路径，再在旅程脚本中设置构建环境；私有 HOME 中没有宿主的工具目录。
 
 ```bash
 mkdir -p artifacts/verification-build
@@ -128,14 +128,14 @@ unshare --user --map-current-user --net \
   artifacts/build-tools/bin/python eng/linux/build.py --with-test-fixture --compression-level 1 \
   --output artifacts/verification-build/package \
   > artifacts/verification-build/main.log 2>&1
-flock /home/liam_t/tmp/hitl/coop.lock taskset -c 10 \
+flock "${TYPELAY_COOP_LOCK:?请先设置派任务者提供的共享锁绝对路径}" taskset -c 10 \
   unshare --user --map-current-user --net \
   artifacts/build-tools/bin/python \
   .agents/skills/verify-typelay/scripts/offline-fcitx-build.py \
   --cache-build /home/liam_t/项目/Typelay/artifacts/linux/fcitx-build-gcc15-cpu10 \
   --output artifacts/verification-build/fcitx \
   > artifacts/verification-build/fcitx.log 2>&1
-flock /home/liam_t/tmp/hitl/coop.lock taskset -c 10 \
+flock "${TYPELAY_COOP_LOCK:?请先设置派任务者提供的共享锁绝对路径}" taskset -c 10 \
   unshare --user --map-current-user --net \
   artifacts/build-tools/bin/python tests/linux/fcitx_cooperative/run.py \
   --build-only --reuse-build --scope core --output artifacts/verification-build/fcitx \

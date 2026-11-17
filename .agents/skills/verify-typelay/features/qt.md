@@ -35,7 +35,7 @@ export PATH="$PWD/.agents/skills/verify-typelay/scripts/qt-tools:$PATH"
 
 系统安装的工具若无需该库路径，则不加这段。诊断窗口识别时同时保存 `xdotool` 的退出码、stderr 和 PID 搜索结果；工具加载失败不证明 Qt 窗口未映射。
 
-**完整合作 probe。** 用 `cp --reflink=auto` 将主检出的 `artifacts/linux/qt-cooperative/fcitx5-qt.tar.gz` 复制到本工作树同路径，再运行下列命令。归档身份由 `eng/linux/cooperative/inputs.py` 定义，构建器复验摘要。归档或 SDK 缺失时停止该步，报告缺少的路径，不下载替代字节。该入口包含编译，外层私有会话命令须带 `flock /home/liam_t/tmp/hitl/coop.lock taskset -c 10`，内部旅程须设置构建说明中的 GCC 15 环境。
+**完整合作 probe。** 用 `cp --reflink=auto` 将主检出的 `artifacts/linux/qt-cooperative/fcitx5-qt.tar.gz` 复制到本工作树同路径，再运行下列命令。归档身份由 `eng/linux/cooperative/inputs.py` 定义，构建器复验摘要。归档或 SDK 缺失时停止该步，报告缺少的路径，不下载替代字节。该入口包含编译，先按[构建说明](../references/build.md#构建当前源码)设置共享锁路径。外层私有会话命令须带 `flock "${TYPELAY_COOP_LOCK:?请先设置共享锁路径}" taskset -c 10`，内部旅程须设置构建说明中的 GCC 15 环境。
 
 ```bash
 TMPDIR=/tmp /usr/bin/python3 tests/linux/qt_cooperative/run.py \
