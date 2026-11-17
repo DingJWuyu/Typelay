@@ -243,7 +243,7 @@ def verify_upload_conditions(job_id, job, name, upload, contract, groups):
             expected = (
                 active
                 and status != "cancelled"
-                and changed.get(contract.outcome, "success") in ("success", "failure")
+                and changed.get(contract.outcome, "success") in contract.outcomes
             )
         actual = condition_matches(
             upload.get("if"),
