@@ -155,7 +155,7 @@ internal sealed partial class BrowserInput
     }
     private enum ObservationStage
     {
-        None, Describe, Capture, Snapshot, Publish, Shortcut, Input, Lifecycle, OwnerPrepare
+        None, Describe, Capture, Snapshot, Publish, Shortcut, Input, Lifecycle, OwnerPrepare, EditorRenewal
     }
     private enum ObservationReason
     {
@@ -169,7 +169,9 @@ internal sealed partial class BrowserInput
         ConfigurationGenerationMismatch, AcceptKeyMismatch, ExitKeyMismatch, SourceNotReady,
         EditorNotReady, MalformedReply, GeometrySpace, TextUnavailable, ImeInvalid, SnapshotUnusable,
         ObservationMissing, ForegroundNotCurrent, AcknowledgementNotCurrent, DirectWriteUnsupported,
-        EditorFocused, Configured, DocumentFocusChanged, DocumentClosed, Destroyed, InputChanged
+        EditorFocused, Configured, DocumentFocusChanged, DocumentClosed, Destroyed, InputChanged,
+        EditorNotFocused, ApprovalRejected, MetadataChanged, ContentRevisionChanged, InputRevisionChanged,
+        GlossaryChanged
     }
     private enum PageReason
     {
@@ -183,6 +185,29 @@ internal sealed partial class BrowserInput
     private bool OwnerTraceEnabled => !string.IsNullOrWhiteSpace(_tracePath) && TraceBudget.OwnersAvailable;
     private bool TraceEnabled => !string.IsNullOrWhiteSpace(_tracePath) && TraceBudget.GeneralAvailable;
     private bool InputTraceEnabled => !string.IsNullOrWhiteSpace(_tracePath) && TraceBudget.InputsAvailable;
+    internal enum EditorDisplayStage
+    {
+        RenewalRequested, RenewalSuperseded, RenewalRejected, RenewalSent, Hidden
+    }
+    private readonly HashSet<EditorDisplayStage> _editorDisplayProgressTraced = [];
+    internal void TraceEditorDisplay(EditorDisplayStage stage, long displayAgeMs)
+    {
+        if (!TraceEnabled)
+            return;
+        // Normal renewal repeats every 400ms. Record its progress once so it
+        // cannot consume the failure window's existing general trace budget.
+        // A superseded request is normal while the user continues editing.
+        if (stage is EditorDisplayStage.RenewalRequested or EditorDisplayStage.RenewalSent
+            or EditorDisplayStage.RenewalSuperseded && !_editorDisplayProgressTraced.Add(stage))
+            return;
+        // Reuse the existing bounded trace sink. These are observations of the
+        // original display request, never another read, clock update or renewal.
+        Trace("browser-editor-display", new
+        {
+            stage,
+            displayAgeMs = Math.Clamp(displayAgeMs, -10000, 10000)
+        });
+    }
     private InputCapture CaptureRejected(ObservationReason reason, BrowserReply? reply = null,
         bool? editor = null, long? observationAgeMs = null)
     {

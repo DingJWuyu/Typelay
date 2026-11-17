@@ -275,6 +275,20 @@ class BrowserContract(unittest.TestCase):
         command_metadata_setup = ""
         if (
             self._testMethodName
+            == "test_source_owner_preparation_observes_selection_before_its_queued_notification"
+        ):
+            # This observer runs before the adapter handles the real queued
+            # notification, without pausing Chromium or changing its selection.
+            command_metadata_setup = """window.addEventListener('selectionchange', event => {
+              if (event.isTrusted && window.prepareBeforeSelectionNotification) {
+                const prepare = window.prepareBeforeSelectionNotification;
+                window.prepareBeforeSelectionNotification = null;
+                try { window.queuedRecovery = prepare(); }
+                catch (error) { window.queuedRecoveryError = String(error); }
+              }
+            }, true);"""
+        if (
+            self._testMethodName
             == "test_source_command_reports_changed_metadata_without_capturing_or_writing"
         ):
             # Change associated label text at the real key boundary, before the
@@ -951,7 +965,14 @@ class BrowserContract(unittest.TestCase):
     ):
         self.assert_source_command_recovers_after_rejection(text_change=False)
 
-    def assert_source_command_recovers_after_rejection(self, *, text_change):
+    def test_source_owner_preparation_observes_selection_before_its_queued_notification(self):
+        self.assert_source_command_recovers_after_rejection(
+            text_change=False, before_selection_notification=True
+        )
+
+    def assert_source_command_recovers_after_rejection(
+        self, *, text_change, before_selection_notification=False
+    ):
         self.type_source()
         scripts = []
         paused = []
@@ -1033,6 +1054,28 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(rejected["ack"]["state"], "rejected")
         self.assertEqual(rejected["ack"]["diagnostic"]["firstReason"], "Calibration")
         self.assertEqual(rejected["ack"]["diagnostic"]["lastClockReason"], "authorityMissing")
+        self.page.evaluate("""() => {
+          window.prepareRecoveryOwner = () => {
+            const prepared = fixtureCommand({id: 8904, op: 'prepare-command-owner',
+              data: {ownerId: 'new-owner', generation: rejectedOwner.generation}});
+            if (!prepared) return {prepared:null};
+            const stamp = fixtureHostClock().boottimeMs;
+            fixtureCommand({id: 8905, op: 'activate-command-owner', data: {...rejectedOwner,
+              ownerId: 'new-owner', authority: prepared.authority, expiresAtMs: stamp + 800,
+              releasedAtMs: stamp}});
+            const ack = fixtureMessages.filter(item => item.event === 'command-owner').at(-1).data;
+            fixtureCommand({id: 8906, op: 'activate-command-owner', data: rejectedOwner});
+            return {prepared: prepared.authority, ack,
+              late: fixtureMessages.filter(item => item.event === 'command-owner').at(-1).data};
+          };
+        }""")
+        if before_selection_notification:
+            # Native selection is already committed when Chromium dispatches
+            # this queued event. Prepare through the host protocol before the
+            # adapter's event listener, pinning a request ahead of notification.
+            self.page.evaluate(
+                "() => { prepareBeforeSelectionNotification = prepareRecoveryOwner; }"
+            )
         if text_change:
             self.page.keyboard.insert_text(" changed")
         else:
@@ -1042,18 +1085,13 @@ class BrowserContract(unittest.TestCase):
             self.page.locator("#source").click(position={"x": 12, "y": 12})
             self.assertEqual(self.page.evaluate("recoveryClick"), {"trusted": True, "target": True})
             self.assertEqual(self.page.locator("#source").input_value(), "Hello")
-        renewed = self.page.evaluate("""() => {
-          const prepared = fixtureCommand({id: 8904, op: 'prepare-command-owner',
-            data: {ownerId: 'new-owner', generation: rejectedOwner.generation}});
-          const stamp = fixtureHostClock().boottimeMs;
-          fixtureCommand({id: 8905, op: 'activate-command-owner', data: {...rejectedOwner,
-            ownerId: 'new-owner', authority: prepared.authority, expiresAtMs: stamp + 800,
-            releasedAtMs: stamp}});
-          const ack = fixtureMessages.filter(item => item.event === 'command-owner').at(-1).data;
-          fixtureCommand({id: 8906, op: 'activate-command-owner', data: rejectedOwner});
-          return {prepared: prepared.authority, ack,
-            late: fixtureMessages.filter(item => item.event === 'command-owner').at(-1).data};
-        }""")
+        if before_selection_notification:
+            self.page.wait_for_function("window.queuedRecovery || window.queuedRecoveryError")
+            self.assertIsNone(self.page.evaluate("window.queuedRecoveryError || null"))
+        renewed = self.page.evaluate(
+            "queuedRecovery" if before_selection_notification else "prepareRecoveryOwner()"
+        )
+        self.assertIsNotNone(renewed.get("prepared"), renewed)
         self.assertEqual(renewed["ack"]["state"], "active")
         self.assertEqual(renewed["ack"]["ownerId"], "new-owner")
         self.assertNotEqual(renewed["prepared"]["token"], rejected["prepared"]["token"])

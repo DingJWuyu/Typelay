@@ -990,23 +990,48 @@ internal sealed partial class BrowserInput
     }
     internal async Task<JsonElement?> DescribeEditorAsync(BrowserObservation original, SessionViewToken token, string[] excluded)
     {
-        if (token.Target != original.Target || token.CommandGeneration != _hook.CommandGeneration
-            || GetFocus(original.Target) != FocusMember.Overlay || !ForegroundCurrent(original))
+        long started = WindowsInterruptClock.NowMs;
+        JsonElement? Refuse(ObservationReason reason, BrowserReply? reply = null)
+        {
+            TraceObservation(ObservationStage.EditorRenewal, reason, reply?.Data ?? default,
+                editor: true, observationAgeMs: WindowsInterruptClock.NowMs - started);
             return null;
+        }
+        if (token.Target != original.Target)
+            return Refuse(ObservationReason.TargetChanged);
+        if (token.CommandGeneration != _hook.CommandGeneration)
+            return Refuse(ObservationReason.CommandGenerationChanged);
+        if (GetFocus(original.Target) != FocusMember.Overlay)
+            return Refuse(ObservationReason.EditorNotFocused);
+        if (!ForegroundCurrent(original))
+            return Refuse(ObservationReason.ForegroundNotCurrent);
         var glossary = GlossaryFocus;
         var description = await original.Peer.RequestAsync("describe", new
         {
             target = original.Target.Value
         });
-        if (!Approved(original.Peer, description, excluded, out var authority, out _, out var target, out _, glossary: glossary)
-            || target != original.Target || description!.Route != original.Route
-            || token.CommandGeneration != _hook.CommandGeneration || !ForegroundCurrent(original)
-            || GetFocus(original.Target) != FocusMember.Overlay
-            || String(authority, "metadataKey") != String(original.Authority, "metadataKey")
-            || Number(authority, "contentRevision") != Number(original.Authority, "contentRevision")
-            || Number(authority, "inputRevision") != Number(original.Authority, "inputRevision")
-            || glossary is not null && !GlossaryEvidence(description.Data, glossary))
-            return null;
+        if (!Approved(original.Peer, description, excluded, out var authority, out _, out var target, out _, glossary: glossary))
+            return Refuse(ObservationReason.ApprovalRejected, description);
+        if (target != original.Target)
+            return Refuse(ObservationReason.TargetChanged, description);
+        if (description!.Route != original.Route)
+            return Refuse(ObservationReason.ReplyRouteChanged, description);
+        if (token.CommandGeneration != _hook.CommandGeneration)
+            return Refuse(ObservationReason.CommandGenerationChanged, description);
+        if (!ForegroundCurrent(original))
+            return Refuse(ObservationReason.ForegroundNotCurrent, description);
+        if (GetFocus(original.Target) != FocusMember.Overlay)
+            return Refuse(ObservationReason.EditorNotFocused, description);
+        if (String(authority, "metadataKey") != String(original.Authority, "metadataKey"))
+            return Refuse(ObservationReason.MetadataChanged, description);
+        if (Number(authority, "contentRevision") != Number(original.Authority, "contentRevision"))
+            return Refuse(ObservationReason.ContentRevisionChanged, description);
+        if (Number(authority, "inputRevision") != Number(original.Authority, "inputRevision"))
+            return Refuse(ObservationReason.InputRevisionChanged, description);
+        if (glossary is not null && !GlossaryEvidence(description.Data, glossary))
+            return Refuse(ObservationReason.GlossaryChanged, description);
+        TraceObservation(ObservationStage.EditorRenewal, ObservationReason.Ready, description.Data,
+            editor: true, observationAgeMs: WindowsInterruptClock.NowMs - started);
         return authority; // Metadata-only UI clock evidence. Never a new source snapshot.
     }
     public async Task<InputReturn> ReturnAsync(InputContext context)

@@ -617,6 +617,10 @@
   function describe(field) {
     drainMutations();
     if (!field || (!commandClock && !clockValid())) return null;
+    // Native controls commit a selection before queuing selectionchange. A
+    // host request can arrive first; its authority must include that change.
+    // The later event sees the remembered range and cannot count it twice.
+    if (!field.richText) selectionChanged(field);
     const meta = metadata(field);
     if (!meta || meta.password || !meta.enabled || meta.readOnly || meta.offscreen) return null;
     return {target: field.id, metadata: meta, authority: authority(field, meta),

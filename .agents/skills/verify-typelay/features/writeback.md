@@ -65,6 +65,7 @@ Preconditions: 对本次合成字段有明确写回验收意图，实验选项�
 
 - **Windows 合作浏览器。** 本机只按 [Windows 证据](../references/windows.md)读取 Actions。对应入口覆盖默认 Index、人工稿两次独立 Tab 和原字段直接替换，不能用 Linux 旅程替代。
 - **浏览器草稿传输。** 在私有会话运行 `tests/linux/browser_e2e.py`，检查暂时不完整的 UTF-16 编辑仍逐次传递，补齐 emoji 后保留完整稿。结合共享 Protocol 与 Core 回归，检查非法载荷被拒、非法最终稿不能写入。该受控 DOM 契约不替代 Windows 的真实 Index 旅程。
+- **浏览器拒绝后恢复。** 同一 DOM 套件覆盖真实选区点击后重新准备 owner，包括选区已提交而 `selectionchange` 尚未处理的顺序。新 authority 必须携带增长的输入版本，迟到旧 owner 仍被拒绝，独立 F10 使用新 owner 与当前选区。此入口不证明 Windows 宿主的续租与恢复已通过。
 - **窄浏览器浮层。** 同一 DOM 契约在 180、320 和 520 像素宽度、亮色与暗色下保存编辑截图。检查“编辑中”完整显示在一行，语言、操作与回源提示均在浮层内；Windows 仍须核对真实人工稿场景截图。
 - **浏览器命令恢复。** DOM 契约保留相同样式写入使原准备失效的负例，以及正文输入或真实点击改变选区后，新 owner 与新 ACK 的独立正例。Windows 现役 Direct 场景使用一次受控故障注入：核对实际加载脚本等于发行脚本，在准备回包位置用非暂停条件断点重复赋相同样式，保留真实协议与时钟。读取 `ownerRecovery`，要求命中一次、样式前后相同、原准备真实拒绝并退休、原输入产生新源版本、新 owner 与新 ACK、断点已移除，再结合公开就绪和原单次 Direct 的精确替换结果。`sourceChange=selection-change` 还要求准备时的实际选区变化，且准备与触发刷新属于同一 input/content 版本，后来键入的正文不能补这份证据。无命中、无拒绝或身份链缺失均判失败。普通自然旅程通过不证明这条恢复链；同版本反复捕获、旧 ACK 和原生注册恢复本身均不授予恢复资格。
 - **GTK4 独立交互。** 在同一私有会话通过正式安装器准备模型后，运行下面的现役交互段。`--native` 须包含与产品源码匹配的 GTK4 fixture。该 scope 独立执行预览、接受、编辑回源、选区、原生 Undo、输入法拒绝和后台直接替换；它使用受控字段和初始设置，不证明物理键盘输入。它不执行[GTK4 配置](settings.md#driving-it-with-private-niri)，不能替代默认 `gtk4` 完整 scope 或改变 CI 必过集合。
@@ -125,3 +126,4 @@ runner 通过正式 `install.py install` 安装当前包，再从空数据执行
 - 合成键盘、受控 fixture 与物理输入法各有边界。本机未执行物理输入法验收。
 - 网页旅程的 Tab 使用私有 XTest；Unicode 文本使用浏览器可信输入，选区通过 DOM 设置。它不证明物理输入、任意站点或普通 textarea 的原生 Undo。Firefox、富文本和商店安装仍有各自入口。
 - Windows 逐 UTF-16 单元输入 emoji 时，编辑器可能短暂持有孤立代理码元。验收保留原输入和完整稿，核对第一次 Tab 前的浮层仍可见，回源零写与下一次独立接受分别有证据。不能删除 emoji 或改换输入入口来绕过断连。
+- Windows 编辑器断开时，将 `draftObservation.editorChanges` 与 `trace-app.jsonl` 中的 `browser-editor-display`、`EditorRenewal` 和 `capture-empty` 按时间对应。续租诊断沿用原 trace 总预算，只记录阶段、首个拒绝原因和耗时。日志耗尽或缺少页面端结果时，根因仍须标为未确认。
