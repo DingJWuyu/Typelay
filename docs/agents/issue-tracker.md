@@ -28,16 +28,21 @@ To show a screenshot or recording in a PR, reference it in the body as `![<alt>]
 
 每张 ticket 由一个 agent 实现，形成独立 PR，由负责人按风险审查后合并。独立 PR 的 base 是 `hitl`；一个 spec 的多张 ticket 使用下节的堆叠方式，最终合入 `hitl`。分支权限见根 [AGENTS.md](../../AGENTS.md)。
 
-负责人确认变更已合入 `hitl` 且满足验收条件后，关闭对应 ticket。GitHub 仅对默认分支解释 PR 的关闭关键字，见[官方说明](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue)。本仓库默认分支是 `main`，因此不能依赖合入 `hitl` 自动关票；依赖判断仍以 issue 的实际状态为准。
+- **Read a PR's review**: `gh pr view <number> --comments` for the conversation and `gh pr checks <number>` for its checks. Line comments appear in neither: read them with `gh api --paginate repos/<owner>/<repo>/pulls/<number>/comments`, and reply to a thread with `gh api repos/<owner>/<repo>/pulls/<number>/comments/<id>/replies -f body="..."`, where `<id>` is the thread's first comment.
+- **Close tickets**: a PR closes the tickets it names only when it merges into the default branch (see [GitHub documentation](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue)). When the work targets another branch, close each ticket by hand (see **Close**) once its PR merges into that branch.
+
+负责人确认变更已合入 `hitl` 且满足验收条件后，关闭对应 ticket。本仓库默认分支是 `main`；依赖判断仍以 issue 的实际状态为准。
 
 ## Stacked PRs
 
-本仓库的栈底 base 是 `hitl`，下面命令中的 `<target>` 取 `hitl`。后续每层从上一层分支切出，PR 以紧邻的下层分支为 base。
+本仓库的栈底 base 是 `hitl`，下面命令中的 `<target>` 取 `hitl`。
 
-GitHub supports stacked PRs, one PR per branch, each on the one below, through the `gh stack` extension: where `gh stack` is missing, install it with `gh extension install github/gh-stack`. _(Delete this section to land a spec's tickets on one integration branch; `/implement` reads it.)_
+GitHub supports stacked PRs, one PR per branch, each on the one below, through the `gh stack` extension: where `gh stack` is missing, install it with `gh extension install github/gh-stack`. _(Keep this section unless the user wants each spec's tickets landed together on one integration branch and reviewed as one PR; `/implement` reads it.)_
 
 - **Add a layer**: each layer is a new branch, since the finished branch may still be checked out in another worktree. Create the first with `gh stack init --base <target> <layer>`, and each later one from the top layer with `gh stack add <layer>`. Then bring the finished branch's commits onto it with `git cherry-pick <its-base>..<finished-branch>`.
-- **Open or update the PRs**: `gh stack submit --open`, since a run outside an interactive terminal opens drafts otherwise. Then set each new PR's title and body with `gh pr edit <number> --title <title> --body-file <file>`.
+- **Open or update the PRs**: `gh stack submit --open`, since a run outside an interactive terminal opens drafts otherwise. Then set each new PR's title and body with `gh pr edit <number> --title <title> --body-file <file>`. Where the repo has no Stacked PRs feature, `gh stack submit` still pushes but reports that it could not create the PRs: open each with `gh pr create --base <the layer below, or target for the first> --head <layer> --title <title> --body-file <file>`.
+- **Merge without the Stacked PRs feature**: the maintainer works bottom up, one layer at a time: points the PR at `<target>` with `gh pr edit <number> --base <target>`, then merges it with `gh pr merge <number> --merge`, which keeps the layer's commits, so the next layer's PR shows only its own change.
+- **After changing a lower layer**: from that layer, `gh stack rebase --upstack`, then `gh stack push`.
 - **After a lower layer merges**: `gh stack sync`.
 
 ## Pull requests as a triage surface
