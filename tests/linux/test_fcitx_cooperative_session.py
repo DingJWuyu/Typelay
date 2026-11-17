@@ -9,8 +9,71 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from fcitx_cooperative import run as cooperative
 from fcitx_cooperative.run import run_owned_session
+
+
+class CooperativeSessionScopeTests(unittest.TestCase):
+    def run_scope(self, scope=None, fail=None):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher = root / "dbus-run-session"
+            # Replace only the external desktop launcher. The production runner
+            # still launches, waits for and checks each real child process.
+            launcher.write_text(
+                f"#!{sys.executable}\n"
+                "import json, os, sys\nfrom pathlib import Path\n"
+                "args = sys.argv\n"
+                "scope = args[args.index('--glossary-toolkit') + 1] "
+                "if '--glossary-toolkit' in args else 'core'\n"
+                "root = Path(args[args.index('--output') + 1])\n"
+                "with (root / 'calls.jsonl').open('a') as stream:\n"
+                "    stream.write(json.dumps({'scope': scope, 'owned': "
+                "os.environ.get('TYPELAY_COOPERATIVE_OWNED_XVFB')}) + '\\n')\n"
+                "evidence = root if scope == 'core' else root / (scope + '-glossary-session')\n"
+                "evidence.mkdir(exist_ok=True)\n"
+                "(evidence / 'cleanup.json').write_text(json.dumps({'childrenExited': True}))\n"
+                "sys.exit(7 if os.environ.get('FAIL_SCOPE') == scope else 0)\n"
+            )
+            launcher.chmod(0o700)
+            output = root / "actions-output"
+            with patch.dict(
+                os.environ,
+                {"PATH": str(root) + os.pathsep + os.environ["PATH"], "FAIL_SCOPE": fail or ""},
+            ):
+                arguments = {} if scope is None else {"scope": scope}
+                if fail:
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        cooperative.run_sessions(root, "5.1.22", output, **arguments)
+                else:
+                    cooperative.run_sessions(root, "5.1.22", output, **arguments)
+            calls = [json.loads(line) for line in (root / "calls.jsonl").read_text().splitlines()]
+            self.assertTrue(all(call["owned"] == "1" for call in calls))
+            self.assertEqual(
+                output.read_text() if output.exists() else "",
+                "" if fail == "core" else "core-ready=true\n",
+            )
+            return [call["scope"] for call in calls]
+
+    def test_default_runs_every_existing_session(self):
+        self.assertEqual(self.run_scope(), ["core", "gtk4", "gtk3"])
+
+    def test_each_partition_runs_its_own_core_before_the_selected_glossary(self):
+        for scope, expected in (
+            ("core", ["core"]),
+            ("gtk3", ["core", "gtk3"]),
+            ("gtk4", ["core", "gtk4"]),
+        ):
+            with self.subTest(scope=scope):
+                self.assertEqual(self.run_scope(scope), expected)
+
+    def test_core_failure_cannot_authorize_glossary_or_qt(self):
+        self.assertEqual(self.run_scope("gtk3", "core"), ["core"])
+
+    def test_glossary_failure_remains_failed_after_successful_core(self):
+        self.assertEqual(self.run_scope("gtk4", "gtk4"), ["core", "gtk4"])
 
 
 class CooperativeSessionCleanupTests(unittest.TestCase):

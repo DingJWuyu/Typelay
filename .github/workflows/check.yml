@@ -734,17 +734,21 @@ jobs:
         CI_LINUX_GROUP: ${{ matrix.group }}
         GH_TOKEN: ${{ github.token }}
       run: |
-        if [ "$CI_LINUX_GROUP" = native ]; then
+        if [[ "$CI_LINUX_GROUP" == native* ]]; then
           python eng/ci/fixed.py restore fcitx --wait-for-job fcitx-build
           python eng/linux/cooperative/fcitx.py --reuse-third-party &
           gtk_pid=$!
+        fi
+        if [[ "$CI_LINUX_GROUP" == native || "$CI_LINUX_GROUP" == native-qt ]]; then
           python eng/linux/cooperative/qt.py &
           qt_pid=$!
         fi
         status=0
         python eng/linux/build.py --with-test-fixture --hy-runtime artifacts/linux/hy-cpu-runtime --compression-level 1 || status=1
-        if [ "$CI_LINUX_GROUP" = native ]; then
+        if [[ "$CI_LINUX_GROUP" == native* ]]; then
           wait "$gtk_pid" || status=1
+        fi
+        if [[ "$CI_LINUX_GROUP" == native || "$CI_LINUX_GROUP" == native-qt ]]; then
           wait "$qt_pid" || status=1
         fi
         exit "$status"
@@ -1011,18 +1015,26 @@ jobs:
       run: python tests/linux/fcitx_probe.py
     - name: Verify isolated Fcitx and GTK cooperative transactions
       id: fcitx
-      if: ${{ matrix.group == 'native' && !cancelled() && steps.build.outcome == 'success' }}
-      run: python tests/linux/fcitx_cooperative/run.py --reuse-build --core-version 5.1.22 --core-ready-output "$GITHUB_OUTPUT"
+      if: ${{ startsWith(matrix.group, 'native') && !cancelled() && steps.build.outcome == 'success' }}
+      env:
+        CI_LINUX_GROUP: ${{ matrix.group }}
+      run: |
+        case "$CI_LINUX_GROUP" in
+          native-gtk) scope=gtk3 ;;
+          native-gtk4) scope=gtk4 ;;
+          *) scope=core ;;
+        esac
+        python tests/linux/fcitx_cooperative/run.py --reuse-build --core-version 5.1.22 --scope "$scope" --core-ready-output "$GITHUB_OUTPUT"
     - name: Probe original Fcitx Qt input delivery boundaries
       id: qt
-      if: ${{ matrix.group == 'native' && !cancelled() && steps.fcitx.outputs.core-ready == 'true' }}
+      if: ${{ (matrix.group == 'native' || matrix.group == 'native-qt') && !cancelled() && steps.fcitx.outputs.core-ready == 'true' }}
       shell: bash
       run: |
         set -o pipefail
         python tests/linux/qt_cooperative/run.py --reuse-build --fcitx-root artifacts/linux/fcitx-cooperative-5.1.22 --verify-fcitx-build 2>&1 | tee artifacts/linux/qt-cooperative-probe.log
     - name: Exercise Qt language search independently of ordered acceptance
       id: qt-language-options
-      if: ${{ matrix.group == 'native' && !cancelled() && steps.fcitx.outputs.core-ready == 'true' && (steps.qt.outcome == 'success' || steps.qt.outcome == 'failure') && hashFiles('artifacts/linux/qt-cooperative/fcitx5-qt.tar.gz') != '' }}
+      if: ${{ (matrix.group == 'native' || matrix.group == 'native-qt') && !cancelled() && steps.fcitx.outputs.core-ready == 'true' && (steps.qt.outcome == 'success' || steps.qt.outcome == 'failure') && hashFiles('artifacts/linux/qt-cooperative/fcitx5-qt.tar.gz') != '' }}
       env:
         QT_PROBE_OUTCOME: ${{ steps.qt.outcome }}
       shell: bash
@@ -1042,10 +1054,10 @@ jobs:
           python tests/linux/qt_cooperative/run.py --reuse-build --fcitx-root artifacts/linux/fcitx-cooperative-5.1.22 --verify-fcitx-build --language-options-only --out "$language" 2>&1 | tee artifacts/linux/qt-language-options.log
         fi
     - name: Preserve independent Qt language search evidence
-      if: ${{ matrix.group == 'native' && !cancelled() && (steps.qt-language-options.outcome == 'success' || steps.qt-language-options.outcome == 'failure') }}
+      if: ${{ (matrix.group == 'native' || matrix.group == 'native-qt') && !cancelled() && (steps.qt-language-options.outcome == 'success' || steps.qt-language-options.outcome == 'failure') }}
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:
-        name: typelay-linux-qt-language-options-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        name: typelay-linux-qt-language-options-${{ matrix.group }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
         path: |
           artifacts/linux/qt-language-options.log
           artifacts/linux/qt-language-options/*.json
@@ -1055,7 +1067,7 @@ jobs:
         retention-days: 14
     - name: Package and relocate the optional Fcitx cooperation runtime
       id: fcitx-package
-      if: ${{ matrix.group == 'native' && !cancelled() && (steps.fcitx.outcome == 'success' || steps.fcitx.outcome == 'failure')
+      if: ${{ startsWith(matrix.group, 'native') && !cancelled() && (steps.fcitx.outcome == 'success' || steps.fcitx.outcome == 'failure')
         }}
       env:
         QT_PROBE_OUTCOME: ${{ steps.qt.outcome }}
@@ -1136,7 +1148,7 @@ jobs:
         python tests/linux/native_e2e.py --desktop --desktop-scope browser --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/desktop --editor-bundle artifacts/editor-probe/fixture.js
     - name: Exercise relocated Fcitx and cooperative GTK with the real local model
       id: gtk-desktop
-      if: ${{ matrix.group == 'native' && !cancelled() && steps.models.outcome == 'success' && steps.fcitx-package.outcome
+      if: ${{ matrix.group == 'native-gtk' && !cancelled() && steps.models.outcome == 'success' && steps.fcitx-package.outcome
         == 'success' && steps.display.outcome == 'success' }}
       run: |
         export DISPLAY=:99
@@ -1146,7 +1158,7 @@ jobs:
         python tests/linux/native_e2e.py --desktop --desktop-scope gtk --gtk-session-bindings --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/gtk-desktop --fcitx-cooperative "artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative"
     - name: Exercise cooperative GTK4 Entry with the real local model
       id: gtk4-desktop
-      if: ${{ matrix.group == 'native' && !cancelled() && steps.models.outcome == 'success' && steps.fcitx-package.outcome
+      if: ${{ matrix.group == 'native-gtk4' && !cancelled() && steps.models.outcome == 'success' && steps.fcitx-package.outcome
         == 'success' && steps.display.outcome == 'success' }}
       run: |
         export DISPLAY=:99
@@ -1156,7 +1168,7 @@ jobs:
         python tests/linux/native_e2e.py --desktop --desktop-scope gtk4 --gtk-session-bindings --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/gtk4-desktop --fcitx-cooperative "artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative"
     - name: Exercise Qt6 widgets with explicit bundle or build provenance
       id: qt-desktop
-      if: ${{ matrix.group == 'native' && !cancelled() && steps.models.outcome == 'success' && (steps.qt.outcome == 'success'
+      if: ${{ matrix.group == 'native-qt' && !cancelled() && steps.models.outcome == 'success' && (steps.qt.outcome == 'success'
         || steps.qt.outcome == 'failure') && steps.fcitx-package.outcome == 'success' && steps.display.outcome == 'success'
         }}
       env:
@@ -1205,7 +1217,7 @@ jobs:
         export XDG_CACHE_HOME="$PWD/artifacts/linux/hy-model-cache"
         python tests/linux/native_e2e.py --desktop --desktop-scope model-packages --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/hy-package
     - name: Preserve small GTK3 desktop event diagnostics
-      if: ${{ always() && matrix.group == 'native' }}
+      if: ${{ always() && matrix.group == 'native-gtk' }}
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:
         name: typelay-linux-gtk3-desktop-events-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -1219,7 +1231,7 @@ jobs:
         if-no-files-found: warn
         retention-days: 14
     - name: Preserve small GTK4 probe and desktop diagnostics
-      if: ${{ always() && matrix.group == 'native' }}
+      if: ${{ always() && matrix.group == 'native-gtk4' }}
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:
         name: typelay-linux-gtk4-events-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -1242,7 +1254,7 @@ jobs:
         if-no-files-found: warn
         retention-days: 14
     - name: Preserve small Qt desktop event diagnostics
-      if: ${{ always() && matrix.group == 'native' }}
+      if: ${{ always() && matrix.group == 'native-qt' }}
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:
         name: typelay-linux-qt-desktop-events-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -1260,7 +1272,12 @@ jobs:
           artifacts/ci/
           artifacts/linux/*.json
           artifacts/linux/*.log
-          artifacts/linux/ordinary-gimp/
+          artifacts/linux/ordinary-gimp/*.json
+          artifacts/linux/ordinary-gimp/*.jsonl
+          artifacts/linux/ordinary-gimp/*.log
+          artifacts/linux/ordinary-gimp/*.png
+          artifacts/linux/ordinary-gimp/*.kdl
+          artifacts/linux/ordinary-gimp/*.failed
           artifacts/linux/browser-native/
           artifacts/linux/firefox-native/
           artifacts/linux/vscode/
@@ -1271,9 +1288,27 @@ jobs:
           artifacts/linux/setup-settings/
           artifacts/linux/setup-tutorial/
           artifacts/linux/desktop/
-          artifacts/linux/gtk-desktop/
-          artifacts/linux/gtk4-desktop/
-          artifacts/linux/qt-desktop/
+          artifacts/linux/gtk-desktop/*.json
+          artifacts/linux/gtk-desktop/*.jsonl
+          artifacts/linux/gtk-desktop/*.log
+          artifacts/linux/gtk-desktop/*.png
+          artifacts/linux/gtk-desktop/*.kdl
+          artifacts/linux/gtk-desktop/*.failed
+          artifacts/linux/gtk4-desktop/*.json
+          artifacts/linux/gtk4-desktop/*.jsonl
+          artifacts/linux/gtk4-desktop/*.log
+          artifacts/linux/gtk4-desktop/*.png
+          artifacts/linux/gtk4-desktop/*.kdl
+          artifacts/linux/gtk4-desktop/*.failed
+          artifacts/linux/gtk4-desktop/gtk4-connected-before-map/*.json
+          artifacts/linux/qt-desktop/*.json
+          artifacts/linux/qt-desktop/*.jsonl
+          artifacts/linux/qt-desktop/*.log
+          artifacts/linux/qt-desktop/*.png
+          artifacts/linux/qt-desktop/*.kdl
+          artifacts/linux/qt-desktop/*.failed
+          artifacts/linux/qt-desktop/qt-motion-expand/frame-*.png
+          artifacts/linux/qt-desktop/qt-motion-chinese-draft/frame-*.png
           artifacts/linux/qt-cooperative/*.json
           artifacts/linux/qt-cooperative/*.log
           artifacts/linux/qt-cooperative/*.png
@@ -1310,5 +1345,8 @@ jobs:
       matrix:
         group:
         - native
+        - native-gtk
+        - native-gtk4
+        - native-qt
     env: *linux-sdk
     steps: *linux-steps
