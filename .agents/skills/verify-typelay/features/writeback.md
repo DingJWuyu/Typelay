@@ -122,7 +122,7 @@ runner 通过正式 `install.py install` 安装当前包，再从空数据执行
 - 基础 Launch 的实验写回保持默认关闭，因此 `gtk-preview.py` 明确记录 `writebackTested=false`。不能把预览通过升级为写回通过。
 - 可见译文、`ValidTranslation` 与短期接受许可不同。资格失效时不得重复投递直到“碰巧通过”，也不得放宽输入法状态或焦点判断。
 - GTK3 TextBuffer 不提供本旅程需要的原生 Undo。`userActionsStarted` / `userActionsFinished` 只证明一次编辑分组，结果中的 `nativeUndo=false` 不能改写为撤销成功。
-- GIMP 3.2.6-2 的 Comment 不提供评论修改的原生 Undo。既有 `ordinary-gimp` 会比较原生粘贴轨迹，这种不支持不能报告成 TypeLay 撤销成功。
+- GIMP 3.2.8-1 的 Comment 不提供评论修改的原生 Undo。既有 `ordinary-gimp` 会比较原生粘贴轨迹，这种不支持不能报告成 TypeLay 撤销成功。
 - 合成键盘、受控 fixture 与物理输入法各有边界。本机未执行物理输入法验收。
 - 网页旅程的 Tab 使用私有 XTest；Unicode 文本使用浏览器可信输入，选区通过 DOM 设置。它不证明物理输入、任意站点或普通 textarea 的原生 Undo。Firefox、富文本和商店安装仍有各自入口。
 - Windows 逐 UTF-16 单元输入 emoji 时，编辑器可能短暂持有孤立代理码元。验收保留原输入和完整稿，核对第一次 Tab 前的浮层仍可见，回源零写与下一次独立接受分别有证据。不能删除 emoji 或改换输入入口来绕过断连。
