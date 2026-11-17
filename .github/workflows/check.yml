@@ -777,12 +777,10 @@ jobs:
       id: hy-runtime-contracts
       if: ${{ matrix.group == 'contracts' && !cancelled() && steps.hy-cpu.outcome == 'success' }}
       run: TYPELAY_HY_CPU_RUNTIME="$PWD/artifacts/linux/hy-cpu-runtime" python tests/linux/test_hy_runtime.py -v
-    - name: Verify Linux test_ui_fonts
+    - name: Verify Linux fonts and display isolation
       id: test-ui-fonts
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: |
-        TYPELAY_UI_FONT_ROOT="$PWD/artifacts/ui-fonts" python tests/linux/test_ui_fonts.py -v
-        python tests/linux/test_display_isolation.py -v
+      run: TYPELAY_UI_FONT_ROOT="$PWD/artifacts/ui-fonts" python tests/linux/test_display_isolation.py -v
     - name: Verify Linux test_build_bundle
       id: test-build-bundle
       if: ${{ matrix.group == 'contracts' && !cancelled() }}

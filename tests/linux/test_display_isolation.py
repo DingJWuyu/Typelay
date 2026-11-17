@@ -55,6 +55,8 @@ class DisplayIsolationTests(unittest.TestCase):
                         TYPELAY_VERIFY_OUTPUT=directory,
                         NIRI_SOCKET=str(Path(directory) / "wayland-owned"),
                     )
+                environment.update(environment_overrides or {})
+                if private_session:
                     (Path(directory) / "session.json").write_text(
                         json.dumps(
                             {
@@ -68,7 +70,6 @@ class DisplayIsolationTests(unittest.TestCase):
                             }
                         )
                     )
-                environment.update(environment_overrides or {})
                 try:
                     result = subprocess.run(
                         [
@@ -137,6 +138,43 @@ class DisplayIsolationTests(unittest.TestCase):
                     exit_code=1,
                 )
                 self.assertIn("private session requires its recorded Wayland connection", output)
+
+    def test_private_session_rejects_a_missing_niri_socket(self):
+        with tempfile.TemporaryDirectory() as runtime:
+            output = self.discover(
+                "test_settings_feedback.py",
+                private_session=True,
+                environment_overrides={
+                    "XDG_RUNTIME_DIR": runtime,
+                    "NIRI_SOCKET": str(Path(runtime) / "missing-niri"),
+                },
+                exit_code=1,
+            )
+        self.assertIn("private niri socket missing or outside runtime", output)
+        self.assertNotIn("skipped=", output)
+
+    def test_private_session_rejects_a_niri_socket_outside_its_runtime(self):
+        with tempfile.TemporaryDirectory() as directory, socket.socket(socket.AF_UNIX) as niri:
+            path = str(Path(directory) / "niri-outside")
+            niri.bind(path)
+            output = self.discover(
+                "test_settings_feedback.py",
+                private_session=True,
+                environment_overrides={"NIRI_SOCKET": path},
+                exit_code=1,
+            )
+        self.assertIn("private niri socket missing or outside runtime", output)
+        self.assertNotIn("skipped=", output)
+
+    def test_private_session_rejects_a_missing_wayland_socket(self):
+        output = self.discover(
+            "test_settings_feedback.py",
+            private_session=True,
+            environment_overrides={"WAYLAND_DISPLAY": "wayland-missing"},
+            exit_code=1,
+        )
+        self.assertIn("private Wayland socket missing", output)
+        self.assertNotIn("skipped=", output)
 
 
 if __name__ == "__main__":
