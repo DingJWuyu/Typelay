@@ -81,11 +81,12 @@ public sealed partial class NativeSourceControllerTests
             const string draft = "Hello - manual draft";
             Assert.Equal(draft, editor.Text);
             Assert.True(editor.CanUndo);
+            nint cookieBeforeTab = N.GetProp(native.A, "TypeLay.NativeInput.Lifetime.v2");
             Tab(false);
             initialTabHeld = true;
             Tab(true);
             initialTabHeld = false;
-            await Until(() => returns == 1 && N.Focused() == (native.Root, native.A) && editor.IsReadOnly, native.Token);
+            await WaitForFirstTabReturn(native, editor, () => Volatile.Read(ref returns), cookieBeforeTab);
             await Until(() => AutomationProperties.GetItemStatus(editor) == "当前译文" && captures.TryPeek(out _), native.Token);
             int requests = translation.Calls;
             // Freeze the original native identity before entering the confirmation.
@@ -397,4 +398,39 @@ public sealed partial class NativeSourceControllerTests
             Directory.Delete(directory, true);
         }
     });
+
+    private static async Task WaitForFirstTabReturn(ProductionForegroundWriteTests.Desktop native,
+        TextBox editor, Func<int> returns, nint cookieBeforeTab)
+    {
+        var expected = (Returns: 1, Root: native.Root, Control: native.A, ReadOnly: true);
+        (int Returns, nint Root, nint Control, bool ReadOnly) actual = default;
+        N.FocusObservation focus = default;
+        nint sourceCookie = 0;
+        try
+        {
+            await Until(() =>
+            {
+                int count = returns();
+                focus = N.ReadFocus();
+                actual = (count, focus.Root, focus.Control, editor.IsReadOnly);
+                sourceCookie = N.GetProp(native.A, "TypeLay.NativeInput.Lifetime.v2");
+                return actual == expected;
+            }, native.Token);
+        }
+        catch (OperationCanceledException) when (native.Token.IsCancellationRequested)
+        {
+            // Report the exact sample that failed the wait, before any fixture cleanup.
+            static string Condition<T>(string name, T expected, T actual) where T : IEquatable<T> =>
+                $"{name} {(expected.Equals(actual) ? "met" : "UNMET")} (expected={expected}, actual={actual})";
+
+            TestContext.Current.TestOutputHelper!.WriteLine("First Tab return: "
+                + Condition("Broker return count", expected.Returns, actual.Returns) + ", "
+                + Condition("foreground root HWND", expected.Root, actual.Root) + ", "
+                + Condition("focused control HWND", expected.Control, actual.Control) + ", "
+                + Condition("editor IsReadOnly", expected.ReadOnly, actual.ReadOnly)
+                + $", foreground PID={focus.ProcessId}, TID={focus.ThreadId}, GUI thread query={focus.GuiThreadInfoSucceeded}"
+                + $", original source cookie present={cookieBeforeTab != 0}, same source lifetime={cookieBeforeTab != 0 && sourceCookie == cookieBeforeTab}");
+            throw;
+        }
+    }
 }
