@@ -29,6 +29,7 @@ from eng.linux.cooperative import qt as qt_build  # noqa: E402
 from eng.linux.cooperative.inputs import QT_PIN, QT_TEST_INPUTS, hashes, sha256  # noqa: E402
 
 TEST_INPUTS = QT_TEST_INPUTS
+WINDOW_TIMEOUT = 15
 
 
 def verify_fcitx_inputs(fcitx):
@@ -72,8 +73,9 @@ def run(args, **kwargs):
     ).strip()
 
 
-def wait(test, message):
-    deadline = time.monotonic() + 15
+def wait(test, message, *, deadline=None):
+    if deadline is None:
+        deadline = time.monotonic() + WINDOW_TIMEOUT
     while time.monotonic() < deadline:
         value = test()
         if value:
@@ -82,11 +84,11 @@ def wait(test, message):
     raise AssertionError("Timed out: " + message)
 
 
-def search_windows(pid, env, *, name=None):
+def search_windows(pid, env, *, name=None, timeout=5):
     command = ["xdotool", "search", "--onlyvisible", "--pid", str(pid)]
     if name is not None:
         command.extend(["--name", name])
-    result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=5)
+    result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=timeout)
     if result.returncode == 0 and result.stdout.strip():
         return result.stdout
     if result.returncode == 1 and result.stdout == "" and result.stderr == "":
@@ -94,6 +96,67 @@ def search_windows(pid, env, *, name=None):
     raise RuntimeError(
         f"{shlex.join(command)} failed with exit code {result.returncode}\n"
         f"stderr:\n{result.stderr}\nstdout:\n{result.stdout}"
+    )
+
+
+def wait_for_display(fixture, env, deadline, atom):
+    """Bound even a suspended X server's handshake by the original mapping deadline."""
+    try:
+        probe = subprocess.run(
+            [fixture, "--check-display", atom],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            capture_output=True,
+            timeout=max(0, deadline - time.monotonic()),
+        )
+    except subprocess.TimeoutExpired as error:
+        last_error = os.fsdecode(error.stderr or b"").strip() or "no X11 setup reply"
+        raise RuntimeError(
+            f"X11 readiness on {env.get('DISPLAY')} timed out: {last_error}"
+        ) from error
+    if probe.returncode:
+        raise RuntimeError(
+            f"X11 readiness on {env.get('DISPLAY')} exited {probe.returncode}: {probe.stderr.strip()}"
+        )
+    if probe.stderr.strip():
+        print(
+            f"qt-x11 display={env.get('DISPLAY')} before readiness: {probe.stderr.strip()}",
+            flush=True,
+        )
+    print(probe.stdout.strip(), flush=True)
+
+
+def record_unmapped(out, remaining_modes, stage, display, error):
+    scenes = (
+        *remaining_modes,
+        "unmodified_reentry",
+        "ordered",
+        "ordered_delayed",
+        "language_options",
+    )
+    (out / "result.json").write_text(
+        json.dumps(
+            {
+                "passed": False,
+                "stage": f"{remaining_modes[0]}-{stage}",
+                "display": display,
+                "error": str(error),
+                "subsequentScenes": dict.fromkeys(scenes, "not-run"),
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+
+
+def log_fixture_exit(client, log_path):
+    # Observe the real child before the session's cleanup can terminate it.
+    code = client.poll()
+    print(
+        f"qt-x11 fixture pid={client.pid} exit={code if code is not None else 'running'} "
+        f"before_cleanup=true log={log_path}",
+        flush=True,
     )
 
 
@@ -206,6 +269,7 @@ def build(out, forced_sync_diagnostic=False, reuse=False):
             "-o",
             out / "fixture",
             *flags,
+            *shlex.split(run(["pkg-config", "--libs", "xcb"])),
         ]
     )
     run(
@@ -4195,6 +4259,8 @@ def observe_font_order(out, env):
     expected = {}
     path = out / "font-order-result.json"
     try:
+        for region in ("SC", "JP"):
+            (out / f"font-order-{region}.json").unlink(missing_ok=True)
         verify_bundle(font_root)
         expected = {
             region: font_table_hashes(font_root / f"noto-serif/NotoSerif{region}-Regular.otf")
@@ -4244,6 +4310,11 @@ def observe_font_order(out, env):
                 record.update(outcome="exited", exitCode=result.returncode)
                 try:
                     evidence = json.loads((out / f"font-order-{region}.json").read_text())
+                    print(
+                        f"qt-x11 font-order={region} display={clean.get('DISPLAY')} "
+                        f"pid={evidence.get('pid')} exit={result.returncode}",
+                        flush=True,
+                    )
                     errors = display_font_experiment_errors(evidence, expected, region)
                 except (OSError, ValueError, KeyError, TypeError, AttributeError):
                     errors = ["missing-or-invalid-child-evidence"]
@@ -4274,7 +4345,8 @@ def session(
     *,
     verified_fcitx_build=False,
 ):
-    # A failed new session must not leave an earlier same-build async result eligible.
+    # A failed new session must not reuse an earlier full or partial result.
+    (out / "result.json").unlink(missing_ok=True)
     (out / "async-result.json").unlink(missing_ok=True)
     children = []
     with tempfile.TemporaryDirectory(prefix="typelay-qt-research-") as temporary:
@@ -4309,6 +4381,7 @@ def session(
             LIBIME_MODEL_DIRS=f"{prefix}/lib/libime",
             QT_PLUGIN_PATH=str(out / "plugins"),
             QT_QPA_PLATFORM="xcb",
+            QT_FORCE_STDERR_LOGGING="1",
             QT_IM_MODULE="fcitx5",
             TYPELAY_QT_PROBE="1",
             TYPELAY_QT_COOPERATIVE="1",
@@ -4339,7 +4412,8 @@ def session(
                     if forced_sync_diagnostic
                     else {"status": "not-run", "supported": False}
                 )
-                for mode in ("async", "sync") if forced_sync_diagnostic else ("async",):
+                modes = ("async", "sync") if forced_sync_diagnostic else ("async",)
+                for index, mode in enumerate(modes):
                     state_file = out / f"{mode}-state.json"
 
                     def state():
@@ -4355,9 +4429,19 @@ def session(
                             for k in ("tlqtPendingDbus", "tlqtPendingForward", "tlqtOutputDepth")
                         )
 
-                    with (out / f"{mode}-client.log").open("w") as clientlog:
+                    deadline = time.monotonic() + WINDOW_TIMEOUT
+                    display = env.get("DISPLAY")
+                    atom = f"_TYPELAY_QT_PROBE_{os.getpid()}_{time.monotonic_ns()}"
+                    print(f"qt-x11 stage={mode}-display display={display}", flush=True)
+                    try:
+                        wait_for_display(out / "fixture", env, deadline, atom)
+                    except (RuntimeError, OSError) as error:
+                        record_unmapped(out, modes[index:], "display", display, error)
+                        raise
+                    client_log = out / f"{mode}-client.log"
+                    with client_log.open("w") as clientlog, ExitStack() as observations:
                         client = subprocess.Popen(
-                            [str(out / "fixture")],
+                            [str(out / "fixture"), "--require-display", atom],
                             stdin=subprocess.PIPE,
                             text=True,
                             env=env
@@ -4370,25 +4454,54 @@ def session(
                             stderr=subprocess.STDOUT,
                         )
                         children.append(client)
+                        observations.callback(log_fixture_exit, client, client_log)
+
+                        first_query = True
 
                         def mapped_windows():
+                            nonlocal first_query
                             code = client.poll()
                             if code is not None:
-                                tail = (out / f"{mode}-client.log").read_text(errors="replace")[
-                                    -4096:
-                                ]
-                                raise RuntimeError(
-                                    f"Qt fixture exited before mapping: code={code}\n{tail}"
+                                raise ChildProcessError(
+                                    f"Qt fixture exited before mapping: code={code}"
                                 )
-                            return search_windows(client.pid, env).split()
+                            if first_query:
+                                print(
+                                    f"qt-x11 stage={mode}-window-search display={display} pid={client.pid}",
+                                    flush=True,
+                                )
+                                first_query = False
+                            remaining = max(0, deadline - time.monotonic())
+                            return search_windows(
+                                client.pid, env, timeout=min(5, remaining)
+                            ).split()
 
                         try:
-                            window = wait(mapped_windows, "mapped Qt window")[0]
-                        except AssertionError as error:
-                            tail = (out / f"{mode}-client.log").read_text(errors="replace")[-4096:]
-                            raise AssertionError(
-                                f"{error}; child_status={client.poll()}\n{tail}"
-                            ) from error
+                            window = wait(mapped_windows, "mapped Qt window", deadline=deadline)[0]
+                        except (
+                            AssertionError,
+                            RuntimeError,
+                            OSError,
+                            subprocess.SubprocessError,
+                        ) as error:
+                            tail = client_log.read_text(errors="replace")[-4096:]
+                            code = client.poll()
+                            message = (
+                                f"{mode} window mapping on {display}: {error}; "
+                                f"child_status={code}\n{tail}"
+                            )
+                            stage = (
+                                "fixture-exit"
+                                if isinstance(error, ChildProcessError)
+                                or (isinstance(error, AssertionError) and code is not None)
+                                else "window-search"
+                            )
+                            record_unmapped(out, modes[index:], stage, display, message)
+                            raise RuntimeError(message) from error
+                        print(
+                            f"qt-x11 mapped display={display} pid={client.pid} window={window}",
+                            flush=True,
+                        )
                         run(["xdotool", "windowfocus", "--sync", window], env=env)
                         wait(
                             lambda: counter_exceeds(state(), "tlqtContexts")
@@ -4687,23 +4800,33 @@ if __name__ == "__main__":
         )
     else:
         build(out, args.forced_sync_diagnostic, args.reuse_build)
-        subprocess.run(
-            [
-                "xvfb-run",
-                "-a",
-                "dbus-run-session",
-                "--",
-                sys.executable,
-                str(HERE / "run.py"),
-                "--session",
-                "--out",
-                str(out),
-                "--fcitx-root",
-                str(fcitx),
-                *(["--verify-fcitx-build"] if args.verify_fcitx_build else []),
-                *(["--forced-sync-diagnostic"] if args.forced_sync_diagnostic else []),
-                *(["--language-options-only"] if args.language_options_only else []),
-            ],
-            check=True,
-            timeout=180,
-        )
+        # A pipe keeps xvfb-run's final xauth redirection from truncating server evidence.
+        command = [
+            "xvfb-run",
+            "-a",
+            "-e",
+            "/dev/stderr",
+            "-s",
+            "-screen 0 640x480x24 -audit 2 -noreset",
+            "dbus-run-session",
+            "--",
+            sys.executable,
+            str(HERE / "run.py"),
+            "--session",
+            "--out",
+            str(out),
+            "--fcitx-root",
+            str(fcitx),
+            *(["--verify-fcitx-build"] if args.verify_fcitx_build else []),
+            *(["--forced-sync-diagnostic"] if args.forced_sync_diagnostic else []),
+            *(["--language-options-only"] if args.language_options_only else []),
+        ]
+        try:
+            result = subprocess.run(command, stderr=subprocess.PIPE, timeout=180)
+        except subprocess.TimeoutExpired as error:
+            (out / "x11-server.log").write_bytes(error.stderr or b"")
+            raise
+        (out / "x11-server.log").write_bytes(result.stderr)
+        if result.returncode:
+            sys.stderr.buffer.write(result.stderr)
+            result.check_returncode()

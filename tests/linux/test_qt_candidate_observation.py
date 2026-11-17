@@ -1,12 +1,14 @@
 """Process/snapshot observation contracts, not Qt GUI or model-quality evidence."""
 
 import copy
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import Mock, call, patch
 
@@ -95,9 +97,14 @@ class QtWindowSearchTests(unittest.TestCase):
                 result = qt_probe.stock_sync(self.directory, self.environment, [])
                 error = result.get("error", "")
             else:
-                with self.assertRaises((RuntimeError, subprocess.CalledProcessError)) as raised:
+                with self.assertRaises(
+                    (AssertionError, RuntimeError, subprocess.CalledProcessError)
+                ) as raised:
                     qt_probe.session(
-                        self.directory, self.directory, language_options_only=mode == "native"
+                        self.directory,
+                        self.directory,
+                        language_options_only=mode == "native",
+                        forced_sync_diagnostic=mode == "forced",
                     )
                 error = str(raised.exception)
         self.assertTrue(all(child.poll() is not None for child in children))
@@ -131,6 +138,96 @@ class QtWindowSearchTests(unittest.TestCase):
                 self.assertEqual(calls[-1], ["windowfocus", "--sync", "101"])
                 if mode == "native":
                     self.assertEqual(calls[0][-2:], ["--name", "^TypeLay Qt native fixture$"])
+
+    def test_unavailable_display_stops_before_async_fixture_and_marks_later_scenes(self):
+        self.environment["DISPLAY"] = ":73"
+        self.responses.write_text(json.dumps([[2, "", "unexpected window search"]]))
+        started = self.directory / "fixture-started"
+        self.executable(
+            "fixture",
+            "import sys, time\nfrom pathlib import Path\n"
+            "if sys.argv[1:2] == ['--check-display']:\n"
+            "    print('X11 setup failed (xcb error 1)', file=sys.stderr)\n"
+            "    time.sleep(60)\n"
+            f"Path({str(started)!r}).touch()\n",
+        )
+        with (
+            patch.object(qt_probe, "WINDOW_TIMEOUT", 0.4),
+            patch.object(qt_probe, "stock_sync", return_value={}),
+        ):
+            error = self.run_until_search("forced")
+        self.assertIn(":73", error)
+        self.assertIn("timed out", error)
+        self.assertIn("X11 setup failed (xcb error 1)", error)
+        self.assertFalse(started.exists())
+        self.assertFalse(self.calls.exists())
+        result = json.loads((self.directory / "result.json").read_text())
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["stage"], "async-display")
+        self.assertEqual(result["subsequentScenes"]["sync"], "not-run")
+        self.assertEqual(result["subsequentScenes"]["language_options"], "not-run")
+
+    def test_fixture_failure_after_display_readiness_keeps_its_exit_code_and_log(self):
+        self.environment["DISPLAY"] = ":73"
+        self.executable(
+            "fixture",
+            "import sys\n"
+            "if sys.argv[1:2] == ['--check-display']:\n"
+            "    sys.exit(0)\n"
+            "print('unrelated fixture failure', file=sys.stderr)\n"
+            "sys.exit(12)\n",
+        )
+        self.responses.write_text(json.dumps([[1, "", ""]]))
+        error = self.run_until_search("async")
+        self.assertIn("code=12", error)
+        self.assertIn("unrelated fixture failure", error)
+        result = json.loads((self.directory / "result.json").read_text())
+        self.assertEqual(result["stage"], "async-fixture-exit")
+        self.assertFalse((self.directory / "async-result.json").exists())
+
+    def test_failed_font_clients_cannot_report_previous_clients_as_connected(self):
+        for region in ("SC", "JP"):
+            (self.directory / f"font-order-{region}.json").write_text('{"pid":39117}')
+        self.executable("font-order", "raise SystemExit(12)\n")
+        log = io.StringIO()
+        with (
+            patch.object(qt_probe, "verify_bundle"),
+            patch.object(qt_probe, "font_table_hashes", return_value={}),
+            redirect_stdout(log),
+        ):
+            qt_probe.observe_font_order(self.directory, self.environment)
+        result = json.loads((self.directory / "font-order-result.json").read_text())
+        self.assertEqual([scene["exitCode"] for scene in result["scenes"]], [12, 12])
+        self.assertNotIn("39117", log.getvalue())
+        for region in ("SC", "JP"):
+            self.assertFalse((self.directory / f"font-order-{region}.json").exists())
+
+    def test_recovered_display_and_later_fixture_exit_retain_both_observations(self):
+        focused = self.directory / "focused"
+        self.executable(
+            "xdotool",
+            "import sys\nfrom pathlib import Path\n"
+            "if sys.argv[1] == 'search': print('101')\n"
+            f"if sys.argv[1] == 'windowfocus': Path({str(focused)!r}).touch()\n",
+        )
+        self.executable(
+            "fixture",
+            "import sys, time\nfrom pathlib import Path\n"
+            "if sys.argv[1:2] == ['--check-display']:\n"
+            "    print('X11 setup failed (xcb error 1)', file=sys.stderr)\n"
+            "    print('qt-x11 connected')\n"
+            "    sys.exit(0)\n"
+            f"while not Path({str(focused)!r}).exists(): time.sleep(0.01)\n"
+            "print('post-map failure', file=sys.stderr)\nsys.exit(12)\n",
+        )
+        log = io.StringIO()
+        with patch.object(qt_probe, "WINDOW_TIMEOUT", 0.8), redirect_stdout(log):
+            error = self.run_until_search("async")
+        self.assertIn("actual Fcitx IC and first field binding", error)
+        self.assertIn("X11 setup failed (xcb error 1)", log.getvalue())
+        self.assertIn("exit=12", log.getvalue())
+        self.assertIn("async-client.log", log.getvalue())
+        self.assertIn("post-map failure", (self.directory / "async-client.log").read_text())
 
     def test_normal_no_match_remains_bounded_by_the_original_window_deadline(self):
         self.responses.write_text(json.dumps([[1, "", ""]]))
