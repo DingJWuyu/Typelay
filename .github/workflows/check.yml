@@ -156,7 +156,7 @@ jobs:
     - name: Install repository Python tools
       id: python-tools
       if: ${{ !cancelled() && steps.python.outcome == 'success' }}
-      run: python -m pip install -r eng/requirements.txt
+      run: python -m pip install -r eng/requirements.txt -r tests/shared/requirements.txt
     - name: Check repository Python lint
       id: python-lint
       if: ${{ !cancelled() && steps.python-tools.outcome == 'success' }}
