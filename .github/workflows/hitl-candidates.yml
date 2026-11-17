@@ -1,0 +1,64 @@
+name: Recheck PRs against hitl
+'on':
+  push:
+    branches: [hitl]
+permissions: {}
+jobs:
+  pulls:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+      statuses: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    outputs:
+      open: ${{ steps.list.outputs.open }}
+    steps:
+    - name: Find the heads of open PRs targeting hitl
+      id: list
+      shell: python
+      run: |
+        import json
+        import os
+        import subprocess
+
+        endpoint = f"repos/{os.environ['GITHUB_REPOSITORY']}/pulls?state=open&base=hitl&per_page=100"
+        pages = json.loads(subprocess.check_output(["gh", "api", "--paginate", "--slurp", endpoint]))
+        pulls = [{"number": pr["number"], "head": pr["head"]["sha"]} for page in pages for pr in page]
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+            print(f"open={json.dumps(pulls)}", file=output)
+    - name: Link each head to its pending check on the new hitl commit
+      id: pending
+      shell: python
+      env:
+        OPEN_PRS: ${{ steps.list.outputs.open }}
+      run: |
+        import json
+        import os
+        import subprocess
+
+        repository = os.environ["GITHUB_REPOSITORY"]
+        base = os.environ["GITHUB_SHA"]
+        run = f"{os.environ['GITHUB_SERVER_URL']}/{repository}/actions/runs/{os.environ['GITHUB_RUN_ID']}/attempts/{os.environ['GITHUB_RUN_ATTEMPT']}"
+        for head in sorted({pr["head"] for pr in json.loads(os.environ["OPEN_PRS"])}):
+            subprocess.run([
+                "gh", "api", "--silent", f"repos/{repository}/statuses/{head}",
+                "-f", "state=pending", "-f", f"context=hitl shared / {base}",
+                "-f", "description=Waiting for the shared check on the new hitl commit",
+                "-f", f"target_url={run}",
+            ], check=True)
+  candidate:
+    needs: pulls
+    if: ${{ !cancelled() && needs.pulls.outputs.open != '' && needs.pulls.outputs.open != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.pulls.outputs.open) }}
+    name: PR ${{ matrix.number }} at ${{ matrix.head }}
+    permissions:
+      contents: read
+      statuses: write
+    uses: ./.github/workflows/pr-candidate.yml
+    with:
+      base: ${{ github.sha }}
+      head: ${{ matrix.head }}
