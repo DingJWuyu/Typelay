@@ -247,23 +247,41 @@ public sealed partial class SetupRenderingTests
         {
             Motion = "full"
         });
-        var window = await OpenOnboardingModel(scene);
+        const double target = 75;
+        OnboardingWindow? window = null;
+        var observation = new Stopwatch();
+        var frames = new List<FillFrame>();
+        long? firstTargetAtMs = null, lastFrameAtMs = null, actionAtMs = null;
+        bool acted = false;
+        FillFrame? actionFrame = null;
+        ProgressBar? bar = null, current = null;
+        Border? currentFill = null, currentTrack = null;
+        string expected = "the onboarding model step opens";
         try
         {
+            window = await OpenOnboardingModel(scene);
+            expected = "the download consent opens and is accepted";
             await TrayConsent(scene.Host, () => TrayInvoke(OnboardingModelElement<Button>(window, "OnboardingModelAction")), accept: true);
-            await Until(() => transfers.Count == 1 && OnboardingModelElement<ProgressBar>(window, "OnboardingModelProgress").Value == 50);
-            var bar = OnboardingModelElement<ProgressBar>(window, "OnboardingModelProgress");
+            expected = "one transfer reports 50% before the controlled update";
+            await Until(() => transfers.Count == 1
+                && (bar = OnboardingModelElement<ProgressBar>(window, "OnboardingModelProgress")).Value == 50);
+            expected = "the progress bar exposes its display fill";
+            bar = OnboardingModelElement<ProgressBar>(window, "OnboardingModelProgress");
             var fill = Assert.IsType<Border>(bar.Template.FindName("displayFill", bar));
-            bool acted = false;
-            var beforeTarget = new List<FillFrame>(4);
             await Task.Delay(80, TestContext.Current.CancellationToken);
-            var samples = await ObserveOnboardingFill(bar, () => transfers[0].Body.Continue.TrySetResult(), 75, frame =>
+            expected = "the progress bar exposes its track, indicator and public range during rendering";
+            observation.Start();
+            await ObserveOnboardingFill(bar, () => transfers[0].Body.Continue.TrySetResult(), target, frame =>
             {
-                if (frame.Value != 75 && beforeTarget.Count < 4)
-                    beforeTarget.Add(frame);
-                if (acted || bar.Value != 75 || fill.Width <= frame.TrackWidth * .51 || fill.Width >= frame.TrackWidth * .74)
+                frames.Add(frame);
+                lastFrameAtMs = observation.ElapsedMilliseconds;
+                if (frame.Value == target)
+                    firstTargetAtMs ??= lastFrameAtMs;
+                if (acted || bar.Value != target || fill.Width <= frame.TrackWidth * .51 || fill.Width >= frame.TrackWidth * .74)
                     return;
                 acted = true;
+                actionFrame = frame;
+                actionAtMs = lastFrameAtMs;
                 if (operation == "hide")
                 {
                     window.Hide();
@@ -277,48 +295,76 @@ public sealed partial class SetupRenderingTests
                         Motion = "reduce"
                     });
             }, retiredAllowed: true);
-            if (!acted)
-            {
-                try
-                {
-                    // These are the original Rendering samples. Failure evidence
-                    // does not trigger layout or make another paint observation.
-                    TestContext.Current.TestOutputHelper?.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
-                    {
-                        operation = "onboarding-progress-retirement-not-observed",
-                        requestedAction = operation,
-                        acted,
-                        beforeTarget,
-                        sampleCount = samples.Count,
-                        firstSamples = samples.Take(12).ToArray(),
-                        lastSamples = samples.Skip(Math.Max(12, samples.Count - 4)).ToArray(),
-                        maximumObservedFrameGapMs = samples.Zip(samples.Skip(1), (before, after) => after.Elapsed - before.Elapsed)
-                            .DefaultIfEmpty(0).Max(),
-                        trackWidths = samples.Select(frame => frame.TrackWidth).Distinct().Take(4).ToArray(),
-                        matchingSampleCount = samples.Count(frame => frame.Value == 75
-                            && frame.PaintedWidth > frame.TrackWidth * .51 && frame.PaintedWidth < frame.TrackWidth * .74)
-                    }, new System.Text.Json.JsonSerializerOptions
-                    {
-                        NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals
-                    }));
-                }
-                catch (Exception error) when (error is not OutOfMemoryException) { }
-            }
+            observation.Stop();
+            expected = $"{operation} occurs on a 75% frame with painted width strictly between 51% and 74% of the track";
             Assert.True(acted);
-            var current = OnboardingModelElement<ProgressBar>(window, "OnboardingModelProgress");
-            var currentFill = Assert.IsType<Border>(current.Template.FindName("displayFill", current));
-            var currentTrack = Assert.IsType<Border>(current.Template.FindName("PART_Track", current));
-            Assert.Equal(75, current.Value);
+            expected = "the current progress is 75% and painted width is within 0.01 DIP of 75% of the current track width";
+            current = OnboardingModelElement<ProgressBar>(window, "OnboardingModelProgress");
+            currentFill = Assert.IsType<Border>(current.Template.FindName("displayFill", current));
+            currentTrack = Assert.IsType<Border>(current.Template.FindName("PART_Track", current));
+            Assert.Equal(target, current.Value);
             Assert.InRange(currentFill.Width, currentTrack.ActualWidth * .75 - .01, currentTrack.ActualWidth * .75 + .01);
             if (operation != "resize")
             {
+                expected = "the current bar replaces the old bar and the old fill has no local width";
                 Assert.NotSame(bar, current);
                 Assert.Same(DependencyProperty.UnsetValue, fill.ReadLocalValue(FrameworkElement.WidthProperty));
             }
+            expected = "one transfer remains and its body was not cancelled";
             Assert.False(transfers[0].Body.Cancelled);
             Assert.Single(transfers);
         }
-        finally { window.Close(); }
+        catch (Exception error) when (error is TimeoutException or Xunit.Sdk.XunitException)
+        {
+            if (error is TimeoutException && observation.IsRunning)
+            {
+                if (frames.Count == 0)
+                    expected = "at least one rendering frame within 3000 ms";
+                else if (firstTargetAtMs is null)
+                    expected = "a rendering frame with public progress 75% within 3000 ms";
+                else
+                    expected = "500 ms of rendering time after the first 75% frame within the 3000 ms deadline";
+            }
+            observation.Stop();
+            var lastFrame = frames.LastOrDefault();
+            // Keep the rendering clock separate from time spent waiting for callbacks.
+            // A missing sample stays null. Reading the public value here is not a new frame.
+            var targetSamples = frames.SkipWhile(frame => frame.Value != target).ToArray();
+            var evidence = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                operation,
+                expected,
+                targetValue = target,
+                sampledBarValueAtFailure = bar?.Value,
+                currentBarValueAtCheck = current?.Value,
+                currentPaintedWidthAtCheck = currentFill?.Width,
+                currentTrackWidthAtCheck = currentTrack?.ActualWidth,
+                transferCount = transfers.Count,
+                frameCount = frames.Count,
+                targetFrameCount = targetSamples.Count(frame => frame.Value == target),
+                firstTargetAtMs,
+                lastFrameAtMs,
+                lastFrame,
+                targetRenderingElapsedMs = firstTargetAtMs.HasValue ? lastFrame?.Elapsed : null,
+                observationWallMs = observation.ElapsedMilliseconds,
+                resizeTriggered = operation == "resize" && acted,
+                actionAtMs,
+                actionFrame,
+                beforeTarget = frames.Where(frame => frame.Value != target).Take(4),
+                firstSamples = targetSamples.Take(12),
+                lastSamples = targetSamples.Skip(Math.Max(12, targetSamples.Length - 4)),
+                maximumObservedFrameGapMs = targetSamples.Zip(targetSamples.Skip(1), (before, after) => after.Elapsed - before.Elapsed)
+                    .DefaultIfEmpty(0).Max(),
+                trackWidths = targetSamples.Select(frame => frame.TrackWidth).Distinct().Take(4),
+                matchingSampleCount = targetSamples.Count(frame => frame.Value == target
+                    && frame.PaintedWidth > frame.TrackWidth * .51 && frame.PaintedWidth < frame.TrackWidth * .74)
+            }, new System.Text.Json.JsonSerializerOptions
+            {
+                NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals
+            });
+            throw new Xunit.Sdk.XunitException($"Onboarding progress retirement failed. {evidence}", error);
+        }
+        finally { window?.Close(); }
     });
 
     private sealed record FillFrame(double Elapsed, double Value, double RangeValue, double NativeWidth, double PaintedWidth, double TrackWidth, Size Size);
