@@ -17,6 +17,8 @@ concurrency:
   cancel-in-progress: true
 jobs:
   fonts:
+    env:
+      TYPELAY_FIXED_KINDS: fonts
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -36,19 +38,41 @@ jobs:
         GH_TOKEN: ${{ github.token }}
         TAG: ${{ steps.key.outputs.tag }}
     - name: Build UI fonts once per input hash
+      id: fonts-build
       run: |-
         python -m pip install -r eng/requirements.txt
         python eng/fonts/prepare.py
       if: steps.restore.outputs.hit != 'true'
     - name: Verify UI font bytes
+      id: fonts-verify
       run: python eng/fonts/prepare.py --verify
     - name: Publish fixed UI font build
+      id: fonts-publish
       run: python eng/ci/fixed.py publish fonts --tag "$TAG"
       if: steps.restore.outputs.hit != 'true'
       env:
         GH_TOKEN: ${{ github.token }}
         TAG: ${{ steps.key.outputs.tag }}
+    - &fixed-summary
+      name: Summarize fixed artifacts from this producer
+      id: fixed-summary
+      if: always()
+      shell: bash
+      env:
+        FIXED_REPORT: eng/ci/fixed_summary.py
+        FIXED_STEPS: ${{ toJSON(steps) }}
+        PRODUCER_STATUS: ${{ job.status }}
+      run: |
+        if [ -f "$FIXED_REPORT" ] && command -v python >/dev/null; then
+          python "$FIXED_REPORT"
+        else
+          for kind in $TYPELAY_FIXED_KINDS; do
+            echo "* \`$kind\` 的 tag 和生产阶段均未知（生产者 $PRODUCER_STATUS）。"
+          done | tee -a "$GITHUB_STEP_SUMMARY"
+        fi
   fcitx-build:
+    env:
+      TYPELAY_FIXED_KINDS: linux-tools hy index fcitx
     runs-on: ubuntu-latest
     container: &linux-container
       image: archlinux:base-devel
@@ -62,6 +86,7 @@ jobs:
       with:
         persist-credentials: false
     - uses: ./.github/actions/linux-tools
+      id: linux-tools
       with:
         desktop: 'false'
         producer: 'true'
@@ -95,9 +120,11 @@ jobs:
         GH_TOKEN: ${{ github.token }}
         TAG: ${{ steps.hy-key.outputs.tag }}
     - name: Prepare fixed Hy downloads without installing or running a model
+      id: hy-build
       if: steps.hy-cache.outputs.hit != 'true'
       run: python eng/windows/hy/prepare_assets.py --artifacts "$PWD/artifacts" --budget-seconds 590 --assets-only
     - name: Publish fixed Hy downloads
+      id: hy-publish
       if: steps.hy-cache.outputs.hit != 'true'
       run: python eng/ci/fixed.py publish hy --tag "$TAG"
       env:
@@ -109,9 +136,11 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
     - name: Prepare fixed Index downloads
+      id: index-build
       if: steps.index-cache.outputs.hit != 'true'
       run: python eng/shared/prepare_index_model.py --output artifacts/index-model-download
     - name: Publish fixed Index downloads
+      id: index-publish
       if: steps.index-cache.outputs.hit != 'true'
       run: python eng/ci/fixed.py publish index
       env:
@@ -126,14 +155,17 @@ jobs:
         GH_TOKEN: ${{ github.token }}
         TAG: ${{ steps.key.outputs.tag }}
     - name: Build pinned third-party Fcitx dependencies
+      id: fcitx-build
       run: python eng/linux/cooperative/third_party.py
       if: steps.restore.outputs.hit != 'true'
     - name: Publish fixed Fcitx build
+      id: fcitx-publish
       run: python eng/ci/fixed.py publish fcitx --tag "$TAG"
       if: steps.restore.outputs.hit != 'true'
       env:
         GH_TOKEN: ${{ github.token }}
         TAG: ${{ steps.key.outputs.tag }}
+    - *fixed-summary
   shared:
     name: shared
     runs-on: ubuntu-latest
@@ -165,6 +197,9 @@ jobs:
       id: python-format
       if: ${{ !cancelled() && steps.python-tools.outcome == 'success' }}
       run: python -m ruff format --check --diff .
+    - name: Verify fixed artifact summaries without a checkout
+      if: ${{ !cancelled() && steps.python-tools.outcome == 'success' }}
+      run: python -m unittest discover -s tests/linux -p test_ci_fixed_summary.py -v
     - name: Verify Linux input feedback contracts
       id: input-feedback
       if: ${{ !cancelled() && steps.python.outcome == 'success' }}

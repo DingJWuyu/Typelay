@@ -70,6 +70,14 @@ def log_event(stage, event, tag, **fields):
     )
 
 
+def producer_record(kind, **fields):
+    """Send this producer's own observations to its job summary, including inside composites."""
+    if kind in os.environ.get("TYPELAY_FIXED_KINDS", "").split():
+        with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+            for name, value in fields.items():
+                print(f"FIXED_{kind.replace('-', '_')}_{name}={value}", file=env)
+
+
 def download_verified(repo, tag, archive, asset):
     # Fetch these exact bytes by asset ID. Looking the tag up a second time can
     # fail independently of the transfer whose digest we already hold.
@@ -179,8 +187,11 @@ def main():
         parser.error("--wait-seconds must be positive and finite")
     tag = args.tag or key(args.kind)
     if args.action == "key":
+        producer_record(args.kind, tag=tag)
         print(tag)
         return
+    stage = "publication" if args.action == "publish" else "query"
+    producer_record(args.kind, tag=tag, **{stage: "started"})
     suffix = {"fonts": ".tar.gz", "fcitx": ".tar.zst"}.get(args.kind, ".tar")
     compression = {"fonts": ["-z"], "fcitx": ["--zstd"]}.get(args.kind, [])
     archive = ROOT / "artifacts" / (args.kind + suffix)
@@ -257,6 +268,7 @@ def main():
             log_event("release", "missing", tag, asset=archive.name)
             with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
                 stream.write("hit=false\n")
+            producer_record(args.kind, query="miss")
             return
         release = json.loads(result.stdout)
         try:
@@ -272,29 +284,32 @@ def main():
             asset_id=asset["id"],
             published_at=release.get("published_at"),
         )
-        if args.action == "lookup":
-            with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
-                stream.write("hit=true\n")
-            return
-        download_verified(repo, tag, archive, asset)
-        subprocess.run(
-            ["tar", *compression, "-xf", str(archive)],
-            cwd=ROOT,
-            check=True,
-        )
-        archive.unlink()
+        if args.action == "restore":
+            producer_record(args.kind, query="restoring")
+            download_verified(repo, tag, archive, asset)
+            subprocess.run(
+                ["tar", *compression, "-xf", str(archive)],
+                cwd=ROOT,
+                check=True,
+            )
+            archive.unlink()
         with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
             stream.write("hit=true\n")
+        producer_record(args.kind, query="hit")
     else:
+
+        def reuse_winner(winner):
+            download_verified(repo, tag, archive, release_asset(winner, archive))
+            producer_record(args.kind, publication="reused")
+            print(f"Reused verified fixed build {tag} from release {winner['id']}")
+
         existing = subprocess.run(
             ["gh", "api", f"repos/{repo}/releases/tags/{tag}"],
             capture_output=True,
             text=True,
         )
         if not existing.returncode:
-            winner = json.loads(existing.stdout)
-            download_verified(repo, tag, archive, release_asset(winner, archive))
-            print(f"Reused verified fixed build {tag} from release {winner['id']}")
+            reuse_winner(json.loads(existing.stdout))
             return
         if "HTTP 404" not in existing.stderr:
             log_event("release", "failed", tag, asset=archive.name)
@@ -393,6 +408,7 @@ def main():
                     asset_id=asset["id"],
                     published_at=json.loads(result.stdout).get("published_at"),
                 )
+                producer_record(args.kind, publication="published")
                 return
             log_event("publish", "failed", tag, asset=archive.name, asset_id=asset["id"])
             if "HTTP 422" in result.stderr and any(
@@ -407,16 +423,17 @@ def main():
                         ["gh", "api", f"repos/{repo}/releases/tags/{tag}"], text=True
                     )
                 )
-                download_verified(repo, tag, archive, release_asset(winner, archive))
-                print(f"Reused verified fixed build {tag} from release {winner['id']}")
+                reuse_winner(winner)
             else:
                 raise RuntimeError(result.stderr)
         finally:
             if delete_draft:
-                subprocess.run(
-                    ["gh", "api", f"repos/{repo}/releases/{draft['id']}", "--method", "DELETE"],
-                    check=True,
+                producer_record(args.kind, cleanup="started")
+                cleanup = subprocess.run(
+                    ["gh", "api", f"repos/{repo}/releases/{draft['id']}", "--method", "DELETE"]
                 )
+                producer_record(args.kind, cleanup="failure" if cleanup.returncode else "success")
+                cleanup.check_returncode()
 
 
 if __name__ == "__main__":

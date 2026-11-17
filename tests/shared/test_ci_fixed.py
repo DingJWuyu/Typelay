@@ -18,10 +18,13 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager, redirect_stderr
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from itertools import product
 from pathlib import Path
 from unittest.mock import patch
 
-from eng.ci import fixed
+import yaml
+
+from eng.ci import fixed, fixed_summary
 
 ROOT = Path(__file__).resolve().parents[2]
 SHIM = """import json,os,sys,time
@@ -458,6 +461,51 @@ class FixedBuildTransportTests(unittest.TestCase):
                     self.run_transport(mode, kind=kind)
 
 
+JOBS = yaml.safe_load((ROOT / ".github/workflows/check.yml").read_text(encoding="utf-8"))["jobs"]
+
+
+LINUX_TOOLS = yaml.safe_load(
+    (ROOT / ".github/actions/linux-tools/action.yml").read_text(encoding="utf-8")
+)
+
+
+class FixedSummaryTests(unittest.TestCase):
+    def test_incomplete_evidence_never_identifies_a_cold_build(self):
+        for kind in ("fonts", "linux-tools", "hy", "index", "fcitx"):
+            prefix = f"FIXED_{kind.replace('-', '_')}_"
+            required = ["tag", "query", "publication", "prepare"]
+            if kind == "fonts":
+                required.append("verify")
+            if kind == "linux-tools":
+                required.append("desktop")
+            for flags in product((False, True), repeat=len(required)):
+                if all(flags):
+                    continue
+                with self.subTest(kind=kind, flags=flags):
+                    present = dict(zip(required, flags, strict=True))
+                    records = {
+                        prefix + "tag": "ci-new" if present["tag"] else "",
+                        prefix + "query": "miss" if present["query"] else "restoring",
+                        prefix + "publication": "reused" if present["publication"] else "started",
+                    }
+                    prepared = "success" if present["prepare"] else "cancelled"
+                    steps = {
+                        kind + "-build": {"outcome": prepared},
+                        "fonts-verify": {
+                            "outcome": "success" if present.get("verify") else "failure"
+                        },
+                        "linux-tools": {
+                            "outputs": {
+                                "sdk": prepared,
+                                "desktop": "success" if present.get("desktop") else "skipped",
+                            }
+                        },
+                    }
+                    self.assertNotIn(
+                        "| 本轮冷建 |", fixed_summary.summary_row(kind, steps, records)
+                    )
+
+
 class FixedBuildPublicationTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -468,7 +516,7 @@ class FixedBuildPublicationTests(unittest.TestCase):
         shim.write_text(
             f'@echo off\n"{sys.executable}" "{port}" %*\nexit /b %errorlevel%\n'
             if sys.platform == "win32"
-            else f"#!{sys.executable}\n" + port.read_text()
+            else f"#!{sys.executable}\n" + port.read_text(encoding="utf-8")
         )
         shim.chmod(0o700)
         self.responses = {}
@@ -482,6 +530,7 @@ class FixedBuildPublicationTests(unittest.TestCase):
 
         api, self.calls = self.enterContext(asset_api(read_asset, self.responses))
         self.env = os.environ | {
+            "PYTHONUTF8": "1",
             "GITHUB_API_URL": api,
             "GITHUB_RUN_ID": "123",
             "NO_PROXY": "127.0.0.1",
@@ -492,22 +541,38 @@ class FixedBuildPublicationTests(unittest.TestCase):
             "FIXED_DATABASE": str(database),
         }
 
-    def command(self, caller, action, extra_env=None, *, prepare=True, kind="fonts", wait=False):
+    def command(
+        self,
+        caller,
+        action,
+        extra_env=None,
+        *,
+        prepare=True,
+        kind="fonts",
+        wait=False,
+        tag="ci-test",
+    ):
         root = self.root / caller
         script = root / "eng/ci/fixed.py"
         if not script.exists():
             script.parent.mkdir(parents=True)
             shutil.copyfile(ROOT / "eng/ci/fixed.py", script)
-        folder = "linux/fcitx-cooperative-5.1.22" if kind == "fcitx" else "ui-fonts"
+        folder = {
+            "fonts": "ui-fonts",
+            "linux-tools": "linux-tools-cache",
+            "hy": "hy-download",
+            "index": "index-model-download",
+            "fcitx": "linux/fcitx-cooperative-5.1.22",
+        }[kind]
         payload = root / "artifacts" / folder / "test.bin"
         if action == "publish" and prepare:
             payload.parent.mkdir(parents=True, exist_ok=True)
             payload.write_text(caller)
         return subprocess.run(
-            [sys.executable, str(script), action, kind, "--tag", "ci-test"]
+            [sys.executable, str(script), action, kind, "--tag", tag]
             + (["--wait-for-job", "fcitx-build"] if wait else []),
             capture_output=True,
-            text=True,
+            encoding="utf-8",
             env=self.env
             | {"GITHUB_OUTPUT": str(root / "output"), "GH_TOKEN": "fixture-" + caller}
             | (extra_env or {}),
@@ -519,6 +584,210 @@ class FixedBuildPublicationTests(unittest.TestCase):
             subprocess.check_output(
                 ["gh", "api", "repos/test/repo/releases"], env=self.env, text=True, timeout=10
             )
+        )
+
+    def producer(self, kind, action, extra_env=None, **kwargs):
+        job = "fonts" if kind == "fonts" else "fcitx-build"
+        return self.command(
+            job,
+            action,
+            JOBS[job]["env"] | {"GITHUB_ENV": str(self.root / (job + ".env"))} | (extra_env or {}),
+            kind=kind,
+            tag=self.tag(kind),
+            **kwargs,
+        )
+
+    @staticmethod
+    def tag(kind):
+        return f"ci-{kind}-" + "a" * 64
+
+    def summary(self, job, steps, status="success"):
+        self.assertLessEqual(steps.keys(), {s.get("id") for s in JOBS[job]["steps"]})
+        step = next(s for s in JOBS[job]["steps"] if s.get("id") == "fixed-summary")
+        github_env = self.root / (job + ".env")
+        reported = (
+            dict(line.split("=", 1) for line in github_env.read_text(encoding="utf-8").splitlines())
+            if github_env.exists()
+            else {}
+        )
+        context = {"${{ toJSON(steps) }}": json.dumps(steps), "${{ job.status }}": status}
+        destination = self.root / "summary.md"
+        destination.unlink(missing_ok=True)
+        subprocess.run(
+            [sys.executable, step["env"]["FIXED_REPORT"]],
+            cwd=ROOT,
+            env=os.environ
+            | JOBS[job]["env"]
+            | reported
+            | {key: context.get(value, value) for key, value in step["env"].items()}
+            | {"GITHUB_JOB": job, "GITHUB_STEP_SUMMARY": str(destination), "PYTHONUTF8": "1"},
+            capture_output=True,
+            encoding="utf-8",
+            check=True,
+            timeout=5,
+        )
+        return destination.read_text(encoding="utf-8")
+
+    def tools_steps(self, sdk, desktop, publish, *, outcome):
+        results = {"packages": "success", "sdk": sdk, "desktop": desktop, "publish": publish}
+        context = {
+            "${{ steps." + step["id"] + ".outcome }}": results.get(step["id"], "skipped")
+            for step in LINUX_TOOLS["runs"]["steps"]
+            if "id" in step
+        }
+        outputs = {name: context[item["value"]] for name, item in LINUX_TOOLS["outputs"].items()}
+        return {"linux-tools": {"outcome": outcome, "outputs": outputs}}
+
+    def test_one_new_key_stays_cold_after_consumer_use_and_all_five_hit_on_the_next_run(self):
+        kinds = ("fonts", "linux-tools", "hy", "index", "fcitx")
+
+        def query(kind):
+            found = self.producer(kind, "restore" if kind in ("fonts", "linux-tools") else "lookup")
+            self.assertEqual(found.returncode, 0, found.stderr)
+
+        for kind in kinds[:-1]:
+            published = self.command("earlier", "publish", kind=kind, tag=self.tag(kind))
+            self.assertEqual(published.returncode, 0, published.stderr)
+            query(kind)
+        for result in (
+            self.producer("fcitx", "lookup"),
+            self.producer("fcitx", "publish"),
+            self.command(
+                "consumer",
+                "restore",
+                {"GITHUB_ENV": str(self.root / "fcitx-build.env")},
+                kind="fcitx",
+                tag=self.tag("fcitx"),
+            ),
+        ):
+            self.assertEqual(result.returncode, 0, result.stderr)
+        font_steps = {
+            "fonts-build": {"outcome": "skipped"},
+            "fonts-verify": {"outcome": "success"},
+            "fonts-publish": {"outcome": "skipped"},
+        }
+        hit_steps = self.tools_steps("success", "skipped", "skipped", outcome="success")
+        for kind in ("hy", "index", "fcitx"):
+            for stage in ("build", "publish"):
+                hit_steps[f"{kind}-{stage}"] = {"outcome": "skipped"}
+        summary = self.summary("fonts", font_steps) + self.summary(
+            "fcitx-build",
+            hit_steps
+            | {"fcitx-build": {"outcome": "success"}, "fcitx-publish": {"outcome": "success"}},
+        )
+        self.assertEqual(summary.count("| 命中已发布 |"), 4)
+        self.assertIn(
+            f"| `fcitx` | `{self.tag('fcitx')}` | 本轮冷建 | 未命中 | success | 不适用 | success | 本轮已发布 |",
+            summary,
+        )
+
+        for job in ("fonts", "fcitx-build"):
+            (self.root / (job + ".env")).unlink()
+        for kind in kinds:
+            query(kind)
+        hits = self.summary("fonts", font_steps) + self.summary("fcitx-build", hit_steps)
+        self.assertIn("| 命中已发布 | 命中 | SDK success，桌面 skipped | 不适用 | skipped |", hits)
+        for kind in kinds:
+            self.assertIn(f"| `{kind}` | `{self.tag(kind)}` | 命中已发布 |", hits)
+
+    def test_linux_tools_stays_cold_when_a_competitor_publishes_before_it(self):
+        for result in (
+            self.producer("linux-tools", "restore"),
+            self.command("competitor", "publish", kind="linux-tools", tag=self.tag("linux-tools")),
+            self.producer("linux-tools", "publish", prepare=False),
+        ):
+            self.assertEqual(result.returncode, 0, result.stderr)
+        # The composite action can still fail a later SDK check.
+        summary = self.summary(
+            "fcitx-build",
+            self.tools_steps("success", "success", "success", outcome="failure"),
+            "failure",
+        )
+        self.assertIn(
+            f"| `linux-tools` | `{self.tag('linux-tools')}` | 本轮冷建 | 未命中 | SDK success，桌面 success | 不适用 | success | 已验证其他生产者发布的产物 |",
+            summary,
+        )
+
+    def test_denied_index_query_preserves_earlier_production_and_reports_unreached_fcitx(self):
+        for action in ("lookup", "publish"):
+            result = self.producer("hy", action)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        denied = self.producer("index", "lookup", {"FIXED_DENIED": "1"})
+        self.assertNotEqual(denied.returncode, 0)
+        steps = {
+            "hy-build": {"outcome": "success"},
+            "hy-publish": {"outcome": "success"},
+            "index-cache": {"outcome": "failure"},
+            "index-build": {"outcome": "skipped"},
+            "index-publish": {"outcome": "skipped"},
+            "restore": {"outcome": "skipped"},
+            "fcitx-build": {"outcome": "skipped"},
+            "fcitx-publish": {"outcome": "skipped"},
+        }
+        summary = self.summary("fcitx-build", steps, "failure")
+        self.assertIn(f"| `hy` | `{self.tag('hy')}` | 本轮冷建 |", summary)
+        self.assertIn(
+            f"| `index` | `{self.tag('index')}` | 未知 | failure | skipped | 不适用 | skipped |",
+            summary,
+        )
+        self.assertIn("| `fcitx` | 未知 | 未知 | skipped | skipped | 不适用 | skipped |", summary)
+
+    def test_failed_font_restore_identifies_the_published_tag_without_counting_a_hit(self):
+        published = self.command("earlier", "publish", tag=self.tag("fonts"))
+        self.assertEqual(published.returncode, 0, published.stderr)
+        failed = self.producer("fonts", "restore", {"FIXED_CORRUPT": "1"})
+        self.assertNotEqual(failed.returncode, 0)
+        steps = {
+            step: {"outcome": outcome}
+            for step, outcome in (
+                ("restore", "failure"),
+                ("fonts-build", "skipped"),
+                ("fonts-verify", "skipped"),
+                ("fonts-publish", "skipped"),
+            )
+        }
+        summary = self.summary("fonts", steps, "failure")
+        self.assertIn(
+            f"| `fonts` | `{self.tag('fonts')}` | 未知 | 已找到产物，恢复 failure | skipped | skipped | skipped |",
+            summary,
+        )
+
+    def test_font_verification_failure_after_a_build_is_visible(self):
+        miss = self.producer("fonts", "restore")
+        self.assertEqual(miss.returncode, 0, miss.stderr)
+        steps = {
+            "fonts-build": {"outcome": "success"},
+            "fonts-verify": {"outcome": "failure"},
+            "fonts-publish": {"outcome": "skipped"},
+        }
+        self.assertIn(
+            "| 未知 | 未命中 | success | failure | skipped |",
+            self.summary("fonts", steps, "failure"),
+        )
+
+    def test_interrupted_composite_preparation_and_failed_publication_keep_the_known_stages(self):
+        miss = self.producer("linux-tools", "restore")
+        self.assertEqual(miss.returncode, 0, miss.stderr)
+        for sdk, desktop, status in (
+            ("failure", "skipped", "failure"),
+            ("success", "failure", "failure"),
+            ("success", "cancelled", "cancelled"),
+            ("success", "success", "cancelled"),
+        ):
+            with self.subTest(sdk=sdk, desktop=desktop, status=status):
+                steps = self.tools_steps(sdk, desktop, "skipped", outcome=status)
+                summary = self.summary("fcitx-build", steps, status)
+                self.assertIn(
+                    f"| 未知 | 未命中 | SDK {sdk}，桌面 {desktop} | 不适用 | skipped | 尚无确认结果 |",
+                    summary,
+                )
+        failed = self.producer("linux-tools", "publish", {"FIXED_PUBLISH_RESPONSE_LOST": "1"})
+        self.assertNotEqual(failed.returncode, 0)
+        steps = self.tools_steps("success", "success", "failure", outcome="failure")
+        summary = self.summary("fcitx-build", steps, "failure")
+        self.assertIn(
+            "| 未知 | 未命中 | SDK success，桌面 success | 不适用 | failure | 尚无确认结果 |",
+            summary,
         )
 
     def test_cold_fcitx_consumers_recover_after_the_same_asset_is_published(self):
@@ -621,6 +890,47 @@ class FixedBuildPublicationTests(unittest.TestCase):
             name for name, result in zip(("first", "second"), results) if not result.stdout
         )
         self.assertEqual((self.root / "consumer/artifacts/ui-fonts/test.bin").read_text(), winner)
+
+    def test_verified_422_winner_survives_a_failed_draft_cleanup_in_the_summary(self):
+        miss = self.producer("fonts", "restore")
+        self.assertEqual(miss.returncode, 0, miss.stderr)
+        gate = self.root / "gate"
+        gate.mkdir()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            publishing = pool.submit(
+                self.producer,
+                "fonts",
+                "publish",
+                {"FIXED_PUBLISH_GATE": str(gate), "FIXED_DELETE_DENIED": "1"},
+            )
+            try:
+                deadline = time.monotonic() + 8
+                while not any(gate.iterdir()):
+                    self.assertLess(
+                        time.monotonic(), deadline, "Producer did not reach publication"
+                    )
+                    time.sleep(0.01)
+                winner = self.command("winner", "publish", tag=self.tag("fonts"))
+                self.assertEqual(winner.returncode, 0, winner.stderr)
+            finally:
+                (gate / "go").touch()
+            failed = publishing.result(timeout=20)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("Draft deletion denied", failed.stderr)
+        self.assertIn("Reused verified fixed build", failed.stdout)
+        summary = self.summary(
+            "fonts",
+            {
+                "fonts-build": {"outcome": "success"},
+                "fonts-verify": {"outcome": "success"},
+                "fonts-publish": {"outcome": "failure"},
+            },
+            "failure",
+        )
+        self.assertIn("| 本轮冷建 |", summary)
+        self.assertIn("已验证其他生产者发布的产物", summary)
+        self.assertIn("草稿清理", summary)
+        self.assertIn("| failure | 已验证其他生产者发布的产物 | failure |", summary)
 
     def test_failed_upload_deletes_its_draft_and_next_producer_can_publish(self):
         interrupted = self.command("interrupted", "publish", {"FIXED_UPLOAD_FAILED": "1"})

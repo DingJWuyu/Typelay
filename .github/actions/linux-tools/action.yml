@@ -7,6 +7,19 @@ inputs:
   producer:
     description: Publish the complete pinned package cache when it is missing
     default: 'false'
+outputs:
+  restore:
+    description: Outcome of the fixed package restore
+    value: ${{ steps.packages.outcome }}
+  sdk:
+    description: Outcome of the native SDK installation
+    value: ${{ steps.sdk.outcome }}
+  desktop:
+    description: Outcome of the desktop package installation
+    value: ${{ steps.desktop.outcome }}
+  publish:
+    description: Outcome of the fixed package publication
+    value: ${{ steps.publish.outcome }}
 runs:
   using: composite
   steps:
@@ -36,18 +49,21 @@ runs:
       PRODUCER: ${{ inputs.producer }}
     shell: bash
   - name: Install target native SDK
+    id: sdk
     run: pacman -Su --needed --noconfirm git cmake ninja pkgconf gtk3 gtk4 json-glib python
       curl icu openssl zlib libxkbcommon-x11 dbus fcitx5 fcitx5-gtk fcitx5-chinese-addons boost libime
       patch fmt glib2-devel nlohmann-json expat xkeyboard-config iso-codes extra-cmake-modules gettext wayland-protocols plasma-wayland-protocols
       github-cli opencc procps-ng zstd qt6-base libxkbcommon libxcb
     shell: bash
   - name: Install desktop scenario tools
+    id: desktop
     if: inputs.desktop == 'true' || (inputs.producer == 'true' && steps.packages.outputs.hit != 'true')
     run: pacman -S --needed --noconfirm gimp at-spi2-core python-gobject libayatana-appindicator
       niri mesa uv grim noto-fonts-cjk xdg-desktop-portal-gtk xorg-server-xvfb xdotool
       chromium python-playwright firefox geckodriver code nodejs npm
     shell: bash
   - name: Publish pinned native and desktop packages
+    id: publish
     if: inputs.producer == 'true' && steps.packages.outputs.hit != 'true'
     run: python eng/ci/fixed.py publish linux-tools
     env:
