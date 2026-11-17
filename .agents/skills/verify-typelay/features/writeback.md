@@ -90,21 +90,21 @@ Preconditions: 对本次合成字段有明确写回验收意图，接入端提�
 
   GTK3 与 GTK4 的重入检查还通过真实 Fcitx 和原生协议覆盖 Ctrl 持有期间的候选刷新。检查 `gtk-ordered-retirement.json`，确认第二次发布发生于原 100 毫秒许可内，换框后的 F7 透传且零写入，两个原许可各退休一次，随后原字段独立 Tab 只写入一次。`gtk-ordered-refresh.json` 要求等价刷新保留原计划，`gtk-ordered-change.json` 要求正文改变撤销旧按次资格。这些受控协议场景不使用模型，不能代替完整桌面旅程；2 秒退休期限和 Unknown 隔离保持原要求。
 
-普通网页完整旅程使用同一桌面 runner 的 `browser-index` 范围。先按 build.md 准备当前干净提交的完整包、合作包和 Index 下载缓存，再从新私有会话执行：
+普通网页完整旅程使用同一桌面 runner 的 `browser-index` 范围。先按 build.md 准备当前干净提交的完整包、合作包和 Index 下载缓存，按[浏览器工具](../references/build.md#浏览器工具)在外层终端确定解释器、浏览器和注册类型，再从新私有会话执行：
 
 ```bash
 /usr/bin/python3 "$PWD/.agents/skills/verify-typelay/scripts/private-session.py" \
   --package artifacts/verification-build/package \
   --cooperative artifacts/verification-build/cooperation/TypeLay-Fcitx-cooperative \
   --output "$PWD/artifacts/verification/browser-index-$(date +%Y%m%d-%H%M%S)" \
-  -- bash -c 'exec /usr/bin/python3 tests/linux/native_e2e.py \
+  -- bash -c 'exec "$1" tests/linux/native_e2e.py \
     --inside --desktop --desktop-scope browser-index \
     --package "$TYPELAY_VERIFY_PACKAGE" --native "$PWD/artifacts/linux/native" \
-    --index-cache "$TYPELAY_VERIFY_MODEL_CACHE" --chromium /usr/bin/chromium \
-    --output "$TYPELAY_VERIFY_OUTPUT/browser-index"'
+    --index-cache "$TYPELAY_VERIFY_MODEL_CACHE" --chromium "$2" --browser-kind "$3" \
+    --output "$TYPELAY_VERIFY_OUTPUT/browser-index"' bash "$browser_python" "$browser_exe" "$browser_kind"
 ```
 
-桌面解释器需能导入系统 PyGObject 和支持 `connect_over_cdp(no_defaults=True)` 的 Playwright。可使用带系统包的私有工程环境，并把命令中的解释器和 `--chromium` 换成已安装工具的绝对路径。若实际可执行文件是 Chrome，另传 `--browser-kind google-chrome`，按真实进程身份登记；默认类型为 `chromium`。浏览器使用本次独立 profile。保持私有会话提供的短 `TMPDIR`，只将 socket 等临时文件放入其中；正式安装、模型和包副本留在 Btrfs 等正常文件系统。
+浏览器使用本次独立 profile。保持私有会话提供的短 `TMPDIR`，只将 socket 等临时文件放入其中；正式安装、模型和包副本留在 Btrfs 等正常文件系统。
 
 runner 通过正式 `install.py install` 安装当前包，再从空数据执行默认 `typelay --install-models`。它只预置合成旅程的英到中方向及教程完成状态，保存实际初始设置，不把这项注入当作设置 UI 验收。扩展通过开发加载，连接使用正式注册入口；页面内容由受控普通 HTML 提供，消息管道、桌面宿主和 Index 均为真实组件。
 

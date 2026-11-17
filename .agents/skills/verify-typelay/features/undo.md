@@ -10,7 +10,7 @@
 
 ## Driving it with private niri
 
-先按[构建指南](../references/build.md)准备当前源码的完整包、合作包和 Index 下载缓存。桌面解释器与 Chromium 的选择遵循[网页旅程](writeback.md#driving-it-with-private-niri)。Tiptap 使用现有锁文件，离线准备真实编辑器资源：
+先按[构建指南](../references/build.md)准备当前源码的完整包、合作包和 Index 下载缓存。在同一外层终端按[浏览器工具](../references/build.md#浏览器工具)准备解释器和 Chromium。Tiptap 使用现有锁文件，离线准备真实编辑器资源：
 
 ```bash
 mkdir -p artifacts/editor-probe
@@ -31,12 +31,12 @@ unshare --user --map-current-user --net node \
   --package artifacts/verification-build/package \
   --cooperative artifacts/verification-build/cooperation/TypeLay-Fcitx-cooperative \
   --output "$PWD/artifacts/verification/browser-undo-index-$(date +%Y%m%d-%H%M%S)" \
-  -- bash -c 'exec /usr/bin/python3 tests/linux/native_e2e.py \
+  -- bash -c 'exec "$1" tests/linux/native_e2e.py \
     --inside --desktop --desktop-scope browser-undo-index \
     --package "$TYPELAY_VERIFY_PACKAGE" --native "$PWD/artifacts/linux/native" \
-    --index-cache "$TYPELAY_VERIFY_MODEL_CACHE" --chromium /usr/bin/chromium \
+    --index-cache "$TYPELAY_VERIFY_MODEL_CACHE" --chromium "$2" --browser-kind "$3" \
     --editor-bundle "$PWD/artifacts/editor-probe/fixture.js" \
-    --output "$TYPELAY_VERIFY_OUTPUT/browser-undo-index"'
+    --output "$TYPELAY_VERIFY_OUTPUT/browser-undo-index"' bash "$browser_python" "$browser_exe" "$browser_kind"
 ```
 
 每次重复都使用新的输出目录。runner 从空数据正式安装默认 Index，并记录包、模型 profile、浏览器版本与编辑器 bundle 摘要。它只预置中英方向、教程完成状态和默认自动模式，扩展仍使用正式注册与生产消息链。“原生输入框替换”从默认关闭状态经设置 UI 开启，`settings-writeback.png` 与 `settings-saved.json` 保存结果。

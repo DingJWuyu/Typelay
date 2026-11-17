@@ -85,21 +85,23 @@ test -r "$(pkg-config --variable=pkgdatadir wayland-protocols)/stable/xdg-shell/
 ## 创建本工作树的工程环境
 
 ```bash
-uv venv --offline artifacts/build-tools
+uv python list --only-installed
+uv venv --offline --python 3.12 artifacts/build-tools
 uv pip install --offline --python artifacts/build-tools/bin/python \
   -r eng/requirements.txt ninja==1.13.2
 export PATH="$PWD/artifacts/build-tools/bin:$PATH"
 ```
 
-工程 uv 只用于创建构建工具环境。正式包在 `support/uv/` 携带固定私有 uv，模型安装器按绝对路径调用，无需升级系统 uv。构建会校验官方归档和二进制摘要。本机从主检出复制已有原始归档，不重新下载：
+本机缓存中的固定 fonttools wheel 适配 CPython 3.12。其他机器按本地 wheel 的 Python ABI 选择已安装的解释器。正式包在 `support/uv/` 携带模型安装器使用的固定 uv。新工作树还须复制字体与 Index CPU 运行库的构建输入。主包会校验这些本地字节。
 
 ```bash
-mkdir -p artifacts/linux/uv-download
-cp -a --reflink=auto /home/liam_t/项目/Typelay/artifacts/linux/uv-download/. \
-  artifacts/linux/uv-download/
+shared="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/artifacts"
+mkdir -p artifacts/linux
+cp -a --reflink=auto "$shared/font-sources" "$shared/ui-fonts" artifacts/
+cp -a --reflink=auto "$shared/linux/uv-download" "$shared/linux/index-cpu-download" artifacts/linux/
 ```
 
-GTK 旅程始终使用系统 `/usr/bin/python3`，工程虚拟环境没有系统 PyGObject。
+普通 GTK 旅程使用系统 `/usr/bin/python3`。浏览器旅程还需要能在同一解释器加载的 Playwright，见下方的[浏览器工具](#浏览器工具)。
 
 .NET SDK 必须满足 `global.json`。如果 `dotnet --version` 不匹配，在本工作树生成工具目录：
 
@@ -113,6 +115,47 @@ bash artifacts/verification-tools/dotnet-install.sh --version "$sdk_version" \
 export PATH="$PWD/artifacts/verification-tools/dotnet:$PATH"
 dotnet --version
 ```
+
+### 离线运行共享检查
+
+`dev.ps1 shared-check` 使用 PATH 上的 `python` 发现共享测试，其中的工作流检查用 PyYAML 读取真实工作流。用工程解释器安装仓库固定的共享测试依赖。VSTest 的测试宿主通过本地 TCP 回连，新的网络命名空间默认关闭回环接口。只在新命名空间内启用 `lo`，然后在同一个命名空间执行完整检查。
+
+```bash
+uv pip install --offline --python artifacts/build-tools/bin/python -r tests/shared/requirements.txt
+export PATH="$PWD/artifacts/build-tools/bin:$PATH"
+python -c 'import yaml; print(yaml.__version__)'
+unshare --user --map-current-user --keep-caps --net \
+  env NuGetAudit=false RestoreSources="$HOME/.nuget/packages" \
+  sh -ec 'ip link set lo up; exec pwsh -File ./dev.ps1 shared-check'
+```
+
+### 浏览器工具
+
+在外层终端准备能导入系统 PyGObject 的解释器。下面使用本机已有的 Playwright 1.65.1 及其对应的 Chromium。其他机器可选择支持同一 CDP 参数且有本地浏览器的版本。Playwright 的包和浏览器分别缓存，单独安装 Python 包不足以启动浏览器。
+
+```bash
+uv venv --offline --system-site-packages --python /usr/bin/python3 artifacts/desktop-test-tools
+browser_python="$PWD/artifacts/desktop-test-tools/bin/python"
+uv pip install --offline --python "$browser_python" playwright==1.65.1
+browser_exe=$("$browser_python" - <<'PY'
+from inspect import signature
+from gi.events import GLibEventLoop
+from playwright.sync_api import BrowserType, sync_playwright
+
+assert "no_defaults" in signature(BrowserType.connect_over_cdp).parameters
+with sync_playwright() as driver:
+    print(driver.chromium.executable_path)
+PY
+)
+test -x "$browser_exe" || { echo "缺少 Chromium 可执行文件 $browser_exe" >&2; exit 1; }
+case "$(basename "$(realpath "$browser_exe")")" in
+  chrome|google-chrome) browser_kind=google-chrome ;;
+  chromium|chromium-browser) browser_kind=chromium ;;
+  *) echo "请核对浏览器进程身份：$browser_exe" >&2; exit 1 ;;
+esac
+```
+
+若使用本机已安装的 Chromium，可将 `browser_exe` 设为其实际绝对路径，再检查文件并选择匹配的注册类型。保留这三个 shell 变量供[网页写回](../features/writeback.md#driving-it-with-private-niri)和[原生 Undo](../features/undo.md#driving-it-with-private-niri)命令传参。私有 HOME 有自己的缓存目录，须在进入会话前确定浏览器路径。缺少本地 wheel 或可执行文件时，报告解析器给出的包名、版本或上述路径。
 
 ## 构建当前源码
 
@@ -134,7 +177,7 @@ cp --reflink=auto /home/liam_t/项目/Typelay/artifacts/linux/qt-cooperative/fci
 
 ```bash
 mkdir -p artifacts/verification-build
-artifacts/build-tools/bin/python eng/fonts/prepare.py
+unshare --user --map-current-user --net artifacts/build-tools/bin/python eng/fonts/prepare.py
 unshare --user --map-current-user --net \
   env NuGetAudit=false RestoreSources="$HOME/.nuget/packages" \
   artifacts/build-tools/bin/python eng/linux/build.py --with-test-fixture --compression-level 1 \

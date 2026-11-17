@@ -13,6 +13,8 @@ description: 验证 TypeLay 的 Linux 原生桌面、普通 GTK 输入框翻译�
 
 从新工作树开始，先按[构建与依赖准备](references/build.md)完成当前提交的主包与合作包，并检查本机下载缓存。该文档也说明如何发现这台机器上的用户级工具。启动前检查包的 `build-info.json`，将实际提交与本次代码差异一起记录。
 
+需要运行 `shared-check` 时，先准备[共享测试依赖与私有回环接口](references/build.md#离线运行共享检查)。网页写回和原生 Undo 旅程在占用私有会话前，先核对[Playwright 和 Chromium 的本地路径](references/build.md#浏览器工具)。
+
 在仓库根目录执行以下完整流程。`--output` 必须不存在，且解析符号链接后须位于源包目录外。重复执行时换一个名称。
 
 ```bash
