@@ -21,6 +21,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
+
 from eng.ci import fixed
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -459,6 +461,12 @@ class FixedBuildTransportTests(unittest.TestCase):
 
 
 class FixedBuildPublicationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.jobs = yaml.safe_load(
+            (ROOT / ".github/workflows/check.yml").read_text(encoding="utf-8")
+        )["jobs"]
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -492,19 +500,35 @@ class FixedBuildPublicationTests(unittest.TestCase):
             "FIXED_DATABASE": str(database),
         }
 
-    def command(self, caller, action, extra_env=None, *, prepare=True, kind="fonts", wait=False):
+    def command(
+        self,
+        caller,
+        action,
+        extra_env=None,
+        *,
+        prepare=True,
+        kind="fonts",
+        wait=False,
+        tag="ci-test",
+    ):
         root = self.root / caller
         script = root / "eng/ci/fixed.py"
         if not script.exists():
             script.parent.mkdir(parents=True)
             shutil.copyfile(ROOT / "eng/ci/fixed.py", script)
-        folder = "linux/fcitx-cooperative-5.1.22" if kind == "fcitx" else "ui-fonts"
+        folder = {
+            "fonts": "ui-fonts",
+            "linux-tools": "linux-tools-cache",
+            "hy": "hy-download",
+            "index": "index-model-download",
+            "fcitx": "linux/fcitx-cooperative-5.1.22",
+        }[kind]
         payload = root / "artifacts" / folder / "test.bin"
         if action == "publish" and prepare:
             payload.parent.mkdir(parents=True, exist_ok=True)
             payload.write_text(caller)
         return subprocess.run(
-            [sys.executable, str(script), action, kind, "--tag", "ci-test"]
+            [sys.executable, str(script), action, kind, "--tag", tag]
             + (["--wait-for-job", "fcitx-build"] if wait else []),
             capture_output=True,
             text=True,
@@ -519,6 +543,172 @@ class FixedBuildPublicationTests(unittest.TestCase):
             subprocess.check_output(
                 ["gh", "api", "repos/test/repo/releases"], env=self.env, text=True, timeout=10
             )
+        )
+
+    def producer(self, kind, action, extra_env=None, **kwargs):
+        job = "fonts" if kind == "fonts" else "fcitx-build"
+        return self.command(
+            job,
+            action,
+            self.jobs[job].get("env", {})
+            | {"GITHUB_ENV": str(self.root / (job + ".env"))}
+            | (extra_env or {}),
+            kind=kind,
+            tag=self.tag(kind),
+            **kwargs,
+        )
+
+    @staticmethod
+    def tag(kind):
+        return f"ci-{kind}-" + "a" * 64
+
+    def summary(self, job, steps, status="success", *, checkout=True):
+        job_steps = self.jobs[job]["steps"]
+        self.assertLessEqual(steps.keys(), {s.get("id") for s in job_steps})
+        summary = next((s for s in job_steps if "GITHUB_STEP_SUMMARY" in s.get("run", "")), None)
+        self.assertIsNotNone(summary, f"{job} does not write a run summary")
+        self.assertEqual(summary["if"], "always()")
+        github_env = self.root / (job + ".env")
+        reported = (
+            dict(line.split("=", 1) for line in github_env.read_text(encoding="utf-8").splitlines())
+            if github_env.exists()
+            else {}
+        )
+        context = {"${{ toJSON(steps) }}": json.dumps(steps), "${{ job.status }}": status}
+        destination = self.root / "summary.md"
+        destination.write_text("")
+        result = subprocess.run(
+            ["bash", "-eo", "pipefail", "-c", summary["run"]],
+            cwd=ROOT if checkout else self.root,
+            text=True,
+            capture_output=True,
+            env=os.environ
+            | reported
+            | {k: context[v] for k, v in summary["env"].items()}
+            | {"GITHUB_JOB": job, "GITHUB_STEP_SUMMARY": str(destination), "PYTHONUTF8": "1"},
+            timeout=5,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return destination.read_text(encoding="utf-8")
+
+    def restore_prior_releases(self, kinds):
+        for kind in kinds:
+            published = self.command("earlier", "publish", kind=kind, tag=self.tag(kind))
+            self.assertEqual(published.returncode, 0, published.stderr)
+            found = self.producer(kind, "restore" if kind in ("fonts", "linux-tools") else "lookup")
+            self.assertEqual(found.returncode, 0, found.stderr)
+
+    def test_check_summarizes_all_five_verified_producer_hits_with_their_full_tags(self):
+        kinds = ("fonts", "linux-tools", "hy", "index", "fcitx")
+        self.restore_prior_releases(kinds)
+        summary = self.summary("fonts", {}) + self.summary("fcitx-build", {})
+        for kind in kinds:
+            self.assertIn(f"| `{kind}` | `{self.tag(kind)}` | 命中已发布 |", summary)
+
+    def test_only_the_new_fcitx_key_is_cold_after_a_consumer_restores_it(self):
+        self.restore_prior_releases(("fonts", "linux-tools", "hy", "index"))
+        for result in (
+            self.producer("fcitx", "lookup"),
+            self.producer("fcitx", "publish"),
+            self.command(
+                "consumer",
+                "restore",
+                {"GITHUB_ENV": str(self.root / "fcitx-build.env")},
+                kind="fcitx",
+                tag=self.tag("fcitx"),
+            ),
+        ):
+            self.assertEqual(result.returncode, 0, result.stderr)
+        summary = self.summary("fonts", {}) + self.summary(
+            "fcitx-build", {"fcitx-build": {"outcome": "success"}}
+        )
+        self.assertEqual(summary.count("| 命中已发布 |"), 4)
+        self.assertIn(
+            f"| `fcitx` | `{self.tag('fcitx')}` | 本轮冷建 | 未命中 | success | 本轮已发布 |",
+            summary,
+        )
+
+    def test_linux_tools_stays_cold_when_a_competitor_publishes_before_it(self):
+        for result in (
+            self.producer("linux-tools", "restore"),
+            self.command("competitor", "publish", kind="linux-tools", tag=self.tag("linux-tools")),
+            self.producer("linux-tools", "publish", prepare=False),
+        ):
+            self.assertEqual(result.returncode, 0, result.stderr)
+        # The composite action can still fail a later SDK check.
+        summary = self.summary("fcitx-build", {"linux-tools": {"outcome": "failure"}}, "failure")
+        self.assertIn(
+            f"| `linux-tools` | `{self.tag('linux-tools')}` | 本轮冷建 | 未命中 | success | 已验证其他生产者发布的产物 |",
+            summary,
+        )
+
+    def test_denied_index_query_preserves_earlier_production_and_reports_unreached_fcitx(self):
+        for action in ("lookup", "publish"):
+            result = self.producer("hy", action)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        denied = self.producer("index", "lookup", {"FIXED_DENIED": "1"})
+        self.assertNotEqual(denied.returncode, 0)
+        steps = {
+            "hy-build": {"outcome": "success"},
+            "hy-publish": {"outcome": "success"},
+            "index-cache": {"outcome": "failure"},
+            "index-build": {"outcome": "skipped"},
+            "index-publish": {"outcome": "skipped"},
+            "restore": {"outcome": "skipped"},
+            "fcitx-build": {"outcome": "skipped"},
+            "fcitx-publish": {"outcome": "skipped"},
+        }
+        summary = self.summary("fcitx-build", steps, "failure")
+        self.assertIn(f"| `hy` | `{self.tag('hy')}` | 本轮冷建 |", summary)
+        self.assertIn(
+            f"| `index` | `{self.tag('index')}` | 未知 | failure | skipped | skipped |", summary
+        )
+        self.assertIn("| `fcitx` | 未知 | 未知 | skipped | skipped | skipped |", summary)
+
+    def test_checkout_failure_still_lists_each_unavailable_tag(self):
+        for job, kinds in (
+            ("fonts", ("fonts",)),
+            ("fcitx-build", ("linux-tools", "hy", "index", "fcitx")),
+        ):
+            summary = self.summary(job, {}, "failure", checkout=False)
+            for kind in kinds:
+                self.assertIn(f"`{kind}` 的 tag 和生产阶段均未知（生产者 failure）", summary)
+
+    def test_failed_font_restore_identifies_the_published_tag_without_counting_a_hit(self):
+        published = self.command("earlier", "publish", tag=self.tag("fonts"))
+        self.assertEqual(published.returncode, 0, published.stderr)
+        failed = self.producer("fonts", "restore", {"FIXED_CORRUPT": "1"})
+        self.assertNotEqual(failed.returncode, 0)
+        steps = {
+            step: {"outcome": outcome}
+            for step, outcome in (
+                ("restore", "failure"),
+                ("fonts-build", "skipped"),
+                ("fonts-publish", "skipped"),
+            )
+        }
+        summary = self.summary("fonts", steps, "failure")
+        self.assertIn(
+            f"| `fonts` | `{self.tag('fonts')}` | 未知 | 已找到产物，恢复 failure | skipped | skipped |",
+            summary,
+        )
+
+    def test_interrupted_composite_preparation_and_failed_publication_keep_the_known_stages(self):
+        miss = self.producer("linux-tools", "restore")
+        self.assertEqual(miss.returncode, 0, miss.stderr)
+        steps = {"linux-tools": {"outcome": "cancelled"}}
+        summary = self.summary("fcitx-build", steps, "cancelled")
+        self.assertIn(
+            f"| `linux-tools` | `{self.tag('linux-tools')}` | 未知 | 未命中 | 完成未知（合成步骤 cancelled） | 未见发布记录 |",
+            summary,
+        )
+        failed = self.producer("linux-tools", "publish", {"FIXED_PUBLISH_RESPONSE_LOST": "1"})
+        self.assertNotEqual(failed.returncode, 0)
+        steps = {"linux-tools": {"outcome": "failure"}}
+        summary = self.summary("fcitx-build", steps, "failure")
+        self.assertIn(
+            f"| `linux-tools` | `{self.tag('linux-tools')}` | 未知 | 未命中 | success | 结果未知（合成步骤 failure） |",
+            summary,
         )
 
     def test_cold_fcitx_consumers_recover_after_the_same_asset_is_published(self):

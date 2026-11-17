@@ -70,6 +70,14 @@ def log_event(stage, event, tag, **fields):
     )
 
 
+def producer_record(kind, **fields):
+    """Send this producer's own observations to its job summary, including inside composites."""
+    if os.environ.get("TYPELAY_FIXED_PRODUCER") == "true":
+        with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+            for name, value in fields.items():
+                print(f"FIXED_{kind.replace('-', '_')}_{name}={value}", file=env)
+
+
 def download_verified(repo, tag, archive, asset):
     # Fetch these exact bytes by asset ID. Looking the tag up a second time can
     # fail independently of the transfer whose digest we already hold.
@@ -178,6 +186,7 @@ def main():
     if not math.isfinite(args.wait_seconds) or args.wait_seconds <= 0:
         parser.error("--wait-seconds must be positive and finite")
     tag = args.tag or key(args.kind)
+    producer_record(args.kind, tag=tag)
     if args.action == "key":
         print(tag)
         return
@@ -187,6 +196,7 @@ def main():
     archive.parent.mkdir(exist_ok=True)
     repo = os.environ["GITHUB_REPOSITORY"]
     if args.action in ("lookup", "restore"):
+        producer_record(args.kind, query="started")
         deadline = time.monotonic() + args.wait_seconds if args.wait_for_job else None
         producer_ended = None
         logged_wait = False
@@ -257,6 +267,7 @@ def main():
             log_event("release", "missing", tag, asset=archive.name)
             with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
                 stream.write("hit=false\n")
+            producer_record(args.kind, query="miss")
             return
         release = json.loads(result.stdout)
         try:
@@ -272,20 +283,20 @@ def main():
             asset_id=asset["id"],
             published_at=release.get("published_at"),
         )
-        if args.action == "lookup":
-            with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
-                stream.write("hit=true\n")
-            return
-        download_verified(repo, tag, archive, asset)
-        subprocess.run(
-            ["tar", *compression, "-xf", str(archive)],
-            cwd=ROOT,
-            check=True,
-        )
-        archive.unlink()
+        if args.action == "restore":
+            producer_record(args.kind, query="restoring")
+            download_verified(repo, tag, archive, asset)
+            subprocess.run(
+                ["tar", *compression, "-xf", str(archive)],
+                cwd=ROOT,
+                check=True,
+            )
+            archive.unlink()
         with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
             stream.write("hit=true\n")
+        producer_record(args.kind, query="hit")
     else:
+        producer_record(args.kind, publication="started")
         existing = subprocess.run(
             ["gh", "api", f"repos/{repo}/releases/tags/{tag}"],
             capture_output=True,
@@ -295,6 +306,7 @@ def main():
             winner = json.loads(existing.stdout)
             download_verified(repo, tag, archive, release_asset(winner, archive))
             print(f"Reused verified fixed build {tag} from release {winner['id']}")
+            producer_record(args.kind, publication="reused")
             return
         if "HTTP 404" not in existing.stderr:
             log_event("release", "failed", tag, asset=archive.name)
@@ -393,6 +405,7 @@ def main():
                     asset_id=asset["id"],
                     published_at=json.loads(result.stdout).get("published_at"),
                 )
+                producer_record(args.kind, publication="published")
                 return
             log_event("publish", "failed", tag, asset=archive.name, asset_id=asset["id"])
             if "HTTP 422" in result.stderr and any(
@@ -417,6 +430,7 @@ def main():
                     ["gh", "api", f"repos/{repo}/releases/{draft['id']}", "--method", "DELETE"],
                     check=True,
                 )
+        producer_record(args.kind, publication="reused")
 
 
 if __name__ == "__main__":
