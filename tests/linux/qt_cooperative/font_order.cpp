@@ -308,6 +308,7 @@ int main(int argc, char **argv) {
         QFile output(args[3]);
         if (!output.open(QIODevice::WriteOnly)) return false;
         const QJsonObject result{{"qtVersion", QString::fromLatin1(qVersion())},
+            {"pid", QCoreApplication::applicationPid()},
             {"qtBuildVersion", QStringLiteral(QT_VERSION_STR)},
             {"platform", QGuiApplication::platformName()}, {"primary", primary},
             {"registered", registered}, {"complete", complete}, {"observations", observations},

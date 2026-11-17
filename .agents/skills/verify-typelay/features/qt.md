@@ -44,7 +44,11 @@ TMPDIR=/tmp /usr/bin/python3 tests/linux/qt_cooperative/run.py \
   2>&1 | tee "$TYPELAY_VERIFY_OUTPUT/qt-cooperative.log"
 ```
 
-该入口在私有会话内再建 Xvfb、D-Bus 和 HOME，运行真实异步 Fcitx 输入。`TMPDIR=/tmp` 让内部随机临时目录保持短路径，避免语言入口的 Unix socket 超长；正式包与模型仍留在外层私有安装目录。它使用 XCB 与受控源字段，不证明 Wayland 或模型交互。保留 `versions.json`、`async-*.json`、`ordered-*.json`、各模式日志和命令退出码。`rapid-control-result.json` 记录首个快速接受的原许可、投递时刻及动作后的 fixture，不补发输入。完整结果只在整条链成功后产生；缺少后续结果文件表示尚无执行完成证据。
+该入口在私有会话内再建 Xvfb、D-Bus 和 HOME，运行真实异步 Fcitx 输入。`TMPDIR=/tmp` 让内部随机临时目录保持短路径，避免语言入口的 Unix socket 超长；正式包与模型仍留在外层私有安装目录。它使用 XCB 与受控源字段，不证明 Wayland 或模型交互。保留 `versions.json`、`async-*.json`、`ordered-*.json`、各模式日志和命令退出码。`rapid-control-result.json` 记录首个快速接受的原许可、投递时刻及动作后的 fixture，不补发输入。整条链成功后，`result.json` 记录 `passed=true`。
+
+async fixture 在首次窗口查询发出时可能仍在进行 X11 握手。私有 Xvfb 使用 `-noreset`，首个查询退出后仍保留同一代显示服务。就绪客户端在原 15 秒映射期限内完成实际 XCB 握手并创建本次特有的 atom，Qt fixture 用自己的连接核对该 atom 后才建窗。两步共用原期限。
+
+发生映射故障时，从 `font-order-SC.json` 和 `font-order-JP.json` 读取较早客户端的 PID，再按日志的 `qt-x11` 阶段、显示号和 PID 对照 `x11-server.log` 的连接、断开及拒绝记录。服务端审计记录认证协议和连接身份，排查时不读取认证 cookie。`result.json` 记录失败阶段、错误和后续场景的 `not-run`。`async-client.log` 保留 Qt 自身诊断。
 
 完整 probe 也覆盖单行与多行字段的术语表取消、回源及来源失效。核对源版本、选区或文档变化后零写入。该入口使用受控 Host，不证明正式词条持久化或真实模型的术语质量。
 

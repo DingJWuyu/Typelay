@@ -132,6 +132,48 @@ class QtWindowSearchTests(unittest.TestCase):
                 if mode == "native":
                     self.assertEqual(calls[0][-2:], ["--name", "^TypeLay Qt native fixture$"])
 
+    def test_unavailable_display_stops_before_async_fixture_and_marks_later_scenes(self):
+        self.environment["DISPLAY"] = ":73"
+        self.responses.write_text(json.dumps([[2, "", "unexpected window search"]]))
+        started = self.directory / "fixture-started"
+        self.executable(
+            "fixture",
+            "import sys, time\nfrom pathlib import Path\n"
+            "if sys.argv[1:2] == ['--check-display']:\n"
+            "    print('X11 setup failed (xcb error 1)', file=sys.stderr)\n"
+            "    time.sleep(60)\n"
+            f"Path({str(started)!r}).touch()\n",
+        )
+        with patch.object(qt_probe, "WINDOW_TIMEOUT", 0.4):
+            error = self.run_until_search("async")
+        self.assertIn(":73", error)
+        self.assertIn("timed out", error)
+        self.assertIn("X11 setup failed (xcb error 1)", error)
+        self.assertFalse(started.exists())
+        self.assertFalse(self.calls.exists())
+        result = json.loads((self.directory / "result.json").read_text())
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["stage"], "async-display")
+        self.assertEqual(result["subsequentScenes"]["language_options"], "not-run")
+
+    def test_fixture_failure_after_display_readiness_keeps_its_exit_code_and_log(self):
+        self.environment["DISPLAY"] = ":73"
+        self.executable(
+            "fixture",
+            "import sys\n"
+            "if sys.argv[1:2] == ['--check-display']:\n"
+            "    sys.exit(0)\n"
+            "print('unrelated fixture failure', file=sys.stderr)\n"
+            "sys.exit(12)\n",
+        )
+        self.responses.write_text(json.dumps([[1, "", ""]]))
+        error = self.run_until_search("async")
+        self.assertIn("code=12", error)
+        self.assertIn("unrelated fixture failure", error)
+        result = json.loads((self.directory / "result.json").read_text())
+        self.assertEqual(result["stage"], "async-fixture-exit")
+        self.assertFalse((self.directory / "async-result.json").exists())
+
     def test_normal_no_match_remains_bounded_by_the_original_window_deadline(self):
         self.responses.write_text(json.dumps([[1, "", ""]]))
         with (

@@ -1,5 +1,6 @@
 // Isolated Qt/Fcitx acknowledgement fixture. Never publishes field contents.
 #include <QApplication>
+#include <QtGui/qguiapplication_platform.h>
 #include "../../../src/linux/native/fcitx5/typelay-fcitx-qt-v1.h"
 #include <QEvent>
 #include <QEventLoop>
@@ -19,6 +20,10 @@
 #include <cstdio>
 #include <fcntl.h>
 #include <unistd.h>
+#include <xcb/xcb.h>
+#include <sys/socket.h>
+#include <cstring>
+#include <cstdlib>
 
 class Observer final : public QObject {
 public:
@@ -229,8 +234,59 @@ private:
     unsigned traceLines_ = 0;
 };
 
+// An X server discards atoms on reset. Only the readiness client creates this unique atom.
+static bool displayAtom(xcb_connection_t *connection, const char *name, bool onlyIfExists) {
+    const auto request = xcb_intern_atom(connection, onlyIfExists, std::strlen(name), name);
+    auto *reply = xcb_intern_atom_reply(connection, request, nullptr);
+    const bool found = reply && reply->atom != XCB_ATOM_NONE;
+    std::free(reply);
+    return found;
+}
+
+// The parent bounds this whole process, including a server that accepts but never replies.
+static int waitForDisplay(const char *atom) {
+    bool reported = false;
+    for (;;) {
+        auto *connection = xcb_connect(nullptr, nullptr);
+        const int error = xcb_connection_has_error(connection);
+        if (!error) {
+            if (!displayAtom(connection, atom, false)) {
+                std::fprintf(stderr, "Could not mark X11 server generation (xcb error %d)\n",
+                             xcb_connection_has_error(connection));
+                xcb_disconnect(connection);
+                return 1;
+            }
+            struct ucred server{};
+            socklen_t size = sizeof(server);
+            const bool identified = getsockopt(xcb_get_file_descriptor(connection), SOL_SOCKET,
+                                               SO_PEERCRED, &server, &size) == 0;
+            std::printf("qt-x11 connected pid=%d server_pid=%d\n", getpid(),
+                        identified ? server.pid : -1);
+            xcb_disconnect(connection);
+            return 0;
+        }
+        xcb_disconnect(connection);
+        if (!reported || error != XCB_CONN_ERROR) {
+            std::fprintf(stderr, "X11 setup failed (xcb error %d)\n", error);
+            reported = true;
+        }
+        if (error != XCB_CONN_ERROR) return 1;
+        usleep(20000);
+    }
+}
+
 int main(int argc, char **argv) {
+    if (argc == 3 && std::strcmp(argv[1], "--check-display") == 0) return waitForDisplay(argv[2]);
+    const QByteArray atom = argc == 3 && std::strcmp(argv[1], "--require-display") == 0
+        ? argv[2] : "";
     QApplication app(argc, argv);
+    if (!atom.isEmpty()) {
+        auto *x11 = app.nativeInterface<QNativeInterface::QX11Application>();
+        if (!x11 || !displayAtom(x11->connection(), atom.constData(), true)) {
+            std::fprintf(stderr, "X11 server generation changed or was lost after readiness\n");
+            return 1;
+        }
+    }
     std::fprintf(stderr, "tlqt-fixture-start qt=%s sync=%d\n", qVersion(),
                  int(qEnvironmentVariable("FCITX_QT_USE_SYNC") == "1"));
     const QString statePath = qEnvironmentVariable("TYPELAY_QT_STATE");
