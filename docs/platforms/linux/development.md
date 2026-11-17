@@ -78,6 +78,33 @@ artifacts/build-tools/bin/python eng/linux/build.py --finalize \
 
 生产合作构建归 [eng/linux/cooperative](../../../eng/linux/cooperative/)所有，打包入口归 [packaging/linux/fcitx-cooperative](../../../packaging/linux/fcitx-cooperative/)。测试 runner 调用这些入口，不维护第二份生产配方。改变生产来源、补丁或清单时，需要同时验证实际重建和对应测试入口。
 
+### 合作构建的本地原始归档
+
+Fcitx、第三方依赖和 Qt 构建器均接受 `--archive-cache PATH`。对应 Python `build()` 接受可选的 `archive_cache`。缓存采用平铺布局，文件名如下；摘要与固定来源由正式构建代码维护。
+
+| 消费者 | 缓存根目录中的文件 |
+| --- | --- |
+| Fcitx 和第三方依赖的核心源码 | `fcitx5-c7ecdb931d8b378ccdcd87382a3ef7ff0bd10def.tar.gz`。 |
+| Fcitx 和第三方依赖的中文附加组件 | `fcitx5-chinese-addons-fa65a9b46f805fc491b88c53f6b0159fd6f756af.tar.gz`。 |
+| Fcitx 和第三方依赖的 GTK 源码 | `fcitx5-gtk-3b18d2ab7401d4233daf38bbc5896f1703685a43.tar.gz`。 |
+| Fcitx 和第三方依赖的 LibIME 源码 | `libime-901a73898df3bf5990d6535bf8e7e02b190aee2e.tar.gz`。 |
+| Fcitx 和第三方依赖的 KenLM 源码 | `kenlm-4cb443e60b7bf2c0ddf3c745378f76cb59e254e5.tar.gz`。 |
+| Fcitx 和第三方依赖的运行数据 | `lm_sc.arpa-20260629.tar.zst`、`dict-20260703.tar.zst`、`table-20240108.tar.zst`、`py_stroke-20250329.tar.gz`、`py_table-20121124.tar.gz`、`en_dict-20121020.tar.gz`。 |
+| Qt | `fcitx5-qt.tar.gz`，来源与摘要见 [QT_PIN 和 QT_SHA256](../../../eng/linux/cooperative/inputs.py)。 |
+
+每个入口只读取自己需要的归档，忽略其它文件。缓存与构建输出须分离，不能相同或互相包含。构建器校验缓存字节后复制到输出，再次校验并应用现有补丁。缓存中的安装前缀和二进制不参与构建。
+
+```sh
+python eng/linux/cooperative/fcitx.py --archive-cache artifacts/cooperative-archives \
+  --output artifacts/linux/fcitx-fresh
+python eng/linux/cooperative/third_party.py --archive-cache artifacts/cooperative-archives \
+  --output artifacts/linux/third-party-fresh
+python eng/linux/cooperative/qt.py --archive-cache artifacts/cooperative-archives \
+  --out artifacts/linux/qt-fresh
+```
+
+本地模式遇到缺项或摘要不符即非零退出，错误包含具体归档路径。它不会联网补齐，也不会改用输出目录中的旧归档。`--archive-cache` 与 `--reuse-third-party` 不能同时使用。未指定缓存时，保留原有下载、输出归档校验和已验证第三方产物复用行为。Agent 的断网命名空间、编译环境及共享锁命令见 [verify-typelay 构建准备](../../../.agents/skills/verify-typelay/references/build.md#构建当前源码)。
+
 ### Index 默认载荷
 
 主包默认包含 Index ABI1/b11913 CPU 载荷。需要提前准备或复用已验证目录时，执行：
