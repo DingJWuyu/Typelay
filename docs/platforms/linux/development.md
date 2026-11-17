@@ -169,6 +169,41 @@ pwsh -File ./dev.ps1 shared-check
 
 显式桌面入口仍须通过私有会话运行。单元发现命令的保护不授权在用户桌面直接运行这些脚本。`test_display_isolation.py` 验证反馈与字体入口在导入和执行阶段均不接触调用者的显示，同时确认无显示用例继续执行。
 
+### 复验完整 discovery 的显示隔离
+
+新工作树完成[本地构建与依赖准备](../../../.agents/skills/verify-typelay/references/build.md)后，运行受版本控制的入口：
+
+```sh
+skill="$PWD/.agents/skills/verify-typelay"
+/usr/bin/python3 "$skill/scripts/private-session.py" \
+  --package artifacts/verification-build/package \
+  --cooperative artifacts/verification-build/cooperation/TypeLay-Fcitx-cooperative \
+  --output "$PWD/artifacts/verification/discovery-$(date +%Y%m%d-%H%M%S)" \
+  -- /usr/bin/python3 "$PWD/tests/linux/verify_discovery.py"
+```
+
+本机需要系统 PyGObject、GTK 3、libX11，以及私有会话已有的 niri、Xvfb 和离线缓存。完整 discovery 还需要 Playwright 和 PATH 中的 Chromium，供现有 DOM 回归使用。字体按本页准备。系统 Python 缺少 Playwright 时，可使用基于系统 Python、带 `--system-site-packages` 的虚拟环境，并把命令中的第二个 `/usr/bin/python3` 换成该环境的解释器。所有依赖按任务网络预算从本机缓存准备。这个入口不安装或加载模型。它继承私有会话的离线网络和清理，不访问用户桌面。
+
+入口分别执行两次完整 `unittest` discovery，沿用默认的 `test*.py` 发现范围：
+
+- `outer` 清除测试的私有会话和 CI 准入标记，保留隔离显示连接，模拟普通外层。无显示测试继续执行。GUI 用例必须明确报告未运行原因，任何测试开窗都会失败。
+- `private` 保留真实 `session.json` 身份。现有 `GtkFeedbackTests` 必须全部执行通过，并观察到实际窗口。全部跳过、未发现或显示前提缺失都不能通过。
+
+窗口观察在测试导入前订阅 niri 事件流和 Xvfb 的直接 X11 窗口事件。两路观察开始前和结束后分别创建一个受控 GTK 窗口，确认观察器仍能检测开窗。校准窗口具有独立身份，原始记录保留。观察器启动失败、提前退出或超时都会让该项失败。
+
+每次 discovery 默认限时 300 秒，可向 `verify_discovery.py` 传入 `--timeout`。外层私有会话仍保留自己的总期限。结果位于本次输出的 `discovery/`：
+
+| 原件 | 内容 |
+| --- | --- |
+| `source-identity.json`、`source.diff` | 提交、tree、工作区差异和实际源码文件摘要。 |
+| `session.json`、`package-identity.json`、`network.json`、`invocation.json` | 本次隔离身份、包身份、离线网络及完整入口命令。 |
+| `outer/result.json`、`private/result.json` | 两项独立结论、命令、退出码、GUI 结果和检测到的测试窗口。 |
+| 各项的 `tests.json`、`unittest.log` | 默认发现清单、逐测试结果、跳过原因和 unittest 原始输出。 |
+| 各项的 `windows.jsonl`、`observer.log`、`calibration-*.json/log` | 窗口事件流、观察器错误和前后两路开窗校准原件。 |
+| 外层的 `cleanup.json` | 成功、失败或超时后的自有进程与临时目录清理回执。 |
+
+`not-run` 表示测试未执行。读取 JSON 时同时核对 `cleanup.json` 的 `remainingPids=[]`、`scratchRemoved=true` 和 `runtimeRemoved=true`。清理失败会使会话返回失败。既有字体、反馈和 Unix socket 隔离回归仍保留，完整观察会自动包含以后新增的默认发现测试。
+
 ### 从实际归档检查安装生命周期
 
 ```sh
