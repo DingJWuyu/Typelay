@@ -1359,22 +1359,26 @@ class ApplicationSupportPane:
             self.choose_component(row, action, guard=guard)
         elif action["requiresConfirmation"]:
             labels = self.value["labels"]
+            localize = self.owner.localizer.text
             dialog = Gtk.MessageDialog(
                 transient_for=parent or self.owner.window,
                 modal=True,
                 message_type=Gtk.MessageType.QUESTION,
-                text=row["title"] + "：" + action["label"],
+                text=localize(row["title"]) + self.owner.tr("：", ": ") + localize(action["label"]),
             )
-            consequence = action["confirmationText"]
+            consequence = localize(action["confirmationText"])
             if (
                 action["id"] == "Install"
                 or row["id"] == "desktop-text"
                 and action["id"] in ("Connect", "OpenApplication", "Remove")
             ) and row.get("details"):
-                consequence += "\n\n" + row["details"].split("\n\n", 1)[0]
+                consequence += "\n\n" + localize(row["details"].split("\n\n", 1)[0])
             dialog.format_secondary_text(consequence)
             dialog.add_buttons(
-                labels["cancel"], Gtk.ResponseType.CANCEL, labels["confirm"], Gtk.ResponseType.OK
+                localize(labels["cancel"]),
+                Gtk.ResponseType.CANCEL,
+                localize(labels["confirm"]),
+                Gtk.ResponseType.OK,
             )
 
             answered = False
