@@ -724,6 +724,42 @@ def run_owned_session(command, *, env, timeout, cleanup=None, ready_output=None)
             stream.write("core-ready=true\n")
 
 
+def run_sessions(out, core_version, ready_output=None, *, scope="all"):
+    """Run each selected scene in its own desktop, retaining core readiness."""
+    toolkits = {
+        "all": (None, "gtk4", "gtk3"),
+        "core": (None,),
+        "gtk3": (None, "gtk3"),
+        "gtk4": (None, "gtk4"),
+    }[scope]
+    for toolkit in toolkits:
+        evidence = out / f"{toolkit}-glossary-session" if toolkit else out
+        run_owned_session(
+            [
+                "dbus-run-session",
+                "--",
+                "xvfb-run",
+                "-a",
+                "-s",
+                "-screen 0 1280x960x24",
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--session",
+                *(["--glossary-toolkit", toolkit] if toolkit else []),
+                "--session-deadline",
+                str(time.monotonic() + (115 if toolkit else 98)),
+                "--core-version",
+                core_version,
+                "--output",
+                str(out),
+            ],
+            timeout=145 if toolkit else 120,
+            env=os.environ | {"TYPELAY_COOPERATIVE_OWNED_XVFB": "1"},
+            cleanup=evidence / "cleanup.json",
+            ready_output=ready_output if toolkit is None else None,
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path)
@@ -739,6 +775,12 @@ def main():
     parser.add_argument(
         "--core-ready-output", type=Path, help="Append verified core readiness for CI"
     )
+    parser.add_argument(
+        "--scope",
+        choices=("all", "core", "gtk3", "gtk4"),
+        default="all",
+        help="Run core cooperation and the selected glossary sessions (default: all)",
+    )
     parser.add_argument("--glossary-toolkit", choices=("gtk3", "gtk4"), help=argparse.SUPPRESS)
     args = parser.parse_args()
     default_name = f"fcitx-cooperative-{CORE_VERSION}"
@@ -751,33 +793,7 @@ def main():
     else:
         build(out, args.core_version, args.reuse_build)
         if not args.build_only:
-            # Independent desktops/daemons reuse the same already-built assets.
-            for toolkit in (None, "gtk4", "gtk3"):
-                evidence = out / f"{toolkit}-glossary-session" if toolkit else out
-                run_owned_session(
-                    [
-                        "dbus-run-session",
-                        "--",
-                        "xvfb-run",
-                        "-a",
-                        "-s",
-                        "-screen 0 1280x960x24",
-                        sys.executable,
-                        str(Path(__file__).resolve()),
-                        "--session",
-                        *(["--glossary-toolkit", toolkit] if toolkit else []),
-                        "--session-deadline",
-                        str(time.monotonic() + (115 if toolkit else 98)),
-                        "--core-version",
-                        args.core_version,
-                        "--output",
-                        str(out),
-                    ],
-                    timeout=145 if toolkit else 120,
-                    env=os.environ | {"TYPELAY_COOPERATIVE_OWNED_XVFB": "1"},
-                    cleanup=evidence / "cleanup.json",
-                    ready_output=args.core_ready_output if toolkit is None else None,
-                )
+            run_sessions(out, args.core_version, args.core_ready_output, scope=args.scope)
 
 
 if __name__ == "__main__":

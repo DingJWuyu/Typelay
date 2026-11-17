@@ -107,7 +107,7 @@ Python 开发工具进入 [eng/requirements.txt](../../eng/requirements.txt)。�
 | tree | 用 `git rev-parse '<提交>^{tree}'` 核对源码树。tree 相同只能说明源码内容相同，不能证明某次检查实际执行。 |
 | 最终 `hitl` 提交 | 合入后的集成提交。最终综合验收须来自同一实际集成提交，不能拼接各层的旧结果。 |
 
-CI 使用以下固定检查名。矩阵展开后共 16 个 job，各组保留现役测试命令、断言和产品期限。工作流没有按事件添加前缀，自动 push 与手动取证使用相同 job 名称。保护配置仍须核对最终候选的实际 check name 和来源 app。
+CI 使用以下固定检查名。矩阵展开后共 19 个 job，各组保留现役测试命令、断言和产品期限。工作流没有按事件添加前缀，自动 push 与手动取证使用相同 job 名称。保护配置仍须核对最终候选的实际 check name 和来源 app。
 
 | 检查名 | 执行范围 |
 | --- | --- |
@@ -122,13 +122,16 @@ CI 使用以下固定检查名。矩阵展开后共 16 个 job，各组保留现
 | `Linux / contracts` | 合同、无模型界面与发行包验证。 |
 | `Linux / browser` | 合作浏览器与编辑器。 |
 | `Linux / settings` | 设置、教程与 Hy 生命周期。 |
-| `Linux / native` | Fcitx 探针、GTK/Qt 合作输入、桌面组件附加与原生桌面。 |
+| `Linux / native` | 原始 Fcitx 客户端探针、core 合作事务、Qt probe、完整桌面包搬迁和普通 GIMP。 |
+| `Linux / native-gtk` | 本组 core 合作事务、GTK3 术语会话和 GTK 桌面。 |
+| `Linux / native-gtk4` | 本组 core 合作事务、GTK4 术语会话和 GTK4 桌面。 |
+| `Linux / native-qt` | 本组 core 合作事务、Qt probe 和 Qt 桌面。 |
 
-每轮最多有 16 个 job，字体准备后最多并行 15 个，低于免费 runner 的 20 个并发上限。不同 runner 不共享桌面、模型安装代或消费者进程。每个 Windows 桌面组各自完成正式 Argos 安装与 continuous。Hy 只消费自己 runner 中该次调用的安装和内核退出证明；普通组校验自己 runner 中 continuous 与 Notepad 的原始退出证明。Index 生命周期和浏览器各自执行正式准备，并保留本次安装代和退出证明。同一包不表示同一安装代，也不授予其它 runner 通过资格。完整 solution 构建留在合同与工具组，桌面组只构建它实际消费的 fixture。job 内独立检查在失败后继续，依赖失败的场景保持 skipped。Actions 原始 step 和 job 状态就是结果；失败、取消和 skipped 都不能表述为通过。当前没有负责人批准的历史失败例外。以后获批的例外仍须放在独立非必需 job，保留真实失败。
+每轮最多有 19 个 job，字体准备后最多并行 18 个，低于免费 runner 的 20 个并发上限。不同 runner 不共享桌面、模型安装代或消费者进程。每个 Windows 桌面组各自完成正式 Argos 安装与 continuous。Hy 只消费自己 runner 中该次调用的安装和内核退出证明；普通组校验自己 runner 中 continuous 与 Notepad 的原始退出证明。Index 生命周期和浏览器各自执行正式准备，并保留本次安装代和退出证明。同一包不表示同一安装代，也不授予其它 runner 通过资格。完整 solution 构建留在合同与工具组，桌面组只构建它实际消费的 fixture。job 内独立检查在失败后继续，依赖失败的场景保持 skipped。Actions 原始 step 和 job 状态就是结果；失败、取消和 skipped 都不能表述为通过。当前没有负责人批准的历史失败例外。以后获批的例外仍须放在独立非必需 job，保留真实失败。
 
 结果 artifact 的名称或内含源码记录带有 SHA、run ID 和 attempt。`artifacts/ci/source.json` 记录实际 `git rev-parse HEAD`。push 测试的是 head，不是 GitHub 临时合并提交。墙钟时间统一按 `max(必过 job.completed_at) - run.created_at` 计算，包含排队、准备和诊断上传。
 
-Linux / native 的 `qt-language-options` 步骤独立记录语言搜索。完整 Qt probe 成功时复用其中已经完成的语言场景证据；probe 失败时，在新目录复验并复用本次生产二进制，重建 fixture 后运行语言入口，保留原异步资格结果。两者均为必过步骤。搜索日志、状态和截图另存 `typelay-linux-qt-language-options-*` artifact，Qt 桌面日志和 JSON 另存 `typelay-linux-qt-desktop-events-*`。具体命令与证据边界见 [Qt 功能地图](../../.agents/skills/verify-typelay/features/qt.md)。
+Linux / native 与 Linux / native-qt 的 `qt-language-options` 步骤独立记录语言搜索。完整 Qt probe 成功时复用其中已经完成的语言场景证据；probe 失败时，在新目录复验并复用本次生产二进制，重建 fixture 后运行语言入口，保留原异步资格结果。两者均为必过步骤。搜索日志、状态和截图另存带有分组名称的 `typelay-linux-qt-language-options-*` artifact，Qt 桌面日志和 JSON 另存 `typelay-linux-qt-desktop-events-*`。具体命令与证据边界见 [Qt 功能地图](../../.agents/skills/verify-typelay/features/qt.md)。
 
 GTK3 桌面的源码与包身份、日志、JSON 和截图另存 `typelay-linux-gtk3-desktop-events-*`，成功或失败均保留。该小型工件直接收集原 `gtk-desktop` 步骤的结果，不重新执行场景。语言续显的焦点与期限判据见 [GTK3 语言菜单](../../.agents/skills/verify-typelay/features/settings.md#driving-it-with-private-niri)。
 
@@ -148,15 +151,17 @@ Linux 生产者和消费 runner 都将 pacman 仓库固定到该日期，并用 
 
 Hy 的键只包含生成锁中模型、许可证和运行库压缩包的固定下载记录，不包含当前产品源码记录。它复用原始下载文件，不保存安装后的模型、运行库目录或验收结果。运行 Hy 场景的 Windows runner 仍执行原有准备入口，对每个文件重新检查完整大小与哈希、提取并校验运行库，再执行模型安装和产品场景。`Index / windows` 只通过现有 `eng/windows/hy/prepare_runtime.py` 准备打包所需的 Hy CPU 运行库，不搬运 Hy 模型。该入口校验固定官方归档与运行库文件。Index 的模型和许可证也以各自锁定的下载记录为键，Linux 和 Windows 均复用原始下载，并执行原准备入口的完整校验。固定下载产物的传输复用同一 release 机制，不增加 job 或重试。
 
-普通 push 只上传 TRX、JSON、日志和截图。最终验收需要安装包时，在目标提交手动运行工作流，并设置 `upload_packages=true`。安装包仍在每轮构建和搬迁验证，只是平时不上载。
+普通 push 上传 TRX、JSON、日志、截图及诊断配置。原生桌面组仅上传证据目录中的直接文件，不递归上传隔离安装、模型数据和运行库。最终验收需要安装包时，在目标提交手动运行工作流，并设置 `upload_packages=true`。安装包仍在每轮构建和搬迁验证，只是平时不上载。
 
-CI 的主 Linux 包与合作包均使用 `--compression-level 1`，减少压缩耗时；包内文件、来源校验和搬迁验收保持一致。单独运行打包入口时，默认仍使用等级 9。原生组同时构建当前应用、GTK 合作模块和 Qt 模块，等待三者结束并检查每个退出状态后，才执行依赖这些产物的场景；原始 Fcitx 客户端探针不依赖这些构建，保留独立结果。
+CI 的主 Linux 包与合作包均使用 `--compression-level 1`，减少压缩耗时；包内文件、来源校验和搬迁验收保持一致。单独运行打包入口时，默认仍使用等级 9。四个原生组各自构建当前应用与 GTK 合作模块。`native` 和 `native-qt` 还构建 Qt 模块。每组等待自己的构建结束，检查各退出状态后，才执行依赖场景。原始 Fcitx 客户端探针仍在 `native` 保留独立结果。
+
+Fcitx runner 默认执行 core、GTK4 和 GTK3 三个现役会话。CI 用 `--scope core`、`--scope gtk3` 和 `--scope gtk4` 分配检查，每个 scope 都先执行自己的 core 会话。GTK 两组分别保留对应术语会话及桌面旅程，两个 Qt 消费组分别执行完整 Qt probe。每组使用自己的生产字节、fixture 和清理证明，不跨 runner 导入成功记录。所有场景的断言、产品期限和独立失败语义保持不变。
 
 ```sh
 gh workflow run check.yml --repo DingJWuyu/Typelay --ref <工作分支> -f upload_packages=true
 ```
 
-手动运行也执行完整检查；它不能替代两次自动 push 的时限验收。模型权重只在固定下载 release 和临时 runner 中复用，不进入结果 artifact。CI 不再提供质量采集开关，显式模型研究按[翻译质量采集指南](translation-quality.md)独立执行。
+手动运行也执行完整检查；它不能替代 `hitl` 上连续三次自动 push 的时限验收。模型权重只在固定下载 release 和临时 runner 中复用，不进入结果 artifact。CI 不再提供质量采集开关，显式模型研究按[翻译质量采集指南](translation-quality.md)独立执行。
 
 ## 启用与验收 hitl 合并保护
 
