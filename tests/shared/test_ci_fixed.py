@@ -15,10 +15,18 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SHIM = """import json,os,shutil,sys
+SHIM = """import json,os,shutil,sys,time
 from pathlib import Path
 if sys.argv[1] == "api":
     mode = os.environ["FIXED_CASE"]
+    stage = 'jobs' if sys.argv[2].endswith('/jobs?per_page=100') else 'release'
+    if mode.startswith(stage + '-'):
+        Path(os.environ["FIXED_METADATA"]).with_suffix('.query').write_text(stage)
+        if mode.endswith('-stalled'):
+            time.sleep(2)
+        if mode.endswith('-failed'):
+            print('HTTP 503: ' + stage + ' query failed', file=sys.stderr)
+            sys.exit(1)
     if sys.argv[2].endswith('/jobs?per_page=100'):
         conclusion = {'producer-failed': 'failure', 'producer-cancelled': 'cancelled',
                       'publish-at-completion': 'success'}.get(mode)
@@ -33,7 +41,7 @@ if sys.argv[1] == "api":
                 print(json.dumps({'draft': True, 'assets': []}))
                 sys.exit(0)
             mode = 'missing'
-    if mode in ('producer-failed', 'producer-cancelled', 'producer-running', 'producer-absent'):
+    if mode.startswith('jobs-') or mode in ('producer-failed', 'producer-cancelled', 'producer-running', 'producer-absent'):
         mode = 'missing'
     if mode in ("missing", "denied"):
         print("HTTP " + ("404" if mode == "missing" else "403"), file=sys.stderr)
@@ -45,7 +53,9 @@ else:
 
 
 class FixedBuildTransportTests(unittest.TestCase):
-    def run_transport(self, mode, action="restore", wait=False, kind="fonts", extra_args=()):
+    def run_transport(
+        self, mode, action="restore", wait=False, kind="fonts", extra_args=(), cold_build=False
+    ):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             script = root / "eng/ci/fixed.py"
@@ -89,8 +99,25 @@ class FixedBuildTransportTests(unittest.TestCase):
             )
             shim.chmod(0o700)
             output = root / "output"
+            command = [sys.executable]
+            if cold_build:
+                # Only the producer's elapsed wait is virtual. The CLI still uses
+                # real child processes and downloads/extracts the returned archive.
+                command += [
+                    "-c",
+                    "import runpy, subprocess, sys\n"
+                    "from unittest.mock import patch\n"
+                    "sys.argv = sys.argv[1:]\n"
+                    "elapsed = [0]\n"
+                    "def finish_cold_build(seconds):\n"
+                    "    elapsed[0] = 1020\n"
+                    "with patch('time.monotonic', lambda: elapsed[0]), "
+                    "patch('time.sleep', finish_cold_build):\n"
+                    "    runpy.run_path(sys.argv[0], run_name='__main__')\n",
+                ]
             result = subprocess.run(
-                [sys.executable, str(script), action, kind, "--tag", "ci-test"]
+                command
+                + [str(script), action, kind, "--tag", "ci-test"]
                 + (["--wait-for-job", "fcitx-build"] if wait else [])
                 + list(extra_args),
                 cwd=root,
@@ -119,6 +146,10 @@ class FixedBuildTransportTests(unittest.TestCase):
                     "producer-cancelled",
                     "producer-running",
                     "producer-absent",
+                    "release-failed",
+                    "jobs-failed",
+                    "release-stalled",
+                    "jobs-stalled",
                 ),
                 result.stderr,
             )
@@ -140,8 +171,13 @@ class FixedBuildTransportTests(unittest.TestCase):
                 self.assertIn(
                     "failure" if mode == "producer-failed" else "cancelled", result.stderr
                 )
-            if mode == "producer-running":
+            if mode == "producer-running" or mode.endswith("-stalled"):
                 self.assertIn("Timed out waiting", result.stderr)
+            if mode.startswith(("release-", "jobs-")):
+                stage = mode.split("-", 1)[0]
+                self.assertEqual(metadata.with_suffix(".query").read_text(), stage)
+                if mode.endswith("-failed"):
+                    self.assertIn("HTTP 503: " + stage + " query failed", result.stderr)
             if mode == "producer-absent":
                 self.assertIn("Fixed producer job not found", result.stderr)
             if action == "lookup":
@@ -164,6 +200,19 @@ class FixedBuildTransportTests(unittest.TestCase):
 
     def test_running_producer_wait_is_bounded(self):
         self.run_transport("producer-running", wait=True, extra_args=("--wait-seconds", "0.1"))
+
+    def test_default_wait_can_consume_an_existing_seventeen_minute_cold_build(self):
+        self.run_transport("wait-valid", wait=True, cold_build=True)
+
+    def test_release_and_producer_query_failures_are_explicit(self):
+        for mode in ("release-failed", "jobs-failed"):
+            with self.subTest(mode=mode):
+                self.run_transport(mode, wait=True)
+
+    def test_blocked_release_and_producer_queries_obey_the_same_wait_budget(self):
+        for mode in ("release-stalled", "jobs-stalled"):
+            with self.subTest(mode=mode):
+                self.run_transport(mode, wait=True, extra_args=("--wait-seconds", "0.5"))
 
     def test_missing_producer_has_an_explicit_failure(self):
         self.run_transport("producer-absent", wait=True)
@@ -207,14 +256,14 @@ class FixedBuildPublicationTests(unittest.TestCase):
             "FIXED_DATABASE": str(self.root / "releases.sqlite"),
         }
 
-    def command(self, caller, action, extra_env=None):
+    def command(self, caller, action, extra_env=None, *, prepare=True):
         root = self.root / caller
         script = root / "eng/ci/fixed.py"
         if not script.exists():
             script.parent.mkdir(parents=True)
             shutil.copyfile(ROOT / "eng/ci/fixed.py", script)
         payload = root / "artifacts/ui-fonts/test.bin"
-        if action == "publish":
+        if action == "publish" and prepare:
             payload.parent.mkdir(parents=True, exist_ok=True)
             payload.write_text(caller)
         return subprocess.run(
@@ -232,10 +281,12 @@ class FixedBuildPublicationTests(unittest.TestCase):
             )
         )
 
-    def test_duplicate_publisher_reuses_the_complete_winner_without_overwriting_it(self):
+    def test_existing_winner_is_reused_without_repacking_uploading_or_overwriting_it(self):
         first = self.command("winner", "publish")
         self.assertEqual(first.returncode, 0, first.stderr)
-        duplicate = self.command("competitor", "publish")
+        duplicate = self.command(
+            "competitor", "publish", {"FIXED_UPLOAD_FAILED": "1"}, prepare=False
+        )
         self.assertEqual(duplicate.returncode, 0, duplicate.stderr)
         consumer = self.command("consumer", "restore")
         self.assertEqual(consumer.returncode, 0, consumer.stderr)
@@ -306,7 +357,6 @@ class FixedBuildPublicationTests(unittest.TestCase):
         self.assertEqual(winner.returncode, 0, winner.stderr)
         for variable, diagnostic in (
             ("FIXED_DENIED", "403"),
-            ("FIXED_PUBLISH_DENIED", "403"),
             ("FIXED_CORRUPT", "Release asset digest mismatch"),
         ):
             with self.subTest(variable=variable):
@@ -315,6 +365,13 @@ class FixedBuildPublicationTests(unittest.TestCase):
                 self.assertIn(diagnostic, failed.stderr)
                 self.assertNotIn("Reused verified", failed.stdout)
                 self.assertEqual([r["tag_name"] for r in self.releases()], ["ci-test"])
+
+    def test_permission_denial_during_first_publication_is_an_explicit_failure(self):
+        failed = self.command("producer", "publish", {"FIXED_PUBLISH_DENIED": "1"})
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("403", failed.stderr)
+        self.assertNotIn("Reused verified", failed.stdout)
+        self.assertEqual(self.releases(), [])
 
     def test_abandoned_private_draft_does_not_block_a_new_producer(self):
         subprocess.run(

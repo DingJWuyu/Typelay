@@ -87,8 +87,8 @@ def main():
     parser.add_argument(
         "--wait-seconds",
         type=float,
-        default=600,
-        help="Maximum producer wait (default: 600 seconds)",
+        default=1800,
+        help="Maximum producer wait, including cold builds (default: 1800 seconds)",
     )
     args = parser.parse_args()
     if args.wait_for_job and args.action != "restore":
@@ -186,6 +186,18 @@ def main():
         with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
             stream.write("hit=true\n")
     else:
+        existing = subprocess.run(
+            ["gh", "api", f"repos/{repo}/releases/tags/{tag}"],
+            capture_output=True,
+            text=True,
+        )
+        if not existing.returncode:
+            winner = json.loads(existing.stdout)
+            download_verified(repo, tag, archive, release_asset(winner, archive))
+            print(f"Reused verified fixed build {tag} from release {winner['id']}")
+            return
+        if "HTTP 404" not in existing.stderr:
+            raise RuntimeError(existing.stderr)
         directories = {
             "fonts": ["artifacts/ui-fonts"],
             "fcitx": ["artifacts/linux/fcitx-cooperative-5.1.22"],

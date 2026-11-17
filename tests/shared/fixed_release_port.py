@@ -137,19 +137,6 @@ def main():
         if row["draft"]:
             fail(404, "Not Found")
         (Path(args[args.index("--dir") + 1]) / row["name"]).write_bytes(row["data"])
-    elif args[:2] == ["release", "create"]:
-        # The original implementation fails when another producer owns this tag.
-        if database.execute("SELECT id FROM releases WHERE tag=?", (args[2],)).fetchone():
-            fail(422, "already_exists: tag_name")
-        path = Path(args[-1])
-        with database:
-            database.execute(
-                "INSERT INTO releases(tag,draft,name,data) VALUES (?,1,?,?)",
-                (args[2], path.name, path.read_bytes()),
-            )
-    elif args[:2] == ["release", "edit"]:
-        with database:
-            database.execute("UPDATE releases SET draft=0 WHERE tag=?", (args[2],))
     else:
         raise AssertionError(args)
 
