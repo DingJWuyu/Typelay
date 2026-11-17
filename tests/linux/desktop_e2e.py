@@ -162,7 +162,7 @@ def run_gtk_configuration_journey(fixture_command, environment, output, gtk4, ro
             "outside-blank",
             "window-focus",
         ):
-            with tempfile.TemporaryDirectory(prefix="tl-gtk-language-action-") as directory:
+            with tempfile.TemporaryDirectory(prefix="tl-gtk-action-") as directory:
                 run_case(
                     fixture_command,
                     environment,
@@ -208,7 +208,7 @@ def run_gtk_configuration_journey(fixture_command, environment, output, gtk4, ro
         "trigger-expired-render",
     ]
     for refusal in refusals:
-        with tempfile.TemporaryDirectory(prefix="tl-gtk-language-refusal-") as directory:
+        with tempfile.TemporaryDirectory(prefix="tl-gtk-refusal-") as directory:
             run_case(
                 fixture_command,
                 environment,

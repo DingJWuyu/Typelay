@@ -50,11 +50,11 @@ Preconditions: 对本次合成字段有明确写回验收意图，实验选项�
 - **人工稿。** 通过浮层可编辑 TEXT 控件的公开焦点接口进入编辑，再用私有 XTest 输入合成修改。第一次 Tab 后检查源文仍原样，第二次独立 Tab 后检查人工稿写回，分别保存证据。
 - **直接入口。** 在原字段聚焦时执行 `"$TYPELAY_VERIFY_PACKAGE/typelay" --direct`，另一次独立运行投递 `ctrl+shift+F10`。操作前冻结原字段身份与正文，操作后检查该字段与其它字段，不能用后来聚焦的字段代替原目标。
 - **既有原生合同。** 在私有会话里执行 `DISPLAY="$TYPELAY_VERIFY_XDISPLAY" /usr/bin/python3 tests/linux/native_e2e.py --inside --gtk-refusal --native "$PWD/artifacts/linux/native" --output "$TYPELAY_VERIFY_OUTPUT/refusal"`，先创建输出目录。这条受控链验证 Unknown 拒绝与按键透传，不能算成功写回。
-- **GTK3 真实合作回归。** 在私有会话正式安装模型后执行下列命令。`TMPDIR=/tmp` 让语言续显场景的 Unix socket 保持短路径，包与正式模型仍留在会话的正常文件系统。该入口使用受控 GTK fixture 与初始化设置，保留候选、Verified 回执和计数判据，单独标明证据边界。
+- **GTK3 真实合作回归。** 在私有会话正式安装模型后执行下列命令。保持会话提供的 `TMPDIR`，语言场景使用短目录前缀，使 Unix socket 不超长，超时后仍由外层会话清理。包与正式模型留在会话的正常文件系统。该入口使用受控 GTK fixture 与初始化设置，保留候选、Verified 回执和计数判据，单独标明证据边界。
 
   ```bash
   mkdir "$TYPELAY_VERIFY_OUTPUT/gtk"
-  DISPLAY="$TYPELAY_VERIFY_XDISPLAY" TMPDIR=/tmp timeout 240 \
+  DISPLAY="$TYPELAY_VERIFY_XDISPLAY" timeout 240 \
     /usr/bin/python3 tests/linux/native_e2e.py --inside --desktop \
     --desktop-scope gtk --gtk-session-bindings \
     --package "$TYPELAY_VERIFY_PACKAGE" \
