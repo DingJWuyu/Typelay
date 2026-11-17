@@ -240,12 +240,12 @@ skill="$PWD/.agents/skills/verify-typelay"
 选取失败信息中的 tar，在空目录中还原这次调用。使用与 `invocation.json` 中 `pythonVersion` 一致的 Python 版本。
 
 ```sh
-tar -xf /path/to/finalize-PLACEHOLDER.tar
-git clone fixture.bundle checkout
-if test -f worktree.patch; then git -C checkout apply ../worktree.patch; fi
+tar --no-same-owner -xpf /path/to/finalize-PLACEHOLDER.tar
+timeout 30s git clone fixture.bundle checkout
+if test -f worktree.patch; then timeout 30s git -C checkout apply ../worktree.patch; fi
 mv artifacts checkout/
 python - <<'PYTHON'
-import json, os, subprocess, sys
+import json, os, signal, subprocess, sys
 from pathlib import Path
 
 call = json.loads(Path("invocation.json").read_text())
@@ -253,6 +253,14 @@ result = subprocess.run(
     [sys.executable, *call["argv"][1:]], cwd=call["cwd"],
     env={"PATH": os.environ["PATH"], **call["environment"]}, timeout=call["timeoutSeconds"],
 )
+if result.returncode < 0:
+    number = -result.returncode
+    try:
+        name = signal.Signals(number).name
+    except ValueError:
+        name = signal.strsignal(number)
+    print(f"finalize received {name} ({number})", file=sys.stderr)
+    sys.exit(128 + number)
 sys.exit(result.returncode)
 PYTHON
 ```

@@ -791,13 +791,18 @@ jobs:
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
       run: python -m unittest discover -s tests/linux -p test_build_bundle.py -v
     - name: Compress finalize signal evidence
+      shell: bash
       if: ${{ matrix.group == 'contracts' && !cancelled() && steps.test-build-bundle.outcome == 'failure' }}
       run: |
         if [ -d artifacts/linux/finalize-signals ]; then
-          tar -cJf "$RUNNER_TEMP/finalize-signals.tar.xz" -C artifacts/linux/finalize-signals .
+          cd artifacts/linux/finalize-signals
+          shopt -s globstar nullglob
+          inputs=(**/finalize-*.tar)
+          if (( ${#inputs[@]} == 0 )); then exit 0; fi
+          tar -cJf "$RUNNER_TEMP/finalize-signals.tar.xz" -- "${inputs[@]}"
           # Leave room for the artifact action's ZIP envelope below 20 MB.
           test "$(stat -c %s "$RUNNER_TEMP/finalize-signals.tar.xz")" -le 19990000
-          mv "$RUNNER_TEMP/finalize-signals.tar.xz" artifacts/linux/
+          mv "$RUNNER_TEMP/finalize-signals.tar.xz" ../
         fi
     - name: Upload finalize signal evidence
       if: ${{ matrix.group == 'contracts' && !cancelled() && steps.test-build-bundle.outcome == 'failure' }}
@@ -805,6 +810,7 @@ jobs:
       with:
         name: linux-finalize-signals-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
         path: artifacts/linux/finalize-signals.tar.xz
+        compression-level: 0
         if-no-files-found: ignore
         retention-days: 14
     - name: Verify Linux setup_e2e

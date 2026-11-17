@@ -32,6 +32,7 @@ class Upload:
     outcome: str | None = None
     missing: str = "warn"
     outcomes: tuple[str, ...] = ("success", "failure")
+    compression_level: int | None = None
 
 
 source = Evidence("Record tested commit", (SOURCE,))
@@ -196,6 +197,7 @@ LINUX_UPLOADS = {
         outcome="test-build-bundle",
         outcomes=("failure",),
         missing="ignore",
+        compression_level=0,
     ),
     "typelay-linux-qt-language-options-${{ matrix.group }}": Upload(
         (qt_language,), ("native", "native-qt"), outcome="qt-language-options"

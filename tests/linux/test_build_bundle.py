@@ -7,6 +7,7 @@ import io
 import json
 import os
 import re
+import secrets
 import shutil
 import signal
 import struct
@@ -1003,6 +1004,12 @@ class BrowserBundleTests(unittest.TestCase):
                     )
 
 
+def finalize_evidence_directory():
+    return Path(
+        os.environ.get("TYPELAY_FINALIZE_EVIDENCE", ROOT / "artifacts/linux/finalize-signals")
+    )
+
+
 class MainBundleTests(unittest.TestCase):
     def setUp(self):
         # Keep disposable nested Git repositories outside the working checkout.
@@ -1208,24 +1215,31 @@ class MainBundleTests(unittest.TestCase):
             "eng/linux/build.py",
             "--finalize",
             "--output",
-            "artifacts/package",
+            str(self.package.relative_to(self.repository)),
         ]
         if with_archive:
-            command.extend(["--cooperation-package", "artifacts/cooperation.tar.gz"])
+            command.extend(
+                ["--cooperation-package", str(self.archive.relative_to(self.repository))]
+            )
         command.extend(arguments)
-        environment = os.environ if env is None else env
-        with tempfile.TemporaryDirectory(dir=self.directory) as temporary:
+        return self.run_finalize(
+            command, self.repository, os.environ if env is None else env, timeout
+        )
+
+    def run_finalize(self, command, repository, environment, timeout):
+        # The real replay uses the same relative paths in a fresh checkout.
+        package = self.package.relative_to(self.repository)
+        with tempfile.TemporaryDirectory(dir=repository.parent) as temporary:
             snapshot = Path(temporary)
             # finalize mutates its package in place, including on the second call.
-            shutil.copytree(self.package, snapshot / "artifacts/package", symlinks=True)
-            if with_archive and self.archive.exists():
-                shutil.copy2(self.archive, snapshot / "artifacts/cooperation.tar.gz")
+            shutil.copytree(repository / package, snapshot / package, symlinks=True)
             result = subprocess.run(
                 command,
-                cwd=self.repository,
+                cwd=repository,
                 text=True,
+                errors="backslashreplace",
                 capture_output=True,
-                env=env,
+                env=environment,
                 timeout=timeout,
             )
             if result.returncode < 0:
@@ -1234,21 +1248,34 @@ class MainBundleTests(unittest.TestCase):
                     name = signal.Signals(number).name
                 except ValueError:  # Linux also has unnamed real-time signals.
                     name = signal.strsignal(number)
-                path = self.save_finalize_evidence(snapshot, command, environment, number, timeout)
-                self.fail(f"finalize received {name} ({number}); replay inputs: {path}")
+                message = f"finalize received {name} ({number})"
+                try:
+                    path = self.save_finalize_evidence(
+                        snapshot, repository, command, environment, number, timeout
+                    )
+                except (OSError, subprocess.SubprocessError, tarfile.TarError) as error:
+                    self.fail(
+                        f"{message}; could not save replay inputs: {type(error).__name__}: {error}"
+                    )
+                self.fail(f"{message}; replay inputs: {path}")
             return result
 
-    def save_finalize_evidence(self, snapshot, command, environment, number, timeout):
+    def save_finalize_evidence(self, snapshot, repository, command, environment, number, timeout):
+        archive = self.archive.relative_to(self.repository)
+        if "--cooperation-package" in command and (repository / archive).exists():
+            # The finalizer only reads the cooperation archive.
+            shutil.copy2(repository / archive, snapshot / archive)
         # build-info.json binds the package to this temporary Git commit. Retain
         # the fixture's tracked bytes and any intentional edits, without Git config/hooks.
         subprocess.run(
             ["git", "bundle", "create", str(snapshot / "fixture.bundle"), "--all"],
-            cwd=self.repository,
+            cwd=repository,
             check=True,
             capture_output=True,
+            timeout=30,
         )
         changes = subprocess.check_output(
-            ["git", "diff", "--binary", "--no-ext-diff", "HEAD"], cwd=self.repository
+            ["git", "diff", "--binary", "--no-ext-diff", "HEAD"], cwd=repository, timeout=30
         )
         if changes:
             (snapshot / "worktree.patch").write_bytes(changes)
@@ -1257,24 +1284,25 @@ class MainBundleTests(unittest.TestCase):
             "signal": number,
             "pythonVersion": sys.version,
             "argv": command,
-            "cwd": "checkout",
+            "cwd": repository.name,
             "timeoutSeconds": timeout,
             "environment": {
                 key: environment[key] for key in ("SOURCE_DATE_EPOCH",) if key in environment
             },
         }
         (snapshot / "invocation.json").write_text(json.dumps(invocation, indent=2) + "\n")
-        directory = Path(
-            environment.get("TYPELAY_FINALIZE_EVIDENCE", ROOT / "artifacts/linux/finalize-signals")
-        ).resolve()
+        directory = finalize_evidence_directory().resolve()
         directory.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
-            prefix="finalize-", suffix=".tar", dir=directory, delete=False
+            dir=directory, prefix="finalize-", suffix=".tmp"
         ) as output:
-            with tarfile.open(fileobj=output, mode="w") as archive:
+            with tarfile.open(fileobj=output, mode="w") as tar:
                 for entry in sorted(snapshot.iterdir()):
-                    archive.add(entry, arcname=entry.name)
-        return Path(output.name)
+                    tar.add(entry, arcname=entry.name)
+            output.flush()
+            path = Path(output.name).with_suffix(".tar")
+            os.link(output.name, path)
+        return path
 
     def test_fast_main_archive_preserves_the_complete_finalized_package(self):
         self.write_archive()
@@ -1567,12 +1595,13 @@ class FinalizeSignalTests(unittest.TestCase):
             "        output = Path(sys.argv[sys.argv.index('--output') + 1])\n"
             "        (output / 'typelay').write_text('damaged in child')\n"
             "        print(os.environ['TEST_SECRET'], file=sys.stderr, flush=True)\n"
+            "        os.write(2, bytes([255]))\n"
             "        os.kill(os.getpid(), signal.SIGTERM)\n"
         )
         self.evidence = self.root / "evidence"
         self.environment = {
             "PYTHONPATH": str(hook),
-            "TEST_SECRET": "private-sentinel-value",
+            "TEST_SECRET": secrets.token_hex(16),
             "TYPELAY_FINALIZE_EVIDENCE": str(self.evidence),
             "SOURCE_DATE_EPOCH": "1",
         }
@@ -1582,29 +1611,36 @@ class FinalizeSignalTests(unittest.TestCase):
         self.addCleanup(case.doCleanups)
         case.setUp()
         case.write_archive()
+        (case.package / "typelay").chmod(0o664)
         archive = case.archive.read_bytes()
-        normal = case.finalize(
-            env=os.environ
-            | {"SOURCE_DATE_EPOCH": "1", "TYPELAY_FINALIZE_EVIDENCE": str(self.evidence)}
-        )
+        normal_evidence = finalize_evidence_directory() / self.root.name
+        with patch.dict(os.environ, {"TYPELAY_FINALIZE_EVIDENCE": str(normal_evidence)}):
+            normal = case.finalize(env=os.environ | {"SOURCE_DATE_EPOCH": "1"})
         self.assertEqual(normal.returncode, 0, normal.stderr)
-        self.assertFalse(self.evidence.exists())
+        self.assertFalse(normal_evidence.exists())
         expected = gzip.decompress(case.output.read_bytes())
-        with self.assertRaisesRegex(AssertionError, "SIGTERM") as failure:
-            case.finalize("--compression-level", "1", env=os.environ | self.environment)
+        with (
+            patch.dict(os.environ, self.environment),
+            self.assertRaisesRegex(AssertionError, "SIGTERM") as failure,
+        ):
+            case.finalize("--compression-level", "1")
         case.doCleanups()
         self.assertFalse(case.directory.exists())
         (path,) = self.evidence.glob("*.tar")
         self.assertIn(str(path), str(failure.exception))
         self.assertNotIn(self.environment["TEST_SECRET"], str(failure.exception))
-        with tarfile.open(path) as snapshot:
-            snapshot.extractall(self.root, filter="data")
+        subprocess.run(
+            ["tar", "--no-same-owner", "-xpf", path], cwd=self.root, check=True, timeout=30
+        )
         invocation = json.loads((self.root / "invocation.json").read_text())
         self.assertEqual(invocation["environment"], {"SOURCE_DATE_EPOCH": "1"})
         self.assertEqual(invocation["argv"][-2:], ["--compression-level", "1"])
         self.assertNotIn(self.environment["TEST_SECRET"].encode(), path.read_bytes())
         subprocess.run(
-            ["git", "clone", "-q", "fixture.bundle", "checkout"], cwd=self.root, check=True
+            ["git", "clone", "-q", "fixture.bundle", invocation["cwd"]],
+            cwd=self.root,
+            check=True,
+            timeout=30,
         )
         checkout = self.root / invocation["cwd"]
         (self.root / "artifacts").rename(checkout / "artifacts")
@@ -1614,15 +1650,26 @@ class FinalizeSignalTests(unittest.TestCase):
             (inputs / "package/support/desktop/TypeLay-Fcitx-cooperative.tar.gz").read_bytes(),
             archive,
         )
-        replay = subprocess.run(
+        replay = case.run_finalize(
             [sys.executable, *invocation["argv"][1:]],
-            cwd=checkout,
-            env={"PATH": os.environ["PATH"], **invocation["environment"]},
-            capture_output=True,
-            timeout=30,
+            checkout,
+            {"PATH": os.environ["PATH"], **invocation["environment"]},
+            invocation["timeoutSeconds"],
         )
         self.assertEqual(replay.returncode, 0, replay.stderr)
         self.assertEqual(gzip.decompress((inputs / case.output.name).read_bytes()), expected)
+
+    def test_unwritable_evidence_reports_both_signal_and_save_error(self):
+        case = MainBundleTests("test_missing_requested_payload_does_not_claim_complete_support")
+        self.evidence.touch()
+        with patch.dict(os.environ, self.environment):
+            result = case.run()
+        self.assertEqual(len(result.failures), 1)
+        message = result.failures[0][1]
+        self.assertIn("SIGTERM", message)
+        self.assertIn("FileExistsError", message)
+        self.assertIn(str(self.evidence), message)
+        self.assertNotIn(self.environment["TEST_SECRET"], message)
 
     def test_signalled_rejection_cannot_satisfy_an_expected_error(self):
         case = MainBundleTests("test_missing_requested_payload_does_not_claim_complete_support")
