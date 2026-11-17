@@ -6,11 +6,21 @@
 
 探索领域、命名或评审设计前，读取根 [GLOSSARY.md](../../GLOSSARY.md) 和 [docs/adr/](../adr/) 中涉及当前范围的决策。涉及 Linux 原生坐标时，再读取 [docs/platforms/linux/adr/](../platforms/linux/adr/)。
 
-文件缺失时继续工作。术语或决策实际得到确认后，由 domain-modeling 按需建立对应文档。
+文件缺失时静默继续工作，不报告缺失，也不建议预先创建。术语或决策实际得到确认后，由 domain-modeling 按需建立对应文档。
+
+## 文件结构
+
+```text
+/
+├── GLOSSARY.md
+└── docs/
+    ├── adr/
+    └── platforms/linux/adr/
+```
 
 ## 使用统一术语
 
-代码、测试、任务和假设使用 GLOSSARY.md 定义的名称，特别区分 Preview、Candidate、WritePlan 和 AcceptancePermit。缺少术语时，先判断它是否是本项目的领域概念；通用编程术语不加入 glossary。
+代码、测试、任务和假设使用 GLOSSARY.md 定义的名称，特别区分 Preview、Candidate、WritePlan 和 AcceptancePermit。缺少术语时，先判断它是否是本项目的领域概念；通用编程术语不加入 glossary。沿用已定义的名称，避免 glossary 明确排除的同义词；确认属于领域术语缺口时，记录下来交由 domain-modeling 处理。
 
 ## 处理 ADR 冲突
 
