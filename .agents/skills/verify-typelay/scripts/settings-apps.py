@@ -307,8 +307,8 @@ def main():
 
             install_confirmation("en", theme)
             page("Appearance", "Appearance: " + theme)
-            click("设置：界面语言")
-            combo = visible_named(pid, "设置：界面语言", role=Atspi.Role.COMBO_BOX)
+            click("Setting: Interface language")
+            combo = visible_named(pid, "Setting: Interface language", role=Atspi.Role.COMBO_BOX)
             click("简体中文", root=combo)
             wait(
                 lambda: json.loads(config.read_text()).get("UiLanguage") == "zh-CN",
