@@ -46,13 +46,16 @@ flowchart TB
 
 ## 运行共享检查
 
-共享检查需要 PowerShell 7.2 及以上、[global.json](../../global.json) 固定的 .NET SDK，以及 Python。以下命令在仓库根目录执行：
+共享检查需要 PowerShell 7.2 及以上、[global.json](../../global.json) 固定的 .NET SDK，以及 Python。先在工程 Python 环境中安装共享检查依赖，再从仓库根目录执行入口：
 
 ```sh
+python -m pip install -r eng/requirements.txt -r tests/shared/requirements.txt
 pwsh -File ./dev.ps1 shared-check
 ```
 
-该入口执行 Core、Runtime、Protocol、Windows.Contracts 的 .NET 回归，以及共享 Python 套件。一个套件失败后，其余套件继续执行；入口在全部套件结束后返回失败。它使用 locked restore，不需要 Windows SDK、桌面或翻译模型。Windows.Contracts 虽可跨平台执行，仍属于 Windows 的契约。
+该入口执行 Core、Runtime、Protocol、Windows.Contracts 的 .NET 回归，以及共享 Python 套件。`test_ci_artifacts.py` 在其中读取真实 `check.yml`，为各上传步骤和矩阵分组创建本地合成证据，核对必需文件、载荷排除、生产归属和安装包开关。该回归不启动桌面或模型，也不传输工件。
+
+一个套件失败后，其余套件继续执行；入口在全部套件结束后返回失败。它使用 locked restore，不需要 Windows SDK、桌面或翻译模型。Windows.Contracts 虽可跨平台执行，仍属于 Windows 的契约。
 
 修改 Python 代码时，先按平台开发说明创建工程 Python 虚拟环境并安装固定工具。激活该环境后，检查格式与 lint：
 
@@ -88,7 +91,7 @@ PYTHONPATH=src/shared/TypeLay.Worker python -m unittest discover -s tests/shared
 
 NuGet 依赖版本统一写入 [Directory.Packages.props](../../Directory.Packages.props)。用 `dotnet restore` 更新受影响的 `packages.lock.json`，再用 locked mode 验证；锁文件由工具生成。
 
-Python 开发工具进入 [eng/requirements.txt](../../eng/requirements.txt)。模型运行依赖进入 [worker requirements.txt](../../src/shared/TypeLay.Worker/requirements.txt)，并与两端安装器的实际安装声明一致。依赖变更还需验证对应安装或分发路径。
+Python 开发工具进入 [eng/requirements.txt](../../eng/requirements.txt)。仅共享回归使用的解析依赖进入 [tests/shared/requirements.txt](../../tests/shared/requirements.txt)，避免改变固定字体的构建键。模型运行依赖进入 [worker requirements.txt](../../src/shared/TypeLay.Worker/requirements.txt)，并与两端安装器的实际安装声明一致。依赖变更还需验证对应安装或分发路径。
 
 构建输出、发行包、TRX、日志和截图进入被忽略的 `artifacts/`；.NET 中间结果留在各项目的 `bin/`、`obj/`。使用合成测试文本，避免将用户数据带入产物。
 
