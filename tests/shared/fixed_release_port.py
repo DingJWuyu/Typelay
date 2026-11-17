@@ -123,6 +123,8 @@ def main():
                 fail(500, "Publication response lost")
             print(json.dumps(release(find(fields["tag_name"]))))
         elif method == "DELETE":
+            if os.environ.get("FIXED_DELETE_DENIED"):
+                fail(403, "Draft deletion denied")
             with database:
                 database.execute(
                     "DELETE FROM releases WHERE id=?", (int(endpoint.rsplit("/", 1)[1]),)

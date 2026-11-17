@@ -175,7 +175,9 @@ Linux 的原始 pacman 包也通过 release 复用，键只包含快照日期和
 
 Linux 生产者和消费 runner 都将 pacman 仓库固定到该日期，并用 `-Syyuu` 同步全部已安装软件包，包含滚动容器中较新的包的降级。GTK4 和 Qt 的目标 ABI 包仍保留原 SHA-256 校验。普通上游更新不改变工具链；升级时主动修改快照日期，并在 Actions 验证依赖、目标 ABI 和完整场景。修改第三方源码 pin、数据、补丁或构建配方也会生成新键。普通 TypeLay 原生源码改动仍须满足 10 分钟。
 
-判定新键首建时，以本轮 Check 运行摘要中各固定键的状态为准。摘要中的 `fonts` 生产者列出字体，`fcitx-build` 列出 `linux-tools`、`hy`、`index` 和 `fcitx`。在这两个 job 的日志中按完整 tag 查找 `release` 事件。命中时可核对 `ready` 记录及跳过的构建和发布步骤。冷建时可核对 `missing` 记录、准备或构建步骤，以及发布步骤中的 `publish/complete` 或 `Reused verified fixed build` 记录。生产者先遇到未命中，完成准备后才发现其他生产者已发布同一键，这一轮仍计为冷建。状态未知时，按摘要列出的已知阶段查看相应步骤。
+判定新键首建时，以本轮 Check 运行摘要中各固定键的状态为准。`fonts` 列出字体，`fcitx-build` 列出 `linux-tools`、`hy`、`index` 和 `fcitx`。按完整 tag 在生产者日志中查找 `release` 事件。命中时核对 `ready` 记录。使用 `restore` 的生产者还要完成下载、校验与解包。字体另列字节校验结果。`linux-tools` 分别列出 SDK 和桌面包的安装结果，命中时仍可安装 SDK。
+
+冷建时核对 `missing` 记录、准备或构建的成功结果，以及发布步骤中的 `publish/complete` 或 `Reused verified fixed build` 记录。如果其他生产者抢先发布，本轮完成构建并验证赢家后，仍计为冷建。摘要单列发布步骤、发布结果和草稿清理结果。即使清理失败，也能查到已验证的赢家。状态未知时，按已知阶段查看相应步骤。
 
 PR 按 `W = max(必过 job 的完成时间) - run.created_at` 报告每次运行的完整耗时，并单列该轮检查结论。五个键全部命中时，W 须在 600 秒以内。新键首建可以超过 600 秒，PR 须同时记录触发键变化的输入。失败或未知状态不能单独作为首建依据。
 

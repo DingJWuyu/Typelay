@@ -72,7 +72,7 @@ def log_event(stage, event, tag, **fields):
 
 def producer_record(kind, **fields):
     """Send this producer's own observations to its job summary, including inside composites."""
-    if os.environ.get("TYPELAY_FIXED_PRODUCER") == "true":
+    if kind in os.environ.get("TYPELAY_FIXED_KINDS", "").split():
         with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
             for name, value in fields.items():
                 print(f"FIXED_{kind.replace('-', '_')}_{name}={value}", file=env)
@@ -186,17 +186,18 @@ def main():
     if not math.isfinite(args.wait_seconds) or args.wait_seconds <= 0:
         parser.error("--wait-seconds must be positive and finite")
     tag = args.tag or key(args.kind)
-    producer_record(args.kind, tag=tag)
     if args.action == "key":
+        producer_record(args.kind, tag=tag)
         print(tag)
         return
+    stage = "publication" if args.action == "publish" else "query"
+    producer_record(args.kind, tag=tag, **{stage: "started"})
     suffix = {"fonts": ".tar.gz", "fcitx": ".tar.zst"}.get(args.kind, ".tar")
     compression = {"fonts": ["-z"], "fcitx": ["--zstd"]}.get(args.kind, [])
     archive = ROOT / "artifacts" / (args.kind + suffix)
     archive.parent.mkdir(exist_ok=True)
     repo = os.environ["GITHUB_REPOSITORY"]
     if args.action in ("lookup", "restore"):
-        producer_record(args.kind, query="started")
         deadline = time.monotonic() + args.wait_seconds if args.wait_for_job else None
         producer_ended = None
         logged_wait = False
@@ -296,17 +297,19 @@ def main():
             stream.write("hit=true\n")
         producer_record(args.kind, query="hit")
     else:
-        producer_record(args.kind, publication="started")
+
+        def reuse_winner(winner):
+            download_verified(repo, tag, archive, release_asset(winner, archive))
+            producer_record(args.kind, publication="reused")
+            print(f"Reused verified fixed build {tag} from release {winner['id']}")
+
         existing = subprocess.run(
             ["gh", "api", f"repos/{repo}/releases/tags/{tag}"],
             capture_output=True,
             text=True,
         )
         if not existing.returncode:
-            winner = json.loads(existing.stdout)
-            download_verified(repo, tag, archive, release_asset(winner, archive))
-            print(f"Reused verified fixed build {tag} from release {winner['id']}")
-            producer_record(args.kind, publication="reused")
+            reuse_winner(json.loads(existing.stdout))
             return
         if "HTTP 404" not in existing.stderr:
             log_event("release", "failed", tag, asset=archive.name)
@@ -420,17 +423,17 @@ def main():
                         ["gh", "api", f"repos/{repo}/releases/tags/{tag}"], text=True
                     )
                 )
-                download_verified(repo, tag, archive, release_asset(winner, archive))
-                print(f"Reused verified fixed build {tag} from release {winner['id']}")
+                reuse_winner(winner)
             else:
                 raise RuntimeError(result.stderr)
         finally:
             if delete_draft:
-                subprocess.run(
-                    ["gh", "api", f"repos/{repo}/releases/{draft['id']}", "--method", "DELETE"],
-                    check=True,
+                producer_record(args.kind, cleanup="started")
+                cleanup = subprocess.run(
+                    ["gh", "api", f"repos/{repo}/releases/{draft['id']}", "--method", "DELETE"]
                 )
-        producer_record(args.kind, publication="reused")
+                producer_record(args.kind, cleanup="failure" if cleanup.returncode else "success")
+                cleanup.check_returncode()
 
 
 if __name__ == "__main__":

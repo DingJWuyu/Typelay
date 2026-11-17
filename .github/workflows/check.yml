@@ -18,7 +18,7 @@ concurrency:
 jobs:
   fonts:
     env:
-      TYPELAY_FIXED_PRODUCER: 'true'
+      TYPELAY_FIXED_KINDS: fonts
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -44,6 +44,7 @@ jobs:
         python eng/fonts/prepare.py
       if: steps.restore.outputs.hit != 'true'
     - name: Verify UI font bytes
+      id: fonts-verify
       run: python eng/fonts/prepare.py --verify
     - name: Publish fixed UI font build
       id: fonts-publish
@@ -54,23 +55,24 @@ jobs:
         TAG: ${{ steps.key.outputs.tag }}
     - &fixed-summary
       name: Summarize fixed artifacts from this producer
+      id: fixed-summary
       if: always()
       shell: bash
       env:
+        FIXED_REPORT: eng/ci/fixed_summary.py
         FIXED_STEPS: ${{ toJSON(steps) }}
         PRODUCER_STATUS: ${{ job.status }}
       run: |
-        if [ -f eng/ci/fixed_summary.py ] && command -v python >/dev/null; then
-          python eng/ci/fixed_summary.py | tee -a "$GITHUB_STEP_SUMMARY"
+        if [ -f "$FIXED_REPORT" ] && command -v python >/dev/null; then
+          python "$FIXED_REPORT"
         else
-          if [ "$GITHUB_JOB" = fonts ]; then kinds=fonts; else kinds='linux-tools hy index fcitx'; fi
-          for kind in $kinds; do
+          for kind in $TYPELAY_FIXED_KINDS; do
             echo "* \`$kind\` 的 tag 和生产阶段均未知（生产者 $PRODUCER_STATUS）。"
           done | tee -a "$GITHUB_STEP_SUMMARY"
         fi
   fcitx-build:
     env:
-      TYPELAY_FIXED_PRODUCER: 'true'
+      TYPELAY_FIXED_KINDS: linux-tools hy index fcitx
     runs-on: ubuntu-latest
     container: &linux-container
       image: archlinux:base-devel
