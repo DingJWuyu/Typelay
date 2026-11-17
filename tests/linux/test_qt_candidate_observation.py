@@ -84,7 +84,10 @@ class QtWindowSearchTests(unittest.TestCase):
             children.append(child)
             return child
 
+        # The real session's AF_UNIX socket must fit even under a long private TMPDIR.
         with (
+            tempfile.TemporaryDirectory(prefix="tlqs-", dir="/tmp") as session_root,
+            patch.object(tempfile, "tempdir", session_root),
             patch.dict(os.environ, self.environment),
             patch.object(subprocess, "Popen", side_effect=start),
         ):
