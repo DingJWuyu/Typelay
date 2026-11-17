@@ -747,6 +747,9 @@ jobs:
         fi
         exit "$status"
       if: ${{ !cancelled() && steps.hy-cpu.outcome == 'success' }}
+    - name: Verify archive cache isolation in the candidate replay
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python -m unittest discover -s tests/linux -p test_candidate_archive_discovery.py -v
     - name: Start the disposable X11 display
       id: display
       run: |
