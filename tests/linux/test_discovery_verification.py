@@ -311,6 +311,56 @@ else:
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn("timeout must be positive and finite", result.stderr)
 
+    def test_qt_discovery_checks_its_effective_tmpdir_in_filesystem_bytes(self):
+        command = [
+            sys.executable,
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "tests/linux",
+            "-p",
+            "test_qt_candidate_observation.py",
+            "-v",
+            "-k",
+            "test_expired_unissued_and_late_publications",
+        ]
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            # The old native socket added 82 bytes. A 25-byte root fits exactly.
+            shorter = Path(directory) / ("x" * (25 - len(os.fsencode(directory)) - 1))
+            boundary = Path(directory) / ("界" + "x" * (26 - len(os.fsencode(directory)) - 4))
+            shorter.mkdir()
+            boundary.mkdir()
+            invalid = Path(directory) / "file"
+            invalid.touch()
+            for configured, expected, succeeds in (
+                (boundary, boundary, True),
+                (shorter, shorter, False),
+                (Path("/tmp"), boundary, False),
+                (invalid, invalid, False),
+                (invalid.with_name("missing"), invalid.with_name("missing"), False),
+                (None, boundary, False),
+            ):
+                with self.subTest(configured=configured, expected=expected):
+                    environment = {**os.environ, "TYPELAY_CONTRACTS_TMPDIR": str(expected)}
+                    if configured is None:
+                        environment.pop("TMPDIR", None)
+                    else:
+                        environment["TMPDIR"] = str(configured)
+                    result = subprocess.run(
+                        command,
+                        cwd=ROOT,
+                        env=environment,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    self.assertEqual(result.returncode, 0 if succeeds else 1, result.stderr)
+                    self.assertIn("tempfile.gettempdir()", result.stdout)
+                    if succeeds:
+                        self.assertIn(f"{str(boundary)!r} (26 bytes)", result.stdout)
+                        self.assertIn("Ran 1 test", result.stderr)
+
     def test_private_verification_refuses_ordinary_display_admission(self):
         with tempfile.TemporaryDirectory() as directory:
             result = subprocess.run(

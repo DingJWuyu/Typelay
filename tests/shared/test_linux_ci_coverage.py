@@ -1,6 +1,7 @@
 """Keep default Linux discovery modules connected to actual Check commands."""
 
 import fnmatch
+import os
 import re
 import shlex
 import shutil
@@ -34,8 +35,12 @@ def discovery_modules(root):
     }
 
 
+def check_workflow(root):
+    return yaml.safe_load((root / ".github/workflows/check.yml").read_text(encoding="utf-8"))
+
+
 def ci_modules(root, modules):
-    workflow = yaml.safe_load((root / ".github/workflows/check.yml").read_text(encoding="utf-8"))
+    workflow = check_workflow(root)
     covered = set()
     for job in workflow["jobs"].values():
         if not runnable_condition(job.get("if"), job, {}) or job.get("continue-on-error"):
@@ -138,6 +143,97 @@ class LinuxCiCoverageTests(unittest.TestCase):
     def test_default_discovery_modules_run_in_ci_or_have_a_private_session_reason(self):
         self.check_coverage(ROOT)
 
+    def test_contracts_keep_the_long_default_through_desktop_checks_until_cleanup(self):
+        job = check_workflow(ROOT)["jobs"]["linux"]
+        steps = job["steps"]
+        by_id = {step["id"]: step for step in steps if "id" in step}
+        start = by_id["headless-tmpdir"]
+        cleanup = by_id["cleanup-tmpdir"]
+        self.assertIs(steps[-1], cleanup)
+        qt = by_id["test-qt-candidate-observation"]
+        self.assertLess(steps.index(start), steps.index(qt))
+        desktop_checks = {
+            "settings-feedback",
+            "gtk-refusal",
+            "tray",
+            "tray-panel",
+            "download-progress",
+            "quit-ui",
+            "shortcut-settings",
+        }
+
+        # Evaluate the real success-path guards with one matrix group at a time.
+        def enabled(step, group):
+            shard = {"strategy": {"matrix": {"group": [group]}}}
+            return not step.get("continue-on-error") and runnable_condition(
+                step.get("if"), shard, dict.fromkeys(by_id, True)
+            )
+
+        for group in job["strategy"]["matrix"]["group"]:
+            for step in (start, qt, cleanup, *(by_id[name] for name in desktop_checks)):
+                self.assertEqual(enabled(step, group), group == "contracts", (step["name"], group))
+        self.assertEqual(
+            {
+                step.get("id")
+                for step in steps
+                if enabled(step, "contracts") and "TMPDIR" in step.get("env", {})
+            },
+            desktop_checks,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            original = Path(directory) / "original"
+            original.mkdir()
+            environment = {
+                **os.environ,
+                "TMPDIR": str(original),
+                "RUNNER_TEMP": directory,
+                "GITHUB_ENV": str(Path(directory) / "env"),
+                "GITHUB_OUTPUT": str(Path(directory) / "output"),
+            }
+
+            def run_step(step, env):
+                self.assertEqual(step["shell"], "python")
+                subprocess.run([sys.executable, "-c", step["run"]], env=env, check=True, timeout=10)
+
+            def published(name):
+                lines = Path(environment[name]).read_text(encoding="utf-8").splitlines()
+                return dict(line.split("=", 1) for line in lines)
+
+            run_step(start, environment)
+            defaults = environment | published("GITHUB_ENV")
+            outputs = {
+                "${{ steps.headless-tmpdir.outputs." + key + " }}": value
+                for key, value in published("GITHUB_OUTPUT").items()
+            }
+
+            def step_environment(step):
+                return defaults | {
+                    key: outputs.get(value, value) for key, value in step.get("env", {}).items()
+                }
+
+            headless = Path(defaults["TMPDIR"])
+            self.assertTrue(headless.is_relative_to(directory))
+            self.assertNotEqual(headless, original)
+            self.assertEqual(step_environment(qt)["TYPELAY_CONTRACTS_TMPDIR"], str(headless))
+            # An ordinary step added after a desktop test still inherits the job default.
+            for step in (qt, *(by_id[name] for name in desktop_checks), {}):
+                env = step_environment(step)
+                actual = subprocess.check_output(
+                    [
+                        sys.executable,
+                        "-c",
+                        "import tempfile; print(tempfile.gettempdir()); tempfile.TemporaryFile().close()",
+                    ],
+                    env=env,
+                    text=True,
+                    timeout=10,
+                ).strip()
+                expected = original if step.get("id") in desktop_checks else headless
+                self.assertEqual(Path(actual), expected, step.get("name"))
+            run_step(cleanup, step_environment(cleanup))
+            self.assertFalse(headless.exists())
+            self.assertTrue(original.exists())
+
     def test_new_module_fails_until_a_ci_command_runs_it_without_importing_it(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -149,7 +245,7 @@ class LinuxCiCoverageTests(unittest.TestCase):
             shutil.copyfile(ROOT / ".github/workflows/check.yml", workflow)
             with self.assertRaisesRegex(AssertionError, "missing from CI.*test_new_regression"):
                 self.check_coverage(root, {})
-            value = yaml.safe_load(workflow.read_text())
+            value = check_workflow(root)
             value["jobs"]["linux"]["steps"].append(
                 {"run": "python -m unittest discover -s tests/linux -p test_new_regression.py -v"}
             )
