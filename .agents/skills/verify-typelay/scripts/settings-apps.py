@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Read and operate the actual Apps page in the owned verification session."""
 
+import argparse
 import json
 import os
 import re
@@ -20,6 +21,36 @@ from support.gtk_accessibility import (  # noqa: E402
     visible_named,
 )
 
+INSTALL_CONFIRMATION = {
+    "en": {
+        "title": "Desktop text fields: Install connection components…",
+        "body": (
+            "TypeLay connection components will be installed for the selected app. "
+            "Check the actual connection after installation; the input method will not be "
+            "switched and app processes will not be terminated automatically.\n\n"
+            "Installation verifies and extracts desktop connection components from the current "
+            "TypeLay package into your user directory, retaining the original archive, source "
+            "code and licenses. Trust in the components comes from the package you obtained; "
+            "bundled file hashes are not a publisher signature. This only prepares files. "
+            "It does not run bundled programs, switch input methods or open apps."
+        ),
+        "cancel": "Cancel",
+        "confirm": "Continue",
+    },
+    "zh-CN": {
+        "title": "桌面普通输入框：安装接入组件…",
+        "body": (
+            "将安装所选应用的 TypeLay 接入组件。安装完成后仍须检查实际连接；"
+            "不会自动切换输入法或结束应用进程。\n\n"
+            "安装将从当前 TypeLay 主包校验并展开桌面接入组件到用户目录，"
+            "保留原始压缩包、源码与许可证。来源信任继承于你取得的主包；"
+            "自带文件哈希不是发布者签名。只准备文件，不运行包内程序、切换输入法或打开应用。"
+        ),
+        "cancel": "取消",
+        "confirm": "继续",
+    },
+}
+
 
 def wait(observe, description):
     deadline = time.monotonic() + 15
@@ -31,6 +62,9 @@ def wait(observe, description):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--invalid-component", action="store_true")
+    args = parser.parse_args()
     output = Path(os.environ["TYPELAY_VERIFY_OUTPUT"])
     session = json.loads((output / "session.json").read_text())
     assert session["NIRI_SOCKET"] == os.environ["NIRI_SOCKET"]
@@ -49,6 +83,18 @@ def main():
     def record(**value):
         actions.append(value)
         save("actions.json", actions)
+
+    if args.invalid_component:
+        # Exercise the actual corrupt-package observation, without replacing
+        # the application-support port or modifying the source package.
+        package = Path(os.environ["TYPELAY_VERIFY_PACKAGE"]).resolve()
+        assert package.is_relative_to(Path(os.environ["TYPELAY_VERIFY_SCRATCH"]).resolve())
+        descriptor = package / "support/desktop/component.json"
+        value = json.loads(descriptor.read_text())
+        save("component-descriptor-before.json", value)
+        value["schemaVersion"] = 0
+        descriptor.write_text(json.dumps(value) + "\n")
+        save("component-descriptor-fixture.json", value)
 
     def windows():
         return json.loads(
@@ -86,6 +132,83 @@ def main():
     def capture(name):
         subprocess.run(["grim", str(output / (name + ".png"))], check=True, timeout=5)
         record(action="screenshot", path=name + ".png")
+
+    def install_confirmation(language, theme):
+        expected = INSTALL_CONFIRMATION[language].copy()
+        if args.invalid_component:
+            expected["body"] += "\n" + (
+                "Component verification failed. Retry with a complete TypeLay package from a trusted source."
+                if language == "en"
+                else "组件校验未通过，请使用完整可信的 TypeLay 主包重试。"
+            )
+        saved_before = config.read_bytes()
+        component = Path(os.environ["XDG_DATA_HOME"]) / "typelay/components/desktop-text"
+        assert not component.exists(), "this journey requires uninstalled desktop components"
+        click("App connection: Desktop apps" if language == "en" else "应用连接：桌面应用")
+
+        def modal():
+            desktop = Atspi.get_desktop(0)
+            for index in range(desktop.get_child_count()):
+                app_node = desktop.get_child_at_index(index)
+                if app_node is None or app_node.get_process_id() != pid:
+                    continue
+                app_node.clear_cache()
+                for child_index in range(app_node.get_child_count()):
+                    node = app_node.get_child_at_index(child_index)
+                    if node is None:
+                        continue
+                    node.clear_cache()
+                    if node.get_role() in (
+                        Atspi.Role.ALERT,
+                        Atspi.Role.DIALOG,
+                    ) and node.get_state_set().contains(Atspi.StateType.SHOWING):
+                        return node
+            return None
+
+        dialog = wait(modal, "desktop component install confirmation")
+        name = f"apps-{theme.lower()}-{language}-confirmation"
+        modal_window = wait(
+            lambda: next(
+                (
+                    item
+                    for item in windows()
+                    if item["pid"] == pid and item["id"] != window["id"] and item["is_focused"]
+                ),
+                None,
+            ),
+            "compositor shows the focused installation confirmation",
+        )
+        save(name + "-window.json", modal_window)
+        capture(name)
+        labels, buttons, pending = [], [], [dialog]
+        for _ in range(128):
+            if not pending:
+                break
+            node = pending.pop()
+            if node.get_role() == Atspi.Role.LABEL and node.get_name():
+                labels.append(node.get_name())
+            elif node.get_role() == Atspi.Role.PUSH_BUTTON:
+                buttons.append(node.get_name())
+            pending.extend(node.get_child_at_index(i) for i in range(node.get_child_count()))
+        assert not pending, "confirmation accessibility tree exceeds 128 nodes"
+        save(name + ".json", {"language": language, "labels": labels, "buttons": buttons})
+        assert expected["title"] in labels, "confirmation title does not match " + language
+        assert expected["body"] in labels, "complete confirmation body does not match " + language
+        assert sorted(buttons) == sorted([expected["cancel"], expected["confirm"]]), (
+            "confirmation buttons do not match " + language
+        )
+        assert set(labels) <= set(expected.values()), "unexpected confirmation text"
+        click(expected["cancel"], root=dialog)
+        wait(lambda: modal() is None, "installation cancelled")
+        wait(
+            lambda: not any(item["id"] == modal_window["id"] for item in windows())
+            and any(item["id"] == window["id"] and item["is_focused"] for item in windows()),
+            "compositor returns to settings after cancellation",
+        )
+        capture(name + "-cancelled")
+        assert config.read_bytes() == saved_before, "cancel changed saved preferences"
+        assert not component.exists(), "cancel installed desktop components"
+        save(name + "-cancelled.json", {"settingsUnchanged": True, "componentInstalled": False})
 
     def observe_words(name):
         for title in ("Desktop apps", "Browser extension"):
@@ -204,29 +327,36 @@ def main():
                 observe_words(name)
                 observe_connection_card(name)
 
-        assert not layout_issues, "Apps layout: " + "; ".join(layout_issues)
+            install_confirmation("en", theme)
+            page("Appearance", "Appearance: " + theme)
+            click("Setting: Interface language")
+            combo = visible_named(pid, "Setting: Interface language", role=Atspi.Role.COMBO_BOX)
+            click("简体中文", root=combo)
+            wait(
+                lambda: json.loads(config.read_text()).get("UiLanguage") == "zh-CN",
+                "Simplified Chinese saved",
+            )
+            page("应用", "桌面应用")
+            install_confirmation("zh-CN", theme)
+            page("外观", "外观：浅色")
+            click("设置：界面语言")
+            combo = visible_named(pid, "设置：界面语言", role=Atspi.Role.COMBO_BOX)
+            click("English", root=combo)
+            wait(lambda: json.loads(config.read_text()).get("UiLanguage") == "en", "English saved")
 
-        # Open and cancel the actual component chooser or install confirmation.
-        saved_before_action = json.loads(config.read_text())
-        click("App connection: Desktop apps")
-        cancel = wait(
-            lambda: visible_named(pid, "Cancel") or visible_named(pid, "取消"),
-            "connection action dialog",
-        )
-        capture("apps-connection-action")
-        cancel_name = cancel.get_name()
-        click(cancel_name)
-        wait(lambda: visible_named(pid, cancel_name) is None, "connection action cancelled")
-        capture("apps-after-action")
-        saved_after_action = json.loads(config.read_text())
-        assert saved_after_action == saved_before_action, "cancel changed saved preferences"
-        save("settings-saved.json", saved_after_action)
+        assert not layout_issues, "Apps layout: " + "; ".join(layout_issues)
+        save("settings-saved.json", json.loads(config.read_text()))
         save(
             "result.json",
             {
                 "status": "passed",
-                "features": ["settings/apps-readability"],
-                "initialFixture": {"OnboardingComplete": True},
+                "features": ["settings/apps-readability", "settings/apps-install-confirmation"],
+                "initialFixture": {
+                    "OnboardingComplete": True,
+                    "desktopComponent": (
+                        "invalid-descriptor" if args.invalid_component else "not-installed"
+                    ),
+                },
                 "modelValidation": "not-run",
             },
         )
