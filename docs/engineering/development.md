@@ -55,6 +55,8 @@ pwsh -File ./dev.ps1 shared-check
 
 该入口执行 Core、Runtime、Protocol、Windows.Contracts 的 .NET 回归，以及共享 Python 套件。`test_ci_artifacts.py` 在其中读取真实 `check.yml`，为各上传步骤和矩阵分组创建本地合成证据，核对必需文件、载荷排除、生产归属和安装包开关。该回归不启动桌面或模型，也不传输工件。
 
+`test_linux_ci_coverage.py` 核对默认发现范围内的 Linux 测试模块。新增模块须在 `check.yml` 中有直接执行命令。仅供独立私有会话运行的模块，在该回归的 `PRIVATE_SESSION_ONLY` 中注明原因；当前没有例外。检查只读取文件路径和工作流，不导入 Linux 测试。`Linux / contracts` 执行 discovery 入口的无显示回归，完整私有桌面验收仍使用独立入口。
+
 一个套件失败后，其余套件继续执行；入口在全部套件结束后返回失败。它使用 locked restore，不需要 Windows SDK、桌面或翻译模型。Windows.Contracts 虽可跨平台执行，仍属于 Windows 的契约。
 
 修改 Python 代码时，先按平台开发说明创建工程 Python 虚拟环境并安装固定工具。激活该环境后，检查格式与 lint：
@@ -63,6 +65,8 @@ pwsh -File ./dev.ps1 shared-check
 python -m ruff check .
 python -m ruff format --check --diff .
 ```
+
+根目录 Ruff 命令也检查 `.agents/skills/verify-typelay/scripts/` 下的 Python 脚本。新增脚本无需登记。共享检查会核对这些脚本是否进入 Ruff 的文件发现范围。
 
 定位问题时，可以直接运行受影响的 .NET 项目或 Python 套件。例如：
 

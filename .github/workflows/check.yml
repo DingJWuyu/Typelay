@@ -637,6 +637,7 @@ jobs:
         sudo apt-get install -y python3-gi libglib2.0-bin
         python -m pip install uv==0.13.4
     - name: Prepare and verify official Index model and CPU closure
+      id: index-runtime
       timeout-minutes: 10
       env:
         GH_TOKEN: ${{ github.token }}
@@ -666,6 +667,9 @@ jobs:
       timeout-minutes: 11
       run: |
         /usr/bin/python3 tests/linux/index_package_e2e.py --package artifacts/index-package --cache artifacts/index-model-download --output artifacts/index-production
+    - name: Verify Linux Index runtime contracts
+      if: ${{ !cancelled() && steps.index-runtime.outcome == 'success' }}
+      run: TYPELAY_INDEX_CPU_RUNTIME="$PWD/artifacts/index-runtime" python tests/linux/test_index_runtime.py -v
     - name: Preserve only structured Index verification
       if: always()
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -775,6 +779,13 @@ jobs:
       id: test-ui-fonts
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
       run: TYPELAY_UI_FONT_ROOT="$PWD/artifacts/ui-fonts" python tests/linux/test_display_isolation.py -v
+    - name: Verify Linux bundled font contracts
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: TYPELAY_UI_FONT_ROOT="$PWD/artifacts/ui-fonts" python tests/linux/test_ui_fonts.py -v
+    - name: Verify headless Linux discovery entry contracts
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      timeout-minutes: 1
+      run: python tests/linux/test_discovery_verification.py -v
     - name: Verify Linux test_build_bundle
       id: test-build-bundle
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
@@ -783,6 +794,9 @@ jobs:
       id: setup-e2e
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
       run: python tests/linux/setup_e2e.py -v
+    - name: Verify Linux registered application contracts
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python tests/linux/test_registered_applications.py -v
     - name: Verify Linux private uv preparation
       id: private-uv
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
