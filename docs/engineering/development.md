@@ -151,11 +151,11 @@ Linux 生产者和消费 runner 都将 pacman 仓库固定到该日期，并用 
 
 Hy 的键只包含生成锁中模型、许可证和运行库压缩包的固定下载记录，不包含当前产品源码记录。它复用原始下载文件，不保存安装后的模型、运行库目录或验收结果。运行 Hy 场景的 Windows runner 仍执行原有准备入口，对每个文件重新检查完整大小与哈希、提取并校验运行库，再执行模型安装和产品场景。`Index / windows` 只通过现有 `eng/windows/hy/prepare_runtime.py` 准备打包所需的 Hy CPU 运行库，不搬运 Hy 模型。该入口校验固定官方归档与运行库文件。Index 的模型和许可证也以各自锁定的下载记录为键，Linux 和 Windows 均复用原始下载，并执行原准备入口的完整校验。固定下载产物的传输复用同一 release 机制，不增加 job 或重试。
 
-普通 push 上传 TRX、JSON、日志、截图及诊断配置。原生桌面组仅上传证据目录中的直接文件，不递归上传隔离安装、模型数据和运行库。最终验收需要安装包时，在目标提交手动运行工作流，并设置 `upload_packages=true`。安装包仍在每轮构建和搬迁验证，只是平时不上载。
+普通 push 上传 TRX、JSON、日志、截图及诊断配置。原生桌面组上传证据目录中的直接文件，并显式保留 GTK4 映射前连接回归的 JSON 与 Qt 动画帧子目录，不递归上传隔离安装、模型数据和运行库。最终验收需要安装包时，在目标提交手动运行工作流，并设置 `upload_packages=true`。安装包仍在每轮构建和搬迁验证，只是平时不上载。
 
 CI 的主 Linux 包与合作包均使用 `--compression-level 1`，减少压缩耗时；包内文件、来源校验和搬迁验收保持一致。单独运行打包入口时，默认仍使用等级 9。四个原生组各自构建当前应用与 GTK 合作模块。`native` 和 `native-qt` 还构建 Qt 模块。每组等待自己的构建结束，检查各退出状态后，才执行依赖场景。原始 Fcitx 客户端探针仍在 `native` 保留独立结果。
 
-Fcitx runner 默认执行 core、GTK4 和 GTK3 三个现役会话。CI 用 `--scope core`、`--scope gtk3` 和 `--scope gtk4` 分配检查，每个 scope 都先执行自己的 core 会话。GTK 两组分别保留对应术语会话及桌面旅程，两个 Qt 消费组分别执行完整 Qt probe。每组使用自己的生产字节、fixture 和清理证明，不跨 runner 导入成功记录。所有场景的断言、产品期限和独立失败语义保持不变。
+Fcitx runner 默认执行 core、GTK4 和 GTK3 三个现役会话。CI 用 `--scope core`、`--scope gtk3` 和 `--scope gtk4` 分配检查，每个 scope 都先执行自己的 core 会话。各 scope 都编译并记录 core 和 GTK4 fixture。只有 `all` 与 `gtk3` 编译额外的 GTK3 fixture 和原生模块，并记录 GTK3 fixture 摘要。GTK 两组分别保留对应术语会话及桌面旅程，两个 Qt 消费组分别执行完整 Qt probe。每组使用自己的生产字节、fixture 和清理证明，不跨 runner 导入成功记录。所有场景的断言、产品期限和独立失败语义保持不变。
 
 ```sh
 gh workflow run check.yml --repo DingJWuyu/Typelay --ref <工作分支> -f upload_packages=true

@@ -57,7 +57,7 @@ def flags(*packages):
     return shlex.split(run(["pkg-config", "--cflags", "--libs", *packages]))
 
 
-def build(out: Path, core_version: str, reuse=False):
+def build(out: Path, core_version: str, reuse=False, *, scope="all"):
     inputs = hashes(FCITX_TEST_INPUTS)
     (out / "result.json").unlink(missing_ok=True)
     if reuse:
@@ -99,42 +99,43 @@ def build(out: Path, core_version: str, reuse=False):
             *flags("gtk4", "json-glib-1.0"),
         ]
     )
-    run(
-        [
-            "cc",
-            "-Wall",
-            "-Wextra",
-            "-Werror",
-            "-g",
-            ROOT / "tests/linux/fixtures/gtk_fixture.c",
-            "-o",
-            out / "gtk3-fixture",
-            *flags("gtk+-3.0", "json-glib-1.0"),
-        ]
-    )
-    run(
-        [
-            "cmake",
-            "-S",
-            ROOT / "src/linux/native",
-            "-B",
-            out / "gtk3-native-build",
-            "-G",
-            "Ninja",
-            "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
-        ]
-    )
-    run(
-        [
-            "cmake",
-            "--build",
-            out / "gtk3-native-build",
-            "--target",
-            "typelay-gtk3",
-            "--parallel",
-            "2",
-        ]
-    )
+    if scope in ("all", "gtk3"):
+        run(
+            [
+                "cc",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-g",
+                ROOT / "tests/linux/fixtures/gtk_fixture.c",
+                "-o",
+                out / "gtk3-fixture",
+                *flags("gtk+-3.0", "json-glib-1.0"),
+            ]
+        )
+        run(
+            [
+                "cmake",
+                "-S",
+                ROOT / "src/linux/native",
+                "-B",
+                out / "gtk3-native-build",
+                "-G",
+                "Ninja",
+                "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+            ]
+        )
+        run(
+            [
+                "cmake",
+                "--build",
+                out / "gtk3-native-build",
+                "--target",
+                "typelay-gtk3",
+                "--parallel",
+                "2",
+            ]
+        )
     if hashes(FCITX_TEST_INPUTS) != inputs:
         raise RuntimeError("Test inputs changed during fixture compilation")
     (out / "test-inputs.json").write_text(
@@ -143,7 +144,11 @@ def build(out: Path, core_version: str, reuse=False):
                 "files": inputs,
                 "fixture_sha256": sha256(out / "fixture"),
                 "gtk4_fixture_sha256": sha256(out / "gtk4-fixture"),
-                "gtk3_fixture_sha256": sha256(out / "gtk3-fixture"),
+                **(
+                    {"gtk3_fixture_sha256": sha256(out / "gtk3-fixture")}
+                    if scope in ("all", "gtk3")
+                    else {}
+                ),
                 "build_inputs_sha256": sha256(out / "build-inputs.json"),
                 "build_metadata_sha256": sha256(out / "versions.json"),
             },
@@ -791,7 +796,7 @@ def main():
             parser.error("--session requires the outer absolute deadline")
         session(out, args.core_version, args.session_deadline, args.glossary_toolkit)
     else:
-        build(out, args.core_version, args.reuse_build)
+        build(out, args.core_version, args.reuse_build, scope=args.scope)
         if not args.build_only:
             run_sessions(out, args.core_version, args.core_ready_output, scope=args.scope)
 

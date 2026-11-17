@@ -1300,12 +1300,15 @@ jobs:
           artifacts/linux/gtk4-desktop/*.png
           artifacts/linux/gtk4-desktop/*.kdl
           artifacts/linux/gtk4-desktop/*.failed
+          artifacts/linux/gtk4-desktop/gtk4-connected-before-map/*.json
           artifacts/linux/qt-desktop/*.json
           artifacts/linux/qt-desktop/*.jsonl
           artifacts/linux/qt-desktop/*.log
           artifacts/linux/qt-desktop/*.png
           artifacts/linux/qt-desktop/*.kdl
           artifacts/linux/qt-desktop/*.failed
+          artifacts/linux/qt-desktop/qt-motion-expand/frame-*.png
+          artifacts/linux/qt-desktop/qt-motion-chinese-draft/frame-*.png
           artifacts/linux/qt-cooperative/*.json
           artifacts/linux/qt-cooperative/*.log
           artifacts/linux/qt-cooperative/*.png
