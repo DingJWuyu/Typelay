@@ -177,7 +177,7 @@ jobs:
         namespace_policy=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)
         trap 'sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns="$namespace_policy"' EXIT
         sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-        python tests/linux/test_verification_resources.py -v
+        python -m unittest discover -s tests/linux -p test_verification_resources.py -v
     - name: Verify shared behavior without Windows
       id: shared-behavior
       if: ${{ !cancelled() && steps.python.outcome == 'success' }}
@@ -637,6 +637,7 @@ jobs:
         sudo apt-get install -y python3-gi libglib2.0-bin
         python -m pip install uv==0.13.4
     - name: Prepare and verify official Index model and CPU closure
+      id: index-runtime
       timeout-minutes: 10
       env:
         GH_TOKEN: ${{ github.token }}
@@ -666,6 +667,9 @@ jobs:
       timeout-minutes: 11
       run: |
         /usr/bin/python3 tests/linux/index_package_e2e.py --package artifacts/index-package --cache artifacts/index-model-download --output artifacts/index-production
+    - name: Verify Linux Index runtime contracts
+      if: ${{ !cancelled() && steps.index-runtime.outcome == 'success' }}
+      run: TYPELAY_INDEX_CPU_RUNTIME="$PWD/artifacts/index-runtime" python -m unittest discover -s tests/linux -p test_index_runtime.py -v
     - name: Preserve only structured Index verification
       if: always()
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -766,59 +770,69 @@ jobs:
     - name: Verify Linux Hy preparation contracts
       id: hy-preparation-contracts
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_hy_preparation.py -v
+      run: python -m unittest discover -s tests/linux -p test_hy_preparation.py -v
     - name: Verify Linux Hy runtime contracts
       id: hy-runtime-contracts
       if: ${{ matrix.group == 'contracts' && !cancelled() && steps.hy-cpu.outcome == 'success' }}
-      run: TYPELAY_HY_CPU_RUNTIME="$PWD/artifacts/linux/hy-cpu-runtime" python tests/linux/test_hy_runtime.py -v
+      run: TYPELAY_HY_CPU_RUNTIME="$PWD/artifacts/linux/hy-cpu-runtime" python -m unittest discover -s tests/linux -p test_hy_runtime.py -v
     - name: Verify Linux fonts and display isolation
       id: test-ui-fonts
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: TYPELAY_UI_FONT_ROOT="$PWD/artifacts/ui-fonts" python tests/linux/test_display_isolation.py -v
+      run: TYPELAY_UI_FONT_ROOT="$PWD/artifacts/ui-fonts" python -m unittest discover -s tests/linux -p test_display_isolation.py -v
+    - name: Verify Linux bundled font contracts
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: TYPELAY_UI_FONT_ROOT="$PWD/artifacts/ui-fonts" python -m unittest discover -s tests/linux -p test_ui_fonts.py -v
+    - name: Verify headless Linux discovery entry contracts
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      timeout-minutes: 1
+      run: python -m unittest discover -s tests/linux -p test_discovery_verification.py -v
     - name: Verify Linux test_build_bundle
       id: test-build-bundle
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_build_bundle.py -v
+      run: python -m unittest discover -s tests/linux -p test_build_bundle.py -v
     - name: Verify Linux setup_e2e
       id: setup-e2e
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
       run: python tests/linux/setup_e2e.py -v
+    - name: Verify Linux registered application contracts
+      if: ${{ matrix.group == 'contracts' && !cancelled() }}
+      run: python -m unittest discover -s tests/linux -p test_registered_applications.py -v
     - name: Verify Linux private uv preparation
       id: private-uv
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_private_uv.py -v
+      run: python -m unittest discover -s tests/linux -p test_private_uv.py -v
     - name: Verify Linux test_desktop_session
       id: test-desktop-session
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_desktop_session.py -v
+      run: python -m unittest discover -s tests/linux -p test_desktop_session.py -v
     - name: Verify Linux test_startup_diagnostics
       id: test-startup-diagnostics
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_startup_diagnostics.py -v
+      run: python -m unittest discover -s tests/linux -p test_startup_diagnostics.py -v
     - name: Verify Linux test_desktop_scope_results
       id: test-desktop-scope-results
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_desktop_scope_results.py -v
+      run: python -m unittest discover -s tests/linux -p test_desktop_scope_results.py -v
     - name: Verify Linux test_desktop_acceptance_observation
       id: test-desktop-acceptance-observation
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_desktop_acceptance_observation.py -v
+      run: python -m unittest discover -s tests/linux -p test_desktop_acceptance_observation.py -v
     - name: Verify Linux test_session_key_settings
       id: test-session-key-settings
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_session_key_settings.py -v
+      run: python -m unittest discover -s tests/linux -p test_session_key_settings.py -v
     - name: Verify Linux test_setup_scope_data
       id: test-setup-scope-data
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_setup_scope_data.py -v
+      run: python -m unittest discover -s tests/linux -p test_setup_scope_data.py -v
     - name: Verify Linux test_practice_session
       id: test-practice-session
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_practice_session.py -v
+      run: python -m unittest discover -s tests/linux -p test_practice_session.py -v
     - name: Verify Linux test_fcitx_session_source
       id: test-fcitx-session-source
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_fcitx_session_source.py -v
+      run: python -m unittest discover -s tests/linux -p test_fcitx_session_source.py -v
     - name: Verify Linux test_fcitx_cooperative_session
       id: test-fcitx-cooperative-session
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
@@ -826,75 +840,75 @@ jobs:
     - name: Verify Linux cooperative archive supply
       id: cooperative-archives
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_cooperative_archives.py -v
+      run: python -m unittest discover -s tests/linux -p test_cooperative_archives.py -v
     - name: Verify Linux test_input_notifications
       id: test-input-notifications
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_input_notifications.py -v
+      run: python -m unittest discover -s tests/linux -p test_input_notifications.py -v
     - name: Verify Linux test_gtk_geometry
       id: test-gtk-geometry
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_gtk_geometry.py -v
+      run: python -m unittest discover -s tests/linux -p test_gtk_geometry.py -v
     - name: Verify Linux test_gtk_accessibility_bounds
       id: test-gtk-accessibility-bounds
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_gtk_accessibility_bounds.py -v
+      run: python -m unittest discover -s tests/linux -p test_gtk_accessibility_bounds.py -v
     - name: Verify Linux test_gtk_settings_scroll
       id: test-gtk-settings-scroll
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_gtk_settings_scroll.py -v
+      run: python -m unittest discover -s tests/linux -p test_gtk_settings_scroll.py -v
     - name: Verify Linux test_gtk_settings_focus
       id: test-gtk-settings-focus
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_gtk_settings_focus.py -v
+      run: python -m unittest discover -s tests/linux -p test_gtk_settings_focus.py -v
     - name: Verify Linux test_gtk_settings_combo
       id: test-gtk-settings-combo
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_gtk_settings_combo.py -v
+      run: python -m unittest discover -s tests/linux -p test_gtk_settings_combo.py -v
     - name: Verify Linux test_gtk_shortcut_input
       id: test-gtk-shortcut-input
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_gtk_shortcut_input.py -v
+      run: python -m unittest discover -s tests/linux -p test_gtk_shortcut_input.py -v
     - name: Verify Linux test_settings_capture
       id: test-settings-capture
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_settings_capture.py -v
+      run: python -m unittest discover -s tests/linux -p test_settings_capture.py -v
     - name: Verify Linux test_ordinary_desktop_lifecycle
       id: test-ordinary-desktop-lifecycle
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_ordinary_desktop_lifecycle.py -v
+      run: python -m unittest discover -s tests/linux -p test_ordinary_desktop_lifecycle.py -v
     - name: Verify Linux test_gtk_preview_contract
       id: test-gtk-preview-contract
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_gtk_preview_contract.py -v
+      run: python -m unittest discover -s tests/linux -p test_gtk_preview_contract.py -v
     - name: Verify Linux test_qt_candidate_observation
       id: test-qt-candidate-observation
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_qt_candidate_observation.py -v
+      run: python -m unittest discover -s tests/linux -p test_qt_candidate_observation.py -v
     - name: Verify native Qt source observation projection
       id: test-qt-source-version
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_qt_source_version.py -v
+      run: python -m unittest discover -s tests/linux -p test_qt_source_version.py -v
     - name: Verify Linux test_argos_repetition_process
       id: test-argos-repetition-process
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_argos_repetition_process.py -v
+      run: python -m unittest discover -s tests/linux -p test_argos_repetition_process.py -v
     - name: Verify Linux test_index_package_diagnostics
       id: test-index-package-diagnostics
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_index_package_diagnostics.py -v
+      run: python -m unittest discover -s tests/linux -p test_index_package_diagnostics.py -v
     - name: Verify Linux test_private_session_paths
       id: test-private-session-paths
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_private_session_paths.py -v
+      run: python -m unittest discover -s tests/linux -p test_private_session_paths.py -v
     - name: Verify Linux test_translation_quality_capture
       id: test-translation-quality-capture
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_translation_quality_capture.py -v
+      run: python -m unittest discover -s tests/linux -p test_translation_quality_capture.py -v
     - name: Verify Linux test_vscode_notifications
       id: test-vscode-notifications
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
-      run: python tests/linux/test_vscode_notifications.py -v
+      run: python -m unittest discover -s tests/linux -p test_vscode_notifications.py -v
     - name: Verify resumable model downloads over isolated HTTP
       id: model-downloads
       if: ${{ matrix.group == 'contracts' && !cancelled() }}
@@ -916,7 +930,7 @@ jobs:
     - name: Verify GTK settings feedback
       id: settings-feedback
       if: ${{ matrix.group == 'contracts' && !cancelled() && steps.display.outcome == 'success' }}
-      run: TYPELAY_TEST_CI_DISPLAY=1 DISPLAY=:99 GDK_BACKEND=x11 dbus-run-session -- python tests/linux/test_settings_feedback.py -v
+      run: TYPELAY_TEST_CI_DISPLAY=1 DISPLAY=:99 GDK_BACKEND=x11 dbus-run-session -- python -m unittest discover -s tests/linux -p test_settings_feedback.py -v
     - name: Verify GTK unknown-IME refusal
       id: gtk-refusal
       if: ${{ matrix.group == 'contracts' && !cancelled() && steps.build.outcome == 'success' && steps.display.outcome ==
