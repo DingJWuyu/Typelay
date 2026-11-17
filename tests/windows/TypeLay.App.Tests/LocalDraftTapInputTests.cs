@@ -48,7 +48,8 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
         var downTimes = new List<uint>();
         var upTimes = new List<uint>();
         int cancellations = 0;
-        object? firstCancellation = null;
+        var cancellationCallback = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        object? retiredAnchorObservation = null;
         bool observeFailure = change == "unarmed-prefix", succeeded = false;
         var foregroundEvents = new List<object>(8);
         var deliveredEdges = new List<object>(4);
@@ -123,8 +124,8 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
             // No extra activation, queue drain, timestamp inference or retry.
             await Until(() => hook.ShortcutsReady);
             window.Show();
-            Assert.True(window.Activate());
-            Assert.True(editor.Focus());
+            AssertPrepared(window.Activate(), "Activate", window, editor);
+            AssertPrepared(editor.Focus(), "Focus", window, editor);
             await Until(() => hook.ShortcutsReady && hook.EditorForegroundDelivered is { IsCompletedSuccessfully: true }
                 && Native.GetForegroundWindow() == hwnd && editor.IsKeyboardFocused);
             Assert.All(new[] { 9, 0x77, 0x10, 0x11, 0x12, 0x5b, 0x5c }, key => Assert.False(Native.GetAsyncKeyState(key) < 0));
@@ -137,15 +138,21 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                 {
                     long observedAtTimestamp = Stopwatch.GetTimestamp();
                     nint foreground = Native.GetForegroundWindow();
-                    Volatile.Write(ref firstCancellation, new
+                    cancellationCallback.SetResult(new
                     {
                         observedAtTimestamp,
                         openingMatches = id == opening,
-                        originalEvent = DescribeCancellationEvent(original, hwnd),
+                        originalWindowOwner = ObserveWindowOwner(original?.Window ?? 0),
                         foreground = foreground == hwnd ? "overlay" : foreground == 0 ? "none" : "other"
                     });
                 }
-                catch (Exception error) when (error is not OutOfMemoryException) { }
+                catch (Exception error) when (error is not OutOfMemoryException)
+                {
+                    cancellationCallback.TrySetResult(new
+                    {
+                        observationError = error.GetType().Name
+                    });
+                }
             });
             ushort tab = Scan(9), otherScan = Scan(0x77); // F8 never inserts editor text.
             Input[] pair = [Edge(tab, false), Edge(tab, true)];
@@ -162,7 +169,7 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                 {
                     try
                     {
-                        // The callback foreground is sampled separately from the original event.
+                        retiredAnchorObservation = await ObserveFirstCancellation(hook, opening, hwnd, cancellationCallback.Task);
                         TestContext.Current.TestOutputHelper?.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
                         {
                             operation = "local-draft-unarmed-prefix-anchor-retired",
@@ -171,7 +178,7 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                             anchorObservedTimestamp,
                             timestampFrequency = Stopwatch.Frequency,
                             cancelCallbacksAtDiagnostic = Volatile.Read(ref cancellations),
-                            firstCancellation = Volatile.Read(ref firstCancellation),
+                            firstCancellation = retiredAnchorObservation,
                             captures = captures.Count,
                             downs = downTimes.Count,
                             ups = upTimes.Count
@@ -239,6 +246,8 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                 hook.SetLocalDraftEditorFocus(opening, false);
                 hook.SetLocalDraftEditorFocus(opening, true);
                 Assert.False(hook.LocalDraftAnchorCurrent(opening));
+                var cancellation = Assert.IsType<KeyboardHook.LocalDraftCancellation>(hook.ObserveLocalDraftCancellation(opening));
+                Assert.Null(cancellation.ForegroundEvent);
             }
             else if (change == "external-focus")
             {
@@ -246,6 +255,10 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                 other.Show();
                 Assert.True(other.Activate());
                 await Until(() => !hook.LocalDraftAnchorCurrent(opening));
+                var cancellation = Assert.IsType<KeyboardHook.LocalDraftCancellation>(hook.ObserveLocalDraftCancellation(opening));
+                var original = Assert.IsType<KeyboardHook.LocalDraftForegroundEvent>(cancellation.ForegroundEvent);
+                Assert.Equal(3u, original.EventType);
+                Assert.NotEqual(hwnd, original.Window); // Windows can also report an unknown (zero) HWND.
                 Assert.True(window.Activate());
                 Assert.True(editor.Focus());
             }
@@ -335,7 +348,7 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                         inputDropped,
                         heldScans = held.ToArray(),
                         cancelCallbacks = Volatile.Read(ref cancellations),
-                        firstCancellation = Volatile.Read(ref firstCancellation),
+                        firstCancellation = retiredAnchorObservation ?? await ObserveFirstCancellation(hook, opening, hwnd, cancellationCallback.Task),
                         originalExternalWindow = (long)firstExternalForeground,
                         originalExternalProcess = firstExternalProcess,
                         // Later PID/parent observations cannot prove ownership
@@ -418,8 +431,8 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
         var replace = new Button { Content = "Replace" };
         var window = new Window { Content = replace, Width = 420, Height = 160 };
         window.Show();
-        Assert.True(window.Activate(), "Expected the replace window to activate, but Activate returned false.");
-        Assert.True(replace.Focus(), "Expected the replace button to take focus, but Focus returned false.");
+        AssertPrepared(window.Activate(), "Activate", window, replace);
+        AssertPrepared(replace.Focus(), "Focus", window, replace);
         nint hwnd = new WindowInteropHelper(window).Handle;
         using var hook = new KeyboardHook(allowInjectedInput: true, editorHwnd: hwnd);
         hook.ConfigureShortcuts(false, "Ctrl+Shift+F9", "Ctrl+Shift+F10", SessionShortcutBindings.Default, true);
@@ -427,7 +440,8 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
         ushort enter = Scan(13);
         int cancellations = 0;
         long observationSequence = 0;
-        object? firstCancellation = null, beforeExpiredClaim = null, afterExpiredClaim = null;
+        var cancellationCallback = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        object? beforeExpiredClaim = null, afterExpiredClaim = null;
         bool? expiredClaimReturned = null, anchorAtAssertion = null;
         object? beforeArming = null;
         uint? armStartedTick = null, armCompletedTick = null;
@@ -478,12 +492,22 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
             {
                 if (Interlocked.Increment(ref cancellations) != 1)
                     return;
-                Volatile.Write(ref firstCancellation, new
+                try
                 {
-                    openingMatches = id == opening,
-                    state = ObserveState(),
-                    originalEvent = DescribeCancellationEvent(original, hwnd)
-                });
+                    cancellationCallback.SetResult(new
+                    {
+                        openingMatches = id == opening,
+                        state = ObserveState(),
+                        originalWindowOwner = ObserveWindowOwner(original?.Window ?? 0)
+                    });
+                }
+                catch (Exception error) when (error is not OutOfMemoryException)
+                {
+                    cancellationCallback.TrySetResult(new
+                    {
+                        observationError = error.GetType().Name
+                    });
+                }
             });
             armCompletedTick = GetTickCount();
             hook.SetLocalDraftPrompt(opening, confirmation, replaceFocused: true);
@@ -545,12 +569,7 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                     claims,
                     anchorAtAssertion,
                     cancelCallbacksAtFailure = Volatile.Read(ref cancellations),
-                    firstCancellation = Volatile.Read(ref firstCancellation) ?? new
-                    {
-                        origin = "unknown",
-                        observed = false
-                    },
-                    inputObservations,
+                    inputObservations = inputObservations.ToArray(),
                     inputObservationsDropped,
                     captures = captures.Take(2).Select(press => press is null ? null : new
                     {
@@ -563,7 +582,8 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
                     ups = ups.Take(2).ToArray(),
                     upsDropped = Math.Max(0, ups.Count - 2),
                     stateAtFailure = ObserveState(),
-                    replaceFocusedAtFailure = replace.IsKeyboardFocused
+                    replaceFocusedAtFailure = replace.IsKeyboardFocused,
+                    firstCancellation = await ObserveFirstCancellation(hook, opening, hwnd, cancellationCallback.Task)
                 }));
             }
             catch (Exception diagnosticError) when (diagnosticError is not OutOfMemoryException) { }
@@ -663,18 +683,60 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
         }
     });
 
+    private static void AssertPrepared(bool actual, string operation, Window window, FrameworkElement target)
+    {
+        string? failure = null;
+        if (!actual)
+        {
+            uint tick = GetTickCount();
+            nint foreground = Native.GetForegroundWindow();
+            failure = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                operation,
+                expected = true,
+                actual,
+                tick,
+                testProcess = Environment.ProcessId,
+                overlayWindow = (long)new WindowInteropHelper(window).Handle,
+                foregroundWindow = (long)foreground,
+                foregroundOwner = ObserveWindowOwner(foreground),
+                windowActive = window.IsActive,
+                targetFocused = target.IsKeyboardFocused,
+                focusedElementType = Keyboard.FocusedElement?.GetType().Name
+            });
+        }
+        Assert.True(actual, failure);
+    }
+
+    private static async Task<object> ObserveFirstCancellation(KeyboardHook hook, Guid opening, nint overlay, Task<object?> callback)
+    {
+        if (hook.ObserveLocalDraftCancellation(opening) is not { } cancellation)
+            return new
+            {
+                status = "no-invalidation-at-sample"
+            };
+
+        // The original event is already published. Only the separate callback samples can be pending.
+        if (!callback.IsCompleted)
+            await Task.WhenAny(callback, Task.Delay(TimeSpan.FromMilliseconds(250), CancellationToken.None));
+        bool completed = callback.IsCompletedSuccessfully;
+        return new
+        {
+            originalEvent = DescribeCancellationEvent(cancellation.ForegroundEvent, overlay),
+            callbackStatus = completed ? "completed" : "pending-at-timeout",
+            callbackObservation = completed ? await callback : null
+        };
+    }
+
     private static object DescribeCancellationEvent(KeyboardHook.LocalDraftForegroundEvent? original, nint overlay)
     {
         if (original is not { } ev)
             return new
             {
-                origin = "non-WinEvent"
+                origin = "non-WinEvent",
+                windowIdentity = "unknown"
             };
 
-        // The handle and event thread come from the winning WinEvent. Its window
-        // might already be gone or reused when this separate process lookup runs.
-        uint process = 0;
-        uint windowThread = ev.Window == 0 ? 0 : Native.GetWindowThreadProcessId(ev.Window, out process);
         return new
         {
             origin = "WinEvent",
@@ -682,9 +744,19 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
             originalWindow = (long)ev.Window,
             windowIdentity = ev.Window == 0 ? "unknown" : ev.Window == overlay ? "overlay" : "other",
             ev.EventThread,
-            ev.EventTime,
-            windowThreadAtCallback = windowThread == 0 ? (uint?)null : windowThread,
-            windowProcessAtCallback = process == 0 ? (uint?)null : process
+            ev.EventTime
+        };
+    }
+
+    private static object ObserveWindowOwner(nint hwnd)
+    {
+        // HWND ownership is sampled later and cannot identify the original WinEvent's process.
+        uint process = 0;
+        uint thread = hwnd == 0 ? 0 : Native.GetWindowThreadProcessId(hwnd, out process);
+        return new
+        {
+            thread = thread == 0 ? (uint?)null : thread,
+            process = process == 0 ? (uint?)null : process
         };
     }
 

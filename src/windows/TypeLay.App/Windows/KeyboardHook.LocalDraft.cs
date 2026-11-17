@@ -8,16 +8,30 @@ internal sealed partial class KeyboardHook
 {
     internal readonly record struct LocalDraftForegroundEvent(uint EventType, nint Window, uint EventThread, uint EventTime);
 
+    internal sealed class LocalDraftCancellation(LocalDraftForegroundEvent? foregroundEvent)
+    {
+        public static readonly LocalDraftCancellation WithoutForegroundEvent = new(null);
+        public LocalDraftForegroundEvent? ForegroundEvent { get; } = foregroundEvent;
+    }
+
     // Revocation-only local window anchor. Never an owned editor/source lease.
     private sealed class LocalDraftAnchor(Guid opening, nint overlay, nint source, Action<Guid, LocalDraftForegroundEvent?> cancel)
     {
         public Guid Opening { get; } = opening;
         public nint Overlay { get; } = overlay;
         public nint Source { get; } = source;
-        public Action<Guid, LocalDraftForegroundEvent?> Cancel { get; } = cancel;
-        public int Invalid, Returning;
+        private LocalDraftCancellation? _cancellation;
+        public LocalDraftCancellation? Cancellation => Volatile.Read(ref _cancellation);
+        public int Returning;
         public object? EditorFocus;
         public LocalDraftPrompt? Prompt;
+
+        public void Invalidate(LocalDraftCancellation reason)
+        {
+            // Publish the winning event with revocation, before either thread can observe an invalid anchor.
+            if (Interlocked.CompareExchange(ref _cancellation, reason, null) is null)
+                cancel(Opening, reason.ForegroundEvent);
+        }
     }
     private sealed class LocalDraftPrompt(Guid id)
     {
@@ -82,20 +96,22 @@ internal sealed partial class KeyboardHook
         }
     }
     internal bool LocalDraftAnchorCurrent(Guid opening) => Volatile.Read(ref _localDraftAnchor) is { } anchor
-        && anchor.Opening == opening && Volatile.Read(ref anchor.Invalid) == 0;
+        && anchor.Opening == opening && anchor.Cancellation is null;
+
+    internal LocalDraftCancellation? ObserveLocalDraftCancellation(Guid opening) =>
+        Volatile.Read(ref _localDraftAnchor) is { } anchor && anchor.Opening == opening ? anchor.Cancellation : null;
 
     internal void SetLocalDraftEditorFocus(Guid opening, bool focused)
     {
         if (Volatile.Read(ref _localDraftAnchor) is not { } anchor || anchor.Opening != opening
-            || Volatile.Read(ref anchor.Invalid) != 0 || Volatile.Read(ref anchor.Returning) != 0)
+            || anchor.Cancellation is not null || Volatile.Read(ref anchor.Returning) != 0)
             return;
         if (focused)
             Interlocked.CompareExchange(ref anchor.EditorFocus, new object(), null);
         else
             Interlocked.Exchange(ref anchor.EditorFocus, null);
-        if (!focused && Volatile.Read(ref _localDraftPress) is not null
-            && Interlocked.Exchange(ref anchor.Invalid, 1) == 0)
-            anchor.Cancel(anchor.Opening, null);
+        if (!focused && Volatile.Read(ref _localDraftPress) is not null)
+            anchor.Invalidate(LocalDraftCancellation.WithoutForegroundEvent);
     }
 
     // The real WPF down binds this particular native down, even if LL already
@@ -106,7 +122,7 @@ internal sealed partial class KeyboardHook
         var press = Volatile.Read(ref _localDraftPress);
         var tap = Volatile.Read(ref _localDraftTap);
         long now = WindowsInterruptClock.NowMs;
-        if (anchor is null || anchor.Opening != opening || Volatile.Read(ref anchor.Invalid) != 0
+        if (anchor is null || anchor.Opening != opening || anchor.Cancellation is not null
             || Volatile.Read(ref anchor.Returning) != 0 || Volatile.Read(ref anchor.EditorFocus) is null || press is null || press.Opening != opening
             || press.ReplacesDraft || press.Key is null || press.NativeTime != nativeDownTime || press.Key.ScanCode != scan || press.Key.Extended != extended
             || press.Key.Injected && !_allowInjectedInput || !ShortcutsReady || !_sessionEnabled
@@ -115,7 +131,7 @@ internal sealed partial class KeyboardHook
                 : !ReferenceEquals(tap.Press, press) || EditorInputSequence != tap.UpSequence))
             return null;
         return ReferenceEquals(Volatile.Read(ref _localDraftAnchor), anchor)
-            && ReferenceEquals(Volatile.Read(ref _localDraftPress), press) && Volatile.Read(ref anchor.Invalid) == 0 ? press : null;
+            && ReferenceEquals(Volatile.Read(ref _localDraftPress), press) && anchor.Cancellation is null ? press : null;
     }
 
     internal enum LocalDraftTapClaimResult
@@ -142,7 +158,7 @@ internal sealed partial class KeyboardHook
         // The diagnostic is a result of this one claim, never a second proof.
         var result = anchor is null ? LocalDraftTapClaimResult.AnchorMissing
             : anchor.Opening != press.Opening ? LocalDraftTapClaimResult.OpeningMismatch
-            : Volatile.Read(ref anchor.Invalid) != 0 ? LocalDraftTapClaimResult.AnchorInvalid
+            : anchor.Cancellation is not null ? LocalDraftTapClaimResult.AnchorInvalid
             : Volatile.Read(ref anchor.Returning) != 0 ? LocalDraftTapClaimResult.AlreadyReturning
             : Volatile.Read(ref anchor.EditorFocus) is null ? LocalDraftTapClaimResult.EditorFocusMissing
             : tap is null ? LocalDraftTapClaimResult.TapMissing
@@ -190,7 +206,7 @@ internal sealed partial class KeyboardHook
 
     private void ObserveLocalDraftKey(Native.KeyData data, bool down, bool repeated, bool injected, long now)
     {
-        if (Volatile.Read(ref _localDraftAnchor) is not { Invalid: 0 } anchor)
+        if (Volatile.Read(ref _localDraftAnchor) is not { Cancellation: null } anchor)
             return;
         RetireExpiredLocalReplace(anchor, now);
         var press = Volatile.Read(ref _localDraftPress);
@@ -218,8 +234,7 @@ internal sealed partial class KeyboardHook
             }
             // A second down (even at the same native timestamp), repeat,
             // wrong/extra up or intervening input cannot replace this candidate.
-            if (Interlocked.Exchange(ref anchor.Invalid, 1) == 0)
-                anchor.Cancel(anchor.Opening, null);
+            anchor.Invalidate(LocalDraftCancellation.WithoutForegroundEvent);
             return;
         }
         var keys = Volatile.Read(ref _sessionKeys);
@@ -238,16 +253,15 @@ internal sealed partial class KeyboardHook
                 new(data.Scan, (data.Flags & 1) != 0, injected, data.Key), replace ? prompt!.Id : Guid.Empty));
             // A concurrent menu/focus transition cannot arm this down after its
             // editor already retired. Never reset an existing candidate here.
-            if (keep && !ReferenceEquals(Volatile.Read(ref anchor.EditorFocus), editorFocus)
-                && Interlocked.Exchange(ref anchor.Invalid, 1) == 0)
-                anchor.Cancel(anchor.Opening, null);
+            if (keep && !ReferenceEquals(Volatile.Read(ref anchor.EditorFocus), editorFocus))
+                anchor.Invalidate(LocalDraftCancellation.WithoutForegroundEvent);
         }
         if (data.Key == 9)
             TraceLocalDraftKey(down ? "tab-down" : "unmatched-tab-up", Volatile.Read(ref _localDraftPress), now);
     }
     internal void SetLocalDraftPrompt(Guid opening, Guid confirmation, bool replaceFocused)
     {
-        if (Volatile.Read(ref _localDraftAnchor) is not { Invalid: 0, Returning: 0 } anchor || anchor.Opening != opening)
+        if (Volatile.Read(ref _localDraftAnchor) is not { Cancellation: null, Returning: 0 } anchor || anchor.Opening != opening)
             return;
         var prompt = Volatile.Read(ref anchor.Prompt);
         if (confirmation == Guid.Empty || prompt?.Id != confirmation)
@@ -275,7 +289,7 @@ internal sealed partial class KeyboardHook
     internal LocalDraftPress? CaptureLocalDraftReplacePress(Guid opening, Guid confirmation, uint nativeDownTime,
         uint virtualKey = 0, uint scan = 0, bool extended = false)
     {
-        if (Volatile.Read(ref _localDraftAnchor) is not { Invalid: 0, Returning: 0, Prompt: { } prompt } anchor
+        if (Volatile.Read(ref _localDraftAnchor) is not { Cancellation: null, Returning: 0, Prompt: { } prompt } anchor
             || anchor.Opening != opening || prompt.Id != confirmation
             || Volatile.Read(ref _localDraftPress) is not { ReplacesDraft: true } press || press.Opening != opening
             || press.Confirmation != confirmation || press.NativeTime != nativeDownTime
@@ -297,7 +311,7 @@ internal sealed partial class KeyboardHook
 
     internal LocalDraftTap? ClaimLocalDraftReplaceTap(LocalDraftPress press, uint nativeUpTime)
     {
-        if (!press.ReplacesDraft || Volatile.Read(ref _localDraftAnchor) is not { Invalid: 0, Returning: 0, Prompt: { } prompt } anchor
+        if (!press.ReplacesDraft || Volatile.Read(ref _localDraftAnchor) is not { Cancellation: null, Returning: 0, Prompt: { } prompt } anchor
             || anchor.Opening != press.Opening || prompt.Id != press.Confirmation || Volatile.Read(ref prompt.ReplaceFocused) == 0
             || Volatile.Read(ref _localDraftTap) is not { } tap || !ReferenceEquals(tap.Press, press)
             || tap.NativeUpTime != nativeUpTime || !ShortcutsReady || !_sessionEnabled
@@ -323,7 +337,7 @@ internal sealed partial class KeyboardHook
 
     private void ObserveLocalDraftMouse(int message, nint dataPointer)
     {
-        if (Volatile.Read(ref _localDraftAnchor) is not { Invalid: 0, Prompt: { } prompt } anchor)
+        if (Volatile.Read(ref _localDraftAnchor) is not { Cancellation: null, Prompt: { } prompt } anchor)
             return;
         var data = System.Runtime.InteropServices.Marshal.PtrToStructure<MouseData>(dataPointer);
         long now = WindowsInterruptClock.NowMs;
@@ -363,7 +377,7 @@ internal sealed partial class KeyboardHook
             return;
         bool retained = original.Window == anchor.Overlay || Volatile.Read(ref anchor.Returning) != 0
             && (original.Window == anchor.Source || original.Window == 0);
-        if (!retained && Interlocked.Exchange(ref anchor.Invalid, 1) == 0)
-            anchor.Cancel(anchor.Opening, original);
+        if (!retained)
+            anchor.Invalidate(new(original));
     }
 }
