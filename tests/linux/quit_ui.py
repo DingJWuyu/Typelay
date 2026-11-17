@@ -64,6 +64,7 @@ async def complete(
     """Normal GTK actions and explicitly controlled synchronous retirement callbacks."""
     from types import SimpleNamespace
 
+    import cairo
     from gi.repository import Gdk, GObject, Gtk
     from tray import Tray
 
@@ -117,16 +118,13 @@ async def complete(
         assert dialog.get_modal() and dialog.get_default_widget() is cancel
         return dialog
 
-    def settings_quit():
+    def settings_button(*names):
         pending, matches = [surface.window], []
         for _ in range(4096):
             if not pending:
                 break
             widget = pending.pop()
-            if isinstance(widget, Gtk.Button) and widget.get_accessible().get_name() in (
-                "退出 TypeLay",
-                "Quit TypeLay",
-            ):
+            if isinstance(widget, Gtk.Button) and widget.get_accessible().get_name() in names:
                 matches.append(widget)
             if isinstance(widget, Gtk.Container):
                 pending.extend(widget.get_children())
@@ -138,7 +136,7 @@ async def complete(
         await until(lambda: not jobs and surface.window.is_active())
 
     async def ask_quit():
-        await click(settings_quit(), surface.window)
+        await click(settings_button("退出 TypeLay", "Quit TypeLay"), surface.window)
         return await ready_question(surface.tr("退出 TypeLay？", "Quit TypeLay?"))
 
     async def answer(dialog, response):
@@ -220,12 +218,78 @@ async def complete(
         assert consumed and len(watched) == 1 and not watched[0][0].get_visible()
         assert surface.quit_dialog is None
 
+    # The desktop preference stays fixed as the user switches explicit modes.
+    # System mode also exercises a live change of the native GTK preference.
+    gtk = surface.window.get_settings()
+    gtk.set_property("gtk-theme-name", "Adwaita")
+    for theme, desktop_dark, expected_dark in (
+        ("light", True, False),
+        ("dark", True, True),
+        ("system", True, True),
+        ("system", False, False),
+    ):
+        gtk.set_property("gtk-application-prefer-dark-theme", desktop_dark)
+        assert (await host.ask("settingsPatch", {"theme": theme}, timeout=3))["saved"]
+        await open_settings()
+        surface.sidebar.select_row(surface.nav_rows["application-support"])
+        before = settings_file.read_bytes()
+        for action, title in (
+            ("应用连接：桌面应用", "桌面普通输入框：安装接入组件…"),
+            ("退出 TypeLay", "退出 TypeLay？"),
+        ):
+            await click(settings_button(action), surface.window)
+            dialog = question(title)
+            # Apps shows its transient without an explicit focus request. The
+            # disposable CI Xvfb has no WM to activate it on map.
+            dialog.present()
+            await until(dialog.is_active)
+            buttons = [
+                dialog.get_widget_for_response(response)
+                for response in (Gtk.ResponseType.CANCEL, Gtk.ResponseType.OK)
+            ]
+            for widget in (surface.window, dialog, *buttons):
+                # Render the actual GTK node, including its native background image.
+                sample = cairo.ImageSurface(cairo.FORMAT_ARGB32, 16, 16)
+                context = widget.get_style_context()
+                Gtk.render_background(context, cairo.Context(sample), 0, 0, 16, 16)
+                pixel = Gdk.pixbuf_get_from_surface(sample, 8, 8, 1, 1).get_pixels()
+                assert pixel[3] == 255
+                assert max(pixel[:3]) < 128 if expected_dark else min(pixel[:3]) > 128, (
+                    theme,
+                    desktop_dark,
+                    action,
+                    type(widget).__name__,
+                    tuple(pixel),
+                )
+            labels = [
+                child
+                for child in dialog.get_message_area().get_children()
+                if isinstance(child, Gtk.Label) and child.get_mapped()
+            ]
+            assert any(label.get_text() == title for label in labels), title
+            for label in [*labels, *(button.get_child() for button in buttons)]:
+                context = label.get_style_context()
+                ink = context.get_color(context.get_state())
+                assert ink.alpha == 1
+                rgb = (ink.red, ink.green, ink.blue)
+                assert min(rgb) > 0.5 if expected_dark else max(rgb) < 0.5, (
+                    theme,
+                    action,
+                    label.get_text(),
+                    rgb,
+                )
+            await answer(dialog, Gtk.ResponseType.CANCEL)
+            unchanged(0, before)
+            # Bare Xvfb has no WM to return focus after destroying a transient.
+            await open_settings()
+    print("CONFIRMATION THEME PASS: install and quit, light/dark/system", flush=True)
+
     before = settings_file.read_bytes()
     for mode in ("cancel", "destroy"):
         await open_settings()
         await consume_while_showing(
             surface.tr("退出 TypeLay？", "Quit TypeLay?"),
-            lambda: click(settings_quit(), surface.window),
+            lambda: click(settings_button("退出 TypeLay", "Quit TypeLay"), surface.window),
             mode,
         )
         unchanged(0, before)
@@ -596,7 +660,20 @@ def main():
                     no_install,
                     no_install,
                     None,
-                    lambda: host.ask("applicationSupport", {"facts": []}, timeout=3),
+                    lambda: host.ask(
+                        "applicationSupport",
+                        {
+                            "facts": [
+                                {
+                                    "id": "desktop-text",
+                                    "state": "NeedsInstall",
+                                    "reason": "ComponentMissing",
+                                    "supportedActions": ["Install"],
+                                }
+                            ]
+                        },
+                        timeout=3,
+                    ),
                     support_action,
                     None,
                 )
