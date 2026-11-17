@@ -1218,6 +1218,29 @@ jobs:
           artifacts/linux/gtk-desktop/*.png
         if-no-files-found: warn
         retention-days: 14
+    - name: Preserve small GTK4 probe and desktop diagnostics
+      if: ${{ always() && matrix.group == 'native' }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: typelay-linux-gtk4-events-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          artifacts/ci/source.json
+          artifacts/linux/package/build-info.json
+          artifacts/linux/fcitx-cooperative-5.1.22/build-inputs.json
+          artifacts/linux/fcitx-cooperative-5.1.22/test-inputs.json
+          artifacts/linux/fcitx-cooperative-5.1.22/versions.json
+          artifacts/linux/fcitx-cooperative-5.1.22/gtk4-glossary*.json
+          artifacts/linux/fcitx-cooperative-5.1.22/gtk4-glossary*.jsonl
+          artifacts/linux/fcitx-cooperative-5.1.22/gtk4-glossary*.log
+          artifacts/linux/fcitx-cooperative-5.1.22/gtk4-glossary*.png
+          artifacts/linux/fcitx-cooperative-5.1.22/gtk4-glossary-session/*.json
+          artifacts/linux/fcitx-cooperative-5.1.22/gtk4-glossary-session/*.log
+          artifacts/linux/gtk4-desktop/*.json
+          artifacts/linux/gtk4-desktop/*.jsonl
+          artifacts/linux/gtk4-desktop/*.log
+          artifacts/linux/gtk4-desktop/*.png
+        if-no-files-found: warn
+        retention-days: 14
     - name: Preserve small Qt desktop event diagnostics
       if: ${{ always() && matrix.group == 'native' }}
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

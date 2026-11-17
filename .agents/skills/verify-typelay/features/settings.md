@@ -47,6 +47,8 @@ Preconditions: 私有会话内已有真实桌面进程。语言功能需要正�
 
   该入口需要自己的 Xvfb 和 D-Bus，因为它会再启动 niri，且要求该 Xvfb 只有一个 niri。`TMPDIR=/tmp` 避免嵌套 runtime 超过 Unix socket 路径上限。用户级桌面工具需要的 `LD_LIBRARY_PATH` 仍须可用。四十个场景共享原 115 秒预算，保留 800 毫秒呈现 lease 和原动作次数；受控候选不证明模型术语质量。复制构建目录中的 `gtk4-glossary-*` 原件到本次证据目录，保留结果、失败场景、原字段状态、命令时序、菜单 PNG、启动与内部清理回执。`cases` 仅列已完成场景，`failed_case` 是实际失败场景，其余是 `not-run`。
 
+  CI 的 `typelay-linux-gtk4-events-*` 小型工件保留术语 probe、完整桌面和各自身份。术语续租失败时，对照 `gtk4-glossary-result.json` 的 `failed_case`、协议时序与 `gtk4-glossary.log` 的隐藏原因；真实 Tab 失败时，对照 `gtk-acceptance-phases.json` 的投递时序与 `inside.log` 的 native 按键检查。受控术语 probe 与真实模型桌面分别判断。
+
 - **GTK3 语言菜单。** 使用[写回入口](writeback.md#driving-it-with-private-niri)中的 `gtk` scope 和 `--gtk-session-bindings`。该入口先运行受控 Host 的语言搜索与续显合同，再运行真实模型写回。受控 Host 按正式呈现身份重绘菜单，并以完整保存响应验证失败反馈；它不证明真实 Host 的持久化。检查 `gtk-reentry-language-*-click.json` 及配对状态文件：新候选交互必须退休旧菜单；同一交互收到编辑控件就绪确认时，菜单或已收起菜单的触发器保持焦点，源正文、选区和写入计数不变。就绪确认不授予写入许可。后续真实写回失败时，分别记录已通过的菜单合同与未完成的交互。
 
   CI 的 `typelay-linux-gtk3-desktop-events-*` 小型工件保留本次源码与包身份、GTK3 日志、状态和截图。续显失败时，对照 `languageSelectorClick` 的点击时间、原 `expiresAtMs`、首末焦点观察及配对字段状态，区分选择器未获得焦点、源 IME 未分离与呈现已经退休。当前对照通过不能解释历史失败；缺少原件时保留根因未确认。
