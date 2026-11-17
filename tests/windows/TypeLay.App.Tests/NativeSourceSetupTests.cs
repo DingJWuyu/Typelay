@@ -240,8 +240,8 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
         {
             bool observeInput = scenario == "foreground";
             await using var source = await Source.Start(observeSetupInput: observeInput);
-            Assert.True(N.GetWindowRect(source.Root, out var originalBounds));
-            Assert.True(N.GetWindowRect(source.Field, out var fieldBounds));
+            Assert.True(N.GetWindowRect(source.Root, out var originalBounds), $"Expected initial bounds for source root {(long)source.Root}.");
+            Assert.True(N.GetWindowRect(source.Field, out var fieldBounds), $"Expected initial bounds for source field {(long)source.Field}.");
             var point = new N.Point
             {
                 X = fieldBounds.Left + (fieldBounds.Right - fieldBounds.Left) / 2,
@@ -265,13 +265,13 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
             Assert.True(GetCursorPos(out var previous));
             var observation = new NativeSourceSetup.Observation();
             long? coverRenderedAtMs = null, visibleAtMs = null, focusWaitStartedAtMs = null, focusMatchedAtMs = null;
-            int focusObservations = 0;
             (N.FocusObservation Focus, long AtMs)? firstFocus = null, lastFocus = null;
             var focusCounts = new Dictionary<N.FocusObservation, int>();
             var click = new NativeSourceSetup.ClickObservation();
-            // This fresh fixture receives just one click. Its existing mouse-up
-            // receipt identifies that input without participating in the focus gate.
-            nuint clickMarker = (nuint)source.Process.Id;
+            // Keep the original unmarked click. The fresh fixture records the
+            // receiving HWND and time of its mouse messages independently.
+            N.Rect? preparedBounds = null;
+            nint? preparedHit = null;
             nint coverRoot = 0;
             var foregroundEvents = new List<object>(16);
             var coverMessages = new List<object>(16);
@@ -279,7 +279,8 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
             nint foregroundHook = 0;
             HwndSource? coverSource = null;
             string observationStage = "before-cover";
-            bool scenarioCompleted = false;
+            string? failedCondition = null;
+            bool focusWaitCancelled = false, scenarioCompleted = false;
             Native.WinEventProc foreground = (_, _, window, _, _, thread, eventTime) =>
             {
                 try
@@ -296,7 +297,7 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                         role = WindowRole(window),
                         thread,
                         eventTime,
-                        observedAtMs = WindowsInterruptClock.NowMs
+                        observedAtInterruptMs = WindowsInterruptClock.NowMs
                     });
                 }
                 catch (Exception error) when (error is not OutOfMemoryException) { observerErrors++; }
@@ -315,10 +316,9 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                             stage = observationStage,
                             window = (long)hwnd,
                             message,
-                            clickMarkerMatched = message is 0x0201 or 0x0202 ? (bool?)(GetMessageExtraInfo() == (nint)clickMarker) : null,
                             wParam = (long)wParam,
                             lParam = (long)lParam,
-                            observedAtMs = WindowsInterruptClock.NowMs,
+                            observedAtInterruptMs = WindowsInterruptClock.NowMs,
                             handledAtEntry = handled
                         });
                 }
@@ -338,10 +338,15 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                     coverSource = HwndSource.FromHwnd(coverRoot);
                     coverSource?.AddHook(coverHook);
                 }
+                observationStage = "activate-cover";
                 Assert.True(cover.Activate());
+                observationStage = "cover-foreground";
                 Assert.Equal(coverRoot, N.GetForegroundWindow());
+                observationStage = "initial-point-hits-cover-root";
                 Assert.Equal(coverRoot, N.GetAncestor(WindowFromPoint(point), 2));
+                observationStage = "initial-source-topmost-bit";
                 Assert.Equal(0, N.GetStyle(source.Root, -20) & 0x8); // WS_EX_TOPMOST.
+                observationStage = "initial-cover-topmost-bit";
                 Assert.Equal(scenario == "topmost" ? 0x8 : 0, N.GetStyle(coverRoot, -20) & 0x8);
                 var beforeFocus = N.Focused();
                 using var action = CancellationTokenSource.CreateLinkedTokenSource(source.Token);
@@ -385,7 +390,7 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                     waitStop.Cancel();
                     await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
                 }
-                observationStage = "verify-prepared-foreground-and-geometry";
+                observationStage = "prepared-foreground";
                 if (scenario is "cancelled" or "wrong-root")
                 {
                     Assert.Equal(beforeFocus, N.Focused());
@@ -396,22 +401,29 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                     Assert.True(observation.VisibilityForegroundMatched);
                     Assert.Equal(source.Root, N.GetForegroundWindow());
                 }
+                observationStage = "prepared-source-bounds-available";
                 Assert.True(N.GetWindowRect(source.Root, out var afterBounds));
+                preparedBounds = afterBounds;
+                observationStage = "prepared-source-bounds-equal-initial";
                 Assert.Equal(originalBounds, afterBounds);
+                observationStage = "prepared-source-topmost-bit";
                 Assert.Equal(0, N.GetStyle(source.Root, -20) & 0x8);
                 if (scenario == "foreground")
                 {
+                    observationStage = "prepared-hit-dpi-context";
                     nint previousDpi = SetThreadDpiAwarenessContext(-4);
                     Assert.NotEqual(0, previousDpi);
                     try
                     {
-                        Assert.Equal(source.Field, WindowFromPoint(point));
+                        observationStage = "prepared-point-hits-field";
+                        preparedHit = WindowFromPoint(point);
+                        Assert.Equal(source.Field, preparedHit.Value);
                     }
                     finally { SetThreadDpiAwarenessContext(previousDpi); }
                     observation.ClickStartedAtMs = WindowsInterruptClock.NowMs;
                     observationStage = "original-click";
                     await NativeSourceSetup.ClickAsync(source.Root, source.Field, source.Process, source.Token,
-                        clickMarker, observation: click);
+                        observation: click);
                     observation.ClickEndedAtMs = WindowsInterruptClock.NowMs;
                     observationStage = "focus-wait";
                     focusWaitStartedAtMs = WindowsInterruptClock.NowMs;
@@ -420,7 +432,6 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                         var focus = N.ReadFocus();
                         lastFocus = (focus, WindowsInterruptClock.NowMs);
                         firstFocus ??= lastFocus;
-                        focusObservations++;
                         focusCounts[focus] = focusCounts.GetValueOrDefault(focus) + 1;
                         if ((focus.Root, focus.Control) == (source.Root, source.Field))
                             break;
@@ -430,6 +441,7 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                 }
                 else
                 {
+                    observationStage = "prepared-point-hits-cover-root";
                     Assert.Equal(coverRoot, N.GetAncestor(WindowFromPoint(point), 2));
                     if (scenario == "topmost")
                     {
@@ -437,30 +449,16 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                         Assert.Equal("source-click-obscured", failure.Code);
                     }
                 }
-                observationStage = "verify-cover-clicks-and-source-text";
+                observationStage = "cover-click-count";
                 Assert.Equal(0, coverClicks);
+                observationStage = "source-text-unchanged";
                 Assert.Equal(Source.Text, N.ReadText(source.Field, Limits.MaxTextUnits));
                 scenarioCompleted = true;
             }
-            catch (Exception error) when (observeInput)
+            catch (Exception error)
             {
-                string condition = error is NativeSourceSetup.Failure refusal ? refusal.Code : observationStage;
-                TestContext.Current.TestOutputHelper?.WriteLine($"Source setup failed at {condition}. "
-                    + $"Expected source root={(long)source.Root}, field={(long)source.Field}, "
-                    + "field hit before injection, one click (two input events), zero cover clicks and exact root/field focus.");
-                if (observationStage == "focus-wait" && error is OperationCanceledException && source.Token.IsCancellationRequested)
-                {
-                    if (lastFocus is { } last)
-                    {
-                        TestContext.Current.TestOutputHelper?.WriteLine($"Last focus observation at {Since(last.AtMs)} ms: "
-                            + $"root expected={(long)source.Root} actual={(long)last.Focus.Root} matched={last.Focus.Root == source.Root}; "
-                            + $"field expected={(long)source.Field} actual={(long)last.Focus.Control} matched={last.Focus.Control == source.Field}; "
-                            + $"observations={focusObservations}.");
-                    }
-                    observationStage = "cancelled";
-                    WriteSourceLifetimeAfterFocusCancellation();
-                    WriteOriginalInputAfterFocusCancellation();
-                }
+                failedCondition = error is NativeSourceSetup.Failure refusal ? refusal.Code : observationStage;
+                focusWaitCancelled = observationStage == "focus-wait" && error is OperationCanceledException && source.Token.IsCancellationRequested;
                 throw;
             }
             finally
@@ -472,43 +470,69 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                 }
                 catch (Exception error) when (error is not OutOfMemoryException) { observersDetached = false; }
                 GC.KeepAlive(foreground);
-                TestContext.Current.TestOutputHelper?.WriteLine($"Source visibility: attempts={observation.VisibilityAttempts}; "
-                    + $"foregroundMatched={observation.VisibilityForegroundMatched}; geometry={observation.VisibilityGeometryAvailable}; firstHit={observation.VisibilityFirstHit}; lastHit={observation.VisibilityLastHit}.");
-                TestContext.Current.TestOutputHelper?.WriteLine("Source focus wait: " + JsonSerializer.Serialize(new
+                if (observeInput)
+                    WriteOriginalInput();
+                if (focusWaitCancelled)
+                    WriteSourceLifetimeAfterFocusCancellation();
+                try
                 {
-                    budgetMs = 10000,
-                    sourceReadyMs = Since(source.ReadyAtMs),
-                    coverRenderedMs = Since(coverRenderedAtMs),
-                    visibleMs = Since(visibleAtMs),
-                    clickStartedMs = Since(observation.ClickStartedAtMs),
-                    clickReturnedMs = Since(observation.ClickEndedAtMs),
-                    click,
-                    coverClicks,
-                    focusWaitStartedMs = Since(focusWaitStartedAtMs),
-                    focusMatchedMs = Since(focusMatchedAtMs),
-                    focusObservations,
-                    firstWaitMs = Since(firstFocus?.AtMs),
-                    firstWaitObservation = Project(firstFocus?.Focus),
-                    lastWaitMs = Since(lastFocus?.AtMs),
-                    lastWaitObservation = Project(lastFocus?.Focus),
-                    duringWait = focusCounts.Select(row => new { observation = Project(row.Key), count = row.Value })
-                }));
+                    TestContext.Current.TestOutputHelper?.WriteLine("Source focus wait: " + JsonSerializer.Serialize(new
+                    {
+                        failedCondition,
+                        observationStage,
+                        expectedRoot = (long)source.Root,
+                        expectedField = (long)source.Field,
+                        originalBounds,
+                        preparedBounds,
+                        preparedPoint = point,
+                        preparedHit = (long?)preparedHit,
+                        observation.VisibilityAttempts,
+                        observation.VisibilityForegroundMatched,
+                        observation.VisibilityForegroundWindow,
+                        observation.VisibilityGeometryAvailable,
+                        observation.VisibilityGeometryFailure,
+                        observation.VisibilityBounds,
+                        observation.VisibilityFirstHit,
+                        observation.VisibilityLastHit,
+                        observation.VisibilityHitWindow,
+                        budgetMs = 10000,
+                        budgetStartedInterruptMs = source.BudgetStartedAtMs,
+                        sourceReadyMs = Since(source.ReadyAtMs),
+                        coverRenderedMs = Since(coverRenderedAtMs),
+                        visibleMs = Since(visibleAtMs),
+                        clickStartedMs = Since(observation.ClickStartedAtMs),
+                        clickReturnedMs = Since(observation.ClickEndedAtMs),
+                        expectedClickAttempts = observeInput ? 1 : 0,
+                        expectedInputsInserted = observeInput ? 2 : 0,
+                        click,
+                        expectedCoverClicks = 0,
+                        coverClicks,
+                        focusWaitStartedMs = Since(focusWaitStartedAtMs),
+                        focusMatchedMs = Since(focusMatchedAtMs),
+                        focusObservations = focusCounts.Values.Sum(),
+                        firstWaitMs = Since(firstFocus?.AtMs),
+                        firstWaitObservation = Project(firstFocus?.Focus),
+                        lastWaitMs = Since(lastFocus?.AtMs),
+                        lastWaitObservation = Project(lastFocus?.Focus),
+                        duringWait = focusCounts.Select(row => new { observation = Project(row.Key), count = row.Value }),
+                        observersDetached
+                    }, new JsonSerializerOptions { IncludeFields = true }));
+                }
+                catch { /* Diagnostic output must not mask the original assertion. */ }
                 cover.Close();
                 SetCursorPos(previous.X, previous.Y);
-                if (!observersDetached)
-                    TestContext.Current.TestOutputHelper?.WriteLine("Source input observers detached: false.");
                 if (scenarioCompleted)
                     Assert.True(observersDetached, "source-input-observer-did-not-detach");
             }
             long? Since(long? atMs) => atMs - source.BudgetStartedAtMs;
             string WindowRole(nint window) => window == source.Root ? "source-root" : window == source.Field ? "source-field"
                 : window == coverRoot && coverRoot != 0 ? "cover" : window == 0 ? "none" : "other";
-            void WriteOriginalInputAfterFocusCancellation()
+            void WriteOriginalInput()
             {
-                if (!observeInput)
-                    return;
                 try
                 {
+                    long readAtMs = WindowsInterruptClock.NowMs;
+                    bool readAfterCancellation = source.Token.IsCancellationRequested;
                     const string prefix = "TypeLay.Test.SourceSetup.Event.";
                     int count = Math.Clamp((int)N.GetProp(source.Root, prefix + "Count"), 0, 32);
                     var events = Enumerable.Range(0, count).Select(index =>
@@ -525,17 +549,20 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                             wParam = (long)N.GetProp(source.Root, entry + "WParam"),
                             lParam = (long)N.GetProp(source.Root, entry + "LParam"),
                             nativeTime = phase is 2 or 3 ? (uint?)unchecked((uint)(long)N.GetProp(source.Root, entry + "NativeTime")) : null,
-                            observedAtMs = (long)N.GetProp(source.Root, entry + "ObservedAtMs")
+                            observedAtInterruptMs = (long)N.GetProp(source.Root, entry + "ObservedAtMs")
                         };
                     }).ToArray();
                     TestContext.Current.TestOutputHelper?.WriteLine(JsonSerializer.Serialize(new
                     {
-                        operation = "source-click-focus-not-delivered",
+                        operation = "source-click-events",
+                        propertiesRead = scenarioCompleted ? "after-assertions" : "after-failure",
+                        readAfterCancellation,
+                        readAtInterruptMs = readAtMs,
                         sourceProcess = source.Process.Id,
                         sourceRoot = (long)source.Root,
                         sourceField = (long)source.Field,
                         cover = (long)coverRoot,
-                        source.BudgetStartedAtMs,
+                        budgetStartedInterruptMs = source.BudgetStartedAtMs,
                         foregroundObserverInstalled = foregroundHook != 0,
                         coverObserverInstalled = coverSource is not null,
                         foregroundEvents = foregroundEvents.ToArray(),
@@ -543,17 +570,12 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                         coverMessages = coverMessages.ToArray(),
                         coverDropped,
                         observerErrors,
-                        sourceObserverFieldAfterCancellation = (long)N.GetProp(source.Root, "TypeLay.Test.SourceSetup.Field.v1"),
+                        sourceObserverField = (long)N.GetProp(source.Root, "TypeLay.Test.SourceSetup.Field.v1"),
                         sourceMessages = events,
                         sourceFieldDownsRemoved = events.Count(e => e.role == "source-field" && e.phase == "queue-remove" && e.message == 0x0201),
                         sourceFieldUpsRemoved = events.Count(e => e.role == "source-field" && e.phase == "queue-remove" && e.message == 0x0202),
                         sourceMessagesDropped = (int)N.GetProp(source.Root, prefix + "Dropped"),
-                        sourceMessagesIncomplete = N.GetProp(source.Root, prefix + "Incomplete") != 0,
-                        sourcePropertiesReadAfterCancellation = true,
-                        expectedMouseUpReceipt = (long)clickMarker,
-                        actualMouseUpReceiptAfterCancellation = (long)N.GetProp(source.Root, N.FixtureClickReceipt),
-                        actualMouseUpFieldAfterCancellation = (long)N.GetProp(source.Root, N.FixtureClickField),
-                        desktopAfterCancellation = ObserveDesktopAfterCancellation()
+                        sourceMessagesIncomplete = N.GetProp(source.Root, prefix + "Incomplete") != 0
                     }));
                 }
                 catch (Exception error) when (error is not OutOfMemoryException) { }
@@ -618,6 +640,7 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                         completedMs = Since(WindowsInterruptClock.NowMs),
                         foregroundFocusReadMs = Since(focusReadAtMs),
                         foregroundFocusAfterCancellation = Project(foregroundFocusAfterCancellation),
+                        desktopAfterCancellation = ObserveDesktopAfterCancellation(),
                         kernelExitSignaled,
                         exitCode,
                         rootHandleExists,
@@ -855,7 +878,6 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
     private static extern bool GetUserObjectInformationW(nint handle, int index, StringBuilder information, int length, out int needed);
     [DllImport("user32.dll")] private static extern nint SetThreadDpiAwarenessContext(nint context);
     [DllImport("user32.dll")] private static extern nint WindowFromPoint(N.Point point);
-    [DllImport("user32.dll")] private static extern nint GetMessageExtraInfo();
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)] private static extern bool GetCursorPos(out N.Point point);
     [DllImport("user32.dll")]

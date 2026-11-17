@@ -92,13 +92,20 @@ internal static class NativeSourceSetup
             {
                 Check(IsOwnedField(root, field, process), FailureReason.SourceForegroundIdentityChanged);
                 observation.VisibilityAttempts++;
-                observation.VisibilityForegroundMatched = N.GetForegroundWindow() == root;
+                nint foreground = N.GetForegroundWindow();
+                observation.VisibilityForegroundWindow = (long)foreground;
+                observation.VisibilityForegroundMatched = foreground == root;
                 bool boundsAvailable = N.GetWindowRect(field, out var bounds);
-                observation.VisibilityGeometryAvailable = N.IsWindowVisible(root) && N.IsWindowEnabled(root)
-                    && N.IsWindowVisible(field) && N.IsWindowEnabled(field)
-                    && boundsAvailable
-                    && (long)bounds.Right - bounds.Left > 8 && (long)bounds.Bottom - bounds.Top > 8;
+                observation.VisibilityBounds = boundsAvailable ? bounds : null;
+                observation.VisibilityGeometryFailure = !N.IsWindowVisible(root) ? "root-hidden"
+                    : !N.IsWindowEnabled(root) ? "root-disabled"
+                    : !N.IsWindowVisible(field) ? "field-hidden"
+                    : !N.IsWindowEnabled(field) ? "field-disabled"
+                    : !boundsAvailable ? "field-bounds-unavailable"
+                    : (long)bounds.Right - bounds.Left <= 8 || (long)bounds.Bottom - bounds.Top <= 8 ? "field-width-or-height-at-most-8" : null;
+                observation.VisibilityGeometryAvailable = observation.VisibilityGeometryFailure is null;
                 string hit = "none";
+                nint? hitWindow = null;
                 if (observation.VisibilityGeometryAvailable)
                 {
                     int y = (int)((long)bounds.Top + ((long)bounds.Bottom - bounds.Top) / 2);
@@ -110,24 +117,25 @@ internal static class NativeSourceSetup
                         string current = target == field ? "field" : target == root ? "source-root" : target == 0 ? "none"
                             : N.GetWindowThreadProcessId(target, out uint pid) != 0 && pid == process.Id ? "other-owned" : "foreign";
                         if (x == xs[0])
-                            hit = current;
+                            (hit, hitWindow) = (current, target);
                         if (target == field && observation.VisibilityForegroundMatched)
                         {
-                            RecordHit("field");
+                            RecordHit("field", target);
                             Check(IsOwnedField(root, field, process), FailureReason.SourceForegroundIdentityChanged);
                             ct.ThrowIfCancellationRequested();
                             return point;
                         }
                     }
                 }
-                RecordHit(hit);
+                RecordHit(hit, hitWindow);
             }
             finally { SetThreadDpiAwarenessContext(previousDpi); }
             await Task.Delay(15, ct);
         }
 
-        void RecordHit(string hit)
+        void RecordHit(string hit, nint? window)
         {
+            observation.VisibilityHitWindow = (long?)window;
             observation.VisibilityFirstHit ??= hit;
             observation.VisibilityLastHit = hit;
         }
@@ -138,40 +146,15 @@ internal static class NativeSourceSetup
         && N.GetWindowThreadProcessId(field, out uint fieldPid) != 0 && fieldPid == process.Id
         && N.GetAncestor(field, 2) == root;
 
+    internal sealed record TargetCheck(string Stage, string? UnmetCondition, N.Point Point, N.Rect? FieldBounds, long? HitWindow);
+
     internal sealed class ClickObservation
     {
-        public string? TargetCheck
-        {
-            get; set;
-        }
-        public long? HitWindow
-        {
-            get; set;
-        }
-        public int? X
-        {
-            get; set;
-        }
-        public int? Y
-        {
-            get; set;
-        }
-        public int ClickAttempts
-        {
-            get; set;
-        }
-        public long? SendStartedAtMs
-        {
-            get; set;
-        }
-        public uint? InputsInserted
-        {
-            get; set;
-        }
-        public bool? ReleaseComplete
-        {
-            get; set;
-        }
+        public TargetCheck? LastTargetCheck;
+        public int ClickAttempts;
+        public long? SendStartedInterruptMs;
+        public uint? InputsInserted;
+        public bool? ReleaseComplete;
     }
 
     internal static async Task ClickAsync(nint root, nint field, Process process, CancellationToken ct, nuint marker = 0,
@@ -208,16 +191,20 @@ internal static class NativeSourceSetup
                 Check(current.IsEnabled, FailureReason.SourceClickControlDisabled);
                 Check(!current.IsOffscreen, FailureReason.SourceClickControlOffscreen);
                 var bounds = current.BoundingRectangle;
-                Check(!bounds.IsEmpty && bounds.Width > 8 && bounds.Height > 8
+                bool usableBounds = !bounds.IsEmpty && bounds.Width > 8 && bounds.Height > 8
                     && double.IsFinite(bounds.Left) && double.IsFinite(bounds.Top)
-                    && double.IsFinite(bounds.Right) && double.IsFinite(bounds.Bottom), FailureReason.SourceClickGeometryUnavailable);
+                    && double.IsFinite(bounds.Right) && double.IsFinite(bounds.Bottom);
+                if (!usableBounds)
+                    throw new Failure(FailureReason.SourceClickGeometryUnavailable, observation is null ? null
+                        : $"Expected finite UIA bounds wider and taller than 8. Actual bounds: {bounds}.");
                 var hits = new (N.Point Point, nint? Window)[3];
                 int hitCount = 0;
                 foreach (double x in new[] { bounds.Left + bounds.Width / 2, bounds.Left + 4, bounds.Right - 4 })
                 {
                     double y = bounds.Top + bounds.Height / 2;
-                    Check(x >= int.MinValue && x <= int.MaxValue && y >= int.MinValue && y <= int.MaxValue,
-                        FailureReason.SourceClickGeometryUnavailable);
+                    if (!(x >= int.MinValue && x <= int.MaxValue && y >= int.MinValue && y <= int.MaxValue))
+                        throw new Failure(FailureReason.SourceClickGeometryUnavailable, observation is null ? null
+                            : $"Expected Int32 hit coordinates. Actual point: ({x}, {y}), UIA bounds: {bounds}.");
                     var point = new N.Point { X = (int)x, Y = (int)y };
                     nint? hit = bounds.Contains(point.X, point.Y) ? WindowFromPoint(point) : null;
                     hits[hitCount++] = (point, hit);
@@ -248,7 +235,7 @@ internal static class NativeSourceSetup
             if (observation is not null)
             {
                 observation.ClickAttempts++;
-                observation.SendStartedAtMs = WindowsInterruptClock.NowMs;
+                observation.SendStartedInterruptMs = WindowsInterruptClock.NowMs;
             }
             var click = HyPackageCheck.SendLeftClick(marker);
             if (observation is not null)
@@ -261,18 +248,31 @@ internal static class NativeSourceSetup
 
             void CheckTarget(string stage)
             {
+                N.Rect? fieldBounds = null;
                 nint? hit = null;
-                bool matches = IsOwnedField(root, field, process) && N.IsWindowVisible(field) && N.IsWindowEnabled(field)
-                    && N.GetWindowRect(field, out var bounds) && observed.X >= bounds.Left && observed.X < bounds.Right
-                    && observed.Y >= bounds.Top && observed.Y < bounds.Bottom && (hit = WindowFromPoint(observed)) == field;
-                if (observation is not null)
+                string? unmet;
+                if (!IsOwnedField(root, field, process))
+                    unmet = "owned-field";
+                else if (!N.IsWindowVisible(field))
+                    unmet = "visible-field";
+                else if (!N.IsWindowEnabled(field))
+                    unmet = "enabled-field";
+                else if (!N.GetWindowRect(field, out var bounds))
+                    unmet = "field-bounds-available";
+                else
                 {
-                    observation.TargetCheck = stage;
-                    observation.HitWindow = (long?)hit;
-                    observation.X = observed.X;
-                    observation.Y = observed.Y;
+                    fieldBounds = bounds;
+                    if (observed.X < bounds.Left || observed.X >= bounds.Right || observed.Y < bounds.Top || observed.Y >= bounds.Bottom)
+                        unmet = "point-inside-field-bounds";
+                    else
+                    {
+                        hit = WindowFromPoint(observed);
+                        unmet = hit == field ? null : "point-hits-field";
+                    }
                 }
-                Check(matches, FailureReason.SourceClickTargetChanged);
+                if (observation is not null)
+                    observation.LastTargetCheck = new(stage, unmet, observed, fieldBounds, (long?)hit);
+                Check(unmet is null, FailureReason.SourceClickTargetChanged);
             }
         }
         finally { SetThreadDpiAwarenessContext(previousClickDpi); }
@@ -486,6 +486,13 @@ internal static class NativeSourceSetup
 
     internal sealed class Observation
     {
+        // The desktop test logs these original native samples. Other callers
+        // serialize only the public, classified visibility observations below.
+        internal long? VisibilityForegroundWindow;
+        internal N.Rect? VisibilityBounds;
+        internal string? VisibilityGeometryFailure;
+        internal long? VisibilityHitWindow;
+
         public int VisibilityAttempts
         {
             get; internal set;
