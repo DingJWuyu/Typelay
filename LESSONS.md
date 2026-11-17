@@ -57,6 +57,14 @@
 - **Evidence**：[PR #66 的执行器意见](https://github.com/DingJWuyu/Typelay/pull/66#discussion_r4600464756)及[共享锁意见](https://github.com/DingJWuyu/Typelay/pull/66#discussion_r4600464779)。
 - **Seen**：1 次，2026-11-17。
 
+### 待审提交仍须取得完整验收证据
+
+- **Rule**：在待审 head 上执行要求的完整验收，并保留每次结果。禁止把未解释的失败反复跑到通过后交差，不妨碍为当前 head 取证或复现失败。
+- **Kind**：judgement。
+- **Why**：#61 把“不准重试”理解成不能在新 head 上完整验收，只提交了定向回归，导致私有 GUI 的最新完整证据缺失。
+- **Evidence**：[PR #67 负责人审查](https://github.com/DingJWuyu/Typelay/pull/67#pullrequestreview-5939944553)。
+- **Seen**：1 次，2026-11-17。
+
 ### 固定产物要按实际变更频率划分
 
 - **Rule**：优化 CI 的固定产物时，区分主动升级的第三方依赖与逐提交变化的产品代码。固定工具链，逐提交编译产品模块，并用一次真实产品源码改动验证缓存命中与完整墙钟时间。
