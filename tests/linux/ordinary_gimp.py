@@ -41,7 +41,7 @@ def comment_undo_evidence(package_version, original, replacement, direct, native
     if not supported:
         # Exact audited host/field only. Unknown behavior is not an unsupported
         # capability receipt; a future restoring baseline takes the branch above.
-        assert package_version == "gimp 3.2.6-2", "unknown Comment undo capability"
+        assert package_version == "gimp 3.2.8-1", "unknown Comment undo capability"
         assert native_paste == [replacement, replacement], "unexpected non-restoring native history"
     return {
         "nativeUndoSupported": supported,
@@ -931,14 +931,14 @@ def run_gimp(
         startup_deadline = time.monotonic() + 60
         main = wait_for(main_window, "ordinary GIMP window missing", timeout=60)
         gimp_main_id = main["id"]
-        # Fresh isolated HOME: GIMP 3.2.6 shows its first-run welcome after
+        # Fresh isolated HOME: GIMP 3.2.8 shows its first-run welcome after
         # creating the main window (gimp-update.c). Never race one optional peek.
-        assert report["application"]["packageVersion"] == "gimp 3.2.6-2", (
+        assert report["application"]["packageVersion"] == "gimp 3.2.8-1", (
             "unverified GIMP first-run version"
         )
         welcome = wait_for(
             lambda: unique_owned_window(
-                windows(application["pid"]), application["pid"], "Welcome to GIMP 3.2.6"
+                windows(application["pid"]), application["pid"], "Welcome to GIMP 3.2.8"
             ),
             "fresh-profile GIMP welcome missing",
             timeout=max(0, startup_deadline - time.monotonic()),

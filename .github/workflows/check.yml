@@ -1264,6 +1264,22 @@ jobs:
           artifacts/linux/qt-desktop/*.log
         if-no-files-found: ignore
         retention-days: 14
+    - name: Preserve small GIMP scenario evidence
+      if: ${{ always() && matrix.group == 'native' }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: typelay-linux-gimp-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          artifacts/ci/source.json
+          artifacts/linux/package/build-info.json
+          artifacts/linux/ordinary-gimp/*.json
+          artifacts/linux/ordinary-gimp/*.jsonl
+          artifacts/linux/ordinary-gimp/*.log
+          artifacts/linux/ordinary-gimp/*.png
+          artifacts/linux/ordinary-gimp/*.kdl
+          artifacts/linux/ordinary-gimp/*.failed
+        if-no-files-found: warn
+        retention-days: 14
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       if: always()
       with:

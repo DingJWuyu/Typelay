@@ -111,7 +111,7 @@ class DisconnectCompletionTests(unittest.TestCase):
 class CommentUndoEvidenceTests(unittest.TestCase):
     def test_audited_nonundoable_comment_is_not_reported_as_undo_success(self):
         result = comment_undo_evidence(
-            "gimp 3.2.6-2", "source", "translation", ["translation"] * 2, ["translation"] * 2
+            "gimp 3.2.8-1", "source", "translation", ["translation"] * 2, ["translation"] * 2
         )
         self.assertEqual(
             result,
@@ -131,7 +131,7 @@ class CommentUndoEvidenceTests(unittest.TestCase):
     def test_missing_host_history_never_excuses_a_different_typelay_trajectory(self):
         with self.assertRaises(AssertionError):
             comment_undo_evidence(
-                "gimp 3.2.6-2", "source", "translation", ["changed", "changed"], ["translation"] * 2
+                "gimp 3.2.8-1", "source", "translation", ["changed", "changed"], ["translation"] * 2
             )
         with self.assertRaises(AssertionError):
             comment_undo_evidence(
@@ -141,9 +141,10 @@ class CommentUndoEvidenceTests(unittest.TestCase):
     def test_unknown_nonrestoring_behavior_and_wrong_action_counts_fail(self):
         for version, direct, native in (
             ("gimp future", ["translation"] * 2, ["translation"] * 2),
-            ("gimp 3.2.6-2", ["other"] * 2, ["other"] * 2),
-            ("gimp 3.2.6-2", [], []),
-            ("gimp 3.2.6-2", ["source"] * 3, ["source"] * 3),
+            ("gimp 3.2.6-2", ["translation"] * 2, ["translation"] * 2),
+            ("gimp 3.2.8-1", ["other"] * 2, ["other"] * 2),
+            ("gimp 3.2.8-1", [], []),
+            ("gimp 3.2.8-1", ["source"] * 3, ["source"] * 3),
         ):
             with self.subTest(version=version, native=native), self.assertRaises(AssertionError):
                 comment_undo_evidence(version, "source", "translation", direct, native)
@@ -177,7 +178,7 @@ class DirectReceiptTests(unittest.TestCase):
 
 class OrdinaryFirstRunTests(unittest.TestCase):
     def test_welcome_requires_unique_same_process_exact_title(self):
-        welcome = {"id": 2, "pid": 10, "title": "Welcome to GIMP 3.2.6"}
+        welcome = {"id": 2, "pid": 10, "title": "Welcome to GIMP 3.2.8"}
         self.assertEqual(unique_owned_window([welcome], 10, welcome["title"]), welcome)
         self.assertIsNone(unique_owned_window([welcome], 11, welcome["title"]))
         self.assertIsNone(unique_owned_window([welcome], 10, "Welcome to GIMP 3.2.7"))
@@ -194,7 +195,7 @@ class OrdinaryFirstRunTests(unittest.TestCase):
             {"pid": 11},
             {"id": 3},
             {"is_focused": False},
-            {"title": "Welcome to GIMP 3.2.6"},
+            {"title": "Welcome to GIMP 3.2.8"},
         ):
             with self.subTest(change=change):
                 self.assertIsNone(completed_new_image([{**current, **change}], previous, 2))

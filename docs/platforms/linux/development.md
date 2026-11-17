@@ -206,7 +206,7 @@ GTK3 TextView 的 transport proof 续接只允许单调 transport epoch 变化�
 
 [ordinary-gimp](../../../tests/linux/ordinary_gimp.py)比较两张独立临时图像中的实际轨迹：同一原文和译文，一边由 TypeLay direct 替换，一边由原生粘贴替换，然后各执行固定两次 Ctrl+Z。测试不循环等原文出现，也不向 GIMP 注入撤销历史。
 
-已核版本 GIMP `3.2.6-2` 的 Comment 不为评论修改建立原生 Undo。只有该版本与字段、原生粘贴两次均保持译文、TypeLay 完整轨迹一致时，才记录 `nativeUndoSupported=false` 和 `undoRestoration=not-supported`。这表示宿主不提供撤销，不是 TypeLay 撤销通过。未来基线若恢复原文，TypeLay 也必须恢复；未知版本的不恢复或任意轨迹差异都失败。
+已核版本 GIMP `3.2.8-1` 的 Comment 不为评论修改建立原生 Undo。只有该版本与字段、原生粘贴两次均保持译文、TypeLay 完整轨迹一致时，才记录 `nativeUndoSupported=false` 和 `undoRestoration=not-supported`。这表示宿主不提供撤销，不是 TypeLay 撤销通过。未来基线若恢复原文，TypeLay 也必须恢复；未知版本的不恢复或任意轨迹差异都失败。
 
 该 scope 只在自有嵌套 niri 配置关闭动画。平铺原点必须由同一聚焦窗口、唯一活动输出与工作区、无 overview、窗口与 tile 占满输出及零内容偏移共同证明，缺失坐标不能猜成零。验证还需完成取消、断连、配置恢复和 guardian 退出，局部替换成功不等于整条链通过。
 
