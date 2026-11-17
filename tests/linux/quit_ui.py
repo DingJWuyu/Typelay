@@ -58,13 +58,59 @@ async def wait_cancel(dialog, until):
         raise
 
 
+def painted_background(widget):
+    import cairo
+    from gi.repository import Gdk, Gtk
+
+    # Paint the actual node, including any background image from the GTK theme.
+    sample = cairo.ImageSurface(cairo.FORMAT_ARGB32, 16, 16)
+    Gtk.render_background(widget.get_style_context(), cairo.Context(sample), 0, 0, 16, 16)
+    pixel = Gdk.pixbuf_get_from_surface(sample, 8, 8, 1, 1).get_pixels()
+    assert pixel[3] == 255
+    return tuple(pixel[:3])
+
+
+def assert_dialog_palette(dialog, expected_dark):
+    from gi.repository import Gtk
+
+    buttons = [
+        dialog.get_widget_for_response(response)
+        for response in (Gtk.ResponseType.CANCEL, Gtk.ResponseType.OK)
+    ]
+    for widget in (dialog.get_transient_for(), dialog, *buttons):
+        pixel = painted_background(widget)
+        assert max(pixel[:3]) < 128 if expected_dark else min(pixel[:3]) > 128, (
+            expected_dark,
+            dialog.get_property("text"),
+            type(widget).__name__,
+            tuple(pixel),
+        )
+    labels = [
+        child
+        for child in dialog.get_message_area().get_children()
+        if isinstance(child, Gtk.Label) and child.get_mapped()
+    ]
+    title = dialog.get_property("text")
+    assert any(label.get_text() == title for label in labels), title
+    for label in [*labels, *(button.get_child() for button in buttons)]:
+        context = label.get_style_context()
+        ink = context.get_color(context.get_state())
+        assert ink.alpha == 1
+        rgb = (ink.red, ink.green, ink.blue)
+        assert min(rgb) > 0.5 if expected_dark else max(rgb) < 0.5, (
+            expected_dark,
+            title,
+            label.get_text(),
+            rgb,
+        )
+
+
 async def complete(
     surface, host, state, jobs, failures, quits, settings_file, package, directory, tasks, until
 ):
     """Normal GTK actions and explicitly controlled synchronous retirement callbacks."""
     from types import SimpleNamespace
 
-    import cairo
     from gi.repository import Gdk, GObject, Gtk
     from tray import Tray
 
@@ -222,6 +268,7 @@ async def complete(
     # System mode also exercises a live change of the native GTK preference.
     gtk = surface.window.get_settings()
     gtk.set_property("gtk-theme-name", "Adwaita")
+    surface.window.present()  # Reactivate after the preceding quit confirmation.
     for theme, desktop_dark, expected_dark in (
         ("light", True, False),
         ("dark", True, True),
@@ -230,7 +277,14 @@ async def complete(
     ):
         gtk.set_property("gtk-application-prefer-dark-theme", desktop_dark)
         assert (await host.ask("settingsPatch", {"theme": theme}, timeout=3))["saved"]
-        await open_settings()
+        # Observe the committed appearance on the parent before opening either
+        # transient. A GTK desktop theme notification can precede its repaint.
+        expected_page = (38, 38, 36) if expected_dark else (247, 246, 242)
+        await until(
+            lambda: not jobs
+            and surface.window.is_active()
+            and painted_background(surface.window) == expected_page
+        )
         surface.sidebar.select_row(surface.nav_rows["application-support"])
         before = settings_file.read_bytes()
         for action, title in (
@@ -243,45 +297,13 @@ async def complete(
             # disposable CI Xvfb has no WM to activate it on map.
             dialog.present()
             await until(dialog.is_active)
-            buttons = [
-                dialog.get_widget_for_response(response)
-                for response in (Gtk.ResponseType.CANCEL, Gtk.ResponseType.OK)
-            ]
-            for widget in (surface.window, dialog, *buttons):
-                # Render the actual GTK node, including its native background image.
-                sample = cairo.ImageSurface(cairo.FORMAT_ARGB32, 16, 16)
-                context = widget.get_style_context()
-                Gtk.render_background(context, cairo.Context(sample), 0, 0, 16, 16)
-                pixel = Gdk.pixbuf_get_from_surface(sample, 8, 8, 1, 1).get_pixels()
-                assert pixel[3] == 255
-                assert max(pixel[:3]) < 128 if expected_dark else min(pixel[:3]) > 128, (
-                    theme,
-                    desktop_dark,
-                    action,
-                    type(widget).__name__,
-                    tuple(pixel),
-                )
-            labels = [
-                child
-                for child in dialog.get_message_area().get_children()
-                if isinstance(child, Gtk.Label) and child.get_mapped()
-            ]
-            assert any(label.get_text() == title for label in labels), title
-            for label in [*labels, *(button.get_child() for button in buttons)]:
-                context = label.get_style_context()
-                ink = context.get_color(context.get_state())
-                assert ink.alpha == 1
-                rgb = (ink.red, ink.green, ink.blue)
-                assert min(rgb) > 0.5 if expected_dark else max(rgb) < 0.5, (
-                    theme,
-                    action,
-                    label.get_text(),
-                    rgb,
-                )
+            assert_dialog_palette(dialog, expected_dark)
             await answer(dialog, Gtk.ResponseType.CANCEL)
             unchanged(0, before)
             # Bare Xvfb has no WM to return focus after destroying a transient.
-            await open_settings()
+            assert surface.window.get_mapped()
+            surface.window.present()
+            await until(surface.window.is_active)
     print("CONFIRMATION THEME PASS: install and quit, light/dark/system", flush=True)
 
     before = settings_file.read_bytes()

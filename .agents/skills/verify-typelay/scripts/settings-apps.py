@@ -13,7 +13,8 @@ from pathlib import Path
 import gi
 
 gi.require_version("Atspi", "2.0")
-from gi.repository import Atspi  # noqa: E402
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import Atspi, GdkPixbuf  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "tests/linux"))
 from support.gtk_accessibility import (  # noqa: E402
@@ -186,6 +187,17 @@ def main():
         )
         save(name + "-window.json", modal_window)
         capture(name)
+        # At 1x in the private niri output, sample the top of the actual GTK
+        # decoration. Its empty titlebar is separate from the message body.
+        layout = modal_window["layout"]
+        x, y = layout["tile_pos_in_workspace_view"]
+        dx, dy = layout["window_offset_in_tile"]
+        png = GdkPixbuf.Pixbuf.new_from_file(str(output / (name + ".png")))
+        pixel = png.new_subpixbuf(
+            round(x + dx) + layout["window_size"][0] // 2, round(y + dy) + 6, 1, 1
+        ).get_pixels()[:3]
+        dark = theme != "Light"  # Auto follows the pinned Adwaita dark desktop.
+        assert max(pixel) < 128 if dark else min(pixel) > 128, (name, "titlebar", tuple(pixel))
         labels, buttons, pending = [], [], [dialog]
         for _ in range(128):
             if not pending:
@@ -342,7 +354,8 @@ def main():
                 observe_connection_card(name)
 
             confirmation("en", theme)
-            confirmation("en", theme, quit_app=True)
+            if not args.invalid_component:
+                confirmation("en", theme, quit_app=True)
             page("Appearance", "Appearance: " + theme)
             click("Setting: Interface language")
             combo = visible_named(pid, "Setting: Interface language", role=Atspi.Role.COMBO_BOX)
@@ -359,12 +372,16 @@ def main():
             click("English", root=combo)
             wait(lambda: json.loads(config.read_text()).get("UiLanguage") == "en", "English saved")
 
-        page("Appearance", "Appearance: Auto")
-        click("Appearance: Auto")
-        wait(lambda: json.loads(config.read_text()).get("Theme") == "system", "system theme saved")
-        page("Apps", "Desktop apps")
-        confirmation("en", "system")
-        confirmation("en", "system", quit_app=True)
+        if not args.invalid_component:
+            page("Appearance", "Appearance: Auto")
+            click("Appearance: Auto")
+            wait(
+                lambda: json.loads(config.read_text()).get("Theme") == "system",
+                "system theme saved",
+            )
+            page("Apps", "Desktop apps")
+            confirmation("en", "system")
+            confirmation("en", "system", quit_app=True)
         assert not layout_issues, "Apps layout: " + "; ".join(layout_issues)
         save("settings-saved.json", json.loads(config.read_text()))
         save(
