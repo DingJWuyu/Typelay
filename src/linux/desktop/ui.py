@@ -1360,7 +1360,7 @@ class ApplicationSupportPane:
         elif action["requiresConfirmation"]:
             labels = self.value["labels"]
             localize = self.owner.localizer.text
-            dialog = Gtk.MessageDialog(
+            dialog = self.owner.message_dialog(
                 transient_for=parent or self.owner.window,
                 modal=True,
                 message_type=Gtk.MessageType.QUESTION,
@@ -1486,7 +1486,7 @@ class ApplicationSupportPane:
 
     def open_instructions(self, row):
         labels = self.value["labels"]
-        dialog = Gtk.MessageDialog(
+        dialog = self.owner.message_dialog(
             transient_for=self.owner.window,
             modal=True,
             message_type=Gtk.MessageType.INFO,
@@ -3073,7 +3073,7 @@ class TranslationSettings:
 
     async def confirm_conflict(self, operation, payload, latest_rules, latest_styles):
         glossary = operation == "changeGlossary"
-        dialog = Gtk.MessageDialog(
+        dialog = self.owner.message_dialog(
             transient_for=self.owner.window,
             modal=True,
             message_type=Gtk.MessageType.QUESTION,
@@ -3162,7 +3162,7 @@ class TranslationSettings:
             return
         revision = self.style_state["settingsRevision"]
         session = self.owner.draft_session
-        dialog = Gtk.MessageDialog(
+        dialog = self.owner.message_dialog(
             transient_for=self.owner.window,
             modal=True,
             message_type=Gtk.MessageType.QUESTION,
@@ -3297,6 +3297,29 @@ class Settings:
         self.window.connect("destroy", self.close_quit)
         self.pages.connect("notify::visible-child-name", lambda *_: self.retire_quit())
 
+    def message_dialog(self, **properties):
+        dialog = Gtk.MessageDialog(**properties)
+        # A transient is a separate GTK toplevel. Share the settings window's
+        # scoped provider and follow its resolved appearance while open.
+        style = dialog.get_style_context()
+        style.add_class("typelay-surface")
+        style.add_class(self.window.typelay_theme_scope)
+
+        def sync(owner):
+            parent_style = owner.get_style_context()
+            for name in ("settings-dark", "reduce-motion", "reduce-transparency"):
+                (style.add_class if parent_style.has_class(name) else style.remove_class)(name)
+
+        sync(self.window)
+        handler = self.window.connect("style-updated", sync)
+
+        def disconnect(*_):
+            if self.window.handler_is_connected(handler):
+                self.window.disconnect(handler)
+
+        dialog.connect("destroy", disconnect)
+        return dialog
+
     def close_quit(self, *_):
         self.quit_closed = True
         self.retire_quit()
@@ -3356,7 +3379,7 @@ class Settings:
                 self.quit_intent = self.quit_dialog = None
                 self.quit_requested()
 
-        dialog = Gtk.MessageDialog(
+        dialog = self.message_dialog(
             transient_for=parent or self.window,
             modal=True,
             message_type=Gtk.MessageType.QUESTION,
@@ -4524,7 +4547,7 @@ class Settings:
             return True
         if self.draft_messages is None:
             return True
-        dialog = Gtk.MessageDialog(
+        dialog = self.message_dialog(
             transient_for=parent or self.window,
             modal=True,
             message_type=Gtk.MessageType.QUESTION,
@@ -4788,7 +4811,7 @@ class Settings:
 
     def confirm_package(self, action, proceed, *, guard=None, parent=None):
         requested_at = Gtk.get_current_event_time()
-        dialog = Gtk.MessageDialog(
+        dialog = self.message_dialog(
             transient_for=parent or self.window,
             modal=True,
             message_type=Gtk.MessageType.QUESTION,
@@ -5126,7 +5149,7 @@ class Settings:
 
     def confirm_install(self, install, directions, *, guard=None, parent=None):
         requested_at = Gtk.get_current_event_time()
-        dialog = Gtk.MessageDialog(
+        dialog = self.message_dialog(
             transient_for=parent or self.window,
             modal=True,
             message_type=Gtk.MessageType.QUESTION,

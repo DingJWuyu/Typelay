@@ -58,6 +58,53 @@ async def wait_cancel(dialog, until):
         raise
 
 
+def painted_background(widget):
+    import cairo
+    from gi.repository import Gdk, Gtk
+
+    # Paint the actual node, including any background image from the GTK theme.
+    sample = cairo.ImageSurface(cairo.FORMAT_ARGB32, 16, 16)
+    Gtk.render_background(widget.get_style_context(), cairo.Context(sample), 0, 0, 16, 16)
+    pixel = Gdk.pixbuf_get_from_surface(sample, 8, 8, 1, 1).get_pixels()
+    assert pixel[3] == 255
+    return tuple(pixel[:3])
+
+
+def assert_dialog_palette(dialog, expected_dark):
+    from gi.repository import Gtk
+
+    buttons = [
+        dialog.get_widget_for_response(response)
+        for response in (Gtk.ResponseType.CANCEL, Gtk.ResponseType.OK)
+    ]
+    for widget in (dialog.get_transient_for(), dialog, *buttons):
+        pixel = painted_background(widget)
+        assert max(pixel[:3]) < 128 if expected_dark else min(pixel[:3]) > 128, (
+            expected_dark,
+            dialog.get_property("text"),
+            type(widget).__name__,
+            tuple(pixel),
+        )
+    labels = [
+        child
+        for child in dialog.get_message_area().get_children()
+        if isinstance(child, Gtk.Label) and child.get_mapped()
+    ]
+    title = dialog.get_property("text")
+    assert any(label.get_text() == title for label in labels), title
+    for label in [*labels, *(button.get_child() for button in buttons)]:
+        context = label.get_style_context()
+        ink = context.get_color(context.get_state())
+        assert ink.alpha == 1
+        rgb = (ink.red, ink.green, ink.blue)
+        assert min(rgb) > 0.5 if expected_dark else max(rgb) < 0.5, (
+            expected_dark,
+            title,
+            label.get_text(),
+            rgb,
+        )
+
+
 async def complete(
     surface, host, state, jobs, failures, quits, settings_file, package, directory, tasks, until
 ):
@@ -117,16 +164,13 @@ async def complete(
         assert dialog.get_modal() and dialog.get_default_widget() is cancel
         return dialog
 
-    def settings_quit():
+    def settings_button(*names):
         pending, matches = [surface.window], []
         for _ in range(4096):
             if not pending:
                 break
             widget = pending.pop()
-            if isinstance(widget, Gtk.Button) and widget.get_accessible().get_name() in (
-                "退出 TypeLay",
-                "Quit TypeLay",
-            ):
+            if isinstance(widget, Gtk.Button) and widget.get_accessible().get_name() in names:
                 matches.append(widget)
             if isinstance(widget, Gtk.Container):
                 pending.extend(widget.get_children())
@@ -138,7 +182,7 @@ async def complete(
         await until(lambda: not jobs and surface.window.is_active())
 
     async def ask_quit():
-        await click(settings_quit(), surface.window)
+        await click(settings_button("退出 TypeLay", "Quit TypeLay"), surface.window)
         return await ready_question(surface.tr("退出 TypeLay？", "Quit TypeLay?"))
 
     async def answer(dialog, response):
@@ -220,12 +264,54 @@ async def complete(
         assert consumed and len(watched) == 1 and not watched[0][0].get_visible()
         assert surface.quit_dialog is None
 
+    # The desktop preference stays fixed as the user switches explicit modes.
+    # System mode also exercises a live change of the native GTK preference.
+    gtk = surface.window.get_settings()
+    gtk.set_property("gtk-theme-name", "Adwaita")
+    surface.window.present()  # Reactivate after the preceding quit confirmation.
+    for theme, desktop_dark, expected_dark in (
+        ("light", True, False),
+        ("dark", True, True),
+        ("system", True, True),
+        ("system", False, False),
+    ):
+        gtk.set_property("gtk-application-prefer-dark-theme", desktop_dark)
+        assert (await host.ask("settingsPatch", {"theme": theme}, timeout=3))["saved"]
+        # Observe the committed appearance on the parent before opening either
+        # transient. A GTK desktop theme notification can precede its repaint.
+        expected_page = (38, 38, 36) if expected_dark else (247, 246, 242)
+        await until(
+            lambda: not jobs
+            and surface.window.is_active()
+            and painted_background(surface.window) == expected_page
+        )
+        surface.sidebar.select_row(surface.nav_rows["application-support"])
+        before = settings_file.read_bytes()
+        for action, title in (
+            ("应用连接：桌面应用", "桌面普通输入框：安装接入组件…"),
+            ("退出 TypeLay", "退出 TypeLay？"),
+        ):
+            await click(settings_button(action), surface.window)
+            dialog = question(title)
+            # Apps shows its transient without an explicit focus request. The
+            # disposable CI Xvfb has no WM to activate it on map.
+            dialog.present()
+            await until(dialog.is_active)
+            assert_dialog_palette(dialog, expected_dark)
+            await answer(dialog, Gtk.ResponseType.CANCEL)
+            unchanged(0, before)
+            # Bare Xvfb has no WM to return focus after destroying a transient.
+            assert surface.window.get_mapped()
+            surface.window.present()
+            await until(surface.window.is_active)
+    print("CONFIRMATION THEME PASS: install and quit, light/dark/system", flush=True)
+
     before = settings_file.read_bytes()
     for mode in ("cancel", "destroy"):
         await open_settings()
         await consume_while_showing(
             surface.tr("退出 TypeLay？", "Quit TypeLay?"),
-            lambda: click(settings_quit(), surface.window),
+            lambda: click(settings_button("退出 TypeLay", "Quit TypeLay"), surface.window),
             mode,
         )
         unchanged(0, before)
@@ -596,7 +682,20 @@ def main():
                     no_install,
                     no_install,
                     None,
-                    lambda: host.ask("applicationSupport", {"facts": []}, timeout=3),
+                    lambda: host.ask(
+                        "applicationSupport",
+                        {
+                            "facts": [
+                                {
+                                    "id": "desktop-text",
+                                    "state": "NeedsInstall",
+                                    "reason": "ComponentMissing",
+                                    "supportedActions": ["Install"],
+                                }
+                            ]
+                        },
+                        timeout=3,
+                    ),
                     support_action,
                     None,
                 )

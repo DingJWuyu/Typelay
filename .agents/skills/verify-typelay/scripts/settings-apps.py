@@ -13,7 +13,8 @@ from pathlib import Path
 import gi
 
 gi.require_version("Atspi", "2.0")
-from gi.repository import Atspi  # noqa: E402
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import Atspi, GdkPixbuf  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "tests/linux"))
 from support.gtk_accessibility import (  # noqa: E402
@@ -133,9 +134,16 @@ def main():
         subprocess.run(["grim", str(output / (name + ".png"))], check=True, timeout=5)
         record(action="screenshot", path=name + ".png")
 
-    def install_confirmation(language, theme):
+    def confirmation(language, theme, *, quit_app=False):
         expected = INSTALL_CONFIRMATION[language].copy()
-        if args.invalid_component:
+        trigger = "App connection: Desktop apps" if language == "en" else "应用连接：桌面应用"
+        name = f"apps-{theme.lower()}-{language}-confirmation"
+        if quit_app:
+            # The sidebar confirmation has a title and two buttons, with no body.
+            trigger = "Quit TypeLay"
+            expected = {"title": "Quit TypeLay?", "confirm": "Quit", "cancel": "Cancel"}
+            name = f"quit-{theme.lower()}-{language}-confirmation"
+        elif args.invalid_component:
             expected["body"] += "\n" + (
                 "Component verification failed. Retry with a complete TypeLay package from a trusted source."
                 if language == "en"
@@ -144,7 +152,7 @@ def main():
         saved_before = config.read_bytes()
         component = Path(os.environ["XDG_DATA_HOME"]) / "typelay/components/desktop-text"
         assert not component.exists(), "this journey requires uninstalled desktop components"
-        click("App connection: Desktop apps" if language == "en" else "应用连接：桌面应用")
+        click(trigger)
 
         def modal():
             desktop = Atspi.get_desktop(0)
@@ -165,8 +173,7 @@ def main():
                         return node
             return None
 
-        dialog = wait(modal, "desktop component install confirmation")
-        name = f"apps-{theme.lower()}-{language}-confirmation"
+        dialog = wait(modal, trigger + " confirmation")
         modal_window = wait(
             lambda: next(
                 (
@@ -176,10 +183,21 @@ def main():
                 ),
                 None,
             ),
-            "compositor shows the focused installation confirmation",
+            "compositor shows the focused " + trigger + " confirmation",
         )
         save(name + "-window.json", modal_window)
         capture(name)
+        # At 1x in the private niri output, sample the top of the actual GTK
+        # decoration. Its empty titlebar is separate from the message body.
+        layout = modal_window["layout"]
+        x, y = layout["tile_pos_in_workspace_view"]
+        dx, dy = layout["window_offset_in_tile"]
+        png = GdkPixbuf.Pixbuf.new_from_file(str(output / (name + ".png")))
+        pixel = png.new_subpixbuf(
+            round(x + dx) + layout["window_size"][0] // 2, round(y + dy) + 6, 1, 1
+        ).get_pixels()[:3]
+        dark = theme != "Light"  # Auto follows the pinned Adwaita dark desktop.
+        assert max(pixel) < 128 if dark else min(pixel) > 128, (name, "titlebar", tuple(pixel))
         labels, buttons, pending = [], [], [dialog]
         for _ in range(128):
             if not pending:
@@ -193,13 +211,16 @@ def main():
         assert not pending, "confirmation accessibility tree exceeds 128 nodes"
         save(name + ".json", {"language": language, "labels": labels, "buttons": buttons})
         assert expected["title"] in labels, "confirmation title does not match " + language
-        assert expected["body"] in labels, "complete confirmation body does not match " + language
+        if "body" in expected:
+            assert expected["body"] in labels, (
+                "complete confirmation body does not match " + language
+            )
         assert sorted(buttons) == sorted([expected["cancel"], expected["confirm"]]), (
             "confirmation buttons do not match " + language
         )
         assert set(labels) <= set(expected.values()), "unexpected confirmation text"
         click(expected["cancel"], root=dialog)
-        wait(lambda: modal() is None, "installation cancelled")
+        wait(lambda: modal() is None, trigger + " cancelled")
         wait(
             lambda: not any(item["id"] == modal_window["id"] for item in windows())
             and any(item["id"] == window["id"] and item["is_focused"] for item in windows()),
@@ -274,7 +295,12 @@ def main():
 
     try:
         with (output / "typelay.log").open("w") as log:
-            subprocess.Popen([app, "--settings"], stdout=log, stderr=subprocess.STDOUT)
+            subprocess.Popen(
+                [app, "--settings"],
+                env={**os.environ, "GTK_THEME": "Adwaita:dark"},
+                stdout=log,
+                stderr=subprocess.STDOUT,
+            )
         window = wait(
             lambda: next((w for w in windows() if w["title"] == "TypeLay 设置"), None),
             "settings window",
@@ -327,7 +353,9 @@ def main():
                 observe_words(name)
                 observe_connection_card(name)
 
-            install_confirmation("en", theme)
+            confirmation("en", theme)
+            if not args.invalid_component:
+                confirmation("en", theme, quit_app=True)
             page("Appearance", "Appearance: " + theme)
             click("Setting: Interface language")
             combo = visible_named(pid, "Setting: Interface language", role=Atspi.Role.COMBO_BOX)
@@ -337,20 +365,35 @@ def main():
                 "Simplified Chinese saved",
             )
             page("应用", "桌面应用")
-            install_confirmation("zh-CN", theme)
+            confirmation("zh-CN", theme)
             page("外观", "外观：浅色")
             click("设置：界面语言")
             combo = visible_named(pid, "设置：界面语言", role=Atspi.Role.COMBO_BOX)
             click("English", root=combo)
             wait(lambda: json.loads(config.read_text()).get("UiLanguage") == "en", "English saved")
 
+        if not args.invalid_component:
+            page("Appearance", "Appearance: Auto")
+            click("Appearance: Auto")
+            wait(
+                lambda: json.loads(config.read_text()).get("Theme") == "system",
+                "system theme saved",
+            )
+            page("Apps", "Desktop apps")
+            confirmation("en", "system")
+            confirmation("en", "system", quit_app=True)
         assert not layout_issues, "Apps layout: " + "; ".join(layout_issues)
         save("settings-saved.json", json.loads(config.read_text()))
         save(
             "result.json",
             {
                 "status": "passed",
-                "features": ["settings/apps-readability", "settings/apps-install-confirmation"],
+                "features": [
+                    "settings/apps-readability",
+                    "settings/apps-install-confirmation",
+                    "settings/appearance",
+                ],
+                "gtkTheme": "Adwaita:dark",
                 "initialFixture": {
                     "OnboardingComplete": True,
                     "desktopComponent": (
