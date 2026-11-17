@@ -13,6 +13,13 @@ def validate_cache(archive_cache, output):
     cache, output = Path(archive_cache).resolve(), output.resolve()
     if output.is_relative_to(cache) or cache.is_relative_to(output):
         raise ValueError(f"Build output and archive cache must be separate: {output}, {cache}")
+    for path in output.rglob("*"):
+        if path.is_symlink():
+            target = path.resolve()
+            if target.is_relative_to(cache) or cache.is_relative_to(target):
+                raise ValueError(
+                    f"Build output must be separate from archive cache: {path} -> {target}"
+                )
     return cache
 
 

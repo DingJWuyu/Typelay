@@ -1,10 +1,14 @@
 """Raw archive supply contracts; compilation is verified by the offline build recipe."""
 
+import hashlib
 import io
+import random
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
@@ -39,7 +43,7 @@ class LocalBuildTests(unittest.TestCase):
 
     def test_cache_cannot_overlap_output_even_through_symlinks(self):
         for builder, args, _ in BUILDERS:
-            for layout in ("same", "child", "parent", "symlink"):
+            for layout in ("same", "child", "parent", "symlink", "source-alias"):
                 with self.subTest(builder=builder.__module__, layout=layout):
                     with tempfile.TemporaryDirectory() as tmp:
                         cache = Path(tmp) / "cache"
@@ -51,9 +55,13 @@ class LocalBuildTests(unittest.TestCase):
                             "child": cache / "output",
                             "parent": cache.parent,
                             "symlink": cache.parent / "alias",
+                            "source-alias": cache.parent / "out",
                         }[layout]
                         if layout == "symlink":
                             out.symlink_to(cache, target_is_directory=True)
+                        if layout == "source-alias":
+                            out.mkdir()
+                            (out / "sources").symlink_to(cache, target_is_directory=True)
                         with self.assertRaisesRegex(ValueError, "separate"):
                             builder(out, *args, archive_cache=cache)
                         self.assertEqual(sentinel.read_text(), "must survive")
@@ -86,6 +94,43 @@ class LocalBuildTests(unittest.TestCase):
 
 class ArchiveSupplyTests(unittest.TestCase):
     DIGEST = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+
+    def test_copy_failure_preserves_cache_and_never_downloads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache, out = Path(tmp) / "cache", Path(tmp) / "out"
+            cache.mkdir()
+            out.mkdir()
+            source = cache / "source.tar.gz"
+            source.write_bytes(b"abc")
+            with (
+                patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "cp")),
+                patch("urllib.request.urlopen", side_effect=AssertionError("network")),
+            ):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    download("https://invalid.test/source", out / source.name, self.DIGEST, cache)
+            self.assertEqual(source.read_bytes(), b"abc")
+            self.assertFalse((out / source.name).exists())
+
+    def test_generated_archive_bytes_are_preserved_and_writes_are_isolated(self):
+        random_bytes = random.Random(71)
+        for length in (0, 1, 2, 255, 4096, 65537):
+            with self.subTest(length=length), tempfile.TemporaryDirectory() as tmp:
+                cache, out = Path(tmp) / "cache", Path(tmp) / "out"
+                cache.mkdir()
+                out.mkdir()
+                content = random_bytes.randbytes(length)
+                source, destination = cache / "source.tar.gz", out / "source.tar.gz"
+                source.write_bytes(content)
+                with patch("urllib.request.urlopen", side_effect=AssertionError("network")):
+                    download(
+                        "https://invalid.test/source",
+                        destination,
+                        hashlib.sha256(content).hexdigest(),
+                        cache,
+                    )
+                self.assertEqual(destination.read_bytes(), content)
+                destination.write_bytes(b"changed output")
+                self.assertEqual(source.read_bytes(), content)
 
     def test_local_hit_copies_verified_bytes_and_leaves_cache_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -175,6 +220,122 @@ class CommandLineTests(unittest.TestCase):
                     self.assertIn(
                         "checksum mismatch" if corrupt else "archive missing", result.stderr
                     )
+
+
+class CompilerReached(Exception):
+    """Stop at the external compiler, after real archive extraction and patching."""
+
+
+class PreparedSourcesTests(unittest.TestCase):
+    """Synthetic upstream catalog, real supply/extraction/patching, no compiled-byte claim."""
+
+    def setUp(self):
+        self.context = ExitStack()
+        self.addCleanup(self.context.close)
+        self.root = Path(self.context.enter_context(tempfile.TemporaryDirectory()))
+        self.cache = self.root / "cache"
+        self.cache.mkdir()
+        patches = self.root / "patches"
+        patches.mkdir()
+        self.expected = {}
+        pins = {}
+        for project, (commit, _) in third_party.FCITX_PINS.items():
+            directories = [
+                directory.removeprefix(project + "/")
+                for directory, _, _ in (*third_party.DATA, third_party.SPELL)
+                if directory.startswith(project + "/")
+            ]
+            if project == "libime":
+                directories.append("src/libime/core/kenlm")
+            name = f"{project}-{commit}.tar.gz"
+            pins[project] = (commit, self.archive(name, f"{project}-{commit}", directories))
+            self.expected[Path(name)] = (self.cache / name).read_bytes()
+        data = []
+        for directory, name, _ in (*third_party.DATA, third_party.SPELL):
+            content = name.encode()
+            (self.cache / name).write_bytes(content)
+            data.append((directory, name, hashlib.sha256(content).hexdigest()))
+            self.expected[Path("sources") / directory / name] = content
+        for project in (*third_party.PATCH_PROJECTS, "fcitx5-qt"):
+            (patches / f"{project}.patch").write_text(
+                "--- a/marker\n+++ b/marker\n@@ -1 +1 @@\n-before\n+after\n"
+            )
+        qt_digest = self.archive("fcitx5-qt.tar.gz", f"fcitx5-qt-{qt.QT_PIN}", ["common"])
+        self.context.enter_context(patch.dict(third_party.FCITX_PINS, pins, clear=True))
+        self.context.enter_context(patch.object(third_party, "DATA", tuple(data[:-1])))
+        self.context.enter_context(patch.object(third_party, "SPELL", data[-1]))
+        self.context.enter_context(patch.object(third_party, "PATCHES", patches))
+        self.context.enter_context(patch.object(qt, "PATCHES", patches))
+        self.context.enter_context(patch.object(qt, "QT_SHA256", qt_digest))
+        self.context.enter_context(
+            patch("urllib.request.urlopen", side_effect=AssertionError("network fallback"))
+        )
+        real_run = subprocess.run
+
+        def run(command, *args, **kwargs):
+            if str(command[0]) == "cmake":
+                raise CompilerReached()
+            return real_run(command, *args, **kwargs)
+
+        self.context.enter_context(patch("subprocess.run", side_effect=run))
+
+    def archive(self, name, source_root, directories):
+        path = self.cache / name
+        with tarfile.open(path, "w:gz") as archive:
+            for directory in ("", *directories):
+                entry = tarfile.TarInfo(f"{source_root}/{directory}")
+                entry.type = tarfile.DIRTYPE
+                entry.mode = 0o755
+                archive.addfile(entry)
+            entry = tarfile.TarInfo(f"{source_root}/marker")
+            entry.size = len(b"before\n")
+            archive.addfile(entry, io.BytesIO(b"before\n"))
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def test_fcitx_and_third_party_prepare_all_sources_data_and_spell_from_cache(self):
+        (self.cache / "fcitx5-qt.tar.gz").unlink()  # These builders do not need Qt.
+        before = {p.name: p.read_bytes() for p in self.cache.iterdir()}
+        for builder, args, _ in BUILDERS[:2]:
+            with self.subTest(builder=builder.__module__):
+                out = self.root / builder.__module__.rsplit(".", 1)[-1]
+                with self.assertRaises(CompilerReached):
+                    builder(out, *args, archive_cache=self.cache)
+                for path, content in self.expected.items():
+                    self.assertEqual((out / path).read_bytes(), content)
+                for project in third_party.PATCH_PROJECTS:
+                    self.assertEqual((out / "sources" / project / "marker").read_text(), "after\n")
+                self.assertEqual({p.name: p.read_bytes() for p in self.cache.iterdir()}, before)
+
+    def test_qt_prepares_its_only_archive_and_applies_patch_and_abi(self):
+        for path in self.cache.iterdir():
+            if path.name != "fcitx5-qt.tar.gz":
+                path.unlink()
+        before = (self.cache / "fcitx5-qt.tar.gz").read_bytes()
+        out = self.root / "qt"
+        with self.assertRaises(CompilerReached):
+            qt.build(out, archive_cache=self.cache)
+        self.assertEqual((out / "fcitx5-qt.tar.gz").read_bytes(), before)
+        source = out / f"fcitx5-qt-{qt.QT_PIN}"
+        self.assertEqual((source / "marker").read_text(), "after\n")
+        self.assertEqual((source / "common" / qt.ABI.name).read_bytes(), qt.ABI.read_bytes())
+        self.assertEqual((self.cache / "fcitx5-qt.tar.gz").read_bytes(), before)
+
+    def test_every_later_fcitx_archive_is_required_and_checked_before_compilation(self):
+        for name in sorted(p.name for p in self.cache.iterdir() if p.name != "fcitx5-qt.tar.gz"):
+            path = self.cache / name
+            original = path.read_bytes()
+            for corrupt in (False, True):
+                with self.subTest(name=name, corrupt=corrupt):
+                    if corrupt:
+                        path.write_bytes(b"bad archive")
+                    else:
+                        path.unlink()
+                    out = self.root / f"{name}-{corrupt}"
+                    error_type = RuntimeError if corrupt else FileNotFoundError
+                    with self.assertRaises(error_type) as error:
+                        fcitx.build(out, third_party.CORE_VERSION, archive_cache=self.cache)
+                    self.assertIn(str(path), str(error.exception))
+                    path.write_bytes(original)
 
 
 if __name__ == "__main__":

@@ -468,6 +468,7 @@ class FixedBuildKeyTests(unittest.TestCase):
                     path.write_bytes(contents)
             for name in (
                 "eng/ci/arch-snapshot",
+                "eng/linux/cooperative/archives.py",
                 "eng/linux/cooperative/patches/fcitx5.patch",
             ):
                 with self.subTest(pin=name):
