@@ -138,8 +138,44 @@ internal static class NativeSourceSetup
         && N.GetWindowThreadProcessId(field, out uint fieldPid) != 0 && fieldPid == process.Id
         && N.GetAncestor(field, 2) == root;
 
+    internal sealed class ClickObservation
+    {
+        public string? TargetCheck
+        {
+            get; set;
+        }
+        public long? HitWindow
+        {
+            get; set;
+        }
+        public int? X
+        {
+            get; set;
+        }
+        public int? Y
+        {
+            get; set;
+        }
+        public int ClickAttempts
+        {
+            get; set;
+        }
+        public long? SendStartedAtMs
+        {
+            get; set;
+        }
+        public uint? InputsInserted
+        {
+            get; set;
+        }
+        public bool? ReleaseComplete
+        {
+            get; set;
+        }
+    }
+
     internal static async Task ClickAsync(nint root, nint field, Process process, CancellationToken ct, nuint marker = 0,
-        int? brokerProcessId = null)
+        int? brokerProcessId = null, ClickObservation? observation = null)
     {
         ct.ThrowIfCancellationRequested();
         int processId = process.Id;
@@ -203,20 +239,41 @@ internal static class NativeSourceSetup
         Check(previousClickDpi != 0, FailureReason.SourceClickDpiContext);
         try
         {
-            CheckTarget();
+            CheckTarget("before-moving-cursor");
             Check(new[] { 0x01, 0x02, 0x04, 0x10, 0x11, 0x12, 0x5B, 0x5C }.All(key => GetAsyncKeyState(key) >= 0),
                 FailureReason.SourceClickInputAlreadyHeld);
             Check(SetCursorPos(observed.X, observed.Y), FailureReason.SourceClickCursorUnavailable);
-            CheckTarget();
+            CheckTarget("before-injection");
             ct.ThrowIfCancellationRequested();
+            if (observation is not null)
+            {
+                observation.ClickAttempts++;
+                observation.SendStartedAtMs = WindowsInterruptClock.NowMs;
+            }
             var click = HyPackageCheck.SendLeftClick(marker);
+            if (observation is not null)
+            {
+                observation.InputsInserted = click.Inserted;
+                observation.ReleaseComplete = click.ReleaseComplete;
+            }
             Check(click.ReleaseComplete, FailureReason.SourceClickReleaseIncomplete);
             Check(click.Complete, FailureReason.SourceClickIncomplete);
 
-            void CheckTarget() => Check(IsOwnedField(root, field, process) && N.IsWindowVisible(field) && N.IsWindowEnabled(field)
-                && N.GetWindowRect(field, out var bounds) && observed.X >= bounds.Left && observed.X < bounds.Right
-                && observed.Y >= bounds.Top && observed.Y < bounds.Bottom && WindowFromPoint(observed) == field,
-                FailureReason.SourceClickTargetChanged);
+            void CheckTarget(string stage)
+            {
+                nint? hit = null;
+                bool matches = IsOwnedField(root, field, process) && N.IsWindowVisible(field) && N.IsWindowEnabled(field)
+                    && N.GetWindowRect(field, out var bounds) && observed.X >= bounds.Left && observed.X < bounds.Right
+                    && observed.Y >= bounds.Top && observed.Y < bounds.Bottom && (hit = WindowFromPoint(observed)) == field;
+                if (observation is not null)
+                {
+                    observation.TargetCheck = stage;
+                    observation.HitWindow = (long?)hit;
+                    observation.X = observed.X;
+                    observation.Y = observed.Y;
+                }
+                Check(matches, FailureReason.SourceClickTargetChanged);
+            }
         }
         finally { SetThreadDpiAwarenessContext(previousClickDpi); }
     }
