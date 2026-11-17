@@ -1217,7 +1217,7 @@ jobs:
         export XDG_CACHE_HOME="$PWD/artifacts/linux/hy-model-cache"
         python tests/linux/native_e2e.py --desktop --desktop-scope model-packages --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/hy-package
     - name: Preserve small GTK3 desktop event diagnostics
-      if: ${{ always() && matrix.group == 'native' }}
+      if: ${{ always() && matrix.group == 'native-gtk' }}
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:
         name: typelay-linux-gtk3-desktop-events-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -1231,7 +1231,7 @@ jobs:
         if-no-files-found: warn
         retention-days: 14
     - name: Preserve small GTK4 probe and desktop diagnostics
-      if: ${{ always() && matrix.group == 'native' }}
+      if: ${{ always() && matrix.group == 'native-gtk4' }}
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:
         name: typelay-linux-gtk4-events-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
