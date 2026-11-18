@@ -4,7 +4,7 @@ internal static partial class HyPackageCheck
 {
     // Both the visible source and tray fallback use this exact native event
     // path. A successful insertion is not evidence of receiver focus or a click.
-    internal static (bool Complete, bool ReleaseComplete) SendLeftClick(nuint marker = 0)
+    internal static (bool Complete, bool ReleaseComplete, uint Inserted) SendLeftClick(nuint marker = 0)
     {
         var click = new[]
         {
@@ -13,7 +13,7 @@ internal static partial class HyPackageCheck
         };
         uint inserted = SendInput(2, click, Marshal.SizeOf<MouseEvent>());
         bool released = inserted != 1 || SendInput(1, [click[1]], Marshal.SizeOf<MouseEvent>()) == 1;
-        return (inserted == 2, released);
+        return (inserted == 2, released, inserted);
     }
 
     // INPUT's union contains MOUSEINPUT. Sequential native alignment retains
