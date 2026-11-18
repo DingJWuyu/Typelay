@@ -129,7 +129,7 @@ internal sealed class ModelInstaller
                     continue;
                 stage = ModelSetupStage.ModelDownload;
                 string modelUrl = direction.Url;
-                string archive = await Download(modelUrl, pair + "-" + direction.Version + ".argosmodel", direction.ArchivePin?.Sha256,
+                string archive = await Download("argos-" + pair.Replace('_', '-'), modelUrl, pair + "-" + direction.Version + ".argosmodel", direction.ArchivePin?.Sha256,
                     $"下载{direction.SourceName} → {direction.TargetName} 模型", progress, ct, direction.ArchivePin?.Bytes);
                 // The catalog pin identifies a project-reviewed archive, not an upstream signature.
                 string extraction = Path.Combine(staging, pair);
@@ -243,21 +243,21 @@ internal sealed class ModelInstaller
         {
             const string pythonVersion = "3.13.16";
             progress.Report(new("读取 CPython 官方包元数据"));
-            using var index = await Json(new Uri("https://api.nuget.org/v3/index.json"), ct);
+            using var index = await Json("python-index", new Uri("https://api.nuget.org/v3/index.json"), ct);
             string registration = index.RootElement.GetProperty("resources").EnumerateArray()
                 .First(e => e.GetProperty("@type").GetString() == "RegistrationsBaseUrl/3.6.0")
                 .GetProperty("@id").GetString()!;
-            using var leaf = await Json(new Uri(registration + $"python/{pythonVersion}.json"), ct);
+            using var leaf = await Json("python-registration", new Uri(registration + $"python/{pythonVersion}.json"), ct);
             string pythonUrl = leaf.RootElement.GetProperty("packageContent").GetString()!;
             var entry = leaf.RootElement.GetProperty("catalogEntry");
             string catalogUrl = entry.ValueKind == JsonValueKind.String ? entry.GetString()! : entry.GetProperty("@id").GetString()!;
-            using var catalog = await Json(new Uri(catalogUrl), ct);
+            using var catalog = await Json("python-catalog", new Uri(catalogUrl), ct);
             if (catalog.RootElement.GetProperty("id").GetString() != "python"
                 || catalog.RootElement.GetProperty("version").GetString() != pythonVersion
                 || catalog.RootElement.GetProperty("packageHashAlgorithm").GetString() != "SHA512")
                 throw new InvalidDataException("python-metadata");
             byte[] expectedPython = Convert.FromBase64String(catalog.RootElement.GetProperty("packageHash").GetString()!);
-            string pythonZip = await Download(pythonUrl, "python-" + pythonVersion + ".zip", null, "下载私有 Python 运行组件", progress, ct);
+            string pythonZip = await Download("python", pythonUrl, "python-" + pythonVersion + ".zip", null, "下载私有 Python 运行组件", progress, ct);
             byte[] actualPython;
             await using (var file = File.OpenRead(pythonZip))
                 actualPython = await SHA512.HashDataAsync(file, ct);
@@ -280,14 +280,14 @@ internal sealed class ModelInstaller
             {
                 ct.ThrowIfCancellationRequested();
                 progress.Report(new("读取本地组件元数据 · " + name));
-                using var metadata = await Json(new Uri($"https://pypi.org/pypi/{name}/{version}/json"), ct);
+                using var metadata = await Json(name + "-metadata", new Uri($"https://pypi.org/pypi/{name}/{version}/json"), ct);
                 var wheel = metadata.RootElement.GetProperty("urls").EnumerateArray().FirstOrDefault(e =>
                     !e.GetProperty("yanked").GetBoolean() && Compatible(e.GetProperty("filename").GetString()!));
                 if (wheel.ValueKind != JsonValueKind.Object)
                     throw new InvalidDataException("wheel-unavailable");
                 string filename = wheel.GetProperty("filename").GetString()!, url = wheel.GetProperty("url").GetString()!;
                 string checksum = wheel.GetProperty("digests").GetProperty("sha256").GetString()!;
-                string archive = await Download(url, filename, checksum, "下载本地组件 · " + name, progress, ct);
+                string archive = await Download(name, url, filename, checksum, "下载本地组件 · " + name, progress, ct);
                 await Task.Run(() => Extract(archive, site, stage, ct), ct);
                 _locks.Add(new(name, version, url, checksum));
             }
@@ -563,7 +563,7 @@ internal sealed class ModelInstaller
         IProgress<SetupProgress> progress, CancellationToken ct)
     {
         var direction = package.Directions.Single();
-        string archive = await Download(package.Url, direction.Id + "-" + package.Version + ".argosmodel", package.ArchivePin?.Sha256,
+        string archive = await Download(package.Id, package.Url, direction.Id + "-" + package.Version + ".argosmodel", package.ArchivePin?.Sha256,
             "下载 " + direction.SourceName + " → " + direction.TargetName, progress, ct, package.ArchivePin?.Bytes);
         string extraction = Path.Combine(staging, "extract-" + package.Id);
         Extract(archive, extraction, ModelSetupStage.ModelExtract, ct, package.ArchivePin);
@@ -605,7 +605,7 @@ internal sealed class ModelInstaller
             string name = asset.GetProperty("file").GetString()!, sha = asset.GetProperty("sha256").GetString()!;
             long size = asset.GetProperty("bytes").GetInt64();
             string url = kind == "model" ? package.Url : ModelCatalog.PackageLicenseUrl(package);
-            string archive = await Download(url, package.Id + "-" + package.Version + "-" + name, sha,
+            string archive = await Download(package.Id + "-" + kind, url, package.Id + "-" + package.Version + "-" + name, sha,
                 "下载本地模型及许可证", progress, ct, size);
             string target = FilePath(destination, name);
             await using (var input = File.OpenRead(archive))
@@ -727,13 +727,13 @@ internal sealed class ModelInstaller
             && results.All(result => result.GetProperty("status").GetString() == "translated"
                 && result.GetProperty("nonempty").GetBoolean() && result.GetProperty("differs").GetBoolean());
     }
-    private async Task<JsonDocument> Json(Uri uri, CancellationToken ct)
+    private async Task<JsonDocument> Json(string resource, Uri uri, CancellationToken ct)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(_http.Timeout);
         ct = timeout.Token;
-        using var response = await Get(uri, null, ct);
-        response.EnsureSuccessStatusCode();
+        var (headers, _) = await OpenResource(resource, uri, ct);
+        using var response = headers;
         string value = await response.Content.ReadAsStringAsync(ct);
         if (value.Length > 8 * 1024 * 1024)
             throw new InvalidDataException("metadata-size");
@@ -765,7 +765,37 @@ internal sealed class ModelInstaller
         }
         throw new HttpRequestException("redirect-limit");
     }
-    private async Task<string> Download(string url, string name, string? expectedHash, string label,
+    private async Task<(HttpResponseMessage Response, long Offset)> OpenResource(string resource, Uri uri,
+        CancellationToken ct, string? partial = null, long offset = 0)
+    {
+        bool retriedHttp = false;
+        for (int attempt = 1; ; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var response = await Get(uri, offset, ct);
+            if (response.IsSuccessStatusCode)
+                return (response, offset);
+            using (response)
+            {
+                var status = response.StatusCode;
+                Console.Error.WriteLine($"Model download: resource={resource} attempts={attempt} httpStatus={(int)status}");
+                if (!retriedHttp && status is HttpStatusCode.InternalServerError or HttpStatusCode.BadGateway
+                    or HttpStatusCode.ServiceUnavailable or HttpStatusCode.GatewayTimeout)
+                {
+                    retriedHttp = true;
+                    continue;
+                }
+                if (status == HttpStatusCode.RequestedRangeNotSatisfiable && partial is not null && offset > 0)
+                {
+                    File.Delete(partial);
+                    offset = 0;
+                    continue;
+                }
+                response.EnsureSuccessStatusCode();
+            }
+        }
+    }
+    private async Task<string> Download(string resource, string url, string name, string? expectedHash, string label,
         IProgress<SetupProgress> progress, CancellationToken ct, long? exactBytes = null)
     {
         // ResponseHeadersRead ends HttpClient.Timeout at the headers. One logical
@@ -773,11 +803,7 @@ internal sealed class ModelInstaller
         // and an invalid partial-file restart, rather than consuming the setup budget.
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(_http.Timeout);
-        return await DownloadCore(url, name, expectedHash, label, progress, timeout.Token, exactBytes);
-    }
-    private async Task<string> DownloadCore(string url, string name, string? expectedHash, string label,
-        IProgress<SetupProgress> progress, CancellationToken ct, long? exactBytes)
-    {
+        ct = timeout.Token;
         long limit = exactBytes ?? 1024L * 1024 * 1024;
         string destination = Path.Combine(_cache, Path.GetFileName(name));
         if (File.Exists(destination))
@@ -801,13 +827,9 @@ internal sealed class ModelInstaller
             offset = 0;
         }
         progress.Report(new(label, offset, exactBytes, SetupDownloadPhase.Headers));
-        using var response = await Get(new Uri(url), offset, ct);
-        if (response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable && offset > 0)
-        {
-            File.Delete(partial);
-            return await DownloadCore(url, name, expectedHash, label, progress, ct, exactBytes);
-        }
-        response.EnsureSuccessStatusCode();
+        var opened = await OpenResource(resource, new Uri(url), ct, partial, offset);
+        using var response = opened.Response;
+        offset = opened.Offset;
         bool append = offset > 0 && response.StatusCode == HttpStatusCode.PartialContent
             && response.Content.Headers.ContentRange?.From == offset;
         if (response.StatusCode == HttpStatusCode.PartialContent && !append)
