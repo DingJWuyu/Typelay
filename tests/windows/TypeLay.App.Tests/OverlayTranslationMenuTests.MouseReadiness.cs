@@ -16,7 +16,7 @@ public sealed partial class OverlayTranslationMenuTests
 {
     private sealed record MenuMouseContext(ContextMenu Menu, Button Anchor, Window Owner,
         Action<bool>? Observed = null, Action? RenderingObserved = null, Action? InputAttempted = null,
-        nint? ExpectedForeground = null, Action? VerifySource = null);
+        Action? VerifySourceForeground = null);
 
     private static async Task WithMenuMouseTargetReady(FrameworkElement target, HwndSource host, Point point,
         Native.Point pixel, MenuMouseContext context, CancellationToken cancellation, Func<Action, Task> click)
@@ -132,8 +132,10 @@ public sealed partial class OverlayTranslationMenuTests
             Assert.Equal(point, target.PointToScreen(new(target.ActualWidth / 2, target.ActualHeight / 2)));
             Assert.Equal(owner, new WindowInteropHelper(context.Owner).Handle);
             Assert.NotEqual(nint.Zero, owner);
-            Assert.Equal(context.ExpectedForeground ?? owner, Native.GetForegroundWindow());
-            context.VerifySource?.Invoke();
+            if (context.VerifySourceForeground is { } verifySourceForeground)
+                verifySourceForeground();
+            else
+                Assert.Equal(owner, Native.GetForegroundWindow());
             cancellation.ThrowIfCancellationRequested();
         }
         void Sample()
