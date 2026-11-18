@@ -29,6 +29,8 @@ SOURCE_PATHS = (
     "eng/linux",
     "eng/index_profile.py",
     "eng/fonts/prepare.py",
+    "eng/fonts/bundle.py",
+    "eng/fonts/requirements.txt",
     "eng/fonts/fonts.lock.json",
     "eng/fonts/Noto-CJK-LICENSE.txt",
     "eng/fonts/README.md",

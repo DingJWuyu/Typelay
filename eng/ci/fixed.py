@@ -23,6 +23,22 @@ DOWNLOAD_ATTEMPTS = 3
 TRANSIENT_CURL_ERRORS = {6, 7, 16, 18, 28, 52, 55, 56, 92}
 
 
+# tar accepts exclusion options followed by the selected paths. The raw download
+# releases retain their published identities, which describe the locked downloads.
+ARCHIVE_MEMBERS = {
+    "fonts": ("artifacts/ui-fonts",),
+    "fcitx": (
+        "--exclude=core-build",
+        "--exclude=libime-build",
+        "--exclude=fcitx5-chinese-addons-build",
+        "artifacts/linux/fcitx-cooperative-5.1.22",
+    ),
+    "hy": ("artifacts/hy-download",),
+    "index": ("artifacts/index-model-download",),
+    "linux-tools": ("artifacts/linux-tools-cache",),
+}
+
+
 def key(kind):
     if kind in ("hy", "index"):
         filename = "assets.lock.json" if kind == "hy" else "model.lock.json"
@@ -32,20 +48,28 @@ def key(kind):
             if kind == "hy"
             else ("model", "model_license")
         )
-        downloads = {name: lock[name] for name in names}
+        fields = ("file", "bytes", "sha256", "url")
+        downloads = {}
+        for name in names:
+            pins = ()
+            if name == "runtime_archive":
+                pins = ("tag", "commit")
+            elif kind == "hy" and name == "model":
+                pins = ("revision",)
+            downloads[name] = {field: lock[name][field] for field in (*fields, *pins)}
         return (
             f"ci-{kind}-"
             + hashlib.sha256(json.dumps(downloads, sort_keys=True).encode()).hexdigest()
         )
     if kind == "fonts":
-        files = ["eng/fonts/prepare.py", "eng/fonts/fonts.lock.json", "eng/requirements.txt"]
+        files = ["eng/fonts/bundle.py", "eng/fonts/fonts.lock.json", "eng/fonts/requirements.txt"]
     elif kind == "linux-tools":
-        files = ["eng/ci/arch-snapshot", ".github/actions/linux-tools/action.yml"]
+        files = ["eng/ci/arch-snapshot", "eng/ci/linux-tools.sh"]
     else:
-        from eng.linux.cooperative.third_party import BUILD_INPUTS
+        from eng.linux.cooperative.third_party_recipe import BUILD_INPUTS
 
         files = BUILD_INPUTS
-    digest = hashlib.sha256()
+    digest = hashlib.sha256(json.dumps(ARCHIVE_MEMBERS[kind]).encode() + b"\0")
     for name in sorted(files):
         digest.update(name.encode() + b"\0" + (ROOT / name).read_bytes() + b"\0")
     return f"ci-{kind}-{digest.hexdigest()}"
@@ -314,24 +338,8 @@ def main():
         if "HTTP 404" not in existing.stderr:
             log_event("release", "failed", tag, asset=archive.name)
             raise RuntimeError(existing.stderr)
-        directories = {
-            "fonts": ["artifacts/ui-fonts"],
-            "fcitx": ["artifacts/linux/fcitx-cooperative-5.1.22"],
-            "hy": ["artifacts/hy-download"],
-            "index": ["artifacts/index-model-download"],
-            "linux-tools": ["artifacts/linux-tools-cache"],
-        }[args.kind]
         subprocess.run(
-            [
-                "tar",
-                *compression,
-                "--exclude=core-build",
-                "--exclude=libime-build",
-                "--exclude=fcitx5-chinese-addons-build",
-                "-cf",
-                str(archive),
-                *directories,
-            ],
+            ["tar", *compression, "-cf", str(archive), *ARCHIVE_MEMBERS[args.kind]],
             cwd=ROOT,
             check=True,
         )
