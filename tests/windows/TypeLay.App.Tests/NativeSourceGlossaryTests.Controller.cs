@@ -92,10 +92,15 @@ public sealed partial class NativeSourceGlossaryTests
                             BrokerTextUnchanged = before is not null && before.Text == last?.Text,
                             BrokerSelectionUnchanged = before is not null && before.Selection == last?.Selection,
                             BrokerInputEpochUnchanged = before is not null && before.InputEpoch == last?.InputEpoch,
-                            BrokerIme = last?.Ime.ToString(), ContentEpochBefore = initial.ContentEpoch, monitor.ContentEpoch,
-                            SourceEpochBefore = initial.SourceUserEpoch, monitor.SourceUserEpoch,
-                            WindowEpochBefore = initial.WindowEpoch, monitor.WindowEpoch,
-                            ForegroundEpochBefore = initial.ForegroundEpoch, monitor.ForegroundEpoch
+                            BrokerIme = last?.Ime.ToString(),
+                            ContentEpochBefore = initial.ContentEpoch,
+                            monitor.ContentEpoch,
+                            SourceEpochBefore = initial.SourceUserEpoch,
+                            monitor.SourceUserEpoch,
+                            WindowEpochBefore = initial.WindowEpoch,
+                            monitor.WindowEpoch,
+                            ForegroundEpochBefore = initial.ForegroundEpoch,
+                            monitor.ForegroundEpoch
                         };
                     }
                     return confirmed;
@@ -140,22 +145,42 @@ public sealed partial class NativeSourceGlossaryTests
                         : sourceConfirmed != true ? "confirm-source-observation"
                         : !beginRequested ? "open-form" : expectedForm is null ? "begin-form-refused"
                         : field is not null || sourceFocused ? "confirm-focus" : "mount-form",
-                    Expected = condition, CommandClicked = commandClicked, MenuOpen = menu?.IsOpen,
-                    SourceConfirmationRequested = sourceConfirmationRequested, SourceReserved = sourceReserved, SourceConfirmed = sourceConfirmed,
-                    DeclinedObservation = declinedObservation, BeginRequested = beginRequested, ExpectedFormId = expectedForm, ClosedFormId = closedForm,
-                    BrokerCaptureAgeAtBeginMs = brokerCaptureAgeAtBegin, FreshnessLimitMs = Limits.ObservationMaxAgeMs,
+                    Expected = condition,
+                    CommandClicked = commandClicked,
+                    MenuOpen = menu?.IsOpen,
+                    SourceConfirmationRequested = sourceConfirmationRequested,
+                    SourceReserved = sourceReserved,
+                    SourceConfirmed = sourceConfirmed,
+                    DeclinedObservation = declinedObservation,
+                    BeginRequested = beginRequested,
+                    ExpectedFormId = expectedForm,
+                    ClosedFormId = closedForm,
+                    BrokerCaptureAgeAtBeginMs = brokerCaptureAgeAtBegin,
+                    FreshnessLimitMs = Limits.ObservationMaxAgeMs,
                     SettingsReasonAfterRejection = settingsReasonAfterRejection,
-                    RootAfterClick = clickFocus?.Root.ToInt64(), ControlAfterClick = clickFocus?.Control.ToInt64(),
-                    SourceFieldPresent = field is not null, SourceFieldEverFocused = sourceFocused,
-                    GlossaryEntryFocus = focus is not null, ActualFormId = focus?.FormId, ActualIme = focus?.Ime.ToString(),
-                    SourceRoot = native.Root.ToInt64(), SourceField = native.A.ToInt64(), OverlayRoot = overlay.Handle.ToInt64(),
-                    ActualRoot = actual.Root.ToInt64(), ActualControl = actual.Control.ToInt64(), actual.GuiThreadInfoSucceeded,
+                    RootAfterClick = clickFocus?.Root.ToInt64(),
+                    ControlAfterClick = clickFocus?.Control.ToInt64(),
+                    SourceFieldPresent = field is not null,
+                    SourceFieldEverFocused = sourceFocused,
+                    GlossaryEntryFocus = focus is not null,
+                    ActualFormId = focus?.FormId,
+                    ActualIme = focus?.Ime.ToString(),
+                    SourceRoot = native.Root.ToInt64(),
+                    SourceField = native.A.ToInt64(),
+                    OverlayRoot = overlay.Handle.ToInt64(),
+                    ActualRoot = actual.Root.ToInt64(),
+                    ActualControl = actual.Control.ToInt64(),
+                    actual.GuiThreadInfoSucceeded,
                     ActualWpfControl = focused?.GetType().Name,
                     SourceFieldHasFocus = field is not null && ReferenceEquals(field, focused),
-                    LastCaptureStatus = capture?.Status, LastCaptureFocus = capture?.Focus.ToString(),
-                    LastCaptureRoot = captured?.RootHwnd, LastCaptureField = captured?.ControlHwnd,
-                    SaveClicked = saveClicked, RuleInSettings = settings.Value.Glossary?.Rules.Contains(expected) == true,
-                    BrokerReturn = broker.ReturnStatus, broker.SourceWrites
+                    LastCaptureStatus = capture?.Status,
+                    LastCaptureFocus = capture?.Focus.ToString(),
+                    LastCaptureRoot = captured?.RootHwnd,
+                    LastCaptureField = captured?.ControlHwnd,
+                    SaveClicked = saveClicked,
+                    RuleInSettings = settings.Value.Glossary?.Rules.Contains(expected) == true,
+                    BrokerReturn = broker.ReturnStatus,
+                    broker.SourceWrites
                 }));
             };
             await controller.StartAsync();
@@ -259,7 +284,10 @@ public sealed partial class NativeSourceGlossaryTests
         }
         catch
         {
-            try { reportFailure?.Invoke(); }
+            try
+            {
+                reportFailure?.Invoke();
+            }
             catch (Exception error) when (error is not OutOfMemoryException)
             {
                 TestContext.Current.TestOutputHelper?.WriteLine("Glossary failure observation unavailable: " + error.GetType().Name);

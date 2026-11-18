@@ -66,7 +66,9 @@ public interface ISessionView
     Func<SessionViewToken, ConfirmGlossarySource?>? ReserveGlossarySource
     {
         get => null;
-        set { }
+        set
+        {
+        }
     }
     Func<SessionViewToken, SessionGlossaryEntry?>? BeginGlossaryRequested
     {

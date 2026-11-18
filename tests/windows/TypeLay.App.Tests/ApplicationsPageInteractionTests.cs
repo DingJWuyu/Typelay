@@ -545,9 +545,13 @@ public sealed partial class SettingsRenderingTests
                     },
                     TargetRow = pointerTarget is null ? null : AutomationProperties.GetAutomationId(pointerTarget),
                     ExpectedHitWindow = pointerTarget is null ? (long?)null : new WindowInteropHelper(owner).Handle.ToInt64(),
-                    LastHitWindow = lastHitWindow, TargetLoaded = pointerTarget?.IsLoaded, TargetVisible = pointerTarget?.IsVisible,
-                    DialogObserved = observed, DialogVisible = dialog?.IsVisible,
-                    TargetRightDowns = rowDowns, TargetRightUps = rowUps,
+                    LastHitWindow = lastHitWindow,
+                    TargetLoaded = pointerTarget?.IsLoaded,
+                    TargetVisible = pointerTarget?.IsVisible,
+                    DialogObserved = observed,
+                    DialogVisible = dialog?.IsVisible,
+                    TargetRightDowns = rowDowns,
+                    TargetRightUps = rowUps,
                     At = Environment.TickCount64,
                     RightDowns = rightDowns,
                     RightUps = rightUps,
@@ -627,7 +631,12 @@ public sealed partial class SettingsRenderingTests
                     "ApplicationPickerBrowse" or "ApplicationPickerCancel" or "ApplicationRemovalCancel" or "ApplicationRemovalConfirm"))
                     AssertApplicationActionSize(button);
                 ct.ThrowIfCancellationRequested();
-                stage = retirementOpening switch { 1 => "dialog-retirement", 2 => "stale-consent", _ => "dialog-interaction" };
+                stage = retirementOpening switch
+                {
+                    1 => "dialog-retirement",
+                    2 => "stale-consent",
+                    _ => "dialog-interaction"
+                };
                 await interact(dialog, ct);
                 stage = "dialog-close";
             }

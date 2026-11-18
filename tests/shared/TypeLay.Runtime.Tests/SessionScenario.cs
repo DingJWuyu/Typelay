@@ -587,7 +587,10 @@ internal sealed class SessionScenario : IDisposable
         {
             get; set;
         }
-        public Func<SessionViewToken, ConfirmGlossarySource?>? ReserveGlossarySource { get; set; }
+        public Func<SessionViewToken, ConfirmGlossarySource?>? ReserveGlossarySource
+        {
+            get; set;
+        }
         public Func<SessionViewToken, SessionGlossaryEntry?>? BeginGlossaryRequested
         {
             get; set;

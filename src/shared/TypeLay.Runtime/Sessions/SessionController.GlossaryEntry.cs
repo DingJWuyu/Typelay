@@ -352,7 +352,10 @@ public sealed partial class SessionController
                 CancelGlossaryEntry();
         }
 
-        internal TaskCompletionSource<InputSnapshot?>? PendingSourceObservation { get; private set; }
+        internal TaskCompletionSource<InputSnapshot?>? PendingSourceObservation
+        {
+            get; private set;
+        }
 
         private long _sourceObservationDeadline;
         private bool _sourceMenuDispatched;
@@ -407,7 +410,11 @@ public sealed partial class SessionController
                 {
                     var fresh = await observation.Task;
                     if (fresh is not { IsUsable: true } || fresh.ObservedAtMs < clickedAt
-                        || fresh with { ObservedAtMs = basis.ObservedAtMs, Bounds = basis.Bounds } != basis)
+                        || fresh with
+                        {
+                            ObservedAtMs = basis.ObservedAtMs,
+                            Bounds = basis.Bounds
+                        } != basis)
                         return false;
                     bool Current(SessionViewToken requested) => requested == token && ReferenceEquals(PendingSourceObservation, observation)
                         && fresh.ObservedAtMs <= owner._loop.NowMs && owner._loop.NowMs <= _sourceObservationDeadline

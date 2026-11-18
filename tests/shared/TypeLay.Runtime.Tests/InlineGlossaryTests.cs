@@ -44,22 +44,46 @@ public sealed class InlineGlossaryTests
     {
         using var s = new SessionScenario();
         if (change == "uncommitted-settings")
-            s.Settings.Update(s.Settings.Value with { ExcludedApplications = ["private-app"] });
+            s.Settings.Update(s.Settings.Value with
+            {
+                ExcludedApplications = ["private-app"]
+            });
         s.View.SourceGlossarySupported = true;
         s.ReadyCandidate();
         s.Service.PendingCapture = new();
         s.Tick(Limits.ObservationMaxAgeMs + 1);
         switch (change)
         {
-            case "source-epoch": s.Input.SourceUserEpoch++; break;
-            case "content-epoch": s.Input.ContentEpoch++; break;
-            case "foreground-epoch": s.Input.ForegroundEpoch++; break;
-            case "window-epoch": s.Input.WindowEpoch++; break;
-            case "foreign-focus": s.Input.FocusedTarget = s.Source.Target with { Lifetime = Guid.NewGuid() }; break;
-            case "composition": s.View.EditingComposition = true; break;
-            case "unsupported-source": s.View.SourceGlossarySupported = false; break;
-            case "no-recheck": s.View.ReserveGlossarySource = null; break;
-            case "uncommitted-settings": s.Settings.Value.ExcludedApplications![0] = "uncommitted-app"; break;
+            case "source-epoch":
+                s.Input.SourceUserEpoch++;
+                break;
+            case "content-epoch":
+                s.Input.ContentEpoch++;
+                break;
+            case "foreground-epoch":
+                s.Input.ForegroundEpoch++;
+                break;
+            case "window-epoch":
+                s.Input.WindowEpoch++;
+                break;
+            case "foreign-focus":
+                s.Input.FocusedTarget = s.Source.Target with
+                {
+                    Lifetime = Guid.NewGuid()
+                };
+                break;
+            case "composition":
+                s.View.EditingComposition = true;
+                break;
+            case "unsupported-source":
+                s.View.SourceGlossarySupported = false;
+                break;
+            case "no-recheck":
+                s.View.ReserveGlossarySource = null;
+                break;
+            case "uncommitted-settings":
+                s.Settings.Value.ExcludedApplications![0] = "uncommitted-app";
+                break;
         }
         s.Controller.RefreshAcceptancePresentation();
         Assert.False(s.View.Context!.TranslationActions!.CanOpenGlossary);
@@ -131,7 +155,10 @@ public sealed class InlineGlossaryTests
         if (change == "broker-error")
             s.FailCapture();
         else
-            s.CompleteCapture(change == "missing" ? Captured(fresh) with { Snapshot = null } : Captured(fresh));
+            s.CompleteCapture(change == "missing" ? Captured(fresh) with
+            {
+                Snapshot = null
+            } : Captured(fresh));
         Assert.True(waiting.IsCompleted);
         Assert.Equal(allowed, await waiting);
         Assert.Equal(allowed, entry is not null);
