@@ -355,6 +355,7 @@ public sealed partial class SessionController : IDisposable
     {
         if (_disposed)
             return;
+        _glossary.ExpireSourceObservation(_loop.NowMs);
         if (_closing)
         {
             DrainInputNotices();
@@ -376,7 +377,6 @@ public sealed partial class SessionController : IDisposable
         if (_ownedSource.TickLocalInteraction())
             return;
         long now = _loop.NowMs;
-        _glossary.ExpireSourceObservation(now);
         if (_manualObservation is { UnavailableUntil: > 0 } && !ManualObservationIsCurrent(now))
             StopSession("manual-observation-retired");
         if (_pendingDirect is { } pending && !_directRunning)
