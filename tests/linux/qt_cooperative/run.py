@@ -1956,8 +1956,9 @@ def ordered_controls(
                     "fixture command acknowledged",
                 )
 
-            def settled():
-                value = state()
+            def settled(value=None):
+                if value is None:
+                    value = state()
                 return all(
                     value.get(name) == 0
                     for name in ("tlqtPendingDbus", "tlqtPendingForward", "tlqtOutputDepth")
@@ -3155,7 +3156,7 @@ def ordered_controls(
                                 "unknown",
                             )
                         assert control["visible"] and control["enabled"]
-                        bounds, scale = control["geometry"], state()["scale"]
+                        bounds, scale = control["geometry"], snapshot["scale"]
                         if observation is not None:
                             observation["clickCommand"] = "requested"
                         run(
@@ -3187,6 +3188,17 @@ def ordered_controls(
                         renew()
                         return received(operation)
 
+                    def latest_focus_ime():
+                        for event in reversed(received("sessionGlossaryFocus")):
+                            if event["target"] != target or event["generation"] != generation:
+                                continue
+                            focus = event["value"]
+                            if focus is None:
+                                return None
+                            if focus["formId"] == entry["formId"]:
+                                return focus["ime"]
+                        return None
+
                     @contextmanager
                     def observe_save():
                         # Consume only records from this original click and its existing wait.
@@ -3203,6 +3215,7 @@ def ordered_controls(
                             "beforeHandoff": None,
                             "afterHandoff": None,
                             "stage": "unknown",
+                            "lastCheckedFocus": "unknown",
                             "addQueued": None,
                         }
                         try:
@@ -3510,15 +3523,15 @@ def ordered_controls(
                         if finish == "composing":
                             run(["fcitx5-remote", "-s", "pinyin"], env=environment)
                             observe(
-                                lambda value: value.get("tlqtEngine") == "pinyin" and settled(),
+                                lambda value: value.get("tlqtEngine") == "pinyin"
+                                and settled(value),
                                 "target word uses real pinyin",
                             )
                             run(["xdotool", "type", "--delay", "10", "nihao"], env=environment)
                             observe(
                                 lambda value: value["glossary"]["target"]["focused"]
-                                and (received("sessionGlossaryFocus")[-1]["value"] or {}).get("ime")
-                                == "Composing"
-                                and settled(),
+                                and latest_focus_ime() == "Composing"
+                                and settled(value),
                                 "target word is composing",
                             )
                         elif finish == "reset":
@@ -3552,6 +3565,7 @@ def ordered_controls(
                                 )
                             else:
                                 assert before_handoff["target"] == "Composing", observation
+                                assert before_handoff["targetCached"] == "Composing", observation
                             assert (
                                 observation["afterHandoff"] is None
                                 and observation["addQueued"] is False
@@ -3561,14 +3575,14 @@ def ordered_controls(
                                 observe(
                                     lambda value: value["glossary"]["target"]["focused"]
                                     and value["glossary"]["target"]["text"] != "pull request"
-                                    and settled(),
+                                    and settled(value),
                                     "commit the original target word composition",
                                 )
                                 run(["fcitx5-remote", "-s", "keyboard-us"], env=environment)
                                 observe(
                                     lambda value: value["glossary"]["target"]["focused"]
                                     and value.get("tlqtEngine") == "keyboard-us"
-                                    and settled(),
+                                    and settled(value),
                                     "restore keyboard on the composing target word",
                                 )
                             unchanged()
@@ -3580,6 +3594,11 @@ def ordered_controls(
                                 lambda: events("sessionGlossaryAdd"),
                                 "explicit Save with both words Clear",
                             )
+                        assert observation["addQueued"] is True, observation
+                        assert observation["hostAddCount"] == 1, observation
+                        for check in ("beforeHandoff", "afterHandoff"):
+                            assert observation[check]["source"] == "Clear", observation
+                            assert observation[check]["target"] == "Clear", observation
                         assert len(added) == 1, added
                         saved = added[0]["value"]
                         assert saved["formId"] == entry["formId"] and saved["token"] == token

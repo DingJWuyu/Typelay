@@ -750,8 +750,8 @@ private slots:
             for (int index = 0; index < 2; ++index) {
                 if ((glossary_->terms[index] == field && (causes & TlQtInput))
                     || (glossary_->providers[index] == sender() && (unknown || (causes & TlQtBinding))))
-                    glossary_->clearRevokedBy[index] = unknown ? "provider-unknown"
-                        : (causes & TlQtBinding) ? "provider-binding" : "provider-input";
+                    glossary_->termEvidence[index].revoke(unknown ? "provider-unknown"
+                        : (causes & TlQtBinding) ? "provider-binding" : "provider-input");
             }
         }
         auto *target = targets_.value(field, nullptr);
@@ -3107,6 +3107,22 @@ private:
         int focusChanges = 0;
         bool failed = false;
     };
+    struct GlossaryTermEvidence {
+        enum Status { Unproven, Inspecting, Clear };
+        Status status = Unproven;
+        const char *reason = "unobserved";
+
+        void revoke(const char *cause) { status = Unproven; reason = cause; }
+        void rejectInspection(const char *cause) {
+            // A synchronous provider notification has its own, newer revocation.
+            if (status == Inspecting) revoke(cause);
+        }
+        const char *description() const {
+            if (status == Clear) return "Clear";
+            if (status == Inspecting) return "provider-inspection";
+            return reason;
+        }
+    };
     struct GlossaryForm {
         TranslationActionMenu context;
         std::optional<GlossarySource> source;
@@ -3119,8 +3135,7 @@ private:
         QPointer<QObject> providers[2];
         QString clearText[2];
         QString submittedText[2];
-        // A null reason is the cached Clear receipt for clearText and providers.
-        const char *clearRevokedBy[2] = {"unobserved", "unobserved"};
+        GlossaryTermEvidence termEvidence[2];
         QPointer<QComboBox> scope;
         QPointer<QPushButton> save, cancel;
         QPointer<QLabel> feedback;
@@ -3248,6 +3263,15 @@ private:
             || (form->scope && form->scope->view()->isVisible()
                 && (object == form->scope->view() || object == form->scope->view()->viewport()));
     }
+    static const char *glossaryFocusRole(const GlossaryForm &form, QWidget *focus) {
+        if (!focus) return "unknown";
+        if (focus == form.terms[0]) return "source";
+        if (focus == form.terms[1]) return "target";
+        if (focus == form.save) return "save";
+        if (focus == form.scope) return "scope";
+        if (focus == form.cancel) return "cancel";
+        return "unknown";
+    }
     bool glossaryEvent(const TranslationActionMenu &context, const char *operation, const QJsonValue &value = QJsonValue()) {
         return sendEvent("ui", {{"target", context.target}, {"generation", context.generation}, {"revision", context.revision},
             {"operation", QLatin1String(operation)}, {"value", value}});
@@ -3262,26 +3286,33 @@ private:
         if (QApplication::focusWidget() != field || QGuiApplication::focusObject() != field) return unknown("focus");
         const QPointer<QObject> owner = field->property(ProviderProperty).value<QObject *>();
         auto *provider = owner ? qobject_cast<TypeLayFcitxQtV1 *>(owner.data()) : nullptr;
-        form->clearRevokedBy[index] = "provider-inspection";
+        auto &evidence = form->termEvidence[index];
+        evidence.status = GlossaryTermEvidence::Inspecting;
+        const auto rejected = [&](const char *reason) {
+            evidence.rejectInspection(reason);
+            return unknown(reason);
+        };
         TypeLayFcitxQtStateV1 state{};
         const auto text = field->text();
-        if (!provider || owner != overlaySourceProvider_ || owner->thread() != thread()) return unknown("provider-binding");
-        if (!provider->inspect(field, &state)) return unknown("provider-inspect");
-        if (!glossaryCurrent(form) || !field || !owner || field != form->terms[index]) return unknown("form-or-field-changed");
-        if (QApplication::focusWidget() != field || QGuiApplication::focusObject() != field) return unknown("focus-changed");
-        if (field->property(ProviderProperty).value<QObject *>() != owner || field->text() != text) return unknown("binding-or-text-changed");
+        if (!provider || owner != overlaySourceProvider_ || owner->thread() != thread()) return rejected("provider-binding");
+        if (!provider->inspect(field, &state)) return rejected("provider-inspect");
+        if (!glossaryCurrent(form) || !field || !owner || field != form->terms[index]) return rejected("form-or-field-changed");
+        if (QApplication::focusWidget() != field || QGuiApplication::focusObject() != field) return rejected("focus-changed");
+        if (field->property(ProviderProperty).value<QObject *>() != owner || field->text() != text) return rejected("binding-or-text-changed");
         if (state.size != sizeof state || state.version != 1u
             || (state.flags & ~(TlQtKnown | TlQtFocused | TlQtPending | TlQtComposing | TlQtDetached)) != 0)
-            return unknown("provider-state-shape");
+            return rejected("provider-state-shape");
         form->providers[index] = owner;
         if (observation) observation->insert("focusedProvider", QJsonObject{{"flags", qint64(state.flags)},
             {"serverSerial", qint64(state.serverSerial)}, {"appliedSerial", qint64(state.appliedSerial)},
             {"contextGeneration", qint64(state.contextGeneration)}, {"fieldGeneration", qint64(state.fieldGeneration)}});
-        if ((state.flags & (TlQtKnown | TlQtFocused | TlQtComposing)) == (TlQtKnown | TlQtFocused | TlQtComposing))
+        if ((state.flags & (TlQtKnown | TlQtFocused | TlQtComposing)) == (TlQtKnown | TlQtFocused | TlQtComposing)) {
+            evidence.rejectInspection("Composing");
             return QStringLiteral("Composing");
-        if (!clear(state)) return unknown("provider-not-clear");
-        if (!provider->validateLocal(field, &state)) return unknown("local-validation");
-        form->clearRevokedBy[index] = nullptr;
+        }
+        if (!clear(state)) return rejected("provider-not-clear");
+        if (!provider->validateLocal(field, &state)) return rejected("local-validation");
+        evidence.status = GlossaryTermEvidence::Clear;
         form->clearText[index] = text;
         return QStringLiteral("Clear");
     }
@@ -3290,17 +3321,14 @@ private:
         // can synchronously invalidate the other word. Never probe it for the log.
         const auto recordCache = qScopeGuard([&] {
             if (observation && form) {
-                observation->insert("sourceCached", QLatin1String(form->clearRevokedBy[0] ? form->clearRevokedBy[0] : "Clear"));
-                observation->insert("targetCached", QLatin1String(form->clearRevokedBy[1] ? form->clearRevokedBy[1] : "Clear"));
+                observation->insert("sourceCached", QLatin1String(form->termEvidence[0].description()));
+                observation->insert("targetCached", QLatin1String(form->termEvidence[1].description()));
             }
         });
+        if (observation) *observation = {{"focus", "unknown"}, {"source", "unobserved"}, {"target", "unobserved"}};
         if (!glossaryCurrent(form)) return QStringLiteral("Unknown");
         const auto focus = QApplication::focusWidget();
-        if (observation) {
-            const char *role = focus == form->terms[0] ? "source" : focus == form->terms[1] ? "target"
-                : focus == form->save ? "save" : focus == form->scope ? "scope" : focus == form->cancel ? "cancel" : "unknown";
-            *observation = {{"focus", QLatin1String(role)}, {"source", "unobserved"}, {"target", "unobserved"}};
-        }
+        if (observation) observation->insert("focus", QLatin1String(glossaryFocusRole(*form, focus)));
         if (!insideGlossary(focus)) return QStringLiteral("Unknown");
         for (int index = 0; index < 2; ++index) {
             if (QApplication::focusWidget() == form->terms[index]) {
@@ -3315,7 +3343,8 @@ private:
         for (int index = 0; index < 2; ++index) {
             const char *reason = nullptr;
             if (!form->terms[index]) reason = "field-missing";
-            else if (form->clearRevokedBy[index]) reason = form->clearRevokedBy[index];
+            else if (form->termEvidence[index].status != GlossaryTermEvidence::Clear)
+                reason = form->termEvidence[index].description();
             else if (!form->providers[index]) reason = "provider-missing";
             else if (form->terms[index]->text() != form->clearText[index]) reason = "text-mismatch";
             else {
@@ -3437,17 +3466,28 @@ private:
     }
     void saveGlossary(const std::shared_ptr<GlossaryForm> &form) {
         const bool trace = qEnvironmentVariableIsSet("TYPELAY_QT_PROBE");
-        const char *stage = "form-eligibility";
+        const char *stage = "form-retired";
+        const char *lastCheckedFocus = "unknown";
         QJsonObject before, after;
         bool addQueued = false;
         const auto record = qScopeGuard([&] {
             if (!trace) return;
             const QJsonObject observation{{"formId", form ? form->entry.value("formId") : QJsonValue()},
-                {"stage", QLatin1String(stage)}, {"beforeHandoff", before.isEmpty() ? QJsonValue() : QJsonValue(before)},
+                {"stage", QLatin1String(stage)}, {"lastCheckedFocus", QLatin1String(lastCheckedFocus)},
+                {"beforeHandoff", before.isEmpty() ? QJsonValue() : QJsonValue(before)},
                 {"afterHandoff", after.isEmpty() ? QJsonValue() : QJsonValue(after)}, {"addQueued", addQueued}};
             std::fprintf(stderr, "tlqt-glossary-save %s\n", QJsonDocument(observation).toJson(QJsonDocument::Compact).constData());
         });
-        if (!glossaryCurrent(form) || !form->current || form->pending || form->finished || probingGlossary_) return;
+        if (!glossaryCurrent(form)) return;
+        if (!form->current) { stage = "form-no-longer-current"; return; }
+        if (form->pending) { stage = "form-pending"; return; }
+        if (form->finished) { stage = "form-finished"; return; }
+        if (probingGlossary_) { stage = "form-probing"; return; }
+        const auto checkedFocus = [&] {
+            auto *focus = QApplication::focusWidget();
+            if (trace) lastCheckedFocus = glossaryFocusRole(*form, focus);
+            return focus;
+        };
         QScopedValueRollback<bool> probing(probingGlossary_, true);
         const auto ime = glossaryIme(form, trace ? &before : nullptr);
         stage = "before-handoff-form";
@@ -3477,9 +3517,11 @@ private:
         // This is the user's explicit Save activation. Move to the real Save
         // control while both words are proven Clear. Freeze through the input
         // filter, never by changing readOnly/enabled or other IM attributes.
-        stage = "focus-handoff";
         form->save->setFocus(Qt::OtherFocusReason);
-        if (!glossaryCurrent(form) || QApplication::focusWidget() != form->save) return;
+        stage = "focus-handoff-form";
+        if (!glossaryCurrent(form)) return;
+        stage = "focus-handoff-focus";
+        if (checkedFocus() != form->save) return;
         stage = "after-handoff-values";
         if (form->scope->currentIndex() != selected || form->terms[0]->text() != rule.value("sourceTerm").toString()
             || form->terms[1]->text() != rule.value("targetTerm").toString()) return;
@@ -3491,18 +3533,22 @@ private:
         // suppress that invalidation merely to allow the Save operation.
         stage = "after-handoff-ime";
         if (glossaryIme(form, trace ? &after : nullptr) != QStringLiteral("Clear")) {
-            if (!glossaryCurrent(form)) return;
+            if (!glossaryCurrent(form)) { stage = "after-handoff-form"; return; }
             form->pending = false;
             form->feedback->setText(QStringLiteral("输入法状态尚未确认，请完成输入后再保存。"));
             return;
         }
-        stage = "after-handoff-form-focus";
-        if (!glossaryCurrent(form) || !insideGlossary(QApplication::focusWidget())) return;
+        stage = "after-handoff-form";
+        if (!glossaryCurrent(form)) return;
+        stage = "after-handoff-focus";
+        if (!insideGlossary(checkedFocus())) return;
         const QJsonObject focus{{"formId", form->entry.value("formId")}, {"token", form->context.token}, {"ime", "Clear"}};
         form->reportedFocus = focus;
         glossaryEvent(form->context, "sessionGlossaryFocus", focus);
-        stage = "after-focus-event";
-        if (!glossaryCurrent(form) || !insideGlossary(QApplication::focusWidget())) return;
+        stage = "after-focus-event-form";
+        if (!glossaryCurrent(form)) return;
+        stage = "after-focus-event-focus";
+        if (!insideGlossary(checkedFocus())) return;
         stage = "queue-add";
         addQueued = glossaryEvent(form->context, "sessionGlossaryAdd", QJsonObject{{"formId", form->entry.value("formId")},
             {"token", form->context.token}, {"settingsRevision", form->entry.value("settingsRevision")}, {"rule", rule}});
@@ -3552,7 +3598,7 @@ private:
             connect(field, &QLineEdit::textChanged, this, [this, weak = std::weak_ptr<GlossaryForm>(form), index] {
                 const auto current = weak.lock();
                 if (!current || glossary_ != current) return;
-                current->clearRevokedBy[index] = "text-changed";
+                current->termEvidence[index].revoke("text-changed");
                 // Accessibility/programmatic edits can bypass widget input
                 // events. Preserve the submitted display, but revoke Clear
                 // normally; restoring text does not mint new IM evidence.
@@ -4264,11 +4310,11 @@ private:
             for (int index = 0; index < 2; ++index) {
                 if (form->terms[index] != object) continue;
                 if (event->type() == QEvent::InputMethod || event->type() == QEvent::KeyPress)
-                    form->clearRevokedBy[index] = event->type() == QEvent::InputMethod ? "input-method" : "key-press";
+                    form->termEvidence[index].revoke(event->type() == QEvent::InputMethod ? "input-method" : "key-press");
                 else if (event->type() == QEvent::DynamicPropertyChange
                     && static_cast<QDynamicPropertyChangeEvent *>(event)->propertyName() == ProviderProperty) {
                     auto *owner = form->terms[index]->property(ProviderProperty).value<QObject *>();
-                    if (owner && owner != form->providers[index]) form->clearRevokedBy[index] = "provider-replaced";
+                    if (owner && owner != form->providers[index]) form->termEvidence[index].revoke("provider-replaced");
                 }
             }
             if (lockedInput) {
