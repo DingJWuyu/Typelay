@@ -71,7 +71,7 @@ internal sealed partial class SettingsWindow : Window
     private readonly SettingsDraftMessages _draftMessages = SettingsDraftPresentation.Create();
     private string _page = "general", _setupStatus = "";
     private SetupFailureView? _setupFailure, _setupRecoveryFailure;
-    private string? _setupFailureStage;
+    private string? _setupFailureStage, _setupHttpDiagnostic;
     private ModelReplacementFailure? _setupReplacementFailure;
     private ModelInstallationStore.PublicationDiagnostic? _setupPublicationFailure;
     private bool _setupPaused, _startingModel;
@@ -1342,6 +1342,8 @@ internal sealed partial class SettingsWindow : Window
                 : Enum.TryParse<ModelSetupStage>(_setupFailureStage, out var parsed) && Enum.IsDefined(parsed) ? parsed.ToString() : "unknown";
             string diagnostic = $"错误类别：{failure.Code}\n安装阶段：{stage}"
                 + (_setupRecoveryFailure is { } recovery ? $"\n恢复阻塞：{recovery.Code}" : "");
+            if (_setupHttpDiagnostic is { } http)
+                diagnostic += "\n" + http;
             if (_setupReplacementFailure is { } replacement)
                 diagnostic += $"\n切换阶段：{DiagnosticValue(replacement.Phase)}"
                     + $"\n切换原因：{DiagnosticValue(replacement.FailureCode)}\n发布确认：{DiagnosticValue(replacement.Outcome)}";
@@ -1426,6 +1428,7 @@ internal sealed partial class SettingsWindow : Window
         _setupFailure = null;
         _setupRecoveryFailure = null;
         _setupFailureStage = null;
+        _setupHttpDiagnostic = null;
         _setupReplacementFailure = null;
         _setupPublicationFailure = null;
         _setupPaused = false;
@@ -1488,7 +1491,7 @@ internal sealed partial class SettingsWindow : Window
         }
         catch (ModelSetupException failure)
         {
-            SetupFailed(failure.Category, failure.Stage.ToString(), failure.RecoveryFailureCategory);
+            SetupFailed(failure.Category, failure.Stage.ToString(), failure.RecoveryFailureCategory, httpDiagnostic: failure.HttpDiagnostic);
             if (_packageRequest?.Operation is ModelPackageOperation.Select or ModelPackageOperation.Remove)
             {
                 _packageRequest = null;
@@ -1516,15 +1519,16 @@ internal sealed partial class SettingsWindow : Window
     internal void CancelPreparation() => _install?.Cancel();
     internal void ReportSetupFailure(ModelSetupException failure, ModelInstallationStore.PublicationDiagnostic? publication = null)
     {
-        SetupFailed(failure.Category, failure.Stage.ToString(), failure.RecoveryFailureCategory, publication: publication);
+        SetupFailed(failure.Category, failure.Stage.ToString(), failure.RecoveryFailureCategory, publication: publication, httpDiagnostic: failure.HttpDiagnostic);
         RefreshPreparation();
     }
     private void SetupFailed(SetupFailureCategory category, string stage, SetupFailureCategory? recovery = null,
-        ModelReplacementFailure? replacement = null, ModelInstallationStore.PublicationDiagnostic? publication = null)
+        ModelReplacementFailure? replacement = null, ModelInstallationStore.PublicationDiagnostic? publication = null, string? httpDiagnostic = null)
     {
         _setupFailure = SetupFailurePresentation.Create(category);
         _setupRecoveryFailure = recovery is { } blocked ? SetupFailurePresentation.Create(blocked) : null;
         _setupFailureStage = stage;
+        _setupHttpDiagnostic = httpDiagnostic;
         _setupReplacementFailure = replacement;
         _setupPublicationFailure = publication;
         _setupStatus = _setupFailure.Message + "\n" + (_setupRecoveryFailure is { } obstruction

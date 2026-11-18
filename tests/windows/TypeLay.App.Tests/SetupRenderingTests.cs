@@ -297,6 +297,17 @@ public sealed partial class SetupRenderingTests(WpfDesktopFixture desktop)
                 Assert.NotNull(exposed);
                 Assert.Equal(expected, exposed.Current.HelpText);
             }, TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            window.ReportSetupFailure(ModelSetupException.From(
+                new ModelDownloadHttpException("argos-zh-en", 2, System.Net.HttpStatusCode.BadGateway), ModelSetupStage.ModelDownload));
+            var httpDiagnostic = Named<Expander>(window, "PreparationDiagnostics");
+            Assert.Equal("错误类别：network\n安装阶段：ModelDownload\nresource=argos-zh-en attempts=2 httpStatus=502",
+                AutomationProperties.GetHelpText(httpDiagnostic));
+            if (!unknown)
+            {
+                httpDiagnostic.IsExpanded = true;
+                ((TextBlock)httpDiagnostic.Content).BringIntoView();
+                RenderTray(window, "model-download-http-error.png");
+            }
             window.ReportSetupFailure(new(SetupFailureCategory.Integrity, ModelSetupStage.Activate));
             var diagnostic = Named<Expander>(window, "PreparationDiagnostics");
             Assert.Equal("错误类别：integrity\n安装阶段：Activate", AutomationProperties.GetHelpText(diagnostic));

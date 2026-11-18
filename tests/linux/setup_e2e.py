@@ -26,6 +26,7 @@ import zipfile
 from dataclasses import replace
 from email.message import Message
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from itertools import product
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1612,6 +1613,53 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(self.requests[-1].get_header("If-range"), headers["Last-Modified"])
         self.assertEqual(archive.read_bytes(), b"firstsecond")
 
+    def test_transient_retry_survives_a_range_restart_without_renewing_it(self):
+        retryable = (500, 502, 503, 504)
+        for first, final, range_first in product(retryable, retryable, (False, True)):
+            statuses = [416, first, final] if range_first else [first, 416, final]
+            expected_ranges = ["bytes=5-", None if range_first else "bytes=5-", None]
+            with self.subTest(statuses=statuses):
+                self.interrupted()
+                self.requests.clear()
+                self.responses.extend(
+                    urllib.error.HTTPError("model", status, "failure", {}, None)
+                    for status in statuses
+                )
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    setup.download(DIRECTIONS["zh_en"], self.cache)
+                self.assertEqual(caught.exception.code, statuses[-1])
+                self.assertEqual(
+                    [req.get_header("Range") for req in self.requests], expected_ranges
+                )
+                self.assertFalse((self.cache / "zh_en-1.9.argosmodel").exists())
+
+    def test_retry_headers_and_blocked_body_share_the_first_requests_deadline(self):
+        now = 1000
+        timeouts = []
+
+        def open_response(request, timeout):
+            nonlocal now
+            timeouts.append(timeout)
+            if len(timeouts) == 1:
+                now += 899.875
+                raise urllib.error.HTTPError("model", 503, "failure", {}, None)
+            return SlowBody(b"late")
+
+        class SlowBody(Response):
+            def read(self, size=-1):
+                threading.Event().wait(1)
+                return super().read(size)
+
+        with (
+            patch.object(setup, "time", wraps=time) as clock,
+            patch.object(self, "open", side_effect=open_response),
+            self.assertRaises(TimeoutError),
+        ):
+            clock.monotonic.side_effect = lambda: now
+            setup.download(DIRECTIONS["zh_en"], self.cache)
+        self.assertEqual(timeouts, [45, 0.125])
+        self.assertFalse((self.cache / "zh_en-1.9.argosmodel").exists())
+
     def test_unsatisfied_range_restarts_once(self):
         self.interrupted()
         self.responses.extend(
@@ -1632,6 +1680,11 @@ class DownloadTests(unittest.TestCase):
                     "https://argos-net.com/model", code, "failure", {}, io.BytesIO(b"private body")
                 ) as error,
             ):
+                if code == 503:
+                    first = urllib.error.HTTPError(
+                        "https://argos-net.com/model", 502, "failure", {}, io.BytesIO()
+                    )
+                    self.responses.append(first)
                 self.responses.append(error)
                 with self.assertRaises(urllib.error.HTTPError) as caught:
                     setup.download(DIRECTIONS["zh_en"], self.cache)
@@ -1639,6 +1692,17 @@ class DownloadTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, code)
                 self.assertTrue(error.closed)
                 self.assertFalse((self.cache / "zh_en-1.9.argosmodel").exists())
+
+    def test_pause_while_releasing_transient_response_stops_the_download(self):
+        with urllib.error.HTTPError("model", 503, "failure", {}, io.BytesIO()) as error:
+            self.responses.append(error)
+            with (
+                patch.object(error, "close", side_effect=setup.Paused),
+                self.assertRaises(setup.Paused),
+            ):
+                setup.download(DIRECTIONS["zh_en"], self.cache)
+        self.assertEqual(len(self.requests), 1)
+        self.assertFalse((self.cache / "zh_en-1.9.argosmodel").exists())
 
     def test_http_response_close_failure_preserves_the_network_error(self):
         with urllib.error.HTTPError(
@@ -1691,12 +1755,13 @@ class HTTPDownloadTests(unittest.TestCase):
 
     """Optional CI transport check, with a real loopback HTTP server, no model."""
 
-    def test_socket_interruption_range_and_changed_resource(self):
-        responses, requests = [], []
+    def setUp(self):
+        self.responses = responses = []
+        self.requests = requests = []
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
-                requests.append(dict(self.headers))
+                requests.append((self.path, dict(self.headers)))
                 status, headers, body = responses.pop(0)
                 self.send_response(status)
                 for name, value in headers.items():
@@ -1712,7 +1777,7 @@ class HTTPDownloadTests(unittest.TestCase):
         server = HTTPServer(("127.0.0.1", 0), Handler)
         server.timeout = 2
         self.addCleanup(server.server_close)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread = threading.Thread(target=server.serve_forever, args=(0.02,), daemon=True)
         thread.start()
         self.addCleanup(thread.join, 5)
         self.addCleanup(server.shutdown)
@@ -1722,17 +1787,83 @@ class HTTPDownloadTests(unittest.TestCase):
             def open(self, request, timeout):
                 # Only this test's transport is relocated. Production still
                 # constructs the fixed official HTTPS URL and origin policy.
-                assert request.full_url == "https://argos-net.com/v1/translate-zh_en-1_9.argosmodel"
+                assert request.full_url in {DIRECTIONS[pair].url for pair in ("en_zh", "zh_en")}
                 local = setup.urllib.request.Request(
-                    f"http://127.0.0.1:{server.server_port}/model",
+                    f"http://127.0.0.1:{server.server_port}{request.selector}",
                     headers=dict(request.header_items()),
                 )
                 return transport.open(local, timeout=timeout)
 
+        self.enterContext(
+            patch.object(setup.urllib.request, "build_opener", return_value=LocalTransport())
+        )
+
+    def test_each_argos_resource_recovers_once_and_publishes_only_pinned_bytes(self):
+        body = b"pinned model"
+        pin = ArchivePin(hashlib.sha256(body).hexdigest(), len(body), 100)
+        for pair in ("zh_en", "en_zh"):
+            direction = replace(DIRECTIONS[pair], archive_pin=pin)
+            for status in (200, 500, 502, 503, 504):
+                with self.subTest(pair=pair, status=status), tempfile.TemporaryDirectory() as cache:
+                    self.requests.clear()
+                    self.responses.clear()
+                    if status != 200:
+                        self.responses.append((status, {}, b""))
+                    self.responses.append((200, {"Content-Length": len(body)}, body))
+                    path, _ = setup.download(direction, Path(cache))
+                    self.assertEqual(path.read_bytes(), body)
+                    setup.download(direction, Path(cache))
+                    expected = 1 if status == 200 else 2
+                    self.assertEqual(
+                        [p for p, _ in self.requests],
+                        [urllib.parse.urlsplit(direction.url).path] * expected,
+                    )
+
+    def test_terminal_http_response_and_corrupt_bodies_never_publish_an_archive(self):
+        body = b"pinned model"
+        direction = replace(
+            DIRECTIONS["en_zh"],
+            archive_pin=ArchivePin(hashlib.sha256(body).hexdigest(), len(body), 100),
+        )
+        for statuses, content, category in (
+            ([500, 500], b"", "network"),
+            ([502, 504], b"", "network"),
+            ([503, 404], b"", "network"),
+            ([404], b"", "network"),
+            ([501], b"", "network"),
+            ([200], body[:-1], "integrity"),
+            ([200], b"", "integrity"),
+            ([200], body.upper(), "integrity"),
+            ([503, 200], body.upper(), "integrity"),
+        ):
+            with (
+                self.subTest(statuses=statuses, content=content),
+                tempfile.TemporaryDirectory() as cache,
+            ):
+                self.requests.clear()
+                self.responses[:] = [
+                    (status, {"Content-Length": len(content)}, content) for status in statuses
+                ]
+                with self.assertRaises((ValueError, urllib.error.URLError)) as caught:
+                    setup.download(direction, Path(cache))
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    setup.report_failure(caught.exception, "model-download", resource="argos-en-zh")
+                line = output.getvalue().splitlines()[0]
+                self.assertEqual(setup.failure_code(line), category)
+                if category == "network":
+                    diagnostic = json.loads(line.removeprefix(setup.FAILURE_PREFIX))
+                    self.assertEqual(diagnostic["httpStatus"], statuses[-1])
+                    self.assertEqual(diagnostic["httpAttempts"], len(statuses))
+                    self.assertEqual(diagnostic["resource"], "argos-en-zh")
+                self.assertEqual(len(self.requests), len(statuses))
+                self.assertFalse((Path(cache) / "en_zh-1.9.argosmodel").exists())
+
+    def test_socket_interruption_range_and_changed_resource(self):
+        responses, requests = self.responses, self.requests
         progress_output = io.StringIO()
         with (
             tempfile.TemporaryDirectory(prefix="typelay-http-") as directory,
-            patch.object(setup.urllib.request, "build_opener", return_value=LocalTransport()),
             contextlib.redirect_stdout(progress_output),
         ):
             cache = Path(directory)
@@ -1748,8 +1879,8 @@ class HTTPDownloadTests(unittest.TestCase):
             )
             archive, _ = setup.download(DIRECTIONS["zh_en"], cache)
             self.assertEqual(archive.read_bytes(), b"firstsecond")
-            self.assertEqual(requests[-1]["Range"], "bytes=5-")
-            self.assertEqual(requests[-1]["If-Range"], '"v1"')
+            self.assertEqual(requests[-1][1]["Range"], "bytes=5-")
+            self.assertEqual(requests[-1][1]["If-Range"], '"v1"')
             prefix = "TYPELAY_SETUP_PROGRESS="
             records = [
                 json.loads(line[len(prefix) :])
@@ -1774,7 +1905,7 @@ class HTTPDownloadTests(unittest.TestCase):
             responses.append((200, {"Content-Length": 9, "ETag": '"v2"'}, b"new model"))
             archive, _ = setup.download(DIRECTIONS["zh_en"], cache)
             self.assertEqual(archive.read_bytes(), b"new model")
-            self.assertEqual(requests[-1]["Range"], "bytes=5-")
+            self.assertEqual(requests[-1][1]["Range"], "bytes=5-")
             stream = setup.InstallationProgress()
             owner = object()
             stream.begin(owner)
@@ -2951,6 +3082,7 @@ class InstallationFailureTests(unittest.TestCase):
         returncode=0,
         discarded_archive=False,
         worker_result=None,
+        before_response=None,
         cleanup_error=None,
         expected_code=1,
         requested=None,
@@ -3072,6 +3204,8 @@ class InstallationFailureTests(unittest.TestCase):
             catalog_path.write_text(json.dumps(catalog_value), encoding="utf-8")
 
             def open_response(request, **kwargs):
+                if before_response is not None:
+                    before_response(request)
                 if failure is not None:
                     raise failure
                 if worker_result is not None:
@@ -3332,6 +3466,10 @@ class InstallationFailureTests(unittest.TestCase):
             ("networkReason", "private-token"),
             ("networkReason", []),
             ("networkReason", "dns"),
+            ("httpAttempts", True),
+            ("httpAttempts", 0),
+            ("httpAttempts", 4),
+            ("httpAttempts", "2"),
             ("httpStatus", True),
             ("httpStatus", "503"),
             ("httpStatus", 99),
@@ -3415,6 +3553,34 @@ class InstallationFailureTests(unittest.TestCase):
                 self.assertIn('"category":"runtime"', output)
                 self.assertIn('"stage":"self-check"', output)
                 self.assertNotIn("重新获取损坏", output)
+
+    def test_one_preparation_recovers_each_model_without_refetching_the_first(self):
+        requests = []
+
+        def fail_once(request):
+            requests.append(request.full_url)
+            if requests.count(request.full_url) == 1:
+                raise urllib.error.HTTPError(request.full_url, 503, "transient", {}, None)
+
+        directions = ["zh_en", "en_zh"]
+        check = {
+            "status": "passed",
+            "device": "cpu",
+            "results": [
+                {"direction": pair, "status": "translated", "nonempty": True, "differs": True}
+                for pair in directions
+            ],
+        }
+        self.run_setup(
+            requested=directions,
+            committed=None,
+            expected_code=0,
+            worker_result=json.dumps(check).encode(),
+            before_response=fail_once,
+        )
+        self.assertEqual(
+            requests, [DIRECTIONS[pair].url for pair in ("zh_en", "zh_en", "en_zh", "en_zh")]
+        )
 
     def test_requested_single_direction_prepares_only_that_inventory_and_self_check(self):
         self.run_setup(

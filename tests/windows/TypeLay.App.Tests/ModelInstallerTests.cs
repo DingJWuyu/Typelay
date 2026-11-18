@@ -14,7 +14,7 @@ using Xunit;
 
 namespace TypeLay.App.Tests;
 
-public sealed class ModelInstallerTests
+public sealed partial class ModelInstallerTests
 {
     [Theory]
     [InlineData(false, 1073741824L, 2147483648L, 5368709120L)]
@@ -78,18 +78,25 @@ public sealed class ModelInstallerTests
     [InlineData(true, "stream-overflow")]
     [InlineData(false, "stream-short")]
     [InlineData(true, "stream-short")]
+    [InlineData(false, "retry-hash")]
+    [InlineData(true, "retry-length")]
     public async Task NewArchiveMustMatchThePinAndCannotWritePastItsDownloadLimit(bool packages, string defect)
     {
         using var files = new SetupFiles();
         byte[] bad = ModelArchive("zh_en");
-        if (defect == "hash")
+        if (defect is "hash" or "retry-hash")
             bad[^1] ^= 1;
         else if (defect == "stream-short")
             bad = bad[..^1];
         else
             bad = [.. bad, 0];
-        var network = files.Responses(pair => pair == "zh_en" ? bad : ModelArchive(pair), unframedModels: defect.StartsWith("stream-", StringComparison.Ordinal));
+        bool retry = defect.StartsWith("retry-", StringComparison.Ordinal);
+        int attempts = 0;
+        var network = files.Responses(pair => pair == "zh_en" ? bad : ModelArchive(pair), unframedModels: defect.StartsWith("stream-", StringComparison.Ordinal),
+            intercept: uri => uri.AbsolutePath.EndsWith(".argosmodel", StringComparison.Ordinal) && ++attempts == 1 && retry
+                ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) : null);
         var failure = await Assert.ThrowsAsync<ModelSetupException>(() => PrepareZh(files, network, packages));
+        Assert.Equal(retry ? 2 : 1, attempts);
         Assert.Equal(SetupFailureCategory.Integrity, failure.Category);
         Assert.Equal(ModelSetupStage.ModelDownload, failure.Stage);
         Assert.False(File.Exists(files.CachedModel("zh_en")));
@@ -294,7 +301,8 @@ public sealed class ModelInstallerTests
     private static Task<ModelInstallationStore.PreparedInstallation> PrepareZh(SetupFiles files, HttpMessageHandler network,
         bool packages, ModelPackageCatalog? catalog = null)
     {
-        var installer = files.Installer(network, startProcess: files.Child(PassedCheck("zh_en")), catalog: catalog);
+        var installer = files.Installer(network, startProcess: files.Child(PassedCheck("zh_en")), catalog: catalog,
+            availableDiskBytes: _ => long.MaxValue);
         return packages ? installer.PreparePackagesAsync(new(1, ModelPackageOperation.Install, ["argos-zh-en"], ["argos-zh-en"], null),
             NoProgress, TestContext.Current.CancellationToken) : installer.PrepareAsync(NoProgress, TestContext.Current.CancellationToken, ["zh_en"]);
     }
@@ -1231,6 +1239,7 @@ public sealed class ModelInstallerTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested();
+            Assert.Equal(HttpMethod.Get, request.Method);
             Requests.Add(request.RequestUri!.AbsolutePath);
             return Task.FromResult(respond(request.RequestUri));
         }
@@ -1243,11 +1252,12 @@ public sealed class ModelInstallerTests
         public SetupFiles() => Directory.CreateDirectory(Root);
         public ModelInstaller Installer(HttpMessageHandler handler, TimeSpan? downloadTimeout = null,
             Func<ProcessStartInfo, IChildProcess>? startProcess = null, TimeSpan? selfCheckTimeout = null,
-            ModelPackageCatalog? catalog = null, Func<string, long>? availableDiskBytes = null, Func<long>? progressTick = null) =>
+            ModelPackageCatalog? catalog = null, Func<string, long>? availableDiskBytes = null, Func<long>? progressTick = null,
+            Action<CancellationTokenSource, TimeSpan>? scheduleDeadline = null) =>
             new(Root, Path.Combine(Root, "worker.py"), handler, downloadTimeout, startProcess,
                 selfCheckTimeout ?? TimeSpan.FromSeconds(5),
                 localPackages: Path.Combine(Root, "local-packages"), catalog: catalog ?? Catalog(ModelArchive),
-                availableDiskBytes: availableDiskBytes, progressTick: progressTick);
+                availableDiskBytes: availableDiskBytes, progressTick: progressTick, scheduleDeadline: scheduleDeadline);
         public string CachedModel(string pair) => Path.Combine(Root, "downloads", pair + "-1.9.argosmodel");
         public Func<ProcessStartInfo, IChildProcess> Child(string command) => _ =>
         {
@@ -1281,7 +1291,8 @@ public sealed class ModelInstallerTests
             Assert.NotEmpty(_children);
             Assert.All(_children, child => Assert.True(child.Exited));
         }
-        public ResponseHandler Responses(Func<string, byte[]> model, bool unframedModels = false)
+        public ResponseHandler Responses(Func<string, byte[]> model, bool unframedModels = false,
+            Func<Uri, HttpResponseMessage?>? intercept = null)
         {
             byte[] python = Archive(new()
             {
@@ -1291,7 +1302,7 @@ public sealed class ModelInstallerTests
             {
                 ["fixture.py"] = "controlled dependency package"
             });
-            return new ResponseHandler(uri => uri.AbsolutePath switch
+            return new ResponseHandler(uri => intercept?.Invoke(uri) ?? (uri.AbsolutePath switch
             {
                 "/v3/index.json" => Json(new
                 {
@@ -1323,7 +1334,7 @@ public sealed class ModelInstallerTests
                 "/v1/translate-zh_en-1_9.argosmodel" => ModelBytes(model("zh_en"), unframedModels),
                 "/v1/translate-en_zh-1_9.argosmodel" => ModelBytes(model("en_zh"), unframedModels),
                 _ => throw new InvalidOperationException("Unexpected setup request.")
-            });
+            }));
         }
         public void Dispose()
         {

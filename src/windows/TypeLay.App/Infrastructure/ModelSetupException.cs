@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Net;
 using System.Net.Http;
 using System.Security;
 using System.Text.Json;
@@ -11,6 +12,10 @@ internal enum ModelSetupStage
     Prepare, Runtime, Dependencies, ModelDownload, ModelExtract, ModelVerify, SelfCheck, Activate
 }
 
+// Resource names come from the pinned catalog and dependency list, never the server.
+internal sealed class ModelDownloadHttpException(string resource, int attempts, HttpStatusCode status)
+    : HttpRequestException($"resource={resource} attempts={attempts} httpStatus={(int)status}", null, status);
+
 // Keep exception details, paths and server responses out of the user-visible failure contract.
 internal sealed class ModelSetupException(SetupFailureCategory category, ModelSetupStage stage,
     SetupFailureCategory? recoveryFailureCategory = null)
@@ -19,6 +24,11 @@ internal sealed class ModelSetupException(SetupFailureCategory category, ModelSe
     public SetupFailureCategory Category { get; } = category;
     public ModelSetupStage Stage { get; } = stage;
     public SetupFailureCategory? RecoveryFailureCategory { get; } = recoveryFailureCategory;
+
+    public string? HttpDiagnostic
+    {
+        get; private init;
+    }
 
     internal static ModelSetupException From(Exception error, ModelSetupStage stage)
     {
@@ -36,6 +46,9 @@ internal sealed class ModelSetupException(SetupFailureCategory category, ModelSe
             InvalidOperationException when stage is not ModelSetupStage.Prepare => SetupFailureCategory.Integrity,
             _ => SetupFailureCategory.Unknown
         };
-        return new(category, stage);
+        return new(category, stage)
+        {
+            HttpDiagnostic = (error as ModelDownloadHttpException)?.Message
+        };
     }
 }

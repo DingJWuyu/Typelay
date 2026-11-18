@@ -26,6 +26,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import zipfile
+from contextlib import contextmanager
 from email.utils import parsedate_to_datetime
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -295,6 +296,7 @@ def failure_code(line, previous=None):
                 "resource",
                 "networkReason",
                 "httpStatus",
+                "httpAttempts",
                 "runtimeStep",
                 "runtimeReason",
             }
@@ -321,6 +323,14 @@ def failure_code(line, previous=None):
                     or value.get("networkReason") != "http"
                     or type(value["httpStatus"]) is not int
                     or not 100 <= value["httpStatus"] <= 599
+                )
+            )
+            or (
+                "httpAttempts" in value
+                and (
+                    "httpStatus" not in value
+                    or type(value["httpAttempts"]) is not int
+                    or not 1 <= value["httpAttempts"] <= 3
                 )
             )
             or (
@@ -395,6 +405,9 @@ def report_failure(error, stage="prepare", data=None, cache=None, home=None, res
                 reason = "http"
                 if type(error.code) is int and 100 <= error.code <= 599:
                     diagnostic["httpStatus"] = error.code
+                    attempts = getattr(error, "download_attempts", None)
+                    if type(attempts) is int and 1 <= attempts <= 3:
+                        diagnostic["httpAttempts"] = attempts
             elif isinstance(cause, socket.gaierror):
                 reason = "dns"
             elif isinstance(cause, ssl.SSLError):
@@ -497,6 +510,31 @@ def download(direction, cache):
     )
 
 
+class DownloadDeadlineExpired(Exception):
+    """Interrupt urllib without being caught by its per-address OSError fallback."""
+
+
+@contextmanager
+def download_time_left(deadline):
+    # The standalone installer owns SIGALRM on its main thread. Socket timeouts
+    # alone restart on each read, including while urllib is following redirects.
+    def expire(_signal, _frame):
+        raise DownloadDeadlineExpired()
+
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("model-download-timeout")
+    previous = signal.signal(signal.SIGALRM, expire)
+    try:
+        signal.setitimer(signal.ITIMER_REAL, remaining)
+        yield remaining
+    except DownloadDeadlineExpired:
+        raise TimeoutError("model-download-timeout") from None
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
 def download_resource(
     pair, url, archive, limit, *, expected=None, hosts=("argos-net.com",), resource=None
 ):
@@ -561,9 +599,13 @@ def download_resource(
         offset, saved, checksum = 0, {}, hashlib.sha256()
 
     opener = urllib.request.build_opener(Redirects(hosts))
-    started = time.monotonic()
-    # One fresh retry is sufficient for an ignored Range, stale validator or 416.
-    for attempt in range(2):
+    deadline = time.monotonic() + 900
+    # Only a validated offset can trigger a fresh range restart. A transient
+    # response has its own single retry, including across that restart.
+    retried_http = False
+    attempts = 0
+    while True:
+        attempts += 1
         if _progress_attempt >= PROGRESS_COUNTER_LIMIT:
             raise ValueError("setup-progress-attempt")
         _progress_attempt += 1
@@ -574,14 +616,23 @@ def download_resource(
                 {"Range": f"bytes={offset}-", "If-Range": next(iter(saved["validator"].values()))}
             )
         try:
-            response = opener.open(urllib.request.Request(url, headers=headers), timeout=45)
+            with download_time_left(deadline) as remaining:
+                response = opener.open(
+                    urllib.request.Request(url, headers=headers), timeout=min(45, remaining)
+                )
         except urllib.error.HTTPError as error:
+            error.download_attempts = attempts
             try:
                 error.close()
+            except Paused:
+                raise
             except Exception:
                 # Response cleanup must not replace the original network failure.
                 raise error from None
-            if error.code != 416 or not offset or attempt:
+            if error.code in (500, 502, 503, 504) and not retried_http:
+                retried_http = True
+                continue
+            if error.code != 416 or not offset:
                 raise
             discard()
             offset, saved, checksum = 0, {}, hashlib.sha256()
@@ -609,8 +660,6 @@ def download_resource(
                 ):
                     discard()
                     offset, saved, checksum = 0, {}, hashlib.sha256()
-                    if attempt:
-                        raise ValueError("model-download-range")
                     continue
             elif response.status != 200:
                 raise ValueError("model-download-status")
@@ -673,18 +722,22 @@ def download_resource(
                     pending.replace(metadata)
 
                 try:
-                    while block := response.read(65536):
-                        if count + len(block) > limit or time.monotonic() - started > 900:
-                            raise ValueError("model-download-limit")
-                        output.write(block)
-                        checksum.update(block)
-                        count += len(block)
-                        if time.monotonic() - last_progress > 2:
-                            last_progress = time.monotonic()
-                            checkpoint()
-                            progress("Body")
-                            print(f"正在下载 {pair} 模型：{count // (1024 * 1024)} MiB", flush=True)
-                    if (total and count != total) or not count:
+                    with download_time_left(deadline):
+                        while block := response.read(65536):
+                            if count + len(block) > limit:
+                                raise ValueError("model-download-limit")
+                            output.write(block)
+                            checksum.update(block)
+                            count += len(block)
+                            if time.monotonic() - last_progress > 2:
+                                last_progress = time.monotonic()
+                                checkpoint()
+                                progress("Body")
+                                print(
+                                    f"正在下载 {pair} 模型：{count // (1024 * 1024)} MiB",
+                                    flush=True,
+                                )
+                    if (total and count != total) or (not count and expected is None):
                         raise OSError("model-download-incomplete")
                     output.flush()
                     os.fsync(output.fileno())
@@ -705,7 +758,6 @@ def download_resource(
             metadata.unlink(missing_ok=True)
             progress("Complete")
             return archive, url
-    raise OSError("model-download-retry")
 
 
 def copy_bounded(source, target, limit, error):
