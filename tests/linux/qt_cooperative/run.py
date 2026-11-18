@@ -3151,20 +3151,13 @@ def ordered_controls(
                         return wait(check, message)
 
                     def click(name, observation=None):
+                        nonlocal last_click
+                        last_click = {"role": name}
+                        if observation is not None:
+                            observation["click"] = last_click
                         renew()
                         snapshot = state()
-                        control = snapshot["overlayControls"][name]
-                        assert control["visible"] and control["enabled"]
-                        bounds, scale = control["geometry"], state()["scale"]
-                        last_click.clear()
-                        last_click.update(
-                            role=name,
-                            snapshotAtMs=snapshot.get("observedAtMs"),
-                            instance=control.get("instance"),
-                            geometry=bounds,
-                            scale=scale,
-                            requestedAtMs=now_ms(),
-                        )
+                        last_click["snapshotAtMs"] = snapshot.get("observedAtMs")
                         if observation is not None:
                             observation["focusBeforeClick"] = next(
                                 (
@@ -3174,7 +3167,14 @@ def ordered_controls(
                                 ),
                                 "unknown",
                             )
+                        control = snapshot["overlayControls"][name]
+                        last_click["instance"] = control.get("instance")
+                        assert control["visible"] and control["enabled"]
+                        bounds, scale = control["geometry"], snapshot["scale"]
+                        last_click.update(geometry=bounds, scale=scale)
+                        if observation is not None:
                             observation["clickCommand"] = "requested"
+                        last_click["requestedAtMs"] = now_ms()
                         run(
                             [
                                 "xdotool",
@@ -3226,6 +3226,7 @@ def ordered_controls(
                             "finish": finish,
                             "formId": entry["formId"],
                             "clickCommand": "not-requested",
+                            "click": None,
                             "focusBeforeClick": "unknown",
                             "clicked": "unknown",
                             "beforeHandoff": None,
@@ -3250,7 +3251,7 @@ def ordered_controls(
                                 event["value"]["formId"] == entry["formId"]
                                 for event in received("sessionGlossaryAdd")
                             )
-                            observation.update(click=last_click, renewal=renewal)
+                            observation["renewal"] = renewal
                             print("qt-glossary-save", json.dumps(observation), flush=True)
 
                     def unchanged():

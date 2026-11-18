@@ -1959,9 +1959,12 @@ private:
         return inspect(target) && clear(target->state) && authorityMatches(target, basis, true)
             && local(target, target->state) && !geometry(target).isEmpty();
     }
-    bool overlayActive() const {
-        return card_ && card_->isVisible() && overlayTarget_ && overlayTarget_->field
-            && overlayTarget_->field->window()->isActiveWindow() && now() <= overlayUntil_;
+    bool overlayActive(qint64 *observedAt = nullptr) const {
+        if (!card_ || !card_->isVisible() || !overlayTarget_ || !overlayTarget_->field
+            || !overlayTarget_->field->window()->isActiveWindow()) return false;
+        const auto current = now();
+        if (observedAt) *observedAt = current;
+        return current <= overlayUntil_;
     }
     void syncOverlay() {
         const bool focusedEditor = overlayActive() && insideOverlay(QApplication::focusWidget());
@@ -3121,6 +3124,7 @@ private:
         const char *reason = "unobserved";
 
         void revoke(const char *cause) { clear = false; reason = cause; }
+        void beginInspection() { clear = false; reason = nullptr; }
         void rejectInspection(const char *cause) {
             // A synchronous provider notification already supplied a newer reason.
             if (!reason) reason = cause;
@@ -3294,7 +3298,7 @@ private:
         const QPointer<QObject> owner = field->property(ProviderProperty).value<QObject *>();
         auto *provider = owner ? qobject_cast<TypeLayFcitxQtV1 *>(owner.data()) : nullptr;
         auto &evidence = form->termEvidence[index];
-        evidence.revoke(nullptr);
+        evidence.beginInspection();
         const auto rejected = [&](const char *reason) {
             evidence.rejectInspection(reason);
             return unknown(reason);
@@ -4238,7 +4242,8 @@ private:
             if (!sessionApplied() || data.value("generation") != shortcutConfiguration_.value("generation"))
                 return {{"visible", false}, {"editing", false}};
             const qint64 until = integer(data, "expiresAtMs", 0), current = now();
-            if (target == overlayTarget_ && overlayActive() && sessionApplied()
+            qint64 activeCheckedAt = -1;
+            if (target == overlayTarget_ && overlayActive(&activeCheckedAt) && sessionApplied()
                 && data.value("generation") == shortcutConfiguration_.value("generation")
                 && data.value("generation") == overlayGeneration_ && until >= current && until - current <= 1000
                 && metadataMatches(target, data.value("authority").toObject()) && !geometry(target).isEmpty()
@@ -4249,7 +4254,7 @@ private:
                 overlayAuthority_ = data.value("authority").toObject();
             }
             else {
-                traceExpiredOverlay("renew", current);
+                traceExpiredOverlay("renew", activeCheckedAt);
                 hideOverlay();
             }
         } else if (op == "overlay-edit") {
