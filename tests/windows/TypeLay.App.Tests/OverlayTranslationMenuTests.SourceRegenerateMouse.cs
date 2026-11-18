@@ -9,8 +9,8 @@ public sealed partial class OverlayTranslationMenuTests
         ClickMouse(more, Button.ClickEvent, "source-more", cancellation, verifySource: verifySource);
 
     internal static Task ChooseSourceRegenerateByMouse(OverlayWindow overlay, Button more, MenuItem item,
-        nint sourceForeground, Action verifySource, CancellationToken cancellation) =>
+        Action verifySource, CancellationToken cancellation) =>
         ClickMouse(item, MenuItem.ClickEvent, "source-regenerate", cancellation,
             new(Assert.IsAssignableFrom<ContextMenu>(more.ContextMenu), more, overlay,
-                ExpectedForeground: sourceForeground, VerifySource: verifySource));
+                VerifySourceForeground: verifySource));
 }
