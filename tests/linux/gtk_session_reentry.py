@@ -2770,22 +2770,30 @@ async def capture_language_size_requests(stream, evidence):
 @contextmanager
 def configuration_fixture_state(artifact):
     """Publish live GTK4 reports on tmpfs. Archive the last complete report after exit."""
-    with tempfile.TemporaryDirectory(prefix="typelay-gtk4-state-", dir="/dev/shm") as directory:
-        live = Path(directory) / artifact.name
+    directory = Path(tempfile.mkdtemp(prefix="typelay-gtk4-state-", dir="/dev/shm"))
+    live = directory / artifact.name
+    try:
+        # An outer timeout can kill this process before its finally runs.
+        # Keep the last atomic fixture publication readable at the normal artifact path.
+        artifact.symlink_to(live)
+        yield live
+    finally:
+        original_error = sys.exception()
         try:
-            yield live
-        finally:
             if live.is_file():
-                original_error = sys.exception()
-                try:
-                    with tempfile.TemporaryDirectory(dir=artifact.parent) as staging:
-                        saved = Path(staging) / artifact.name
-                        shutil.copy(live, saved)
-                        saved.replace(artifact)
-                except OSError as error:
-                    if original_error is None:
-                        raise
-                    original_error.add_note(f"Could not archive GTK4 fixture report: {error}")
+                with tempfile.TemporaryDirectory(dir=artifact.parent) as staging:
+                    saved = Path(staging) / artifact.name
+                    shutil.copy(live, saved)
+                    saved.replace(artifact)
+            elif artifact.is_symlink() and artifact.readlink() == live:
+                artifact.unlink()
+        except OSError as error:
+            owner = original_error if original_error is not None else error
+            owner.add_note(f"GTK4 fixture report retained at {live}. Archive failed: {error}")
+            if original_error is None:
+                raise
+        else:
+            shutil.rmtree(directory)
 
 
 def run_owned_language_options(
@@ -3097,6 +3105,11 @@ def run_owned_language_options(
                 if configuration_stage:
                     initial, captured = await capture_language_source(
                         input_service, source_ready, evidence
+                    )
+                    # The real fixture has already published and the source is frozen.
+                    # Writing the artifact directly would have replaced this link on its first report.
+                    assert state_path.is_symlink() and state_path.readlink() == live_state, (
+                        "GTK4 fixture did not publish its live report on tmpfs"
                     )
                 else:
                     initial = await language_wait_for(

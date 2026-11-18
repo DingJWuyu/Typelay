@@ -3,6 +3,7 @@
 import asyncio
 import copy
 import json
+import os
 import resource
 import signal
 import subprocess
@@ -63,11 +64,59 @@ class GtkLanguageInitialCaptureTests(unittest.IsolatedAsyncioTestCase):
                     state.touch(mode=0o600)
                     state.write_text('{"report": 1}')
                     state.write_text('{"report": 2}')
-                    self.assertFalse(artifact.exists())
+                    self.assertTrue(artifact.is_symlink())
+                    self.assertTrue(artifact.samefile(state))
                     raise AssertionError("original refusal")
+            self.assertFalse(artifact.is_symlink())
             self.assertEqual(json.loads(artifact.read_text()), {"report": 2})
             self.assertEqual(artifact.stat().st_mode & 0o777, 0o600)
             self.assertFalse(state.parent.exists())
+
+    def test_killed_scenario_leaves_the_last_complete_report_at_the_normal_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "interrupted.json"
+            child = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import os, signal, sys\n"
+                    "from pathlib import Path\n"
+                    "from gtk_session_reentry import configuration_fixture_state\n"
+                    "with configuration_fixture_state(Path(sys.argv[1])) as state:\n"
+                    "    state.write_text('123')\n"
+                    "    os.kill(os.getpid(), signal.SIGTERM)\n",
+                    str(artifact),
+                ],
+                env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+                check=False,
+            )
+            self.assertEqual(child.returncode, -signal.SIGTERM)
+            self.assertTrue(artifact.is_symlink())
+            state = artifact.readlink()
+            self.addCleanup(state.parent.rmdir)
+            self.addCleanup(state.unlink, missing_ok=True)
+            self.assertEqual(json.loads(artifact.read_text()), 123)
+
+    def test_failed_archive_preserves_the_report_and_the_original_failure(self):
+        from gtk_session_reentry import configuration_fixture_state
+
+        with tempfile.TemporaryDirectory() as directory:
+            for refusal in (False, True):
+                with self.subTest(refusal=refusal):
+                    artifact = Path(directory) / f"capture-{refusal}.json"
+                    with self.assertRaises(AssertionError if refusal else OSError) as raised:
+                        with patch("gtk_session_reentry.shutil.copy", side_effect=OSError("full")):
+                            with configuration_fixture_state(artifact) as state:
+                                self.addCleanup(state.parent.rmdir)
+                                self.addCleanup(state.unlink, missing_ok=True)
+                                state.write_text('{"report": 3}')
+                                if refusal:
+                                    raise AssertionError("original refusal")
+                    self.assertEqual(
+                        str(raised.exception), "original refusal" if refusal else "full"
+                    )
+                    self.assertIn(str(state), " ".join(raised.exception.__notes__))
+                    self.assertEqual(json.loads(artifact.read_text()), {"report": 3})
 
     async def test_window_change_before_any_snapshot_admits_one_fresh_source(self):
         from gtk_session_reentry import capture_language_source
