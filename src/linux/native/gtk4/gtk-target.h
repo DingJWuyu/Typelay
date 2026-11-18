@@ -44,7 +44,12 @@ Target *tl_lookup(const char *id);
 void tl_discover(GtkWidget *widget, gboolean before_input);
 gboolean tl_source_glossary_supported(Target *target);
 JsonObject *tl_describe(Target *target);
-JsonObject *tl_capture(Target *target, JsonObject *authority);
+/* Only the failed comparison, copied at the guard before cleanup or callbacks. */
+typedef struct {
+    const char *phase, *condition;
+    gint64 expected, actual;
+} CaptureFailure;
+JsonObject *tl_capture(Target *target, JsonObject *authority, CaptureFailure *failure);
 JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct);
 JsonObject *tl_write_ordered(Target *target, JsonObject *request, OrderedTicket *ticket);
 gboolean tl_prefix_supported(Target *target);

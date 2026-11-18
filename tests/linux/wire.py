@@ -278,6 +278,7 @@ class PipeTransportTests(unittest.TestCase):
         self.addCleanup(link.close)
         trace = {"reason": "stamp-before", "ageBeforeMs": 4, "targetMatchesBefore": True}
         unsafe = {**trace, "text": "private", "target": "private", "beforeInputRevision": True}
+        refusal = {"phase": "after-read", "condition": "epoch", "expected": 12, "actual": 13}
 
         async def exercise():
             context = GLib.MainContext.default()
@@ -299,6 +300,9 @@ class PipeTransportTests(unittest.TestCase):
 
             for operation, data, diagnostic, expected in (
                 ("capture", None, unsafe, trace),
+                ("capture", None, {**refusal, "text": "private"}, {"refusal": refusal}),
+                ("capture", None, {**refusal, "condition": "private"}, {}),
+                ("capture", None, {**refusal, "actual": "private"}, {}),
                 ("describe", None, unsafe, {}),
                 ("capture", {"text": "normal result"}, unsafe, {}),
                 ("capture", None, {"reason": "private exception"}, {}),

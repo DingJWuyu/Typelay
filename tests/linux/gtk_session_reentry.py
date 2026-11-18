@@ -409,6 +409,8 @@ def run_case(
                     check_preview_appearance(
                         client, source, generation, state, initial, click_evidence
                     )
+                    if client.hello["backend"] == "gtk4":
+                        check_capture_refusals(client)
                     print(
                         "GTK preview colors: current text and manual drafts retain normal contrast",
                         flush=True,
@@ -1616,6 +1618,26 @@ async def language_wait_for(predicate, description, timeout=5):
     raise AssertionError(description)
 
 
+def check_capture_refusals(client):
+    """Replay stale approvals on the real focused field after the preview checks."""
+    for condition in ("epoch", "max-age-ms"):
+        described = client.describe()
+        approval = described["authority"].copy()
+        if condition == "epoch":
+            approval["contextStamp"] = {**approval["contextStamp"], "epoch": -1}
+        else:
+            approval["observedAtMs"] -= 151
+        reply = client.call(
+            "capture", {"target": described["target"], "authority": approval, "traceRefusal": True}
+        )
+        trace = client.capture_trace
+        assert reply is None and trace, (condition, trace)
+        assert trace["phase"] == "before-read" and trace["condition"] == condition, trace
+        assert trace["expected"] == (-1 if condition == "epoch" else 150), trace
+        assert trace["actual"] > trace["expected"], trace
+        print("GTK4 stale capture refused", client.id, json.dumps(trace), flush=True)
+
+
 async def capture_language_source(input_service, ready, evidence):
     """Admit the first source within the original readiness budget, before any lease."""
     deadline = time.monotonic() + 5
@@ -1626,22 +1648,47 @@ async def capture_language_source(input_service, ready, evidence):
             "language source IME/parent/compositor did not become ready",
             timeout=deadline - time.monotonic(),
         )
-        before = input_service.diagnostics()["windowEpoch"]
-        captured = await input_service.request("capture", {})
-        accepted = bool(captured and captured.get("snapshot"))
-        attempts.append(
-            {
-                "atMs": now_ms(),
-                "windowEpochBefore": before,
-                "windowEpochAfter": input_service.diagnostics()["windowEpoch"],
-                "snapshotAdmitted": accepted,
-                "reason": None if accepted else input_service.capture_status,
-            }
+        attempt = {
+            "scenario": evidence.get("configurationStage"),
+            "windowEpochBefore": input_service.diagnostics()["windowEpoch"],
+            "stage": "select-source",
+        }
+        entry = initial.get("firstEntry", {})
+        ime = entry.get("ime") or {}
+        attempt.update(
+            ready={
+                "observedAtMs": initial.get("observedAtMs"),
+                "imeClear": initial.get("imeClear"),
+                "ime": {
+                    key: ime.get(key) for key in ("context", "input", "flags", "server", "applied")
+                },
+                **{
+                    key: entry.get(key)
+                    for key in ("instance", "topInstance", "focused", "topActive")
+                },
+                **initial.get("readyWindow", {}),
+            },
         )
-        assert time.monotonic() < deadline, "initial source capture exceeded readiness budget"
+        attempts.append(attempt)
+        try:
+            captured = await input_service.capture({}, admission=attempt)
+        except Exception as error:
+            attempt.update(
+                atMs=now_ms(), windowEpochAfter=input_service.diagnostics()["windowEpoch"]
+            )
+            error.add_note("GTK4 initial capture " + json.dumps(attempt))
+            raise
+        attempt.update(atMs=now_ms(), windowEpochAfter=input_service.diagnostics()["windowEpoch"])
+        accepted = bool(captured and captured.get("snapshot"))
+        attempt.update(
+            snapshotAdmitted=accepted, reason=None if accepted else input_service.capture_status
+        )
+        assert time.monotonic() < deadline, (
+            "initial source capture exceeded readiness budget: " + json.dumps(attempt)
+        )
         if accepted:
             return initial, captured
-        assert input_service.capture_status == "window-changing", input_service.capture_status
+        assert input_service.capture_status == "window-changing", json.dumps(attempt)
     raise AssertionError("initial source capture did not stabilize within readiness budget")
 
 
@@ -3010,7 +3057,16 @@ def run_owned_language_options(
                     and last_readiness.get("imeClear")
                     and parent_geometry_ready(last_readiness, dimensions)
                     and input_service.focused_peer() is peer
-                    and last_readiness
+                    and {
+                        **last_readiness,
+                        "readyWindow": {
+                            "expectedWindowId": window["id"],
+                            "focusedWindowId": (input_service.niri.focused or {}).get("id"),
+                            "expectedPeerPid": peer.pid,
+                            "peerFocused": True,
+                            "parentGeometryReady": True,
+                        },
+                    }
                 )
 
             try:

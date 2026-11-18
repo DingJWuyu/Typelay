@@ -16,7 +16,48 @@ class RoutedReply(dict):
 
 def capture_failure_trace(value):
     """Allow diagnostic scalars only; this never supplies an input result."""
-    if not isinstance(value, dict) or value.get("reason") not in (
+    if not isinstance(value, dict):
+        return {}
+    if (
+        value.get("phase") in ("before-read", "after-read")
+        and value.get("condition")
+        in (
+            "target-present",
+            "mutating",
+            "ime-inspection",
+            "ime-flags",
+            "ime-applied",
+            "ime-known",
+            "composing",
+            "focused-target",
+            "stamp-present",
+            "ime-observed",
+            "context",
+            "epoch",
+            "input",
+            "server",
+            "applied",
+            "flags",
+            "min-age-ms",
+            "max-age-ms",
+            "authority-present",
+            "supported",
+            "approved-target-matches",
+            "metadata-present",
+            "metadata-key-matches",
+            "sensitive",
+            "editable",
+            "widget-enabled",
+            "text-available",
+            "description-present",
+            "storage-revision",
+            "input-revision",
+            "focus-revision",
+        )
+        and all(type(value.get(k)) is int and abs(value[k]) < 2**63 for k in ("actual", "expected"))
+    ):
+        return {"refusal": {k: value[k] for k in ("phase", "condition", "expected", "actual")}}
+    if value.get("reason") not in (
         "ime-unavailable",
         "focus-before",
         "stamp-before",
@@ -98,6 +139,8 @@ class Link:
         self.pending[identity] = future
         if operation == "capture" and type(capture_trace) is dict:
             self.capture_traces[identity] = capture_trace
+            if data and data.get("traceRefusal") is True:
+                capture_trace["requestId"] = identity
         if operation == "capture" and type(capture_continuity) is dict:
             self.capture_continuities[identity] = capture_continuity
         timing = (

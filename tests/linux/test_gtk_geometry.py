@@ -61,9 +61,9 @@ class GtkLanguageInitialCaptureTests(unittest.IsolatedAsyncioTestCase):
             def diagnostics(self):
                 return {"windowEpoch": self.calls}
 
-            async def request(self, operation, data):
+            async def capture(self, context, *, admission):
                 self.calls += 1
-                assert (operation, data) == ("capture", {})
+                assert context == {}
                 return None if self.calls == 1 else {"snapshot": {"text": "Fresh source"}}
 
         service, evidence = Input(), {}
@@ -73,6 +73,40 @@ class GtkLanguageInitialCaptureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(initial["first"], captured["snapshot"]["text"])
         self.assertEqual(service.calls, 2)
         self.assertEqual(len(evidence["initialCaptureAdmission"]), 2)
+
+    async def test_first_native_refusal_reports_only_its_own_request_and_ready_field(self):
+        from gtk_session_reentry import capture_language_source
+
+        class Input:
+            capture_status = "native-read-declined"
+
+            def diagnostics(self):
+                return {"windowEpoch": 3}
+
+            async def capture(self, context, *, admission):
+                admission.update(
+                    requestId=17,
+                    stage="capture-reply",
+                    refusal={
+                        "phase": "before-read",
+                        "condition": "epoch",
+                        "expected": 3,
+                        "actual": 4,
+                    },
+                )
+                return None
+
+        initial = {"first": "PRIVATE BODY", "imeClear": True, "firstEntry": {"instance": 9}}
+        evidence = {"configurationStage": "language-configuration-swap"}
+        with self.assertRaisesRegex(AssertionError, "native-read-declined") as error:
+            await capture_language_source(Input(), lambda: initial, evidence)
+        (attempt,) = evidence["initialCaptureAdmission"]
+        self.assertEqual(attempt["ready"]["instance"], 9)
+        self.assertEqual(attempt["requestId"], 17)
+        self.assertEqual(attempt["refusal"]["actual"], 4)
+        for expected in ("language-configuration-swap", "epoch", "before-read", '"requestId": 17'):
+            self.assertIn(expected, str(error.exception))
+        self.assertNotIn("PRIVATE BODY", str(error.exception))
 
     async def test_other_refusal_never_retries_or_invents_a_snapshot(self):
         from gtk_session_reentry import capture_language_source
@@ -86,7 +120,7 @@ class GtkLanguageInitialCaptureTests(unittest.IsolatedAsyncioTestCase):
                 def diagnostics(self):
                     return {"windowEpoch": 1}
 
-                async def request(self, *_):
+                async def capture(self, context, *, admission):
                     self.calls += 1
                     return None
 
@@ -107,7 +141,7 @@ class GtkLanguageInitialCaptureTests(unittest.IsolatedAsyncioTestCase):
             def diagnostics(self):
                 return {"windowEpoch": self.calls}
 
-            async def request(self, *_):
+            async def capture(self, context, *, admission):
                 self.calls += 1
                 clock[0] = 15.0
                 return None

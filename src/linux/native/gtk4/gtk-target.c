@@ -268,8 +268,35 @@ static gboolean inspect_ime(Target *target) {
     target->composing = (state.flags & TL_FCITX_COMPOSING) != 0;
     return TRUE;
 }
+static gboolean capture_equal(CaptureFailure *failure, const char *condition, gint64 expected, gint64 actual) {
+    if (actual == expected) return TRUE;
+    if (failure) {
+        failure->condition = condition;
+        failure->expected = expected;
+        failure->actual = actual;
+    }
+    return FALSE;
+}
+static gboolean capture_ime_known(Target *target, CaptureFailure *failure) {
+    if (!target->ime_known) {
+        if (failure && target->im_observed) {
+            guint32 mask = TL_FCITX_KNOWN | TL_FCITX_FOCUSED | TL_FCITX_PENDING;
+            if (!capture_equal(failure, "ime-flags", TL_FCITX_KNOWN | TL_FCITX_FOCUSED, target->im_state.flags & mask)
+                || !capture_equal(failure, "ime-applied", (gint64)target->im_state.server_serial,
+                    (gint64)target->im_state.applied_serial)) return FALSE;
+        }
+        return capture_equal(failure, "ime-known", TRUE, FALSE);
+    }
+    return capture_equal(failure, "composing", FALSE, target->composing);
+}
+static gboolean capture_ime_clear(Target *target, CaptureFailure *failure) {
+    return capture_equal(failure, "target-present", TRUE, target != NULL)
+        && capture_equal(failure, "mutating", FALSE, target->mutating)
+        && capture_equal(failure, "ime-inspection", TRUE, !!inspect_ime(target))
+        && capture_ime_known(target, failure);
+}
 gboolean tl_ime_clear(Target *target) {
-    return target && !target->mutating && inspect_ime(target) && target->ime_known && !target->composing;
+    return capture_ime_clear(target, NULL);
 }
 /* A detached source may back an unchanged, read-only menu preview. This is
  * deliberately not IME Clear and cannot authorize capture or source writes. */
@@ -605,15 +632,23 @@ JsonObject *tl_describe(Target *target) {
     g_free(key);
     return value;
 }
-gboolean tl_metadata_matches(Target *target, JsonObject *approved) {
-    if (!approved || !supported(target) || g_strcmp0(tl_string(approved, "target"), target->id) != 0) return FALSE;
+static gboolean metadata_matches(Target *target, JsonObject *approved, CaptureFailure *failure) {
+    if (!capture_equal(failure, "authority-present", TRUE, approved != NULL)
+        || !capture_equal(failure, "supported", TRUE, supported(target))
+        || !capture_equal(failure, "approved-target-matches", TRUE, g_strcmp0(tl_string(approved, "target"), target->id) == 0))
+        return FALSE;
     JsonObject *fields = metadata(target);
-    if (!fields) return FALSE;
+    if (!capture_equal(failure, "metadata-present", TRUE, fields != NULL)) return FALSE;
     char *key = metadata_key(fields);
-    gboolean allowed = g_strcmp0(key, tl_string(approved, "metadataKey")) == 0 && !sensitive(target)
-        && editable(target) && gtk_widget_is_sensitive(target->widget);
+    gboolean allowed = capture_equal(failure, "metadata-key-matches", TRUE, g_strcmp0(key, tl_string(approved, "metadataKey")) == 0)
+        && capture_equal(failure, "sensitive", FALSE, sensitive(target))
+        && capture_equal(failure, "editable", TRUE, !!editable(target))
+        && capture_equal(failure, "widget-enabled", TRUE, !!gtk_widget_is_sensitive(target->widget));
     json_object_unref(fields); g_free(key);
     return allowed;
+}
+gboolean tl_metadata_matches(Target *target, JsonObject *approved) {
+    return metadata_matches(target, approved, NULL);
 }
 static gint utf16_length(const char *text) {
     if (!text || !g_utf8_validate(text, -1, NULL)) return -1;
@@ -658,30 +693,50 @@ static char *read_text(Target *target, gint *start, gint *end) {
     if (*start < 0 || *end < 0) { g_free(text); return NULL; }
     return text;
 }
-static gboolean stamp_matches(Target *target, JsonObject *approved) {
+static gboolean capture_stamp_matches(Target *target, JsonObject *approved, CaptureFailure *failure) {
     JsonObject *stamp = tl_object(approved, "contextStamp");
-    return stamp && target->im_observed
-        && (gint64)target->im_state.context_generation == tl_integer(stamp, "context", -1)
-        && (gint64)target->im_state.epoch == tl_integer(stamp, "epoch", -1)
-        && (gint64)target->im_state.input_epoch == tl_integer(stamp, "input", -1)
-        && (gint64)target->im_state.server_serial == tl_integer(stamp, "server", -1)
-        && (gint64)target->im_state.applied_serial == tl_integer(stamp, "applied", -1)
-        && (gint64)target->im_state.flags == tl_integer(stamp, "flags", -1);
+    return capture_equal(failure, "stamp-present", TRUE, stamp != NULL)
+        && capture_equal(failure, "ime-observed", TRUE, !!target->im_observed)
+        && capture_equal(failure, "context", tl_integer(stamp, "context", -1), (gint64)target->im_state.context_generation)
+        && capture_equal(failure, "epoch", tl_integer(stamp, "epoch", -1), (gint64)target->im_state.epoch)
+        && capture_equal(failure, "input", tl_integer(stamp, "input", -1), (gint64)target->im_state.input_epoch)
+        && capture_equal(failure, "server", tl_integer(stamp, "server", -1), (gint64)target->im_state.server_serial)
+        && capture_equal(failure, "applied", tl_integer(stamp, "applied", -1), (gint64)target->im_state.applied_serial)
+        && capture_equal(failure, "flags", tl_integer(stamp, "flags", -1), (gint64)target->im_state.flags);
 }
-JsonObject *tl_capture(Target *target, JsonObject *approved) {
-    if (!tl_ime_clear(target) || target != tl_focused() || !stamp_matches(target, approved)) return NULL;
+static gboolean stamp_matches(Target *target, JsonObject *approved) {
+    return capture_stamp_matches(target, approved, NULL);
+}
+static gboolean capture_age(gint64 age, CaptureFailure *failure) {
+    if (age < 0) return capture_equal(failure, "min-age-ms", 0, age);
+    if (age > 150) return capture_equal(failure, "max-age-ms", 150, age);
+    return TRUE;
+}
+static gboolean capture_focused(Target *target, CaptureFailure *failure) {
+    Target *focused = tl_focused();
+    /* 1 = the requested field, 0 = no field, 2 = another field. */
+    return capture_equal(failure, "focused-target", 1, focused == target ? 1 : focused ? 2 : 0);
+}
+JsonObject *tl_capture(Target *target, JsonObject *approved, CaptureFailure *failure) {
+    if (failure) failure->phase = "before-read";
+    if (!capture_ime_clear(target, failure) || !capture_focused(target, failure)
+        || !capture_stamp_matches(target, approved, failure)) return NULL;
     gint64 age = tl_now() - tl_integer(approved, "observedAtMs", 0);
-    if (age < 0 || age > 150 || !tl_metadata_matches(target, approved)) return NULL;
+    if (!capture_age(age, failure) || !metadata_matches(target, approved, failure)) return NULL;
     guint64 storage = target->storage_revision, input = target->input_revision, focus = target->focus_revision;
     gint start, end;
     char *text = read_text(target, &start, &end);
-    if (!text) return NULL;
+    if (!capture_equal(failure, "text-available", TRUE, text != NULL)) return NULL;
+    if (failure) failure->phase = "after-read";
     JsonObject *description = tl_describe(target);
     age = tl_now() - tl_integer(approved, "observedAtMs", 0);
-    if (!description || !target->ime_known || target->composing || !stamp_matches(target, approved)
-        || age < 0 || age > 150 || target != tl_focused() || target->storage_revision != storage
-        || target->input_revision != input || target->focus_revision != focus
-        || !tl_metadata_matches(target, approved)) {
+    if (!capture_equal(failure, "description-present", TRUE, description != NULL)
+        || !capture_ime_known(target, failure) || !capture_stamp_matches(target, approved, failure)
+        || !capture_age(age, failure) || !capture_focused(target, failure)
+        || !capture_equal(failure, "storage-revision", (gint64)storage, (gint64)target->storage_revision)
+        || !capture_equal(failure, "input-revision", (gint64)input, (gint64)target->input_revision)
+        || !capture_equal(failure, "focus-revision", (gint64)focus, (gint64)target->focus_revision)
+        || !metadata_matches(target, approved, failure)) {
         if (description) json_object_unref(description);
         g_free(text); return NULL;
     }
