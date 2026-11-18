@@ -294,3 +294,35 @@ class CandidateTests(unittest.TestCase):
     def test_failed_status_publication_fails_the_reporting_job(self):
         result = self.publish("b", "h", "success", "gh() { return 1; }")
         self.assertNotEqual(result.returncode, 0)
+
+    def test_report_reads_the_verified_candidate_tree_with_trusted_base_checked_out(self):
+        self.git("switch", "-q", "hitl")
+        base = self.commit("base.txt", "later base")
+        result, _ = self.checkout(base, self.head)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tree = self.git("rev-parse", "HEAD^{tree}")
+        self.git("checkout", "-q", "--detach", base)
+        script = workflow_step("pr-candidate.yml", "failure-comparison", "source")
+        for expected_tree in (tree, "0" * 40):
+            env_file = self.root / ".git/report-environment"
+            env_file.write_text("")
+            result = subprocess.run(
+                [git_bash(), "-eo", "pipefail", "-c", script],
+                cwd=self.root,
+                capture_output=True,
+                text=True,
+                env={
+                    **self.environment,
+                    "BASE": base,
+                    "HEAD_SHA": self.head,
+                    "TESTED_TREE": expected_tree,
+                    "GITHUB_ENV": env_file.as_posix(),
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            if expected_tree == tree:
+                self.assertEqual(env_file.read_text().strip(), "CANDIDATE_SOURCE_TREE=" + tree)
+                self.assertEqual(self.git("show", tree + ":feature.txt"), "head one")
+            else:
+                self.assertEqual(env_file.read_text(), "")
+            self.assertEqual(self.git("rev-parse", "HEAD"), base)

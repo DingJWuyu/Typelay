@@ -25,6 +25,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       tested: ${{ steps.candidate.outputs.tested }}
+      tree: ${{ steps.candidate.outputs.tree }}
     permissions:
       contents: read
     steps:
@@ -50,6 +51,7 @@ jobs:
         commit=$(git -c user.name=TypeLay -c user.email=ci@localhost commit-tree \
           "$tree" -p "$BASE" -p "$HEAD_SHA" -m 'TypeLay PR candidate')
         git checkout --detach "$commit"
+        echo "tree=$tree" >> "$GITHUB_OUTPUT"
         echo "tested=$commit" >> "$GITHUB_OUTPUT"
         git show -s --format='Tested commit: `%H`%n%nSource tree: `%T`' | tee -a "$GITHUB_STEP_SUMMARY"
     - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
@@ -85,6 +87,17 @@ jobs:
         ref: ${{ inputs.base || github.event.pull_request.base.sha }}
         persist-credentials: false
         fetch-depth: 0
+    - name: Reconstruct the tested tree without checking out candidate code
+      id: source
+      if: needs.shared.outputs.tested != ''
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TESTED_TREE: ${{ needs.shared.outputs.tree }}
+      run: |
+        if { git cat-file -e "$HEAD_SHA^{commit}" || git -c 'credential.helper=!gh auth git-credential' fetch --no-tags "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$HEAD_SHA"; } &&
+           tree=$(git merge-tree --write-tree "$BASE" "$HEAD_SHA") && test "$tree" = "$TESTED_TREE"; then
+          echo "CANDIDATE_SOURCE_TREE=$tree" >> "$GITHUB_ENV"
+        fi
     - name: Publish candidate failure comparison from its trusted base
       env:
         GH_TOKEN: ${{ github.token }}

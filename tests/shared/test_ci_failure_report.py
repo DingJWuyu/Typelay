@@ -111,13 +111,14 @@ AssertionError: private field contents
         from failure_evidence import Observation
         from failure_report import compare
 
-        step = {"name": "original step", "conclusion": "failure"}
+        step = {"name": "original step", "number": 1, "conclusion": "failure"}
         row = Observation("case", "capture", "native-read-declined")
         different = Observation("case", "click", "render-deadline")
         cases = [
             ("failure", "failure", [row], "基线也记录了这条失败"),
             ("failure", "failure", [different], "同分片记录了另一条失败"),
-            ("success", "success", [], "同分片通过"),
+            ("success", "success", [], "同分片通过，用例无法对照"),
+            ("success", "success", [Observation("case", status="passed")], "同分片通过"),
             ("failure", "skipped", [], "无法对照"),
             ("cancelled", "cancelled", [], "无法对照"),
             ("failure", "failure", [Observation()], "无法对照"),
@@ -126,7 +127,7 @@ AssertionError: private field contents
         for job_status, step_status, rows, expected in cases:
             with self.subTest(expected=expected, job_status=job_status, step_status=step_status):
                 base = {"conclusion": job_status, "steps": [dict(step, conclusion=step_status)]}
-                self.assertIn(expected, compare(step, row, base, {"original step": rows}))
+                self.assertIn(expected, compare(("original step", 1), row, base, {1: rows}))
 
     def test_baseline_uses_the_hitl_tip_at_push_time_and_only_first_parent_ancestors(self):
         import tempfile
@@ -197,8 +198,8 @@ AssertionError: private field contents
             ],
         }
         records = {
-            "original probe": [Observation("ordered", "publish", "assert admitted")],
-            "language search": [Observation()],
+            4: [Observation("ordered", "publish", "assert admitted")],
+            5: [Observation()],
         }
         lines = format_job(job, records, None, {}, [], [])
         page, cli = StringIO(), StringIO()
@@ -284,7 +285,7 @@ AssertionError: private field contents
             tests = root / "tests"
             tests.mkdir()
             (tests / "wait.py").write_text(
-                "def example():\n    wait('preview missing')\ndef wait(description):\n    raise AssertionError(description)\n"
+                "def example():\n    wait('preview missing')\ndef wait(description):\n    raise AssertionError(description)\nelsewhere = receive('unrelated label')\n"
             )
             git("add", ".")
             git(
@@ -307,6 +308,8 @@ AssertionError: """
                 (row,) = python_failures(sha, log + "private source text")
                 self.assertNotIn("private source text", str(row))
                 self.assertNotEqual(row.stage, "wait")
+                (row,) = python_failures(sha, log + "unrelated label")
+                self.assertIsNone(row.assertion)
 
     def test_html_and_terminal_are_unambiguous_when_evidence_is_missing(self):
         from failure_report import report
@@ -381,3 +384,258 @@ AssertionError: """
         text = "\n".join(report(Api(), run, {"before": "b" * 40}))
         self.assertIn("b" * 40, text)
         self.assertIn("403", text)
+
+    def test_contract_report_combines_log_trx_and_all_failed_tests(self):
+        from failure_evidence import CONTRACTS, contracts_from_trx
+
+        case = "TypeLay.App.Tests.Fixture.Click"
+        other = "TypeLay.App.Tests.Fixture.Other"
+        log = f'  Failed {case} [1 s]\n    {{"operation":"source-click-focus-not-delivered"}}'
+        trx = f'<TestRun><UnitTestResult testName="{case}" outcome="Failed"><Message>System.TimeoutException : private</Message></UnitTestResult></TestRun>'
+        reports = {
+            "contracts": list(contracts_from_trx("a" * 40, trx)),
+            "contract-summary": {"failedTests": [{"testName": n} for n in (case, other)]},
+        }
+        rows = observe_step("a" * 40, CONTRACTS, log, reports)
+        self.assertEqual({r.case for r in rows}, {case, other})
+        first = next(r for r in rows if r.case == case)
+        self.assertEqual(
+            (first.stage, first.assertion, first.exception),
+            ("focus-wait", "source-click-focus-not-delivered", "TimeoutException"),
+        )
+
+    def test_fixed_setup_reasons_and_actual_continuous_outcomes_reach_the_report(self):
+        from failure_evidence import CONTINUOUS, LINUX_INDEX, WINDOWS_INDEX
+
+        path = "index-production/result.json"
+        windows = {
+            "outcomes": {"activate-index": "failed"},
+            "failure": "IOException: private-token",
+            "failureReason": "index-hello-identity",
+        }
+        (row,) = observe_step("a" * 40, WINDOWS_INDEX, "", {path: windows})
+        self.assertEqual(row.reason, "index-hello-identity")
+        self.assertNotIn("private-token", str(row))
+        windows["failureReason"] = "another-private-token"
+        (row,) = observe_step("a" * 40, WINDOWS_INDEX, "", {path: windows})
+        self.assertIsNone(row.reason)
+        self.assertIsNone(row.assertion)
+        linux = {
+            "stages": {"install-argos": "failed"},
+            "failure": "AssertionError",
+            "preparationFailures": {
+                "install-argos": {
+                    "exitCode": 7,
+                    "diagnostic": {
+                        "stage": "model-download",
+                        "category": "network",
+                        "httpStatus": 503,
+                        "resource": "argos-zh-en",
+                        "networkReason": "http",
+                        "message": "private",
+                    },
+                }
+            },
+        }
+        (row,) = observe_step("a" * 40, LINUX_INDEX, "", {path: linux})
+        self.assertEqual(
+            (row.case, row.stage, row.assertion, row.category, row.reason),
+            ("install-argos", "model-download", "HTTP 503", "network", "http"),
+        )
+        self.assertNotIn("private", str(row))
+        scenes = {
+            "modelSetup": {"outcome": "ready"},
+            "directTranslation": {"outcome": "verified"},
+            "chromeNewTab": {"outcome": "passed"},
+        }
+        rows = observe_step(
+            "a" * 40,
+            CONTINUOUS,
+            "",
+            {"continuous-translation/result.json": scenes},
+            successful=True,
+        )
+        self.assertEqual({r.case for r in rows if r.status == "passed"}, set(scenes))
+
+    def test_report_reader_keeps_independent_results_and_rejects_unusable_artifacts(self):
+        import io
+        import json
+        import zipfile
+        from unittest.mock import patch
+
+        from failure_actions import LIMIT, Attempt, MissingEvidence
+        from failure_evidence import BROWSER, WINDOWS_INDEX
+        from failure_report import observations
+
+        sha = "a" * 40
+        source = {"tested_commit": sha, "run_id": 12, "attempt": 2}
+        name = f"typelay-index-windows-{sha}-12-2"
+
+        class Evidence:
+            listed = True
+            fields = {"id": 3, "expired": False, "size_in_bytes": LIMIT}
+            body = b""
+            downloads = 0
+
+            def pages(self, path, key, **kwargs):
+                assert key == "artifacts"
+                yield [dict(self.fields, name=name)] if self.listed else []
+
+            def read(self, path, *, raw=False):
+                if path == "artifacts/3/zip":
+                    self.downloads += 1
+                    return self.body
+                raise MissingEvidence("Actions HTTP 404")
+
+        api = Evidence()
+
+        def archive(identity, damaged):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
+                z.writestr("ci/source.json", json.dumps(identity))
+                z.writestr(
+                    "browser-cooperation/result.json",
+                    json.dumps(
+                        {
+                            "scenes": [
+                                {
+                                    "outcome": "failed",
+                                    "name": "editor",
+                                    "stage": "confirm",
+                                    "failure": "deadline",
+                                }
+                            ]
+                        }
+                    ),
+                )
+                if damaged:
+                    z.writestr("index-production/result.json", damaged)
+            return buf.getvalue()
+
+        def read(*steps):
+            job = {
+                "id": 4,
+                "name": "Index / windows",
+                "steps": [
+                    {"number": i, "name": step, "conclusion": "failure"}
+                    for i, step in enumerate(steps, 1)
+                ],
+            }
+            return observations(Attempt(api, {"id": 12, "run_attempt": 2, "head_sha": sha}), job)
+
+        for broken in (None, "{truncated", "[]", '{"outcomes": "invalid"}'):
+            with self.subTest(broken=broken):
+                api.body = archive(source, broken)
+                records, notes = read(WINDOWS_INDEX, BROWSER)
+                self.assertIn("editor", str(records))
+                self.assertTrue(any("index-production/result.json" in n for n in notes))
+        self.assertEqual(api.downloads, 4)
+        read("Build package")
+        self.assertEqual(api.downloads, 4)
+        for fields, listed, body, msg in (
+            ({}, False, b"", "缺失"),
+            ({"expired": True}, True, b"", "过期"),
+            ({"size_in_bytes": LIMIT + 1}, True, b"", "超过"),
+            ({}, True, b"broken", "解析"),
+            ({}, True, archive(dict(source, attempt=1), None), "不符"),
+            ({}, True, archive(dict(source, tested_commit="b" * 40), None), "不符"),
+        ):
+            with self.subTest(msg=msg):
+                api.fields = {"id": 3, "expired": False, "size_in_bytes": LIMIT, **fields}
+                api.listed, api.body = listed, body
+                records, notes = read(BROWSER)
+                self.assertNotIn("editor", str(records))
+                self.assertIn(msg, str(notes))
+
+        # The server metadata, transferred zip and individual expanded member each have a limit.
+        api.body = archive(source, " " * 4096)
+        size = len(api.body)
+        api.fields = {"id": 3, "expired": False, "size_in_bytes": size}
+        with patch("failure_actions.LIMIT", size):
+            records, notes = read(WINDOWS_INDEX, BROWSER)
+            self.assertIn("editor", str(records))
+            self.assertIn("分项报告超过", str(notes))
+            api.body += b"x"
+            records, notes = read(BROWSER)
+            self.assertNotIn("editor", str(records))
+            self.assertIn("结构化报告超过", str(notes))
+
+    def test_same_named_steps_keep_their_own_logs_and_baseline_occurrence(self):
+        from failure_evidence import Observation
+        from failure_report import format_job
+
+        upload = "Run actions/upload-artifact"
+        job = {
+            "name": "Windows desktop / ordinary",
+            "conclusion": "failure",
+            "html_url": "https://example.test/current",
+            "steps": [dict(name=upload, number=n, conclusion="failure") for n in (8, 10)],
+        }
+        base = {
+            **job,
+            "html_url": "https://example.test/base",
+            "steps": [dict(name=upload, number=n, conclusion="failure") for n in (3, 9)],
+        }
+        first, second = (
+            Observation("upload", "finish", code) for code in ("first-code", "second-code")
+        )
+        lines = format_job(
+            job, {8: [first], 10: [second]}, base, {3: [second], 9: [second]}, [], []
+        )
+        self.assertTrue(
+            any("#step:8:1" in r and "first-code" in r and "另一条失败" in r for r in lines)
+        )
+        self.assertTrue(
+            any("#step:10:1" in r and "second-code" in r and "这条失败" in r for r in lines)
+        )
+
+    def test_missing_jobs_or_generic_assertions_do_not_claim_a_green_or_matching_run(self):
+        from failure_evidence import Observation
+        from failure_report import compare, report
+
+        row = Observation("TypeLay.Runtime.Tests.A", "assert", "Assert.Equal()")
+        step = dict(name="test", number=9, conclusion="failure")
+        self.assertIn(
+            "无法对照",
+            compare(("test", 1), row, {"steps": [step], "conclusion": "failure"}, {9: [row]}),
+        )
+
+        class Api:
+            def pages(self, path, key, **kwargs):
+                yield (
+                    [
+                        dict(name="Failure comparison", status="in_progress", conclusion=None),
+                        dict(name="shared", status="queued", conclusion=None),
+                    ]
+                    if key == "jobs"
+                    else []
+                )
+
+        run = dict(
+            id=12,
+            run_attempt=2,
+            created_at="2026-01-02T01:00:00Z",
+            workflow_id=1,
+            html_url="https://example.test",
+            head_sha="a" * 40,
+            head_branch="hitl",
+        )
+        text = "\n".join(report(Api(), run, {"before": "b" * 40}))
+        self.assertNotIn("没有失败", text)
+        self.assertIn("无法判定", text)
+
+    def test_every_published_line_is_identical_in_summary_and_terminal(self):
+        from io import StringIO
+        from itertools import product
+
+        from failure_report import publish
+
+        samples = ("", " ", "未知", "| <&> markdown", "TYPELAY_REPORT literal", "run/attempt 12/2")
+        for length in range(4):
+            for lines in product(samples, repeat=length):
+                page, cli = StringIO(), StringIO()
+                publish(lines, page, cli)
+                self.assertEqual(page.getvalue().splitlines(), list(lines))
+                self.assertEqual(
+                    cli.getvalue().splitlines(), ["TYPELAY_REPORT " + line for line in lines]
+                )

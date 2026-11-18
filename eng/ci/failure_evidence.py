@@ -6,7 +6,7 @@ import json
 import re
 import subprocess
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 
@@ -27,9 +27,25 @@ class Observation:
     category: str | None = None
 
     def signature(self):
-        if self.case and self.stage and self.assertion:
+        if self.case and self.stage and self.assertion and not generic_assertion(self.assertion):
             return self.case, self.stage, self.assertion, self.exception, self.reason, self.category
         return None
+
+
+def generic_assertion(value):
+    return bool(re.fullmatch(r"Assert\.\w+\(\)", value or ""))
+
+
+def merge_contract(left, right):
+    if left.status != right.status:
+        ranks = {"failed": 2, "not-run": 1, "passed": 0}
+        return max((left, right), key=lambda row: ranks[row.status])
+    # Prefer a producer failure code or actual source expression over an xUnit method name.
+    if (not left.assertion or generic_assertion(left.assertion)) and right.assertion:
+        left, right = right, left
+    return replace(
+        left, stage=left.stage or right.stage, exception=left.exception or right.exception
+    )
 
 
 def token(value):
@@ -61,13 +77,14 @@ def python_statements(sha, filename):
     try:
         tree = ast.parse("\n".join(lines))
     except SyntaxError:
-        return [], set()
+        return [], {}
     assertions = [node for node in ast.walk(tree) if isinstance(node, ast.Assert)]
-    literals = {
-        node.value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Constant) and isinstance(node.value, str)
-    }
+    literals = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Call, ast.Assert, ast.Raise)):
+            for value in ast.walk(node):
+                if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                    literals.setdefault(value.value, set()).add(node.lineno)
     return assertions, literals
 
 
@@ -111,7 +128,9 @@ def python_failures(sha, log):
             "{'status': 'failed-before-publication',"
         ):
             code += " (failed-before-publication)"
-        elif error[2] and any(error[2] in python_statements(sha, file)[1] for file, _, _ in frames):
+        elif error[2] and any(
+            int(at) in python_statements(sha, file)[1].get(error[2], ()) for file, at, _ in frames
+        ):
             if not code or error[2] not in code:
                 code = error[2]
         elif not code or not (code.startswith("assert ") or code.startswith("self.assert")):
@@ -138,16 +157,126 @@ BROWSER = "Verify cooperative browser input with the shipped app and real model"
 CONTRACTS = "Verify Windows behavior and contracts"
 
 
-def index_rows(report, include_passed):
+def fixed(value, choices):
+    return value if isinstance(value, str) and value in choices else None
+
+
+def setup_diagnostic(item):
+    category = fixed(
+        item.get("category"),
+        ("network", "disk-space", "integrity", "permission", "runtime", "unknown"),
+    )
+    stage = fixed(
+        item.get("stage"),
+        (
+            "prepare",
+            "runtime",
+            "dependencies",
+            "model-download",
+            "model-extract",
+            "model-verify",
+            "self-check",
+            "activate",
+        ),
+    )
+    resource = reason = assertion = None
+    if stage == "model-download":
+        resource = fixed(
+            item.get("resource"),
+            (
+                "argos-zh-en",
+                "argos-en-zh",
+                "hy-model",
+                "hy-license",
+                "index-model",
+                "index-license",
+                "unknown",
+            ),
+        )
+        if category == "network":
+            reason = fixed(
+                item.get("networkReason"),
+                ("http", "dns", "tls", "timeout", "connection", "incomplete", "unknown"),
+            )
+            http = item.get("httpStatus")
+            if type(http) is int and 100 <= http <= 599 and reason in (None, "http"):
+                assertion = f"HTTP {http}"
+    if stage in ("runtime", "dependencies"):
+        assertion = fixed(
+            item.get("runtimeStep"),
+            (
+                "tool-verify",
+                "python-install",
+                "python-find",
+                "venv-create",
+                "dependencies-resolve",
+                "dependencies-install",
+            ),
+        )
+        if assertion:
+            reason = fixed(
+                item.get("runtimeReason"),
+                (
+                    "missing",
+                    "integrity",
+                    "source",
+                    "permission",
+                    "exit",
+                    "timeout",
+                    "output",
+                    "launch",
+                ),
+            )
+    return Observation(resource, stage, assertion or reason, reason=reason, category=category)
+
+
+def index_rows(sha, report, include_passed):
     failure, _, code = str(report.get("failure") or "").partition(": ")
     for name, status in (report.get("outcomes") or report.get("stages") or {}).items():
         if status == "failed":
+            diagnostic = ((report.get("preparationFailures") or {}).get(name) or {}).get(
+                "diagnostic"
+            ) or {}
+            row = setup_diagnostic(diagnostic)
+            reason = fixed(
+                report.get("failureReason"),
+                (
+                    "index-publication-unconfirmed",
+                    "index-hello-identity",
+                    "index-inference-profile-unqualified",
+                ),
+            )
+            # Only LifecycleFailure appends a producer-owned label. Other messages can contain input.
+            label = (
+                code
+                if failure == "LifecycleFailure"
+                and code in python_statements(sha, "tests/linux/index_package_e2e.py")[1]
+                else None
+            )
+            setup_stage = fixed(
+                report.get("setupStage"),
+                (
+                    "Prepare",
+                    "Runtime",
+                    "Dependencies",
+                    "ModelDownload",
+                    "ModelExtract",
+                    "ModelVerify",
+                    "SelfCheck",
+                    "Activate",
+                ),
+            )
+            category = fixed(
+                report.get("setupCategory"),
+                ("Network", "DiskSpace", "Integrity", "Permission", "Runtime", "Unknown"),
+            )
             yield Observation(
                 token(name),
-                token(report.get("setupStage")) or token(name),
-                token(report.get("failureReason")) or token(code),
+                row.stage or setup_stage or token(name),
+                row.assertion or reason or label,
                 token(failure),
-                category=token(report.get("setupCategory")),
+                reason or row.reason,
+                category=category or row.category,
             )
         elif status == "not-run" or (include_passed and status == "passed"):
             yield Observation(token(name), token(name), status=status)
@@ -262,21 +391,12 @@ def setup_rows(log):
             continue
         if not isinstance(item, dict):
             continue
-        http = item.get("httpStatus")
-        yield Observation(
-            token(item.get("resource")),
-            token(item.get("stage")),
-            f"HTTP {http}"
-            if type(http) is int and 100 <= http <= 599
-            else token(item.get("networkReason")),
-            reason=token(item.get("networkReason")),
-            category=token(item.get("category")),
-        )
+        yield setup_diagnostic(item)
 
 
 def observe_step(sha, step_name, log, reports, *, successful=False):
     if step_name in (WINDOWS_INDEX, LINUX_INDEX):
-        rows = list(index_rows(reports.get("index-production/result.json") or {}, successful))
+        rows = list(index_rows(sha, reports.get("index-production/result.json") or {}, successful))
     elif step_name in SCENE_REPORTS:
         rows = list(browser_rows(reports.get(SCENE_REPORTS[step_name]) or {}, successful))
         result = reports.get(SCENE_REPORTS[step_name]) or {}
@@ -295,7 +415,11 @@ def observe_step(sha, step_name, log, reports, *, successful=False):
     elif step_name == CONTINUOUS:
         result = reports.get("continuous-translation/result.json") or {}
         scenes = [
-            dict(value, name=name)
+            dict(
+                value,
+                name=name,
+                outcome="passed" if value["outcome"] in ("ready", "verified") else value["outcome"],
+            )
             for name, value in result.items()
             if isinstance(value, dict) and "outcome" in value
         ]
@@ -307,14 +431,15 @@ def observe_step(sha, step_name, log, reports, *, successful=False):
     else:
         rows = list(contracts_from_log(sha, log))
         if step_name in (CONTRACTS, "Verify shared behavior without Windows"):
-            by_case = {row.case: row for row in rows}
-            for row in reports.get("contracts", []):
+            rows.extend(reports.get("contracts", []))
+            for item in reports.get("contract-summary", {}).get("failedTests") or []:
+                if isinstance(item, dict) and isinstance(item.get("testName"), str):
+                    rows.append(Observation(contract_case(sha, item["testName"])))
+            by_case = {}
+            for row in rows:
                 if successful or row.status != "passed":
-                    by_case[row.case] = row
-            if not by_case and step_name == CONTRACTS:
-                for case in reports.get("contract-summary", {}).get("failedTests", []):
-                    name = contract_case(sha, case.get("testName", ""))
-                    by_case[name] = Observation(name)
+                    prior = by_case.get(row.case)
+                    by_case[row.case] = merge_contract(prior, row) if prior else row
             rows = list(by_case.values())
     if not successful:
         rows.extend([*setup_rows(log), *python_failures(sha, log)])

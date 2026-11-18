@@ -10,7 +10,22 @@ from functools import cached_property
 from itertools import count
 from urllib.parse import urlencode
 
-from failure_evidence import SCENE_REPORTS, contracts_from_trx
+from failure_evidence import (
+    CONTINUOUS,
+    CONTRACTS,
+    LINUX_INDEX,
+    SCENE_REPORTS,
+    WINDOWS_INDEX,
+    contracts_from_trx,
+)
+
+SHARED_TEST = "Verify shared behavior without Windows"
+REPORTS = {
+    **SCENE_REPORTS,
+    WINDOWS_INDEX: "index-production/result.json",
+    LINUX_INDEX: "index-production/result.json",
+    CONTINUOUS: "continuous-translation/result.json",
+}
 
 LIMIT = 20_000_000
 SHA = re.compile(r"[0-9a-f]{40}")
@@ -94,6 +109,7 @@ class Attempt:
         self.id = run["id"]
         self.attempt = run["run_attempt"]
         self.sha = run["head_sha"]
+        self.source = self.sha
 
     @cached_property
     def jobs(self):
@@ -105,7 +121,11 @@ class Attempt:
         pages = self.actions.pages(f"runs/{self.id}/artifacts", "artifacts")
         return {a["name"]: a for page in pages for a in page}
 
-    def reports(self, job):
+    def reports(self, job, steps):
+        requested = {REPORTS[s] for s in steps if s in REPORTS}
+        contracts = bool(steps.intersection({CONTRACTS, SHARED_TEST}))
+        if not requested and not contracts:
+            return {}, []
         name = job["name"]
         suffix = f"{self.sha}-{self.id}-{self.attempt}"
         if name == "Index / windows":
@@ -119,7 +139,7 @@ class Attempt:
         elif name == "shared":
             key = "shared-" + suffix
         else:
-            return {}
+            return {}, []
         artifact = self.artifacts.get(key)
         if not artifact:
             raise MissingEvidence("结构化报告缺失")
@@ -132,52 +152,79 @@ class Attempt:
             raise MissingEvidence("结构化报告超过 20 MB")
         try:
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
-                return self.read_reports(archive, name)
+                return self.read_reports(archive, name, requested, contracts)
         except (ValueError, KeyError, TypeError, ET.ParseError, zipfile.BadZipFile) as error:
             raise MissingEvidence("结构化报告无法解析") from error
 
-    def read_reports(self, archive, job):
+    def read_reports(self, archive, job, requested, contracts):
         files = {item.filename: item for item in archive.infolist()}
 
         def read(name):
+            if name not in files:
+                raise MissingEvidence("分项报告缺失")
             if files[name].file_size > LIMIT:
                 raise MissingEvidence("分项报告超过 20 MB")
             return archive.read(files[name])
 
+        def read_object(name):
+            data = json.loads(read(name))
+            if not isinstance(data, dict):
+                raise ValueError("object expected")
+            return data
+
         if not job.startswith("Windows contracts / "):
-            source = json.loads(read("ci/source.json"))
+            source = read_object("ci/source.json")
             if (
                 source.get("tested_commit"),
                 str(source.get("run_id")),
                 str(source.get("attempt")),
             ) != (self.sha, str(self.id), str(self.attempt)):
                 raise MissingEvidence("结构化报告的源码或 attempt 不符")
-        results = {}
-        for path in (
-            *SCENE_REPORTS.values(),
-            "continuous-translation/result.json",
-            "index-production/result.json",
-        ):
-            if path in files:
-                results[path] = json.loads(read(path))
-        trx = []
+        results, notes = {}, []
+
+        def collect(name, label, parse):
+            try:
+                return parse(name)
+            except MissingEvidence as error:
+                notes.append(f"{label}：{error}。")
+            except (
+                TypeError,
+                ValueError,
+                ET.ParseError,
+                zipfile.BadZipFile,
+                RuntimeError,
+                EOFError,
+            ):
+                notes.append(f"{label}：分项报告无法解析。")
+            return None
+
+        for path in sorted(requested):
+            data = collect(path, path, read_object)
+            if data is not None:
+                results[path] = data
+        if not contracts:
+            return results, notes
         if job.startswith("Windows contracts / "):
-            pointer = json.loads(read("current-contracts.json"))
-            current = pointer["runDirectory"]
-            if not re.fullmatch(r"contracts-[a-f0-9]{32}", current):
+            current = read_object("current-contracts.json").get("runDirectory")
+            if not isinstance(current, str) or not re.fullmatch(r"contracts-[a-f0-9]{32}", current):
                 raise MissingEvidence("本次 TRX 指针无效")
             trx = [
                 n
                 for n in files
                 if re.fullmatch(current + r"/(?:main|archive-body-timeout)/[^/]+\.trx", n)
             ]
-            run_report = current + "/result.json"
-            if run_report in files:
-                results["contract-summary"] = json.loads(read(run_report))
-        elif job == "shared":
+            summary = collect(current + "/result.json", "合同汇总", read_object)
+            if summary is not None:
+                results["contract-summary"] = summary
+        else:
             trx = [n for n in files if re.fullmatch(r"shared-test-results/[^/]+\.trx", n)]
-        if trx:
-            results["contracts"] = [
-                r for filename in trx for r in contracts_from_trx(self.sha, read(filename))
-            ]
-        return results
+        if not trx:
+            notes.append("TRX 分项报告缺失。")
+        results["contracts"] = []
+        for name in trx:
+            rows = collect(
+                name, "TRX", lambda path: list(contracts_from_trx(self.source, read(path)))
+            )
+            if rows is not None:
+                results["contracts"].extend(rows)
+        return results, notes

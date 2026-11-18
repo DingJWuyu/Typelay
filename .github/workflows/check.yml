@@ -1523,12 +1523,25 @@ jobs:
     permissions:
       contents: read
       actions: read
+    env:
+      COMPLETE_SUCCESS: ${{ github.run_attempt == 1 && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && !contains(needs.*.result, 'skipped') }}
     steps:
+    - name: Publish the result of a successful complete push
+      if: env.COMPLETE_SUCCESS == 'true'
+      run: |
+        {
+          echo '## 必过检查失败对照'
+          echo
+          printf '被测提交 `%s`，run/attempt [%s/%s](%s/%s/actions/runs/%s/attempts/%s)。\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+          echo '本次完整运行的必过检查均已通过。'
+        } | tee -a "$GITHUB_STEP_SUMMARY" | sed 's/^/TYPELAY_REPORT /'
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      if: env.COMPLETE_SUCCESS != 'true'
       with:
         persist-credentials: false
         fetch-depth: 0
     - name: Publish failure comparison
+      if: env.COMPLETE_SUCCESS != 'true'
       env:
         GH_TOKEN: ${{ github.token }}
       run: python eng/ci/failure_report.py

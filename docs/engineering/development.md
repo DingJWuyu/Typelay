@@ -175,9 +175,15 @@ GTK4 的术语 probe 和完整桌面诊断另存 `typelay-linux-gtk4-events-*`�
 gh run view "$RUN_ID" --attempt "$ATTEMPT" --repo DingJWuyu/Typelay --log | sed -n '/^Failure comparison[[:space:]]/s/^.*Z TYPELAY_REPORT //p'
 ```
 
-命令从报告 job 的日志读出 Actions 摘要的原文，无需下载 artifact。每行指向该分片的原始步骤。断言、异常和生产者分类分别列出，原因取自生产者明确记录的原因字段。准备失败后，Actions 跳过的步骤和报告中的未运行用例会单列。旧工作流没有发布这份摘要时，命令没有输出。
+这条命令读取整次运行的日志，再提取报告 job 发布的摘要原文。已知报告 job 编号时，只需读取该 job 的日志。在本次 attempt 的运行页打开 `Failure comparison`，链接末尾的数字就是 `JOB_ID`。
 
-普通分支 push 以运行创建时最近一次 `hitl` push 的提交与被测提交求共同基点。`hitl` push 使用事件的 `before`，PR 合并候选使用事件的 base。报告在同一工作流中按完整 job 名匹配矩阵分片。指定 SHA 缺少历史运行时，报告沿基线第一父链回溯，并列出实际 SHA、run 和 attempt。缺少可比用例、阶段或断言时显示「无法对照」。基线曾出现相同失败或通过，只说明那一次的观察结果。
+```bash
+gh api --allow-escape-sequences "repos/DingJWuyu/Typelay/actions/jobs/$JOB_ID/logs" | sed -n 's/^[^ ]*Z TYPELAY_REPORT //p'
+```
+
+两条命令都无需下载 artifact。每行指向该分片的原始步骤。断言、异常和生产者分类分别列出，原因取自生产者明确记录的原因字段。准备失败后，Actions 跳过的步骤和报告中的未运行用例会单列。旧工作流没有发布这份摘要时，命令没有输出。
+
+普通分支 push 以运行创建时最近一次 `hitl` push 的提交与被测提交求共同基点。`hitl` push 使用事件的 `before`，PR 合并候选使用事件的 base。候选工作流仅执行合并树，报告会注明这次缺少独立的基线运行。报告在同一工作流中按完整 job 名匹配矩阵分片。指定 SHA 缺少历史运行时，报告沿基线第一父链回溯，并列出实际 SHA、run 和 attempt。同分片通过但缺少该用例的执行记录时，报告区分分片结论与用例能否对照。缺少可比用例、阶段或断言时显示「无法对照」。基线曾出现相同失败或通过，只说明那一次的观察结果。
 
 `Failure comparison` 在上述 19 个必过 job 结束后读取既有日志和分项结果。W 仍以这 19 个 job 的最晚完成时间计算。基线、报告或日志过期时，保留可读字段和原有检查结论。
 
