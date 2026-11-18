@@ -1126,6 +1126,50 @@ jobs:
       run: |
         set -o pipefail
         python tests/linux/qt_cooperative/run.py --reuse-build --fcitx-root artifacts/linux/fcitx-cooperative-5.1.22 --verify-fcitx-build 2>&1 | tee artifacts/linux/qt-cooperative-probe.log
+    - name: Reject previous Qt evidence after interrupted probe preparation
+      if: ${{ matrix.group == 'native-qt' && !cancelled() && steps.qt.outcome == 'success' }}
+      shell: bash
+      run: |
+        qt=artifacts/linux/qt-cooperative
+        fcitx=artifacts/linux/fcitx-cooperative-5.1.22
+        scratch=$(mktemp -d)
+        trap 'rm -rf -- "$scratch"' EXIT
+        for file in versions.json async-runtime.json qt-runtime-probe fixture qpa_ack font-order \
+          plugins/platforminputcontexts/libfcitx5platforminputcontextplugin.so \
+          native/qt6/generic/libtypelay-qt6.so native/qt-native-fixture; do
+          mkdir -p "$(dirname "$scratch/$file")"
+          ln -s "$PWD/$qt/$file" "$scratch/$file"
+        done
+        mkdir "$scratch/language-configuration-interrupted.png"
+        admission=(python tests/linux/qt_cooperative/desktop_admission.py --qt-output "$scratch"
+          --fcitx-root "$fcitx" --probe-outcome failure --output "$scratch/admission.json")
+        for entry in outer session; do
+          cp "$qt/result.json" "$qt/async-result.json" "$scratch/"
+          args=()
+          if [[ $entry == outer ]]; then
+            "${admission[@]}"
+          else
+            args+=(--session)
+          fi
+          code=0
+          python tests/linux/qt_cooperative/run.py --out "$scratch" --fcitx-root "$fcitx" \
+            --reuse-build --verify-fcitx-build "${args[@]}" 2>"$scratch/preflight.log" || code=$?
+          test "$code" = 1
+          grep -F 'IsADirectoryError' "$scratch/preflight.log" | grep -F 'language-configuration-interrupted.png'
+          code=0
+          "${admission[@]}" || code=$?
+          test "$code" = 1
+          python - "$scratch/admission.json" <<'PYTHON'
+        import json
+        import sys
+        from pathlib import Path
+        report = json.loads(Path(sys.argv[1]).read_text())
+        assert report["admission"] == "not-run"
+        assert report["distributionAcceptance"] is False
+        assert "async-result.json" in report["reason"], report
+        PYTHON
+          test ! -e "$scratch/result.json"
+        done
     - name: Exercise Qt language search independently of ordered acceptance
       id: qt-language-options
       if: ${{ (matrix.group == 'native' || matrix.group == 'native-qt') && !cancelled() && steps.fcitx.outputs.core-ready == 'true' && (steps.qt.outcome == 'success' || steps.qt.outcome == 'failure') && hashFiles('artifacts/linux/qt-cooperative/fcitx5-qt.tar.gz') != '' }}

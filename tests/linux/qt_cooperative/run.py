@@ -4384,6 +4384,39 @@ def observe_font_order(out, env):
         )
 
 
+def prepare_probe(
+    out, fcitx, forced_sync_diagnostic, language_options_only, *, verified_fcitx_build
+):
+    reports = [
+        "result.json",
+        "async-result.json",
+        "language-options-result.json",
+        "language-options-paint.json",
+    ]
+    if not language_options_only:
+        reports.extend(
+            (
+                "font-order-result.json",
+                "unmodified-reentry-result.json",
+                "ordered-result.json",
+                "ordered-delayed-result.json",
+                "rapid-control-result.json",
+            )
+        )
+        if forced_sync_diagnostic:
+            reports.extend(("stock-sync-result.json", "sync-result.json"))
+    # Revoke each independent result even when another receipt is a directory.
+    with ExitStack() as cleanup:
+        for name in reports:
+            cleanup.callback((out / name).unlink, missing_ok=True)
+    for screenshot in out.glob("language-configuration-*.png"):
+        screenshot.unlink()
+    fcitx = fcitx.resolve()
+    if verified_fcitx_build:
+        verify_fcitx_inputs(fcitx)
+    return fcitx
+
+
 def session(
     out,
     fcitx,
@@ -4392,9 +4425,13 @@ def session(
     *,
     verified_fcitx_build=False,
 ):
-    # A failed new session must not reuse an earlier full or partial result.
-    (out / "result.json").unlink(missing_ok=True)
-    (out / "async-result.json").unlink(missing_ok=True)
+    fcitx = prepare_probe(
+        out,
+        fcitx,
+        forced_sync_diagnostic,
+        language_options_only,
+        verified_fcitx_build=verified_fcitx_build,
+    )
     children = []
     with tempfile.TemporaryDirectory(prefix="typelay-qt-research-") as temporary:
         env = os.environ.copy()
@@ -4831,25 +4868,18 @@ if __name__ == "__main__":
     parser.add_argument("--forced-sync-diagnostic", action="store_true")
     parser.add_argument("--language-options-only", action="store_true")
     args = parser.parse_args()
-    out, fcitx = args.out.resolve(), args.fcitx_root.resolve()
+    out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
-    # Invalidate previous evidence even if this run fails during build/validation.
-    (out / "language-options-paint.json").unlink(missing_ok=True)
-    (out / "language-options-result.json").unlink(missing_ok=True)
-    for screenshot in out.glob("language-configuration-*.png"):
-        screenshot.unlink()
-    (out / "async-result.json").unlink(missing_ok=True)
-    if args.verify_fcitx_build:
-        verify_fcitx_inputs(fcitx)
+    fcitx = args.fcitx_root
+    options = {
+        "forced_sync_diagnostic": args.forced_sync_diagnostic,
+        "language_options_only": args.language_options_only,
+        "verified_fcitx_build": args.verify_fcitx_build,
+    }
     if args.session:
-        session(
-            out,
-            fcitx,
-            args.forced_sync_diagnostic,
-            args.language_options_only,
-            verified_fcitx_build=args.verify_fcitx_build,
-        )
+        session(out, fcitx, **options)
     else:
+        fcitx = prepare_probe(out, fcitx, **options)
         build(out, args.forced_sync_diagnostic, args.reuse_build)
         # A pipe keeps xvfb-run's final xauth redirection from truncating server evidence.
         command = [
