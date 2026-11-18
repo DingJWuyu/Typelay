@@ -134,7 +134,10 @@ internal sealed partial class OverlayWindow : Window, ISessionView, ISourceInter
     {
         get; set;
     }
-    public Func<SessionViewToken, ConfirmGlossarySource?>? ReserveGlossarySource { get; set; }
+    public Func<SessionViewToken, ConfirmGlossarySource?>? ReserveGlossarySource
+    {
+        get; set;
+    }
     public Func<SessionViewToken, SessionGlossaryEntry?>? BeginGlossaryRequested
     {
         get; set;
@@ -588,6 +591,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView, ISourceInter
         };
         Closed += (_, _) =>
         {
+            (_moreButton.ContextMenu as MoreContextMenu)?.RetireGlossarySource();
             _sourceGlossaryTransfer?.Dispose();
             _sourceGlossaryTransfer = null;
             InvalidateOwnedEditor(OwnedEditorReason.UiClosed);
@@ -1560,6 +1564,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView, ISourceInter
         if (_glossary is { } form)
             CloseGlossary(form, restoreEditor: false);
         _sourceAnchor = null;
+        (_moreButton.ContextMenu as MoreContextMenu)?.RetireGlossarySource();
         _sourceGlossarySnapshot = null;
         _sourceGlossaryOpeningToken = null;
         _sourceGlossaryOpeningEntry = null;
@@ -1782,6 +1787,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView, ISourceInter
 
     private void OpenMenu(Button anchor)
     {
+        (anchor.ContextMenu as MoreContextMenu)?.RetireGlossarySource();
         if (_ownedLocalOpening is not null)
         {
             OpenLocalDraftMenu(anchor);
@@ -1790,7 +1796,6 @@ internal sealed partial class OverlayWindow : Window, ISessionView, ISourceInter
         CancelSourceRegenerateQueue();
         var viewToken = _viewContext?.Token;
         var sourceTarget = _sourceAnchor?.Target;
-        var menuGlossarySource = _sourceGlossarySnapshot;
         string menuDraft = _editor.Text;
         var menuState = _sessionState;
         var translation = _viewContext?.TranslationActions;
@@ -1908,20 +1913,28 @@ internal sealed partial class OverlayWindow : Window, ISessionView, ISourceInter
                 && _ownedEditor is null && _glossary is null && !EditingComposition,
             translation?.GlossaryUnavailableReason is { } glossaryReason ? LocalizedStatus(glossaryReason)
                 : translation?.CanOpenGlossary == true ? null : unavailable);
-        ConfirmGlossarySource? confirmSource = null;
         bool sourceMenu = menuState is SessionState.ValidTranslation or SessionState.EditedTranslationPending
             && ReserveGlossarySource is not null;
-        if (sourceMenu)
+        if (sourceMenu && glossary.IsEnabled)
+        {
+            menu.GlossarySource = _sourceGlossarySnapshot;
             ((MoreMenuItem)glossary).Admitted = () =>
             {
-                if (viewToken is not null && menuGlossarySource is { IsUsable: true } basis
+                if (viewToken is not null && menu.GlossarySource is { IsUsable: true } basis
                     && _sourceGlossarySnapshot is { } current
-                    && current with { ObservedAtMs = basis.ObservedAtMs, Bounds = basis.Bounds } == basis
+                    && current with
+                    {
+                        ObservedAtMs = basis.ObservedAtMs,
+                        Bounds = basis.Bounds
+                    } == basis
                     && KeyboardHook.ExactNativeFieldFocused(viewToken.Target.AsWindows()))
-                    confirmSource = ReserveGlossarySource!(viewToken);
+                    menu.ReservedGlossarySource = ReserveGlossarySource!(viewToken);
             };
+        }
         glossary.Click += async (_, _) =>
         {
+            var confirmSource = menu.ReservedGlossarySource;
+            menu.ReservedGlossarySource = null;
             if (!Dispatch((MoreMenuItem)glossary) || viewToken is null)
                 return;
             menu.IsOpen = false;

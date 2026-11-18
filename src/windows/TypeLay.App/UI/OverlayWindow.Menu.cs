@@ -6,6 +6,8 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Automation;
 using System.Windows.Shapes;
+using TypeLay.Core;
+using TypeLay.Runtime;
 
 namespace TypeLay.App;
 
@@ -45,6 +47,19 @@ internal sealed partial class OverlayWindow
     private sealed class MoreContextMenu : ContextMenu
     {
         private bool _opened;
+        internal InputSnapshot? GlossarySource
+        {
+            get; set;
+        }
+        internal ConfirmGlossarySource? ReservedGlossarySource
+        {
+            get; set;
+        }
+        internal void RetireGlossarySource()
+        {
+            GlossarySource = null;
+            ReservedGlossarySource = null;
+        }
         public bool Retired
         {
             get; private set;
@@ -63,7 +78,11 @@ internal sealed partial class OverlayWindow
                     _opened = true;
                 }
                 else if (_opened)
+                {
                     Retired = true;
+                    // OnClick has already reserved its own source. WPF delivers Click after closing.
+                    GlossarySource = null;
+                }
             }
             // Track the actual IsOpen transition before WPF's popup callbacks.
             // Routed Closed can arrive after the deferred MenuItem.Click.
@@ -74,7 +93,10 @@ internal sealed partial class OverlayWindow
     private sealed class MoreMenuItem(Func<bool> current) : MenuItem
     {
         private bool _clickPending;
-        internal Action? Admitted { get; set; }
+        internal Action? Admitted
+        {
+            get; set;
+        }
         protected override void OnClick()
         {
             if (!IsEnabled || !current())
