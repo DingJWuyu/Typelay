@@ -75,7 +75,7 @@ jobs:
             pwsh -NoProfile -File ./dev.ps1 shared-check
           '
   failure-comparison:
-    if: ${{ always() && needs.shared.result != 'success' }}
+    if: ${{ always() && (needs.shared.result == 'failure' || needs.shared.result == 'cancelled') }}
     needs: shared
     runs-on: ubuntu-latest
     permissions:
