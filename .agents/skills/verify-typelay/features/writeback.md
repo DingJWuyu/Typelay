@@ -51,7 +51,7 @@ Preconditions: 对本次合成字段有明确写回验收意图，接入端提�
 - **接受。** 在私有旅程中按预览文件打开普通 GTK 字段，记录实际译文、源文和选区。向 `DISPLAY="$TYPELAY_VERIFY_XDISPLAY"` 投递 `xdotool key --clearmodifiers Tab`。检查同一源字段变为该次候选，保存前后 AT-SPI 文本与截图。只看到浮层关闭不能判为接受成功。
 - **人工稿。** 通过浮层可编辑 TEXT 控件的公开焦点接口进入编辑，再用私有 XTest 输入合成修改。第一次 Tab 后检查源文仍原样，第二次独立 Tab 后检查人工稿写回，分别保存证据。
 - **直接入口。** 在原字段聚焦时执行 `"$TYPELAY_VERIFY_PACKAGE/typelay" --direct`，另一次独立运行投递 `ctrl+shift+F10`。操作前冻结原字段身份与正文，操作后检查该字段与其它字段，不能用后来聚焦的字段代替原目标。
-- **既有原生合同。** 在私有会话里执行 `DISPLAY="$TYPELAY_VERIFY_XDISPLAY" /usr/bin/python3 tests/linux/native_e2e.py --inside --gtk-refusal --native "$PWD/artifacts/linux/native" --output "$TYPELAY_VERIFY_OUTPUT/refusal"`，先创建输出目录。这条受控链验证 Unknown 拒绝与按键透传，不能算成功写回。
+- **既有原生合同。** 在私有会话里执行 `DISPLAY="$TYPELAY_VERIFY_XDISPLAY" /usr/bin/python3 tests/linux/native_e2e.py --inside --gtk-refusal --native "$PWD/artifacts/linux/native" --output "$TYPELAY_VERIFY_OUTPUT/refusal"`，先创建输出目录。这条受控链验证 Unknown 拒绝与按键透传。入口先清除上一轮的汇总与分项。完整运行的 `native-result.json` 汇入本轮 Unknown 拒绝、八项通知和 direct epoch 结果。
 - **GTK3 真实合作回归。** 在私有会话正式安装模型后执行下列命令。保持会话提供的 `TMPDIR`，语言场景使用短目录前缀，使 Unix socket 不超长，超时后仍由外层会话清理。包与正式模型留在会话的正常文件系统。该入口使用受控 GTK fixture 与初始化设置，保留候选、Verified 回执和计数判据，单独标明证据边界。
 
   ```bash

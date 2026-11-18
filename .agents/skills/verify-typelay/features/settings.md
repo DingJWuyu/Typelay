@@ -55,7 +55,7 @@ Preconditions: 私有会话内已有真实桌面进程。语言功能需要正�
       --output "$1"' sh "$PWD/artifacts/linux/fcitx-cooperative-5.1.22"
   ```
 
-  该入口需要自己的 Xvfb 和 D-Bus，因为它会再启动 niri，且要求该 Xvfb 只有一个 niri。`TMPDIR=/tmp` 避免嵌套 runtime 超过 Unix socket 路径上限。用户级桌面工具需要的 `LD_LIBRARY_PATH` 仍须可用。四十个场景共享原 115 秒预算，保留 800 毫秒呈现 lease 和原动作次数；受控候选不证明模型术语质量。复制构建目录中的 `gtk4-glossary-*` 原件到本次证据目录，保留结果、失败场景、原字段状态、命令时序、菜单 PNG、启动与内部清理回执。`cases` 仅列已完成场景，`failed_case` 是实际失败场景，其余是 `not-run`。
+  该入口需要自己的 Xvfb 和 D-Bus，因为它会再启动 niri，且要求该 Xvfb 只有一个 niri。`TMPDIR=/tmp` 避免嵌套 runtime 超过 Unix socket 路径上限。用户级桌面工具需要的 `LD_LIBRARY_PATH` 仍须可用。四十个场景共享原 115 秒预算，保留 800 毫秒呈现 lease 和原动作次数；受控候选不证明模型术语质量。普通入口在构建预检前清除所选工具包上一轮的结果、启动和清理回执。独立 `--session` 只负责本次工具包。复制构建目录中的 `gtk4-glossary-*` 原件到本次证据目录，保留结果、失败场景、原字段状态、命令时序、菜单 PNG、启动与内部清理回执。`cases` 仅列已完成场景，`failed_case` 是实际失败场景，其余是 `not-run`。
 
   CI 的 `typelay-linux-gtk4-events-*` 小型工件保留术语 probe、完整桌面和各自身份。术语续租失败时，对照 `gtk4-glossary-result.json` 的 `failed_case`、协议时序与 `gtk4-glossary.log` 的隐藏原因；真实 Tab 失败时，对照 `gtk-acceptance-phases.json` 的投递时序与 `inside.log` 的 native 按键检查。受控术语 probe 与真实模型桌面分别判断。
 

@@ -44,7 +44,7 @@ TMPDIR=/tmp /usr/bin/python3 tests/linux/qt_cooperative/run.py \
   2>&1 | tee "$TYPELAY_VERIFY_OUTPUT/qt-cooperative.log"
 ```
 
-该入口在私有会话内再建 Xvfb、D-Bus 和 HOME，运行真实异步 Fcitx 输入。`TMPDIR=/tmp` 让内部随机临时目录保持短路径，避免语言入口的 Unix socket 超长；正式包与模型仍留在外层私有安装目录。它使用 XCB 与受控源字段，不证明 Wayland 或模型交互。保留 `versions.json`、`async-*.json`、`ordered-*.json`、各模式日志和命令退出码。`rapid-control-result.json` 记录首个快速接受的原许可、投递时刻及动作后的 fixture，不补发输入。整条链成功后，`result.json` 记录 `passed=true`。
+该入口在私有会话内再建 Xvfb、D-Bus 和 HOME，运行真实异步 Fcitx 输入。`TMPDIR=/tmp` 让内部随机临时目录保持短路径，避免语言入口的 Unix socket 超长；正式包与模型仍留在外层私有安装目录。它使用 XCB 与受控源字段，不证明 Wayland 或模型交互。保留 `versions.json`、`async-*.json`、`ordered-*.json`、各模式日志和命令退出码。`rapid-control-result.json` 记录首个快速接受的原许可、投递时刻及动作后的 fixture，不补发输入。完整 probe 复用目录时，先清除字体、按键重入、按序投递、延迟投递和快速接受的旧分项回执。开启 `--forced-sync-diagnostic` 时也清除两项同步诊断回执。整条链成功后，`result.json` 记录 `passed=true`。
 
 async fixture 在首次窗口查询发出时可能仍在进行 X11 握手。私有 Xvfb 使用 `-noreset`，首个查询退出后仍保留同一代显示服务。就绪客户端在原 15 秒映射期限内完成实际 XCB 握手并创建本次特有的 atom，Qt fixture 用自己的连接核对该 atom 后才建窗。两步共用原期限。
 
@@ -52,7 +52,7 @@ async fixture 在首次窗口查询发出时可能仍在进行 X11 握手。私�
 
 完整 probe 也覆盖单行与多行字段的术语表取消、回源及来源失效。核对源版本、选区或文档变化后零写入。该入口使用受控 Host，不证明正式词条持久化或真实模型的术语质量。
 
-**独立语言搜索。** 完整 probe 成功时，其中的语言入口已经完成。CI 将本次 `language-options-*.json`、日志、配置截图和 `versions.json` 复制到独立证据目录，不再构建或重复输入。完整 probe 失败时仍执行下列独立入口。新目录只复制本轮生产源码和二进制，`--reuse-build` 复验身份后重建 fixture。不要在完整 probe 的输出上重跑 `--session`，该入口会清除原来的异步资格结果。
+**独立语言搜索。** 完整 probe 成功时，其中的语言入口已经完成。CI 将本次 `language-options-*.json`、日志、配置截图和 `versions.json` 复制到独立证据目录，不再构建或重复输入。完整 probe 失败时仍执行下列独立入口。新目录只复制本轮生产源码和二进制，`--reuse-build` 复验身份后重建 fixture。普通入口和 `--session` 都在预检前使复用目录中的完整与异步成功失效。只有本轮完整通过的 `result.json` 可以用于打包。若本轮异步客户端正常退出后其它场景失败，桌面准入仍可验证这份 `async-result.json` 的构建身份。
 
 检查文字省略时，对照 `language-options-paint.json` 和同主题、同状态的 `language-configuration-*.png`。结果文件按场景写入，同时列出明暗主题的 `normal`、`disabled` 和 `selectable` 才覆盖完整。可选行和禁用行都应完整显示“韩语”和 `한국어`。夹具将截图中的两列文字、列间留白和右侧内边距与同字体绘制的参考行逐像素比较。`selectable` 截图中，葡语两列均完整，德语仅右列省略，塞尔维亚语两列均保留可见前缀和省略号。
 

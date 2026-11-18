@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import ExitStack
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -59,7 +60,6 @@ def flags(*packages):
 
 def build(out: Path, core_version: str, reuse=False, *, scope="all"):
     inputs = hashes(FCITX_TEST_INPUTS)
-    (out / "result.json").unlink(missing_ok=True)
     if reuse:
         import importlib.util
 
@@ -277,9 +277,6 @@ def session(out: Path, core_version: str, deadline: float, glossary_toolkit=None
     prefix = out / "core-prefix"
     for name in ("command", "command.tmp", "state.json", "result.json", "cleanup.json"):
         (evidence / name).unlink(missing_ok=True)
-    if glossary_toolkit:
-        for suffix in ("result.json", "startup.json"):
-            (out / f"{glossary_toolkit}-glossary-{suffix}").unlink(missing_ok=True)
     with tempfile.TemporaryDirectory(prefix="typelay-fcitx-cooperative-") as temporary:
         private = Path(temporary)
         env = os.environ.copy()
@@ -729,15 +726,17 @@ def run_owned_session(command, *, env, timeout, cleanup=None, ready_output=None)
             stream.write("core-ready=true\n")
 
 
+SESSION_TOOLKITS = {
+    "all": (None, "gtk4", "gtk3"),
+    "core": (None,),
+    "gtk3": (None, "gtk3"),
+    "gtk4": (None, "gtk4"),
+}
+
+
 def run_sessions(out, core_version, ready_output=None, *, scope="all"):
     """Run each selected scene in its own desktop, retaining core readiness."""
-    toolkits = {
-        "all": (None, "gtk4", "gtk3"),
-        "core": (None,),
-        "gtk3": (None, "gtk3"),
-        "gtk4": (None, "gtk4"),
-    }[scope]
-    for toolkit in toolkits:
+    for toolkit in SESSION_TOOLKITS[scope]:
         evidence = out / f"{toolkit}-glossary-session" if toolkit else out
         run_owned_session(
             [
@@ -791,6 +790,21 @@ def main():
     default_name = f"fcitx-cooperative-{CORE_VERSION}"
     out = (args.output or ROOT / "artifacts/linux" / default_name).resolve()
     out.mkdir(parents=True, exist_ok=True)
+    toolkits = (args.glossary_toolkit,) if args.session else SESSION_TOOLKITS[args.scope]
+    # A malformed core or toolkit receipt cannot keep another selected toolkit qualified.
+    with ExitStack() as cleanup:
+        for toolkit in toolkits:
+            reports = (
+                (
+                    f"{toolkit}-glossary-result.json",
+                    f"{toolkit}-glossary-startup.json",
+                    f"{toolkit}-glossary-session/cleanup.json",
+                )
+                if toolkit
+                else ("result.json", "cleanup.json")
+            )
+            for name in reports:
+                cleanup.callback((out / name).unlink, missing_ok=True)
     if args.session:
         if args.session_deadline is None:
             parser.error("--session requires the outer absolute deadline")

@@ -57,6 +57,101 @@ class CooperativeSessionScopeTests(unittest.TestCase):
             )
             return [call["scope"] for call in calls]
 
+    def failed_preflight(self, out, *args, diagnostic, code=1):
+        failed = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                cooperative.__file__,
+                *args,
+                "--output",
+                str(out),
+            ],
+            env={"HOME": str(out), "PATH": os.defpath},
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual(failed.returncode, code, failed.stderr)
+        self.assertIn(diagnostic, failed.stderr)
+        return failed.stderr
+
+    def test_failed_preflight_invalidates_only_evidence_owned_by_the_selected_sessions(self):
+        for args, selected, diagnostic, code in (
+            (("--reuse-build", "--scope", "all"), {"core", "gtk3", "gtk4"}, "versions.json", 1),
+            (("--reuse-build", "--scope", "gtk3"), {"core", "gtk3"}, "versions.json", 1),
+            (("--reuse-build", "--scope", "gtk4"), {"core", "gtk4"}, "versions.json", 1),
+            (("--reuse-build", "--scope", "core"), {"core"}, "versions.json", 1),
+            (
+                ("--session", "--glossary-toolkit", "gtk4"),
+                {"gtk4"},
+                "requires the outer absolute deadline",
+                2,
+            ),
+        ):
+            with self.subTest(args=args), tempfile.TemporaryDirectory() as directory:
+                out = Path(directory)
+                reports = {
+                    "core": {
+                        out / "result.json": {"passed": True},
+                        out / "cleanup.json": {"childrenExited": True},
+                    }
+                }
+                for toolkit in ("gtk3", "gtk4"):
+                    session = out / f"{toolkit}-glossary-session"
+                    session.mkdir()
+                    reports[toolkit] = {
+                        out / f"{toolkit}-glossary-result.json": {
+                            "passed": True,
+                            "cases": [
+                                {"source": source, "state": state, "finish": finish, "passed": True}
+                                for source in ("entry", "textview")
+                                for state in ("ValidTranslation", "EditedTranslationPending")
+                                for finish in (
+                                    "save",
+                                    "pointer-save",
+                                    "cancel",
+                                    "changed-source",
+                                    "replaced-buffer",
+                                    "reset",
+                                    "external-focus",
+                                    "no-click-replay",
+                                    "changed-selection",
+                                    "expired",
+                                )
+                            ],
+                        },
+                        out / f"{toolkit}-glossary-startup.json": {
+                            "status": "passed",
+                            "cleanup": True,
+                        },
+                        session / "cleanup.json": {"childrenExited": True},
+                    }
+                keep = {}
+                for owner, records in reports.items():
+                    for path, record in records.items():
+                        path.write_text(json.dumps(record))
+                        if owner not in selected:
+                            keep[path] = record
+                self.failed_preflight(out, *args, diagnostic=diagnostic, code=code)
+                self.assertEqual({p: json.loads(p.read_text()) for p in out.rglob("*.json")}, keep)
+
+    def test_malformed_core_receipt_does_not_leave_selected_glossaries_qualified(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            (out / "cleanup.json").mkdir()
+            results = [out / f"{toolkit}-glossary-result.json" for toolkit in ("gtk3", "gtk4")]
+            for report in results:
+                report.write_text('{"passed":true}')
+            self.assertIn(
+                "IsADirectoryError",
+                self.failed_preflight(
+                    out, "--reuse-build", "--scope", "all", diagnostic="cleanup.json"
+                ),
+            )
+            self.assertEqual([path.name for path in results if path.exists()], [])
+
     def test_default_runs_every_existing_session(self):
         self.assertEqual(self.run_scope(), ["core", "gtk4", "gtk3"])
 
