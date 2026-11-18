@@ -14,13 +14,13 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from eng.linux.cooperative import fcitx, qt, third_party  # noqa: E402
+from eng.linux.cooperative import fcitx, qt, third_party, third_party_recipe  # noqa: E402
 from eng.linux.cooperative.archives import download  # noqa: E402
 
 BUILDERS = (
     (
         fcitx.build,
-        (third_party.CORE_VERSION,),
+        (third_party_recipe.CORE_VERSION,),
         "fcitx5-c7ecdb931d8b378ccdcd87382a3ef7ff0bd10def.tar.gz",
     ),
     (third_party.build, (), "fcitx5-c7ecdb931d8b378ccdcd87382a3ef7ff0bd10def.tar.gz"),
@@ -86,7 +86,7 @@ class LocalBuildTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "reuse"):
                 fcitx.build(
                     Path(tmp) / "output",
-                    third_party.CORE_VERSION,
+                    third_party_recipe.CORE_VERSION,
                     reuse_third_party=True,
                     archive_cache=Path(tmp) / "cache",
                 )
@@ -239,10 +239,10 @@ class PreparedSourcesTests(unittest.TestCase):
         patches.mkdir()
         self.expected = {}
         pins = {}
-        for project, (commit, _) in third_party.FCITX_PINS.items():
+        for project, (commit, _) in third_party_recipe.FCITX_PINS.items():
             directories = [
                 directory.removeprefix(project + "/")
-                for directory, _, _ in (*third_party.DATA, third_party.SPELL)
+                for directory, _, _ in (*third_party_recipe.DATA, third_party_recipe.SPELL)
                 if directory.startswith(project + "/")
             ]
             if project == "libime":
@@ -251,20 +251,20 @@ class PreparedSourcesTests(unittest.TestCase):
             pins[project] = (commit, self.archive(name, f"{project}-{commit}", directories))
             self.expected[Path(name)] = (self.cache / name).read_bytes()
         data = []
-        for directory, name, _ in (*third_party.DATA, third_party.SPELL):
+        for directory, name, _ in (*third_party_recipe.DATA, third_party_recipe.SPELL):
             content = name.encode()
             (self.cache / name).write_bytes(content)
             data.append((directory, name, hashlib.sha256(content).hexdigest()))
             self.expected[Path("sources") / directory / name] = content
-        for project in (*third_party.PATCH_PROJECTS, "fcitx5-qt"):
+        for project in (*third_party_recipe.PATCH_PROJECTS, "fcitx5-qt"):
             (patches / f"{project}.patch").write_text(
                 "--- a/marker\n+++ b/marker\n@@ -1 +1 @@\n-before\n+after\n"
             )
         qt_digest = self.archive("fcitx5-qt.tar.gz", f"fcitx5-qt-{qt.QT_PIN}", ["common"])
-        self.context.enter_context(patch.dict(third_party.FCITX_PINS, pins, clear=True))
-        self.context.enter_context(patch.object(third_party, "DATA", tuple(data[:-1])))
-        self.context.enter_context(patch.object(third_party, "SPELL", data[-1]))
-        self.context.enter_context(patch.object(third_party, "PATCHES", patches))
+        self.context.enter_context(patch.dict(third_party_recipe.FCITX_PINS, pins, clear=True))
+        self.context.enter_context(patch.object(third_party_recipe, "DATA", tuple(data[:-1])))
+        self.context.enter_context(patch.object(third_party_recipe, "SPELL", data[-1]))
+        self.context.enter_context(patch.object(third_party_recipe, "PATCHES", patches))
         self.context.enter_context(patch.object(qt, "PATCHES", patches))
         self.context.enter_context(patch.object(qt, "QT_SHA256", qt_digest))
         self.context.enter_context(
@@ -302,7 +302,7 @@ class PreparedSourcesTests(unittest.TestCase):
                     builder(out, *args, archive_cache=self.cache)
                 for path, content in self.expected.items():
                     self.assertEqual((out / path).read_bytes(), content)
-                for project in third_party.PATCH_PROJECTS:
+                for project in third_party_recipe.PATCH_PROJECTS:
                     self.assertEqual((out / "sources" / project / "marker").read_text(), "after\n")
                 self.assertEqual({p.name: p.read_bytes() for p in self.cache.iterdir()}, before)
 
@@ -333,7 +333,7 @@ class PreparedSourcesTests(unittest.TestCase):
                     out = self.root / f"{name}-{corrupt}"
                     error_type = RuntimeError if corrupt else FileNotFoundError
                     with self.assertRaises(error_type) as error:
-                        fcitx.build(out, third_party.CORE_VERSION, archive_cache=self.cache)
+                        fcitx.build(out, third_party_recipe.CORE_VERSION, archive_cache=self.cache)
                     self.assertIn(str(path), str(error.exception))
                     path.write_bytes(original)
 

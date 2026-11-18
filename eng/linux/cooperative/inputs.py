@@ -4,31 +4,31 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from eng.linux.cooperative.third_party import (
+from eng.linux.cooperative.third_party_recipe import (
     BUILD_INPUTS as THIRD_PARTY_INPUTS,
 )
-from eng.linux.cooperative.third_party import (
+from eng.linux.cooperative.third_party_recipe import (
     CORE_VERSION as CORE_VERSION,
 )
-from eng.linux.cooperative.third_party import (
+from eng.linux.cooperative.third_party_recipe import (
     DATA as DATA,
 )
-from eng.linux.cooperative.third_party import (
+from eng.linux.cooperative.third_party_recipe import (
     FCITX_PINS as FCITX_PINS,
 )
-from eng.linux.cooperative.third_party import (
+from eng.linux.cooperative.third_party_recipe import (
     PATCH_PROJECTS as PATCH_PROJECTS,
 )
-from eng.linux.cooperative.third_party import (
+from eng.linux.cooperative.third_party_recipe import (
     PRIVATE_VERSIONS as PRIVATE_VERSIONS,
 )
-from eng.linux.cooperative.third_party import (
+from eng.linux.cooperative.third_party_recipe import (
     SOURCE_VERSIONS as SOURCE_VERSIONS,
 )
-from eng.linux.cooperative.third_party import (
+from eng.linux.cooperative.third_party_recipe import (
     hashes as hashes,
 )
-from eng.linux.cooperative.third_party import (
+from eng.linux.cooperative.third_party_recipe import (
     sha256 as sha256,
 )
 
@@ -46,6 +46,7 @@ CHINESE_DATA_ARCHIVES = {
 FCITX_BUILD_INPUTS = (
     "eng/linux/cooperative/inputs.py",
     "eng/linux/cooperative/fcitx.py",
+    "eng/linux/cooperative/third_party.py",
     *THIRD_PARTY_INPUTS,
     "src/linux/native/fcitx5/typelay-fcitx-v1.h",
     "src/linux/native/common/gtk-textbuffer-write.inc",
@@ -63,6 +64,7 @@ QT_BUILD_INPUTS = (
     "eng/linux/cooperative/archives.py",
     "eng/linux/cooperative/inputs.py",
     "eng/linux/cooperative/third_party.py",
+    "eng/linux/cooperative/third_party_recipe.py",
     "eng/linux/cooperative/qt.py",
     "eng/linux/cooperative/patches/fcitx5-qt.patch",
     "eng/linux/cooperative/qt-runtime-probe.cpp",

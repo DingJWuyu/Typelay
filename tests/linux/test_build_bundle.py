@@ -32,7 +32,7 @@ sys.path.insert(0, str(ROOT))
 
 from support.font_bundle_fixture import inert_font_payload  # noqa: E402
 
-from eng.fonts import prepare as fonts  # noqa: E402
+from eng.fonts import bundle as fonts  # noqa: E402
 from eng.linux import build  # noqa: E402
 from eng.linux.cooperative import inputs  # noqa: E402
 
@@ -155,8 +155,11 @@ class BuildSafetyTests(unittest.TestCase):
             "eng/linux/cooperative/archives.py",
             "eng/linux/cooperative/inputs.py",
             "eng/linux/cooperative/third_party.py",
+            "eng/linux/cooperative/third_party_recipe.py",
             "eng/linux/index/prepare_runtime.py",
             "eng/fonts/prepare.py",
+            "eng/fonts/bundle.py",
+            "eng/fonts/requirements.txt",
             "eng/index_profile.py",
             "src/shared/TypeLay.Worker/typelay_worker/index_assets.py",
         ):
@@ -748,36 +751,90 @@ class QtDesktopAdmissionTests(unittest.TestCase):
         from qt_cooperative.run import session
 
         self.complete_client()
+        previous = self.qt / "ordered-result.json"
+        previous.write_text('{"default_tab_regression":true}')
         # Exercise the real session entry without starting Qt, a daemon or a bus.
         # Its missing executable fails before any client or input can be created.
         with self.assertRaises(FileNotFoundError):
             session(self.qt, self.directory / "missing-fcitx", language_options_only=True)
+        self.assertIs(json.loads(previous.read_text())["default_tab_regression"], True)
         self.assertFalse((self.qt / "async-result.json").exists())
 
-    def test_cli_invalidates_previous_async_before_verifying_or_building(self):
-        for session in (False, True):
-            with self.subTest(session=session):
-                self.complete_client()
-                result = subprocess.run(
-                    [
-                        sys.executable,
-                        "-I",
-                        "-B",
-                        str(ROOT / "tests/linux/qt_cooperative/run.py"),
-                        "--out",
-                        str(self.qt),
-                        "--fcitx-root",
-                        str(self.directory / "missing-fcitx"),
-                        "--verify-fcitx-build",
-                        *(["--session"] if session else []),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("versions.json", result.stderr)
-                self.assertFalse((self.qt / "async-result.json").exists())
+    def test_cli_invalidates_previous_full_and_async_results_before_preflight(self):
+        full = self.qt / "result.json"
+        screenshot = self.qt / "language-configuration-interrupted.png"
+        full_scenes = {
+            "font-order-result.json": {
+                "diagnosticOnly": True,
+                "scenes": [{"displayExperimentPassed": True}],
+            },
+            "ordered-result.json": {"default_tab_regression": True},
+            "ordered-delayed-result.json": {"queued_fn_original_deadline_passes_pair": True},
+            "unmodified-reentry-result.json": {
+                "direct_selection_reentry_unknown_replied_and_quarantined": True
+            },
+            "rapid-control-result.json": {"status": "passed"},
+        }
+        sync_scenes = {
+            name: {
+                "status": "diagnostic-unsupported",
+                "supported": False,
+                "first_field_length_matches": True,
+            }
+            for name in ("stock-sync-result.json", "sync-result.json")
+        }
+        scenes = full_scenes | sync_scenes
+        for diagnostic, options, preserved in (
+            ("versions.json", [], sync_scenes),
+            ("versions.json", ["--forced-sync-diagnostic"], {}),
+            ("versions.json", ["--language-options-only", "--forced-sync-diagnostic"], scenes),
+            (screenshot.name, [], sync_scenes),
+            (full.name, [], sync_scenes),
+        ):
+            for session in (False, True):
+                with self.subTest(diagnostic=diagnostic, session=session, options=options):
+                    for name, record in scenes.items():
+                        (self.qt / name).write_text(json.dumps(record))
+                    self.complete_client()
+                    self.admission.verify_qt_desktop_inputs(self.qt, self.fcitx)
+                    if diagnostic == full.name:
+                        full.mkdir(exist_ok=True)
+                    else:
+                        full.write_text('{"passed":true,"default_async_required":true}')
+                    if diagnostic == screenshot.name:
+                        screenshot.mkdir(exist_ok=True)
+                    result = subprocess.run(
+                        [
+                            sys.executable,
+                            "-I",
+                            "-B",
+                            str(ROOT / "tests/linux/qt_cooperative/run.py"),
+                            "--out",
+                            str(self.qt),
+                            "--fcitx-root",
+                            str(self.directory / "missing-fcitx"),
+                            "--reuse-build",
+                            "--verify-fcitx-build",
+                            *(["--session"] if session else []),
+                            *options,
+                        ],
+                        env={"HOME": str(self.directory), "PATH": os.defpath},
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn(diagnostic, result.stderr)
+                    self.assertFalse(full.is_file())
+                    self.assertFalse((self.qt / "async-result.json").exists())
+                    self.assertEqual(
+                        {
+                            name: json.loads((self.qt / name).read_text())
+                            for name in scenes
+                            if (self.qt / name).exists()
+                        },
+                        preserved,
+                    )
 
     def test_each_build_record_and_compiled_binary_remains_bound(self):
         self.complete_client()
@@ -1019,12 +1076,15 @@ class MainBundleTests(unittest.TestCase):
         self.repository = self.directory / "checkout"
         self.repository.mkdir()
         font_sources, font_payload = inert_font_payload()
-        self.font_source_paths = tuple(
-            dict.fromkeys(("eng/fonts/prepare.py", "eng/requirements.txt", *font_sources))
-        )
-        for relative in (
+        font_tools = (
             "eng/fonts/prepare.py",
+            "eng/fonts/bundle.py",
+            "eng/fonts/requirements.txt",
             "eng/requirements.txt",
+        )
+        self.font_source_paths = (*font_tools, *font_sources)
+        for relative in (
+            *font_tools,
             *inputs.FCITX_BUILD_INPUTS,
             *inputs.FCITX_TEST_INPUTS,
             *inputs.QT_BUILD_INPUTS,
