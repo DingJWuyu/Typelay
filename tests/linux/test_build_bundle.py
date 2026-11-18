@@ -1022,22 +1022,15 @@ class MainBundleTests(unittest.TestCase):
         self.repository = self.directory / "checkout"
         self.repository.mkdir()
         font_sources, font_payload = inert_font_payload()
-        self.font_source_paths = tuple(
-            dict.fromkeys(
-                (
-                    "eng/fonts/prepare.py",
-                    "eng/fonts/bundle.py",
-                    "eng/fonts/requirements.txt",
-                    "eng/requirements.txt",
-                    *font_sources,
-                )
-            )
-        )
-        for relative in (
+        font_tools = (
             "eng/fonts/prepare.py",
             "eng/fonts/bundle.py",
             "eng/fonts/requirements.txt",
             "eng/requirements.txt",
+        )
+        self.font_source_paths = (*font_tools, *font_sources)
+        for relative in (
+            *font_tools,
             *inputs.FCITX_BUILD_INPUTS,
             *inputs.FCITX_TEST_INPUTS,
             *inputs.QT_BUILD_INPUTS,

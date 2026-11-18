@@ -5,7 +5,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import tarfile
 from pathlib import Path
 
@@ -97,18 +96,7 @@ def hashes(files):
     return {relative: sha256(ROOT / relative) for relative in files}
 
 
-def run(args, **kwargs):
-    try:
-        return subprocess.check_output(
-            [str(a) for a in args], text=True, timeout=kwargs.pop("timeout", 180), **kwargs
-        ).strip()
-    except subprocess.CalledProcessError as error:
-        if error.output:
-            print(error.output, file=sys.stderr)
-        raise
-
-
-def build(out, archive_cache, progress):
+def build(out, archive_cache, progress, run):
     archive_cache = validate_cache(archive_cache, out)
     out.mkdir(parents=True, exist_ok=True)
     inputs = hashes(BUILD_INPUTS)

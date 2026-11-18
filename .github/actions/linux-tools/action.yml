@@ -16,7 +16,7 @@ outputs:
     value: ${{ steps.sdk.outcome }}
   desktop:
     description: Outcome of the desktop package installation
-    value: ${{ steps.desktop.outcome }}
+    value: ${{ steps.desktop.outputs.result || steps.desktop.outcome }}
   publish:
     description: Outcome of the fixed package publication
     value: ${{ steps.publish.outcome }}
@@ -24,12 +24,15 @@ runs:
   using: composite
   steps:
   - name: Bootstrap the fixed download transport from the pinned repositories
-    run: bash eng/ci/linux-tools.sh bootstrap
+    run: |
+      sed -i -E '/^#?ParallelDownloads[[:space:]]*=/d' /etc/pacman.conf
+      sed -i '/^\[options\]/a ParallelDownloads = 8' /etc/pacman.conf
+      bash eng/ci/linux-tools.sh bootstrap
     shell: bash
   - name: Restore pinned native and desktop packages
     id: packages
     run: |
-      if [ "$PRODUCER" = true ]; then
+      if [[ "${PRODUCER,,}" == true ]]; then
         python eng/ci/fixed.py restore linux-tools
       else
         python eng/ci/fixed.py restore linux-tools --wait-for-job fcitx-build
@@ -41,21 +44,24 @@ runs:
   - name: Install target native SDK
     id: sdk
     run: bash eng/ci/linux-tools.sh sdk
+    shell: bash
+  - name: Install desktop scenario tools
+    id: desktop
+    run: bash eng/ci/linux-tools.sh desktop
     env:
       DESKTOP: ${{ inputs.desktop }}
       PRODUCER: ${{ inputs.producer }}
       HIT: ${{ steps.packages.outputs.hit }}
     shell: bash
-  - name: Install desktop scenario tools
-    id: desktop
-    if: steps.sdk.outputs.install_desktop == 'true'
-    run: bash eng/ci/linux-tools.sh desktop
-    shell: bash
   - name: Publish pinned native and desktop packages
     id: publish
     if: inputs.producer == 'true' && steps.packages.outputs.hit != 'true'
-    run: python eng/ci/fixed.py publish linux-tools
+    run: |
+      test "$SDK/$DESKTOP" = "success/success"
+      python eng/ci/fixed.py publish linux-tools
     env:
+      SDK: ${{ steps.sdk.outcome }}
+      DESKTOP: ${{ steps.desktop.outputs.result || steps.desktop.outcome }}
       GH_TOKEN: ${{ github.token }}
     shell: bash
   - name: Match the target GTK4 upstream release

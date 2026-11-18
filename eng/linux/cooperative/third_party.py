@@ -3,32 +3,43 @@
 
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from eng.linux.cooperative import third_party_recipe as recipe  # noqa: E402
-from eng.linux.cooperative.third_party_recipe import run  # noqa: E402
+
+
+def run(args, **kwargs):
+    try:
+        return subprocess.check_output(
+            [str(a) for a in args], text=True, timeout=kwargs.pop("timeout", 180), **kwargs
+        ).strip()
+    except subprocess.CalledProcessError as error:
+        if error.output:
+            print(error.output, file=sys.stderr)
+        raise
 
 
 def progress(stage, project):
     if project == "fcitx5":
         messages = {
             "configure": f"Configuring complete Fcitx {recipe.CORE_VERSION} with official frontends",
-            "build": f"Building complete Fcitx {recipe.CORE_VERSION} (parallel=2)",
+            "build": f"Building complete Fcitx {recipe.CORE_VERSION}",
             "install": f"Installing Fcitx {recipe.CORE_VERSION} into the private build prefix",
         }
     else:
         messages = {
             "configure": f"Configuring private {project} and its fixed upstream data",
-            "build": f"Building private {project} (parallel=2)",
+            "build": f"Building private {project}",
         }
     print(messages[stage], flush=True)
 
 
 def build(out, archive_cache=None):
-    recipe.build(out, archive_cache, progress)
+    recipe.build(out, archive_cache, progress, run)
 
 
 def verify(out):

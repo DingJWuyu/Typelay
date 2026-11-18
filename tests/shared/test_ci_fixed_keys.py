@@ -31,15 +31,24 @@ class FixedBuildKeyTests(unittest.TestCase):
         self.baseline = self.keys()
 
     def keys(self):
-        return {
-            kind: subprocess.check_output(
-                [sys.executable, str(self.root / "eng/ci/fixed.py"), "key", kind],
-                text=True,
-                timeout=10,
-                env=os.environ | {"PYTHONDONTWRITEBYTECODE": "1"},
-            ).strip()
-            for kind in KINDS
-        }
+        # Each edit gets a fresh interpreter. Run all five CLI invocations on the same checkout.
+        results = subprocess.check_output(
+            [
+                sys.executable,
+                "-c",
+                "import runpy, sys\n"
+                "script, *kinds = sys.argv[1:]\n"
+                "for kind in kinds:\n"
+                "    sys.argv = [script, 'key', kind]\n"
+                "    runpy.run_path(script, run_name='__main__')\n",
+                self.root / "eng/ci/fixed.py",
+                *KINDS,
+            ],
+            text=True,
+            timeout=10,
+            env=os.environ | {"PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        return dict(zip(KINDS, results.splitlines(), strict=True))
 
     def check_edit(self, name, old, new, *changed, label=None):
         with self.subTest(file=name, edit=label or new):
@@ -59,9 +68,12 @@ class FixedBuildKeyTests(unittest.TestCase):
         self.check_edit(ACTION, "name: Linux tools", "# workflow note\nname: Linux tools")
         self.check_edit(ACTION, "Outcome of the fixed package restore", "Archive restore outcome")
         self.check_edit(
-            ACTION, 'if [ "$PRODUCER"', 'echo "Restoring package cache"\n      if [ "$PRODUCER"'
+            ACTION,
+            'if [[ "${PRODUCER,,}"',
+            'echo "Restoring package cache"\n      if [[ "${PRODUCER,,}"',
         )
         self.check_edit("eng/ci/fixed_summary.py", "本轮冷建", "本轮首次构建")
+        self.check_edit(ACTION, "ParallelDownloads = 8", "ParallelDownloads = 4")
 
     def test_pacman_transactions_and_producer_collection_change_the_tools_archive(self):
         recipe = "eng/ci/linux-tools.sh"
@@ -69,7 +81,7 @@ class FixedBuildKeyTests(unittest.TestCase):
             ("python github-cli", "python github-cli wget"),
             ("git cmake ninja", "git cmake ninja make"),
             ("gimp at-spi2-core", "gimp inkscape at-spi2-core"),
-            ('"$PRODUCER" == true', '"$PRODUCER" == false'),
+            ('"${PRODUCER,,}" != true', '"${PRODUCER,,}" == true'),
         ):
             self.check_edit(recipe, old, new, "linux-tools")
         snapshot = "eng/ci/arch-snapshot"
@@ -116,11 +128,50 @@ class FixedBuildKeyTests(unittest.TestCase):
             message = '"prepare_failure"' if kind == "hy" else '"index_asset_stage"'
             self.check_edit(script, message, '"diagnostic"')
 
+    def test_incomplete_download_lock_cannot_identify_an_archive(self):
+        for kind, filename in (("hy", "assets.lock.json"), ("index", "model.lock.json")):
+            path = self.root / "src/shared/TypeLay.Worker/native" / kind / filename
+            original = path.read_text(encoding="utf-8")
+            cases = {"missing lock": None, "empty lock": "", "empty object": "{}"}
+            lock = json.loads(original)
+            del lock["model_license"]
+            cases["missing license"] = json.dumps(lock)
+            lock = json.loads(original)
+            del lock["model"]["url"]
+            cases["missing model URL"] = json.dumps(lock)
+            lock["model"]["url"] = ""
+            cases["empty model URL"] = json.dumps(lock)
+            lock = json.loads(original)
+            lock["model"]["bytes"] = 0
+            cases["empty model"] = json.dumps(lock)
+            invalid_file = json.loads(original)
+            invalid_file["model"]["file"] = "../other"
+            cases["relative path"] = json.dumps(invalid_file)
+            for label, content in cases.items():
+                with self.subTest(kind=kind, input=label):
+                    if content is None:
+                        path.unlink()
+                    else:
+                        path.write_text(content, encoding="utf-8")
+                    result = subprocess.run(
+                        [sys.executable, self.root / "eng/ci/fixed.py", "key", kind],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout, "")
+
     def test_fcitx_progress_messages_do_not_invalidate_the_third_party_archive(self):
         self.check_edit(
             "eng/linux/cooperative/third_party.py",
             "Configuring complete Fcitx",
             "Preparing complete Fcitx",
+        )
+        self.check_edit(
+            "eng/linux/cooperative/third_party.py",
+            "print(error.output,",
+            'print("Build failed:", error.output,',
         )
 
     def test_font_observations_and_lint_dependencies_leave_the_archive_reusable(self):

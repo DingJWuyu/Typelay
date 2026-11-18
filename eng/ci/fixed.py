@@ -12,7 +12,7 @@ import tempfile
 import time
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -33,30 +33,41 @@ ARCHIVE_MEMBERS = {
         "--exclude=fcitx5-chinese-addons-build",
         "artifacts/linux/fcitx-cooperative-5.1.22",
     ),
-    "hy": ("artifacts/hy-download",),
-    "index": ("artifacts/index-model-download",),
     "linux-tools": ("artifacts/linux-tools-cache",),
 }
 
 
-def key(kind):
-    if kind in ("hy", "index"):
-        filename = "assets.lock.json" if kind == "hy" else "model.lock.json"
-        lock = json.loads((ROOT / "src/shared/TypeLay.Worker/native" / kind / filename).read_text())
-        names = (
-            ("model", "model_license", "runtime_archive")
-            if kind == "hy"
-            else ("model", "model_license")
-        )
-        fields = ("file", "bytes", "sha256", "url")
-        downloads = {}
-        for name in names:
-            pins = ()
-            if name == "runtime_archive":
-                pins = ("tag", "commit")
-            elif kind == "hy" and name == "model":
-                pins = ("revision",)
-            downloads[name] = {field: lock[name][field] for field in (*fields, *pins)}
+def locked_downloads(kind):
+    filename = "assets.lock.json" if kind == "hy" else "model.lock.json"
+    lock = json.loads((ROOT / "src/shared/TypeLay.Worker/native" / kind / filename).read_text())
+    names = (
+        ("model", "model_license", "runtime_archive")
+        if kind == "hy"
+        else ("model", "model_license")
+    )
+    downloads = {}
+    for name in names:
+        pins = ()
+        if name == "runtime_archive":
+            pins = ("tag", "commit")
+        elif kind == "hy" and name == "model":
+            pins = ("revision",)
+        text_fields = ("file", "sha256", "url", *pins)
+        record = {field: lock[name][field] for field in ("bytes", *text_fields)}
+        if type(record["bytes"]) is not int or record["bytes"] <= 0:
+            raise ValueError(f"Invalid {kind} {name} byte count")
+        for field in text_fields:
+            if not isinstance(record[field], str) or not record[field].strip():
+                raise ValueError(f"Missing {kind} {name} {field}")
+        filename = record["file"]
+        if PureWindowsPath(filename).name != filename or filename in (".", ".."):
+            raise ValueError(f"Invalid {kind} {name} filename: {filename}")
+        downloads[name] = record
+    return downloads
+
+
+def key(kind, downloads):
+    if downloads is not None:
         return (
             f"ci-{kind}-"
             + hashlib.sha256(json.dumps(downloads, sort_keys=True).encode()).hexdigest()
@@ -209,7 +220,10 @@ def main():
         parser.error("--wait-for-job requires restore")
     if not math.isfinite(args.wait_seconds) or args.wait_seconds <= 0:
         parser.error("--wait-seconds must be positive and finite")
-    tag = args.tag or key(args.kind)
+    downloads = None
+    if args.kind in ("hy", "index") and (args.action == "publish" or not args.tag):
+        downloads = locked_downloads(args.kind)
+    tag = args.tag or key(args.kind, downloads)
     if args.action == "key":
         producer_record(args.kind, tag=tag)
         print(tag)
@@ -338,8 +352,14 @@ def main():
         if "HTTP 404" not in existing.stderr:
             log_event("release", "failed", tag, asset=archive.name)
             raise RuntimeError(existing.stderr)
+        if downloads is None:
+            members = ARCHIVE_MEMBERS[args.kind]
+        else:
+            # Keep the directory layout expected by existing model consumers.
+            directory = "hy-download" if args.kind == "hy" else "index-model-download"
+            members = [f"artifacts/{directory}/{record['file']}" for record in downloads.values()]
         subprocess.run(
-            ["tar", *compression, "-cf", str(archive), *ARCHIVE_MEMBERS[args.kind]],
+            ["tar", *compression, "-cf", str(archive), *members],
             cwd=ROOT,
             check=True,
         )

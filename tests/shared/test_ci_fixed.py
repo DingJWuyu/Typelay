@@ -564,10 +564,23 @@ class FixedBuildPublicationTests(unittest.TestCase):
             "index": "index-model-download",
             "fcitx": "linux/fcitx-cooperative-5.1.22",
         }[kind]
-        payload = root / "artifacts" / folder / "test.bin"
+        directory = root / "artifacts" / folder
         if action == "publish" and prepare:
-            payload.parent.mkdir(parents=True, exist_ok=True)
-            payload.write_text(caller)
+            directory.mkdir(parents=True, exist_ok=True)
+            if kind in ("hy", "index"):
+                name = "assets.lock.json" if kind == "hy" else "model.lock.json"
+                relative = Path("src/shared/TypeLay.Worker/native") / kind / name
+                lock = root / relative
+                if not lock.exists():
+                    lock.parent.mkdir(parents=True)
+                    shutil.copyfile(ROOT / relative, lock)
+                records = json.loads(lock.read_text(encoding="utf-8"))
+                for role in ("model", "model_license", "runtime_archive"):
+                    if role in records:
+                        (directory / records[role]["file"]).write_text(caller)
+                (directory / "unrelated.partial").write_text("unfinished download")
+            else:
+                (directory / "test.bin").write_text(caller)
         return subprocess.run(
             [sys.executable, str(script), action, kind]
             + (["--tag", tag] if tag else [])
@@ -636,6 +649,7 @@ class FixedBuildPublicationTests(unittest.TestCase):
             for step in LINUX_TOOLS["runs"]["steps"]
             if "id" in step
         }
+        context["${{ steps.desktop.outputs.result || steps.desktop.outcome }}"] = desktop
         outputs = {name: context[item["value"]] for name, item in LINUX_TOOLS["outputs"].items()}
         return {"linux-tools": {"outcome": outcome, "outputs": outputs}}
 
@@ -735,9 +749,21 @@ class FixedBuildPublicationTests(unittest.TestCase):
                 path.write_bytes(path.read_bytes() + b"\n# New operational note\n")
                 query("lookup", True)
                 query("restore", True)
-                (payload,) = (current / "artifacts").rglob("test.bin")
-                self.assertEqual(payload.read_text(), "old")
-                payload.unlink()
+                restored = current / "artifacts"
+                payloads = [p for p in restored.rglob("*") if p.is_file()]
+                if kind in ("hy", "index"):
+                    folder = "hy-download" if kind == "hy" else "index-model-download"
+                    lock = json.loads((current / recipe).read_text(encoding="utf-8"))
+                    expected = [
+                        Path(folder) / lock[role]["file"]
+                        for role in ("model", "model_license", "runtime_archive")
+                        if role in lock
+                    ]
+                    self.assertCountEqual([p.relative_to(restored) for p in payloads], expected)
+                self.assertTrue(payloads)
+                for payload in payloads:
+                    self.assertEqual(payload.read_text(), "old")
+                    payload.unlink()
 
                 path = current / recipe
                 original = path.read_bytes()
@@ -751,7 +777,7 @@ class FixedBuildPublicationTests(unittest.TestCase):
                     path.write_text("2027/01/01\n", encoding="utf-8")
                 query("lookup", False)
                 query("restore", False)
-                self.assertFalse(payload.exists())
+                self.assertFalse(any(p.is_file() for p in restored.rglob("*")))
                 path.write_bytes(original)
 
     def test_linux_tools_publishes_and_restores_the_paths_selected_by_its_new_key(self):
