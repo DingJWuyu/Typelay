@@ -671,6 +671,65 @@ public sealed class ModelInstallerTests
     }
 
     [Fact]
+    public async Task AChunkWrittenAfterTheReportIntervalIsVisibleBeforeTheNextReadCanCancel()
+    {
+        using var files = new SetupFiles();
+        using var cancel = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        byte[] archive = ModelArchive("en_zh");
+        long tick = 1000;
+        var body = new StallingBody(archive[..64], maxRead: 32, beforeRead: attempt =>
+        {
+            if (attempt == 2)
+                tick += 90;
+            if (attempt == 3)
+            {
+                tick += 10;
+                cancel.Cancel();
+            }
+        });
+        var network = new BodyHandler(files.Responses(ModelArchive), "/v1/translate-en_zh-1_9.argosmodel", body, archive.Length);
+        var reports = new List<long>();
+        var progress = new SetupProgressSink(update =>
+        {
+            if (update.Label == "下载English → 中文 模型" && update.DownloadPhase == SetupDownloadPhase.Body)
+                reports.Add(update.Downloaded);
+        });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => files.Installer(network, progressTick: () => tick)
+            .PrepareAsync(progress, cancel.Token, ["en_zh"]));
+        Assert.Equal([0L, 32L, 64L], reports);
+        Assert.Equal(archive[..64], File.ReadAllBytes(files.CachedModel("en_zh") + ".part"));
+    }
+
+    [Fact]
+    public async Task AFailedTrailingReportCancelsTheStalledReadAndRetainsTheReportFailure()
+    {
+        using var files = new SetupFiles();
+        using var watchdog = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        watchdog.CancelAfter(TimeSpan.FromSeconds(3));
+        byte[] archive = ModelArchive("en_zh");
+        long tick = 1000;
+        var body = new StallingBody(archive[..64], maxRead: 32, beforeRead: attempt =>
+        {
+            if (attempt == 3)
+                tick += 80;
+        });
+        var network = new BodyHandler(files.Responses(ModelArchive), "/v1/translate-en_zh-1_9.argosmodel", body, archive.Length);
+        var failure = new ModelSetupException(SetupFailureCategory.Permission, ModelSetupStage.ModelDownload);
+        var progress = new SetupProgressSink(update =>
+        {
+            if (update.Label == "下载English → 中文 模型" && update.DownloadPhase == SetupDownloadPhase.Body && update.Downloaded == 64)
+                throw failure;
+        });
+        var actual = await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(network, progressTick: () => tick)
+            .PrepareAsync(progress, watchdog.Token, ["en_zh"]));
+        Assert.Same(failure, actual);
+        Assert.False(watchdog.IsCancellationRequested);
+        Assert.True(body.ReadStarted.Task.IsCompleted);
+        Assert.NotNull(body.CancellationAtMs);
+        Assert.True(body.Disposed);
+    }
+
+    [Fact]
     public async Task ArchiveBodyTimeoutKeepsTheConfirmedPackageAndSelection()
     {
         using var files = new SetupFiles();
@@ -1066,7 +1125,7 @@ public sealed class ModelInstallerTests
         }
     }
 
-    private sealed class StallingBody(byte[] prefix, int maxRead = int.MaxValue) : MemoryStream(prefix)
+    private sealed class StallingBody(byte[] prefix, int maxRead = int.MaxValue, Action<int>? beforeRead = null) : MemoryStream(prefix)
     {
         public TaskCompletionSource ReadStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int ReadAttempts
@@ -1097,6 +1156,7 @@ public sealed class ModelInstallerTests
         public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
         {
             ReadAttempts++;
+            beforeRead?.Invoke(ReadAttempts);
             FirstReadAtMs ??= Environment.TickCount64;
             try
             {
@@ -1183,11 +1243,11 @@ public sealed class ModelInstallerTests
         public SetupFiles() => Directory.CreateDirectory(Root);
         public ModelInstaller Installer(HttpMessageHandler handler, TimeSpan? downloadTimeout = null,
             Func<ProcessStartInfo, IChildProcess>? startProcess = null, TimeSpan? selfCheckTimeout = null,
-            ModelPackageCatalog? catalog = null, Func<string, long>? availableDiskBytes = null) =>
+            ModelPackageCatalog? catalog = null, Func<string, long>? availableDiskBytes = null, Func<long>? progressTick = null) =>
             new(Root, Path.Combine(Root, "worker.py"), handler, downloadTimeout, startProcess,
                 selfCheckTimeout ?? TimeSpan.FromSeconds(5),
                 localPackages: Path.Combine(Root, "local-packages"), catalog: catalog ?? Catalog(ModelArchive),
-                availableDiskBytes: availableDiskBytes);
+                availableDiskBytes: availableDiskBytes, progressTick: progressTick);
         public string CachedModel(string pair) => Path.Combine(Root, "downloads", pair + "-1.9.argosmodel");
         public Func<ProcessStartInfo, IChildProcess> Child(string command) => _ =>
         {

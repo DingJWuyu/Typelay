@@ -22,6 +22,7 @@ internal sealed class ModelInstaller
     private readonly string _data, _worker, _cache, _localPackages;
     private readonly ModelPackageCatalog _catalog;
     private readonly Func<string, long> _availableDiskBytes;
+    private readonly Func<long> _progressTick;
     private string? _sourceModels;
     public bool CleanupPending
     {
@@ -32,7 +33,7 @@ internal sealed class ModelInstaller
     internal ModelInstaller(string data, string worker, HttpMessageHandler? handler = null,
         TimeSpan? downloadTimeout = null, Func<ProcessStartInfo, IChildProcess>? startProcess = null,
         TimeSpan? selfCheckTimeout = null, string? localPackages = null, ModelPackageCatalog? catalog = null,
-        Func<string, long>? availableDiskBytes = null)
+        Func<string, long>? availableDiskBytes = null, Func<long>? progressTick = null)
     {
         _data = Path.GetFullPath(data);
         _worker = Path.GetFullPath(worker);
@@ -40,6 +41,7 @@ internal sealed class ModelInstaller
         _localPackages = localPackages ?? DefaultLocalPackages;
         _catalog = catalog ?? ModelCatalog.Packages;
         _availableDiskBytes = availableDiskBytes ?? AvailableDiskBytes;
+        _progressTick = progressTick ?? (() => Environment.TickCount64);
         _http = new HttpClient(handler ?? new HttpClientHandler
         {
             AllowAutoRedirect = false,
@@ -824,49 +826,9 @@ internal sealed class ModelInstaller
         await using (var file = new FileStream(partial, append ? FileMode.Append : FileMode.Create, FileAccess.Write,
                          FileShare.None, 65536, true))
         {
-            byte[] buffer = new byte[65536];
-            PeriodicTimer? timer = null;
-            Task reports = Task.CompletedTask;
-            try
-            {
-                int read;
-                while ((read = await source.ReadAsync(buffer, ct)) > 0)
-                {
-                    if (read > limit - offset)
-                        throw new InvalidDataException("download-size");
-                    await file.WriteAsync(buffer.AsMemory(0, read), ct);
-                    Volatile.Write(ref offset, offset + read);
-                    if (timer is null)
-                    {
-                        progress.Report(new(label, offset, total, SetupDownloadPhase.Body));
-                        timer = new PeriodicTimer(TimeSpan.FromMilliseconds(80));
-                        reports = ReportWrittenBytes(timer, offset);
-                    }
-                }
-            }
-            finally
-            {
-                timer?.Dispose();
-                await reports;
-            }
+            offset = await CopyDownloadBody(source, file, offset, limit, label, total, progress, ct);
             await file.FlushAsync(ct);
             progress.Report(new(label, offset, total, SetupDownloadPhase.Body));
-
-            // A stalled read must not strand bytes written since the last report.
-            async Task ReportWrittenBytes(PeriodicTimer cadence, long reported)
-            {
-                while (await cadence.WaitForNextTickAsync().ConfigureAwait(false))
-                {
-                    if (ct.IsCancellationRequested)
-                        return;
-                    long downloaded = Volatile.Read(ref offset);
-                    if (downloaded != reported)
-                    {
-                        progress.Report(new(label, downloaded, total, SetupDownloadPhase.Body));
-                        reported = downloaded;
-                    }
-                }
-            }
         }
         if (exactBytes is { } pinnedLength && offset != pinnedLength)
             throw new InvalidDataException("download-size");
@@ -881,6 +843,76 @@ internal sealed class ModelInstaller
         File.Move(partial, destination, true);
         progress.Report(new(label, offset, total, SetupDownloadPhase.Complete));
         return destination;
+    }
+    private async Task<long> CopyDownloadBody(Stream source, Stream file, long offset, long limit, string label, long? total,
+        IProgress<SetupProgress> progress, CancellationToken ct)
+    {
+        const int intervalMs = 80;
+        byte[] buffer = new byte[65536];
+        using var copying = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        Task? reportDue = null;
+        Task<int>? pendingCopy = null;
+        long? reportedAt = null;
+        void ReportOrSchedule()
+        {
+            ct.ThrowIfCancellationRequested();
+            long now = _progressTick();
+            long remaining = reportedAt is { } previous ? intervalMs - (now - previous) : 0;
+            if (remaining > 0)
+            {
+                reportDue ??= Task.Delay(TimeSpan.FromMilliseconds(remaining), copying.Token);
+                return;
+            }
+            reportDue = null;
+            reportedAt = now;
+            progress.Report(new(label, offset, total, SetupDownloadPhase.Body));
+        }
+        async ValueTask<int> CopyChunk()
+        {
+            int count = await source.ReadAsync(buffer, copying.Token);
+            if (count > limit - offset)
+                throw new InvalidDataException("download-size");
+            if (count > 0)
+                await file.WriteAsync(buffer.AsMemory(0, count), copying.Token);
+            return count;
+        }
+        try
+        {
+            while (true)
+            {
+                var chunk = CopyChunk();
+                int written;
+                if (reportDue is not null && !chunk.IsCompleted)
+                {
+                    pendingCopy = chunk.AsTask();
+                    while (reportDue is not null && await Task.WhenAny(pendingCopy, reportDue) == reportDue)
+                    {
+                        await reportDue;
+                        reportDue = null;
+                        ReportOrSchedule();
+                    }
+                    written = await pendingCopy;
+                    pendingCopy = null;
+                }
+                else
+                    written = await chunk;
+                if (written <= 0)
+                    return offset;
+                offset += written;
+                ReportOrSchedule();
+            }
+        }
+        finally
+        {
+            // A failed report can leave a real read or write in flight. Retire it before closing its streams.
+            if (pendingCopy is not null)
+            {
+                await copying.CancelAsync().ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+                await ((Task)pendingCopy).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            }
+            else
+                copying.Cancel();
+        }
     }
     private static void RequireModelFile(string path)
     {
