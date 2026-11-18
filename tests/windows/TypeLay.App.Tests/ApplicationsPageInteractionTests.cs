@@ -393,26 +393,9 @@ public sealed partial class SettingsRenderingTests
         Assert.True(Native.GetCursorPos(out var previous));
         try
         {
-            ApplicationDialogAction(window, () => RightClickApplicationRow(window, row), "ApplicationRemovalConfirmation", interact, pointerTarget: row);
+            ApplicationDialogAction(window, null, "ApplicationRemovalConfirmation", interact, pointerTarget: row);
         }
         finally { SetCursorPos(previous.X, previous.Y); }
-    }
-
-    private static void RightClickApplicationRow(Window window, FrameworkElement row)
-    {
-        row.BringIntoView();
-        window.UpdateLayout();
-        var pixel = ApplicationRowPoint(row);
-        Assert.Equal(new WindowInteropHelper(window).Handle, WindowFromPoint(pixel));
-        Assert.Equal(0, Native.GetAsyncKeyState(2) & 0x8000);
-        Assert.True(SetCursorPos(pixel.X, pixel.Y));
-        // Actual native right-click routes directly to the confirmation; there is
-        // no internal removal callback or intermediate menu invocation here.
-        Input[] input = [new() { MouseFlags = 8 }, new() { MouseFlags = 16 }];
-        uint sent = SendInput(2, input, Marshal.SizeOf<Input>());
-        if (sent == 1)
-            SendInput(1, [input[1]], Marshal.SizeOf<Input>());
-        Assert.Equal(2u, sent);
     }
 
     private static NativePoint ApplicationRowPoint(FrameworkElement row)
@@ -421,7 +404,7 @@ public sealed partial class SettingsRenderingTests
         return new NativePoint { X = (int)point.X, Y = (int)point.Y };
     }
 
-    private static void ApplicationDialogAction(SettingsWindow owner, Action open, string id, Action<Window> interact, FrameworkElement? pointerTarget = null) =>
+    private static void ApplicationDialogAction(SettingsWindow owner, Action? open, string id, Action<Window> interact, FrameworkElement? pointerTarget = null) =>
         ApplicationDialogActionAsync(owner, open, id, (dialog, ct) =>
         {
             ct.ThrowIfCancellationRequested();
@@ -429,7 +412,7 @@ public sealed partial class SettingsRenderingTests
             return Task.CompletedTask;
         }, pointerTarget: pointerTarget);
 
-    private static void ApplicationDialogActionAsync(SettingsWindow owner, Action open, string id, Func<Window, CancellationToken, Task> interact, bool awaitEntrance = true, bool observeNativeInput = false, FrameworkElement? pointerTarget = null, int? retirementOpening = null)
+    private static void ApplicationDialogActionAsync(SettingsWindow owner, Action? open, string id, Func<Window, CancellationToken, Task> interact, bool awaitEntrance = true, bool observeNativeInput = false, FrameworkElement? pointerTarget = null, int? retirementOpening = null)
     {
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         limit.CancelAfter(TimeSpan.FromSeconds(3));
@@ -778,10 +761,28 @@ public sealed partial class SettingsRenderingTests
                 }
             }
             ct.ThrowIfCancellationRequested();
-            if (pointerTarget is not null)
-                stage = "right-click-delivery";
             action = owner.Dispatcher.BeginInvoke(new Action(() => interaction = InteractAsync()), DispatcherPriority.ApplicationIdle);
-            open();
+            if (pointerTarget is null)
+            {
+                ArgumentNullException.ThrowIfNull(open);
+                open();
+            }
+            else
+            {
+                pointerTarget.BringIntoView();
+                owner.UpdateLayout();
+                var pixel = ApplicationRowPoint(pointerTarget);
+                lastHitWindow = WindowFromPoint(pixel).ToInt64();
+                Assert.Equal(new WindowInteropHelper(owner).Handle.ToInt64(), lastHitWindow);
+                Assert.Equal(0, Native.GetAsyncKeyState(2) & 0x8000);
+                Assert.True(SetCursorPos(pixel.X, pixel.Y));
+                Input[] input = [new() { MouseFlags = 8 }, new() { MouseFlags = 16 }];
+                stage = "right-click-delivery";
+                uint sent = SendInput(2, input, Marshal.SizeOf<Input>());
+                if (sent == 1)
+                    SendInput(1, [input[1]], Marshal.SizeOf<Input>());
+                Assert.Equal(2u, sent);
+            }
             owner.Dispatcher.Invoke(() => { }, DispatcherPriority.SystemIdle);
             if (!observed || !completed || interaction?.IsCompleted != true)
                 RecordBeforeCleanup();
