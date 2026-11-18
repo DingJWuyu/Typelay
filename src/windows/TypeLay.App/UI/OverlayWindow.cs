@@ -134,6 +134,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView, ISourceInter
     {
         get; set;
     }
+    public Func<SessionViewToken, Task<bool>>? ConfirmGlossarySource { get; set; }
     public Func<SessionViewToken, SessionGlossaryEntry?>? BeginGlossaryRequested
     {
         get; set;
@@ -1789,6 +1790,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView, ISourceInter
         CancelSourceRegenerateQueue();
         var viewToken = _viewContext?.Token;
         var sourceTarget = _sourceAnchor?.Target;
+        var menuGlossarySource = _sourceGlossarySnapshot;
         string menuDraft = _editor.Text;
         var menuState = _sessionState;
         var translation = _viewContext?.TranslationActions;
@@ -1911,6 +1913,15 @@ internal sealed partial class OverlayWindow : Window, ISessionView, ISourceInter
             if (!Dispatch((MoreMenuItem)glossary) || viewToken is null)
                 return;
             menu.IsOpen = false;
+            if (menuState is SessionState.ValidTranslation or SessionState.EditedTranslationPending
+                && ConfirmGlossarySource is { } confirm)
+            {
+                if (menuGlossarySource is not { IsUsable: true } basis || _sourceGlossarySnapshot is not { } current
+                    || current with { ObservedAtMs = basis.ObservedAtMs, Bounds = basis.Bounds } != basis
+                    || !KeyboardHook.ExactNativeFieldFocused(viewToken.Target.AsWindows())
+                    || !await confirm(viewToken) || !ContextCurrent() || menu.IsOpen || EditingComposition)
+                    return;
+            }
             await OpenGlossaryAsync(viewToken);
         };
         menu.Items.Add(new Separator());

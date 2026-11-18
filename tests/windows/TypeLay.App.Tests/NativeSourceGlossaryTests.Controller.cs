@@ -63,6 +63,14 @@ public sealed partial class NativeSourceGlossaryTests
             long? brokerCaptureAgeAtBegin = null;
             string? settingsReasonAfterRejection = null;
             (nint Root, nint Control)? clickFocus = null;
+            bool? sourceConfirmed = null;
+            var confirm = view.ConfirmGlossarySource!;
+            view.ConfirmGlossarySource = async token =>
+            {
+                bool confirmed = await confirm(token);
+                sourceConfirmed = confirmed;
+                return confirmed;
+            };
             var begin = view.BeginGlossaryRequested!;
             view.BeginGlossaryRequested = token =>
             {
@@ -99,7 +107,7 @@ public sealed partial class NativeSourceGlossaryTests
                 {
                     Stage = stage == "open-form" && (field is not null || sourceFocused) ? "confirm-focus" : stage,
                     Expected = condition, CommandClicked = commandClicked, MenuOpen = menu?.IsOpen,
-                    BeginRequested = beginRequested, ExpectedFormId = expectedForm, ClosedFormId = closedForm,
+                    SourceConfirmed = sourceConfirmed, BeginRequested = beginRequested, ExpectedFormId = expectedForm, ClosedFormId = closedForm,
                     BrokerCaptureAgeAtBeginMs = brokerCaptureAgeAtBegin, FreshnessLimitMs = Limits.ObservationMaxAgeMs,
                     SettingsReasonAfterRejection = settingsReasonAfterRejection,
                     RootAfterClick = clickFocus?.Root.ToInt64(), ControlAfterClick = clickFocus?.Control.ToInt64(),

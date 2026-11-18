@@ -119,6 +119,7 @@ public sealed partial class SessionController : IDisposable
         overlay.EscapeRequested = token => { if (ViewCommandIsCurrent(token, false)) _ = Escape(); };
         overlay.AlternativeRequested = token => RequestAlternative(token, fromView: true);
         overlay.StyleRequested = ChangeViewStyleAsync;
+        overlay.ConfirmGlossarySource = _glossary.ConfirmSourceAsync;
         overlay.BeginGlossaryRequested = _glossary.BeginGlossaryEntry;
         overlay.AddGlossaryRequested = _glossary.AddGlossaryEntryAsync;
         overlay.CloseGlossaryRequested = _glossary.CloseGlossaryEntry;
@@ -375,6 +376,7 @@ public sealed partial class SessionController : IDisposable
         if (_ownedSource.TickLocalInteraction())
             return;
         long now = _loop.NowMs;
+        _glossary.ExpireSourceObservation(now);
         if (_manualObservation is { UnavailableUntil: > 0 } && !ManualObservationIsCurrent(now))
             StopSession("manual-observation-retired");
         if (_pendingDirect is { } pending && !_directRunning)
@@ -651,6 +653,7 @@ public sealed partial class SessionController : IDisposable
         long windowEpoch = _hook.WindowEpoch;
         long contentEpoch = _hook.ContentEpoch;
         var glossaryRead = _glossary.BeginRead();
+        var menuConfirmation = _glossary.PendingSourceObservation;
         var request = Context();
         var freshWake = _pendingWakeCapture is { Intent: not null } intent ? intent : null;
         bool traceCapture = false;
@@ -1037,6 +1040,7 @@ public sealed partial class SessionController : IDisposable
             else
                 captureExit = "active-non-source";
             Render();
+            menuConfirmation?.TrySetResult(inputUnchanged && !result.ForegroundExpired && result.Focus == FocusMember.Source ? snapshot : null);
             Trace(inputUnchanged ? "capture" : "capture-input-changed");
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
@@ -1103,6 +1107,7 @@ public sealed partial class SessionController : IDisposable
         }
         finally
         {
+            menuConfirmation?.TrySetResult(null);
             _capturing = false;
             // Only the first bounded observations of a registered on-demand practice.
             // Record existing gate results; never probe native focus for diagnostics.
@@ -2157,7 +2162,7 @@ public sealed partial class SessionController : IDisposable
             SettleWrite(operation, new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome), out _);
         ContinueShutdown(expired: true);
         RetireInteraction();
-        _glossary.CancelGlossaryEntry();
+        _glossary.Retire();
         _ownedSource.ForgetCompletion();
         _ownedSource.RetireAutomaticPractice(false);
         if (PracticeProgress is { } practice)

@@ -5,6 +5,58 @@ namespace TypeLay.Runtime.Tests;
 
 public sealed class InlineGlossaryTests
 {
+    [Theory]
+    [InlineData("unchanged", true)]
+    [InlineData("content-edge", false)]
+    [InlineData("focus-edge", false)]
+    [InlineData("text", false)]
+    [InlineData("selection", false)]
+    [InlineData("unknown-ime", false)]
+    [InlineData("wrong-field", false)]
+    [InlineData("expired", false)]
+    public async Task SourceGlossaryMenuConfirmsOnlyTheUnchangedFieldObservedAfterItsClick(string change, bool allowed)
+    {
+        using var s = new SessionScenario(translationRelease: SessionScenario.HyRelease,
+            modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true);
+        s.View.SourceGlossarySupported = true;
+        s.ReadyCandidate();
+        var token = s.View.Token;
+        s.Service.PendingCapture = new();
+        s.Tick(Limits.ObservationMaxAgeMs + 1);
+        s.Input.ContentEpoch++; // The admitted menu click has already reached the hook.
+        Assert.Null(s.View.BeginGlossaryRequested!(token));
+        Assert.NotNull(s.View.ConfirmGlossarySource);
+        var confirm = s.View.ConfirmGlossarySource;
+        var waiting = confirm(token);
+        Assert.False(waiting.IsCompleted);
+        Assert.False(await confirm(token));
+        InputCapture Captured(InputSnapshot source) => new(source, FocusMember.Source, "org.typelay.ControlledApp",
+            s.Input.UserEpoch, s.Input.ForegroundEpoch, new(token.Target, s.Input.CommandGeneration, s.Input.SessionBindings, true, true));
+        s.CompleteCapture(Captured(s.Fresh)); // Started before this command.
+        Assert.False(waiting.IsCompleted);
+        s.Service.PendingCapture = new();
+        s.Tick(change == "expired" ? Limits.ObservationMaxAgeMs + 1 : 60);
+        if (change == "content-edge")
+            s.Input.ContentEpoch++;
+        if (change == "focus-edge")
+            s.Input.WindowEpoch++;
+        var fresh = change switch
+        {
+            "text" => s.Fresh with { Text = "different" },
+            "selection" => s.Fresh with { Selection = new(1, 2) },
+            "unknown-ime" => s.Fresh with { Ime = ImeState.Unknown },
+            "wrong-field" => s.Fresh with { Target = s.Fresh.Target with { Lifetime = Guid.NewGuid() } },
+            _ => s.Fresh
+        };
+        s.CompleteCapture(Captured(fresh));
+        Assert.True(waiting.IsCompleted);
+        Assert.Equal(allowed, await waiting);
+        if (allowed)
+            Assert.NotNull(s.View.BeginGlossaryRequested!(token));
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+    }
+
     [Fact]
     public void AcknowledgedEditorHandoffRechecksUnchangedSourceForGlossaryManagement()
     {

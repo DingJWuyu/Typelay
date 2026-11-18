@@ -60,6 +60,12 @@ public interface ISessionView
         {
         }
     }
+    // Native source menus confirm a post-click observation before moving focus.
+    Func<SessionViewToken, Task<bool>>? ConfirmGlossarySource
+    {
+        get => null;
+        set { }
+    }
     Func<SessionViewToken, SessionGlossaryEntry?>? BeginGlossaryRequested
     {
         get; set;
