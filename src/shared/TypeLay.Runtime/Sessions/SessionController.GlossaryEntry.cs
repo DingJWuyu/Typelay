@@ -293,7 +293,7 @@ public sealed partial class SessionController
             finally { owner._capturing = false; }
         }
 
-        internal string? QualifyGlossaryEntry(SessionViewToken? token, bool existing = false)
+        internal string? QualifyGlossaryEntry(SessionViewToken? token, bool existing = false, bool presentingMenu = false)
         {
             if (owner._disposed || token is null || !GlossaryEntryTokenCurrent(token))
                 return "glossary-stale";
@@ -310,7 +310,11 @@ public sealed partial class SessionController
             if (!existing && _glossaryEntry is not null)
                 return "glossary-entry-open";
             if (!existing)
-                return owner.GetGlossarySettingsState().UnavailableReason;
+            {
+                // A native source menu can request a new observation. Opening the form still requires it.
+                bool canReobserve = presentingMenu && sourceOrigin && owner._overlay.ReserveGlossarySource is not null;
+                return owner.GetGlossarySettingsState(null, canReobserve).UnavailableReason;
+            }
             return null;
         }
 
@@ -348,16 +352,103 @@ public sealed partial class SessionController
                 CancelGlossaryEntry();
         }
 
+        internal TaskCompletionSource<InputSnapshot?>? PendingSourceObservation
+        {
+            get; private set;
+        }
+
+        private long _sourceObservationDeadline;
+        private bool _sourceMenuDispatched;
+        internal TaskCompletionSource<InputSnapshot?>? SourceObservationForRead => _sourceMenuDispatched ? PendingSourceObservation : null;
+        private Func<SessionViewToken, bool>? _confirmedSourceCurrent;
+        private void EndSourceObservation()
+        {
+            PendingSourceObservation?.TrySetResult(null);
+            PendingSourceObservation = null;
+            _confirmedSourceCurrent = null;
+            _sourceMenuDispatched = false;
+        }
+        internal void ExpireSourceObservation(long now)
+        {
+            if (PendingSourceObservation is not null && now > _sourceObservationDeadline)
+                EndSourceObservation();
+        }
+
+        internal ConfirmGlossarySource? ReserveSource(SessionViewToken token)
+        {
+            long clickedAt = owner._loop.NowMs;
+            // Mouse edges in the menu advance ContentEpoch. Freeze the admitted click and require
+            // a normal read begun afterwards. A read already in flight cannot confirm the command.
+            var hook = owner._hook;
+            var sourceVersion = (hook.ConnectionId, hook.CommandGeneration, hook.UserEpoch, hook.SourceUserEpoch,
+                hook.ContentEpoch, hook.ForegroundEpoch, hook.WindowEpoch);
+            var state = (owner._configurationRevision, owner._settings.Revision, owner._session.Revision, owner._session.State);
+            if (PendingSourceObservation is not null || HasEntry || !owner.ViewCommandIsCurrent(token, false)
+                || owner._session.State is not (SessionState.ValidTranslation or SessionState.EditedTranslationPending)
+                || owner._session.Current is not { IsUsable: true } basis || basis.Target != token.Target
+                || owner._styleObservation is not { } previous || previous.Target != basis.Target
+                || previous.CommandGeneration != token.CommandGeneration || previous.SessionRevision != owner._session.Revision
+                || previous.SourceEpoch != sourceVersion.SourceUserEpoch || previous.ForegroundEpoch != sourceVersion.ForegroundEpoch
+                || previous.WindowEpoch != sourceVersion.WindowEpoch || owner._hook.GetFocus(token.Target) != FocusMember.Source
+                || !owner._sourceInteraction.SupportsSourceGlossaryEntry(token) || owner._overlay.EditingComposition
+                || owner.GetGlossarySettingsState().UnavailableReason is not (null or "glossary-stale"))
+                return null;
+
+            var observation = new TaskCompletionSource<InputSnapshot?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _sourceObservationDeadline = clickedAt + Limits.ObservationMaxAgeMs;
+            PendingSourceObservation = observation;
+            owner.RevokeInput("glossary-menu");
+            owner._permitUntil = 0;
+            return ConfirmAsync;
+
+            async Task<bool> ConfirmAsync(Action open)
+            {
+                if (!ReferenceEquals(PendingSourceObservation, observation) || _sourceMenuDispatched)
+                    return false;
+                _sourceMenuDispatched = true;
+                try
+                {
+                    var fresh = await observation.Task;
+                    if (fresh is not { IsUsable: true } || fresh.ObservedAtMs < clickedAt
+                        || fresh with
+                        {
+                            ObservedAtMs = basis.ObservedAtMs,
+                            Bounds = basis.Bounds
+                        } != basis)
+                        return false;
+                    bool Current(SessionViewToken requested) => requested == token && ReferenceEquals(PendingSourceObservation, observation)
+                        && fresh.ObservedAtMs <= owner._loop.NowMs && owner._loop.NowMs <= _sourceObservationDeadline
+                        && owner._session.Current == fresh
+                        && sourceVersion == (hook.ConnectionId, hook.CommandGeneration, hook.UserEpoch, hook.SourceUserEpoch,
+                            hook.ContentEpoch, hook.ForegroundEpoch, hook.WindowEpoch)
+                        && state == (owner._configurationRevision, owner._settings.Revision, owner._session.Revision, owner._session.State);
+                    if (!Current(token) || QualifyGlossaryEntry(token) is not null)
+                        return false;
+                    _confirmedSourceCurrent = Current;
+                    open(); // Begin registers the form synchronously, while every capture still withholds permits.
+                    return true;
+                }
+                finally
+                {
+                    if (ReferenceEquals(PendingSourceObservation, observation))
+                        EndSourceObservation();
+                }
+            }
+        }
+
         internal SessionGlossaryEntry? BeginGlossaryEntry(SessionViewToken token)
         {
-            if (QualifyGlossaryEntry(token) is not null)
+            var observation = PendingSourceObservation;
+            var confirmed = _confirmedSourceCurrent;
+            if (observation is not null && confirmed is null
+                || QualifyGlossaryEntry(token) is not null)
                 return null;
             var directions = ModelCatalog.Packages.Packages.SelectMany(package => package.Directions)
                 .DistinctBy(direction => direction.Id).Select(direction => new GlossaryDirectionChoice(
                     direction.Source, direction.Target, direction.SourceName, direction.TargetName)).ToArray();
             bool sourceOrigin = owner._session.State is SessionState.ValidTranslation or SessionState.EditedTranslationPending;
             var entry = new SessionGlossaryEntry(Guid.NewGuid(), token, owner._settings.Revision, Array.AsReadOnly(directions), sourceOrigin);
-            _glossaryEntry = new(entry)
+            var form = new GlossaryEntrySession(entry)
             {
                 OriginState = owner._session.State,
                 Source = owner._session.Current,
@@ -371,6 +462,14 @@ public sealed partial class SessionController
                 AppliedGlossary = owner._session.AppliedGlossary,
                 Application = owner._styleObservation?.Application
             };
+            // The final focus query can return the same field after its input epoch advanced.
+            if (_glossaryEntry is not null || !ReferenceEquals(observation, PendingSourceObservation)
+                || confirmed is not null && !confirmed(token))
+            {
+                form.Cancellation.Dispose();
+                return null;
+            }
+            _glossaryEntry = form;
             if (sourceOrigin)
             {
                 _sourceGlossaryReadRevision++;
@@ -588,6 +687,7 @@ public sealed partial class SessionController
             PendingEditorHandoffOwnsOrdinaryRead(request, read.Handoff);
         internal void Retire()
         {
+            EndSourceObservation();
             _editorGlossaryHandoff = null;
             CancelGlossaryEntry();
         }

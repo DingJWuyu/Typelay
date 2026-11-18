@@ -316,7 +316,7 @@ public sealed partial class SettingsRenderingTests
             ct.ThrowIfCancellationRequested();
             Assert.False(dialog.IsVisible);
             Assert.Null(old.Visual);
-        }, awaitEntrance: false);
+        }, awaitEntrance: false, observeNativeInput: retirement == "hide", retirementOpening: 1);
         Assert.Equal(before, File.ReadAllText(scene.Path));
         scene.Window.ShowPage("apps");
         ApplicationRemovalDialogAsync(scene.Window, "writer", async (dialog, ct) =>
@@ -335,7 +335,7 @@ public sealed partial class SettingsRenderingTests
             Assert.True(dialog.IsVisible);
             Assert.Equal(before, File.ReadAllText(scene.Path));
             InvokeApplicationButton(ApplicationButton(dialog, "ApplicationRemovalCancel"));
-        }, observeNativeInput: retirement == "hide");
+        }, observeNativeInput: retirement == "hide", retirementOpening: 2);
         Assert.Equal(before, File.ReadAllText(scene.Path));
     });
 
@@ -445,14 +445,14 @@ public sealed partial class SettingsRenderingTests
         finally { CompositionTarget.Rendering -= Frame; }
     }
 
-    private static void ApplicationRemovalDialogAsync(SettingsWindow owner, string application, Func<Window, CancellationToken, Task> interact, bool awaitEntrance = true, bool observeNativeInput = false)
+    private static void ApplicationRemovalDialogAsync(SettingsWindow owner, string application, Func<Window, CancellationToken, Task> interact, bool awaitEntrance = true, bool observeNativeInput = false, int? retirementOpening = null)
     {
         var row = ApplicationElement(owner, "ApplicationRow_" + application);
         Assert.Null(row.ContextMenu);
         Assert.True(Native.GetCursorPos(out var previous));
         try
         {
-            ApplicationDialogActionAsync(owner, () => RightClickApplicationRow(owner, row), "ApplicationRemovalConfirmation", interact, awaitEntrance, observeNativeInput, pointerTarget: row);
+            ApplicationDialogActionAsync(owner, null, "ApplicationRemovalConfirmation", interact, awaitEntrance, observeNativeInput, pointerTarget: row, retirementOpening: retirementOpening);
         }
         finally { SetCursorPos(previous.X, previous.Y); }
     }

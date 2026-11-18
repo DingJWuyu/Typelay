@@ -1,4 +1,5 @@
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Automation.Peers;
@@ -36,6 +37,7 @@ public sealed partial class NativeSourceGlossaryTests(WpfDesktopFixture desktop)
     // persistence/quality checks are covered separately by InlineGlossaryTests.
     public static IEnumerable<object[]> SourceFormCases()
     {
+        yield return new object[] { "dismiss-menu", false };
         foreach (string action in new[] { "save", "cancel", "foreign", "source-changed", "selection-changed", "readonly",
             "wrong-source-field", "return-root", "return-second", "foreign-pending", "foreign-back-pending", "close-pending", "config-pending",
             "barrier-save", "barrier-cancel", "barrier-close", "barrier-config", "barrier-cookie",
@@ -92,6 +94,15 @@ public sealed partial class NativeSourceGlossaryTests(WpfDesktopFixture desktop)
             view.Render(session, settings.Value, false, context: context); // B-01 write disabled.
             overlay.UpdateLayout();
             Assert.True(view.SupportsSourceGlossaryEntry(token));
+            if (action == "dismiss-menu")
+            {
+                view.ReserveGlossarySource = _ => throw new InvalidOperationException("Dismissed menu reserved a source.");
+                var (snapshot, retainedMenu) = DismissSourceMenu(overlay, view, session, source, settings, context);
+                GC.Collect();
+                Assert.False(snapshot.IsAlive);
+                GC.KeepAlive(retainedMenu);
+                return;
+            }
             SessionGlossaryEntry? entry = null;
             long initialEpoch = monitor.WindowEpoch;
             view.BeginGlossaryRequested = requested =>
@@ -337,6 +348,27 @@ public sealed partial class NativeSourceGlossaryTests(WpfDesktopFixture desktop)
         }
     });
 
+    // Keep the retired WPF peer alive while releasing the local variables that opened it.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static (WeakReference, ContextMenu) DismissSourceMenu(OverlayWindow overlay, WindowsSessionView view,
+        Session session, InputSnapshot source, SettingsStore settings, SessionViewContext context)
+    {
+        var basis = source with
+        {
+        };
+        session.Observe(basis, FocusMember.Source, basis.ObservedAtMs);
+        view.Render(session, settings.Value, false, context: context);
+        var more = Button(overlay, "更多翻译操作");
+        more.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        var menu = Assert.IsAssignableFrom<ContextMenu>(more.ContextMenu);
+        Assert.True(menu.IsOpen);
+        Assert.True(menu.Items.OfType<MenuItem>().Single(item => AutomationProperties.GetAutomationId(item) == "MoreGlossary").IsEnabled);
+        menu.IsOpen = false;
+        session.Observe(source, FocusMember.Source, source.ObservedAtMs);
+        view.Render(session, settings.Value, false, context: context);
+        return (new WeakReference(basis), menu);
+    }
+
     [Theory]
     [InlineData("no-control")]
     [InlineData("unknown-ime")]
@@ -386,6 +418,10 @@ public sealed partial class NativeSourceGlossaryTests(WpfDesktopFixture desktop)
         {
             get; private set;
         }
+        public BrokerResponse? LastCapture
+        {
+            get; private set;
+        }
         public bool Available => true;
         public int ProcessId => native.BrokerProcessId;
         public Task StartAsync() => Task.CompletedTask;
@@ -394,6 +430,8 @@ public sealed partial class NativeSourceGlossaryTests(WpfDesktopFixture desktop)
             if (request.Op is "write" or "direct-write")
                 SourceWrites++;
             var response = await native.Call(request, request.Op == "return-glossary" ? () => ReturnDispatched.TrySetResult() : null);
+            if (request.Op is "capture" or "capture-wake")
+                LastCapture = response;
             if (request.Op == "return-glossary")
                 ReturnStatus = response.Status;
             return response;

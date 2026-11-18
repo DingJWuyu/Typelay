@@ -119,6 +119,7 @@ public sealed partial class SessionController : IDisposable
         overlay.EscapeRequested = token => { if (ViewCommandIsCurrent(token, false)) _ = Escape(); };
         overlay.AlternativeRequested = token => RequestAlternative(token, fromView: true);
         overlay.StyleRequested = ChangeViewStyleAsync;
+        overlay.ReserveGlossarySource = _glossary.ReserveSource;
         overlay.BeginGlossaryRequested = _glossary.BeginGlossaryEntry;
         overlay.AddGlossaryRequested = _glossary.AddGlossaryEntryAsync;
         overlay.CloseGlossaryRequested = _glossary.CloseGlossaryEntry;
@@ -354,6 +355,7 @@ public sealed partial class SessionController : IDisposable
     {
         if (_disposed)
             return;
+        _glossary.ExpireSourceObservation(_loop.NowMs);
         if (_closing)
         {
             DrainInputNotices();
@@ -651,6 +653,7 @@ public sealed partial class SessionController : IDisposable
         long windowEpoch = _hook.WindowEpoch;
         long contentEpoch = _hook.ContentEpoch;
         var glossaryRead = _glossary.BeginRead();
+        var menuConfirmation = _glossary.SourceObservationForRead;
         var request = Context();
         var freshWake = _pendingWakeCapture is { Intent: not null } intent ? intent : null;
         bool traceCapture = false;
@@ -927,7 +930,7 @@ public sealed partial class SessionController : IDisposable
                 }
                 _permitUntil = 0;
                 _hook.Publish(new(snapshot, request.UserEpoch, request.ForegroundEpoch, false, _hook.CommandGeneration, _generation), null);
-                if (result.Focus == FocusMember.Source)
+                if (result.Focus == FocusMember.Source && _glossary.PendingSourceObservation is null)
                 {
                     _hook.PublishShortcut(new(snapshot, contentEpoch, request.ForegroundEpoch, styleApplication));
                     captureExit = "shortcut-publish-called";
@@ -935,7 +938,7 @@ public sealed partial class SessionController : IDisposable
                         _practiceCaptureTracePublished = true;
                 }
                 else
-                    captureExit = "inactive-non-source";
+                    captureExit = result.Focus == FocusMember.Source ? "glossary-menu-pending" : "inactive-non-source";
                 _overlay.HideQuietly();
                 return;
             }
@@ -1005,7 +1008,7 @@ public sealed partial class SessionController : IDisposable
                 ? (_session.Revision, request.SourceUserEpoch, contentEpoch, request.ForegroundEpoch, windowEpoch)
                 : default;
             var practiceBinding = _ownedSource.AutomaticPracticeFor(snapshot.Target);
-            if (freshWake is null && !_glossary.HasEntry && inputUnchanged && result.Focus == FocusMember.Source && _model.Ready
+            if (freshWake is null && !_glossary.HasEntry && _glossary.PendingSourceObservation is null && inputUnchanged && result.Focus == FocusMember.Source && _model.Ready
                 && !_ownedSource.RetiredAutomaticTarget(snapshot.Target)
                 && (_settings.Value.ExperimentalWriteback || practiceBinding is not null
                     || _sessionShortcuts is { SourceLocalAcceptanceVersion: 1 })
@@ -1027,7 +1030,7 @@ public sealed partial class SessionController : IDisposable
             _ownedSource.RememberAutomaticPermit(practiceBinding, permit);
             _hook.Publish(new(snapshot, request.UserEpoch, request.ForegroundEpoch, escape, _hook.CommandGeneration, _generation,
                 practiceBinding?.RunId, practiceBinding?.ConnectionId), permit);
-            if (result.Focus == FocusMember.Source)
+            if (result.Focus == FocusMember.Source && _glossary.PendingSourceObservation is null)
             {
                 _hook.PublishShortcut(new(snapshot, contentEpoch, request.ForegroundEpoch, styleApplication));
                 captureExit = "shortcut-publish-called";
@@ -1035,8 +1038,9 @@ public sealed partial class SessionController : IDisposable
                     _practiceCaptureTracePublished = true;
             }
             else
-                captureExit = "active-non-source";
+                captureExit = result.Focus == FocusMember.Source ? "glossary-menu-pending" : "active-non-source";
             Render();
+            menuConfirmation?.TrySetResult(inputUnchanged && !result.ForegroundExpired && result.Focus == FocusMember.Source ? snapshot : null);
             Trace(inputUnchanged ? "capture" : "capture-input-changed");
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
@@ -1103,6 +1107,7 @@ public sealed partial class SessionController : IDisposable
         }
         finally
         {
+            menuConfirmation?.TrySetResult(null);
             _capturing = false;
             // Only the first bounded observations of a registered on-demand practice.
             // Record existing gate results; never probe native focus for diagnostics.
@@ -1567,7 +1572,7 @@ public sealed partial class SessionController : IDisposable
         return special && !ReferenceEquals(identity, _model.VerifiedIdentity) ? new(0, "error", Code: "not-ready") : result;
     }
 
-    private bool StyleSourceCurrent(SessionViewToken token) => _styleObservation is { } observation
+    private bool StyleSourceCurrent(SessionViewToken token, bool requireFreshObservation = true) => _styleObservation is { } observation
         && token.Revision == _generation && token.CommandGeneration == _hook.CommandGeneration
         && observation.CommandGeneration == _hook.CommandGeneration && observation.Target == token.Target
         && _session.Current is { IsUsable: true } source && source.Target == token.Target
@@ -1575,7 +1580,8 @@ public sealed partial class SessionController : IDisposable
         && observation.SourceEpoch == _hook.SourceUserEpoch && observation.ContentEpoch == _hook.ContentEpoch
         && observation.ForegroundEpoch == _hook.ForegroundEpoch && observation.WindowEpoch == _hook.WindowEpoch
         && _hook.GetFocus(token.Target) != FocusMember.Other
-        && _loop.NowMs >= source.ObservedAtMs && _loop.NowMs - source.ObservedAtMs <= Limits.ObservationMaxAgeMs;
+        && _loop.NowMs >= source.ObservedAtMs
+        && (!requireFreshObservation || _loop.NowMs - source.ObservedAtMs <= Limits.ObservationMaxAgeMs);
 
     private (SessionViewToken? Token, long Revision) ApplyStyleSettings()
     {
@@ -2157,7 +2163,7 @@ public sealed partial class SessionController : IDisposable
             SettleWrite(operation, new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome), out _);
         ContinueShutdown(expired: true);
         RetireInteraction();
-        _glossary.CancelGlossaryEntry();
+        _glossary.Retire();
         _ownedSource.ForgetCompletion();
         _ownedSource.RetireAutomaticPractice(false);
         if (PracticeProgress is { } practice)

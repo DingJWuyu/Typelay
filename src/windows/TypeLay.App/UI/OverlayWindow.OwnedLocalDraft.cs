@@ -54,6 +54,7 @@ internal sealed partial class OverlayWindow
             ?? _viewContext?.TranslationActions?.ApplicationStyle ?? _settings.Styles?.Default ?? TranslationStyle.Natural;
         _viewContext = null;
         _sourceAnchor = null;
+        (_moreButton.ContextMenu as MoreContextMenu)?.RetireGlossarySource();
         _sourceGlossarySnapshot = null;
         _sourceGlossaryOpeningToken = null;
         _glossaryEditorToken = null;
