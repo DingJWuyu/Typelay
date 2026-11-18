@@ -26,6 +26,7 @@ import zipfile
 from dataclasses import replace
 from email.message import Message
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from itertools import product
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1613,10 +1614,10 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(archive.read_bytes(), b"firstsecond")
 
     def test_transient_retry_survives_a_range_restart_without_renewing_it(self):
-        for statuses, expected_ranges in (
-            ([503, 416, 502], ["bytes=5-", "bytes=5-", None]),
-            ([416, 500, 504], ["bytes=5-", None, None]),
-        ):
+        retryable = (500, 502, 503, 504)
+        for first, final, range_first in product(retryable, retryable, (False, True)):
+            statuses = [416, first, final] if range_first else [first, 416, final]
+            expected_ranges = ["bytes=5-", None if range_first else "bytes=5-", None]
             with self.subTest(statuses=statuses):
                 self.interrupted()
                 self.requests.clear()
@@ -3553,12 +3554,12 @@ class InstallationFailureTests(unittest.TestCase):
                 self.assertIn('"stage":"self-check"', output)
                 self.assertNotIn("重新获取损坏", output)
 
-    def test_one_preparation_keeps_the_first_model_when_the_second_needs_a_retry(self):
+    def test_one_preparation_recovers_each_model_without_refetching_the_first(self):
         requests = []
 
         def fail_once(request):
             requests.append(request.full_url)
-            if requests == [DIRECTIONS["zh_en"].url, DIRECTIONS["en_zh"].url]:
+            if requests.count(request.full_url) == 1:
                 raise urllib.error.HTTPError(request.full_url, 503, "transient", {}, None)
 
         directions = ["zh_en", "en_zh"]
@@ -3577,7 +3578,9 @@ class InstallationFailureTests(unittest.TestCase):
             worker_result=json.dumps(check).encode(),
             before_response=fail_once,
         )
-        self.assertEqual(requests, [DIRECTIONS[pair].url for pair in ("zh_en", "en_zh", "en_zh")])
+        self.assertEqual(
+            requests, [DIRECTIONS[pair].url for pair in ("zh_en", "zh_en", "en_zh", "en_zh")]
+        )
 
     def test_requested_single_direction_prepares_only_that_inventory_and_self_check(self):
         self.run_setup(

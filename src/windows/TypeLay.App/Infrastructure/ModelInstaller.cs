@@ -22,6 +22,7 @@ internal sealed class ModelInstaller
     private readonly string _data, _worker, _cache, _localPackages;
     private readonly ModelPackageCatalog _catalog;
     private readonly Func<string, long> _availableDiskBytes;
+    private readonly Action<CancellationTokenSource, TimeSpan> _scheduleDeadline;
     private string? _sourceModels;
     public bool CleanupPending
     {
@@ -32,7 +33,7 @@ internal sealed class ModelInstaller
     internal ModelInstaller(string data, string worker, HttpMessageHandler? handler = null,
         TimeSpan? downloadTimeout = null, Func<ProcessStartInfo, IChildProcess>? startProcess = null,
         TimeSpan? selfCheckTimeout = null, string? localPackages = null, ModelPackageCatalog? catalog = null,
-        Func<string, long>? availableDiskBytes = null)
+        Func<string, long>? availableDiskBytes = null, Action<CancellationTokenSource, TimeSpan>? scheduleDeadline = null)
     {
         _data = Path.GetFullPath(data);
         _worker = Path.GetFullPath(worker);
@@ -40,6 +41,7 @@ internal sealed class ModelInstaller
         _localPackages = localPackages ?? DefaultLocalPackages;
         _catalog = catalog ?? ModelCatalog.Packages;
         _availableDiskBytes = availableDiskBytes ?? AvailableDiskBytes;
+        _scheduleDeadline = scheduleDeadline ?? ((source, budget) => source.CancelAfter(budget));
         _http = new HttpClient(handler ?? new HttpClientHandler
         {
             AllowAutoRedirect = false,
@@ -730,7 +732,7 @@ internal sealed class ModelInstaller
     private async Task<JsonDocument> Json(string resource, Uri uri, CancellationToken ct)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(_http.Timeout);
+        _scheduleDeadline(timeout, _http.Timeout);
         ct = timeout.Token;
         var (headers, _) = await OpenResource(resource, uri, ct);
         using var response = headers;
@@ -766,7 +768,7 @@ internal sealed class ModelInstaller
         throw new HttpRequestException("redirect-limit");
     }
     private async Task<(HttpResponseMessage Response, long Offset)> OpenResource(string resource, Uri uri,
-        CancellationToken ct, string? partial = null, long offset = 0)
+        CancellationToken ct, long offset = 0, Action? restartRange = null)
     {
         bool retriedHttp = false;
         for (int attempt = 1; ; attempt++)
@@ -778,20 +780,25 @@ internal sealed class ModelInstaller
             using (response)
             {
                 var status = response.StatusCode;
-                Console.Error.WriteLine($"Model download: resource={resource} attempts={attempt} httpStatus={(int)status}");
                 if (!retriedHttp && status is HttpStatusCode.InternalServerError or HttpStatusCode.BadGateway
                     or HttpStatusCode.ServiceUnavailable or HttpStatusCode.GatewayTimeout)
                 {
                     retriedHttp = true;
                     continue;
                 }
-                if (status == HttpStatusCode.RequestedRangeNotSatisfiable && partial is not null && offset > 0)
+                if (status == HttpStatusCode.RequestedRangeNotSatisfiable && offset > 0 && restartRange is not null)
                 {
-                    File.Delete(partial);
+                    restartRange();
                     offset = 0;
                     continue;
                 }
-                response.EnsureSuccessStatusCode();
+                var error = new ModelDownloadHttpException(resource, attempt, status);
+                try
+                {
+                    Console.Error.WriteLine(error.Message);
+                }
+                catch (IOException) { /* The setup failure also carries this diagnostic. */ }
+                throw error;
             }
         }
     }
@@ -802,7 +809,7 @@ internal sealed class ModelInstaller
         // download must retain its original deadline through body reads, redirects
         // and an invalid partial-file restart, rather than consuming the setup budget.
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(_http.Timeout);
+        _scheduleDeadline(timeout, _http.Timeout);
         ct = timeout.Token;
         long limit = exactBytes ?? 1024L * 1024 * 1024;
         string destination = Path.Combine(_cache, Path.GetFileName(name));
@@ -827,7 +834,11 @@ internal sealed class ModelInstaller
             offset = 0;
         }
         progress.Report(new(label, offset, exactBytes, SetupDownloadPhase.Headers));
-        var opened = await OpenResource(resource, new Uri(url), ct, partial, offset);
+        var opened = await OpenResource(resource, new Uri(url), ct, offset, () =>
+        {
+            File.Delete(partial);
+            progress.Report(new(label, 0, exactBytes, SetupDownloadPhase.Headers));
+        });
         using var response = opened.Response;
         offset = opened.Offset;
         bool append = offset > 0 && response.StatusCode == HttpStatusCode.PartialContent

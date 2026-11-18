@@ -301,7 +301,8 @@ public sealed partial class ModelInstallerTests
     private static Task<ModelInstallationStore.PreparedInstallation> PrepareZh(SetupFiles files, HttpMessageHandler network,
         bool packages, ModelPackageCatalog? catalog = null)
     {
-        var installer = files.Installer(network, startProcess: files.Child(PassedCheck("zh_en")), catalog: catalog);
+        var installer = files.Installer(network, startProcess: files.Child(PassedCheck("zh_en")), catalog: catalog,
+            availableDiskBytes: _ => long.MaxValue);
         return packages ? installer.PreparePackagesAsync(new(1, ModelPackageOperation.Install, ["argos-zh-en"], ["argos-zh-en"], null),
             NoProgress, TestContext.Current.CancellationToken) : installer.PrepareAsync(NoProgress, TestContext.Current.CancellationToken, ["zh_en"]);
     }
@@ -1183,11 +1184,12 @@ public sealed partial class ModelInstallerTests
         public SetupFiles() => Directory.CreateDirectory(Root);
         public ModelInstaller Installer(HttpMessageHandler handler, TimeSpan? downloadTimeout = null,
             Func<ProcessStartInfo, IChildProcess>? startProcess = null, TimeSpan? selfCheckTimeout = null,
-            ModelPackageCatalog? catalog = null, Func<string, long>? availableDiskBytes = null) =>
+            ModelPackageCatalog? catalog = null, Func<string, long>? availableDiskBytes = null,
+            Action<CancellationTokenSource, TimeSpan>? scheduleDeadline = null) =>
             new(Root, Path.Combine(Root, "worker.py"), handler, downloadTimeout, startProcess,
                 selfCheckTimeout ?? TimeSpan.FromSeconds(5),
                 localPackages: Path.Combine(Root, "local-packages"), catalog: catalog ?? Catalog(ModelArchive),
-                availableDiskBytes: availableDiskBytes);
+                availableDiskBytes: availableDiskBytes, scheduleDeadline: scheduleDeadline);
         public string CachedModel(string pair) => Path.Combine(Root, "downloads", pair + "-1.9.argosmodel");
         public Func<ProcessStartInfo, IChildProcess> Child(string command) => _ =>
         {

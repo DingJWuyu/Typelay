@@ -26,10 +26,11 @@ public sealed partial class ModelInstallerTests
         string retried = packages ? "zh_en" : "en_zh";
         string other = packages ? "en_zh" : "zh_en";
         string target = $"/v1/translate-{retried}-1_9.argosmodel";
-        int attempts = 0;
+        var firstErrors = new Dictionary<string, HttpStatusCode> { ["/v3/index.json"] = HttpStatusCode.ServiceUnavailable };
+        if (firstStatus != 200)
+            firstErrors.Add(target, (HttpStatusCode)firstStatus);
         var network = files.Responses(ModelArchive, intercept: uri =>
-            uri.AbsolutePath == target && ++attempts == 1 && firstStatus != 200
-                ? new HttpResponseMessage((HttpStatusCode)firstStatus) : null);
+            firstErrors.Remove(uri.AbsolutePath, out var status) ? new HttpResponseMessage(status) : null);
         var installer = files.Installer(network, startProcess: files.Child(PassedCheck(other, retried)),
             availableDiskBytes: _ => long.MaxValue);
         string[] ids = ["argos-zh-en"];
@@ -37,20 +38,33 @@ public sealed partial class ModelInstallerTests
             ? await installer.PreparePackagesAsync(new(1, ModelPackageOperation.Install, ids, ids, null),
                 NoProgress, TestContext.Current.CancellationToken)
             : await installer.PrepareAsync(NoProgress, TestContext.Current.CancellationToken, [other, retried]);
-        Assert.Equal(firstStatus == 200 ? 1 : 2, attempts);
-        Assert.Single(network.Requests, path => path == "/python.zip");
+        Assert.Empty(firstErrors);
+        var counts = network.Requests.CountBy(path => path).ToDictionary(item => item.Key, item => item.Value);
+        Assert.Equal(2, counts["/v3/index.json"]);
+        Assert.Equal(firstStatus == 200 ? 1 : 2, counts[target]);
+        Assert.All(counts.Where(item => item.Key != target && item.Key != "/v3/index.json"),
+            item => Assert.Equal(1, item.Value));
         if (!packages)
-        {
-            Assert.Single(network.Requests, path => path == $"/v1/translate-{other}-1_9.argosmodel");
             Assert.Equal(ModelArchive(other), File.ReadAllBytes(files.CachedModel(other)));
-        }
         Assert.Equal(ModelArchive(retried), File.ReadAllBytes(files.CachedModel(retried)));
         Assert.False(File.Exists(Path.Combine(files.Root, "components.json")));
     }
 
+    public static TheoryData<int, int> TransientPairs
+    {
+        get
+        {
+            int[] statuses = [500, 502, 503, 504];
+            var pairs = new TheoryData<int, int>();
+            foreach (int first in statuses)
+                foreach (int final in statuses)
+                    pairs.Add(first, final);
+            return pairs;
+        }
+    }
+
     [Theory]
-    [InlineData(500, 500)]
-    [InlineData(502, 504)]
+    [MemberData(nameof(TransientPairs))]
     [InlineData(503, 404)]
     [InlineData(404, 0)]
     [InlineData(501, 0)]
@@ -63,6 +77,7 @@ public sealed partial class ModelInstallerTests
         var failure = await Assert.ThrowsAsync<ModelSetupException>(() => PrepareZh(files, network, packages: true));
         Assert.Equal(SetupFailureCategory.Network, failure.Category);
         Assert.Equal(ModelSetupStage.ModelDownload, failure.Stage);
+        Assert.Equal($"resource=argos-zh-en attempts={(secondStatus == 0 ? 1 : 2)} httpStatus={(secondStatus == 0 ? firstStatus : secondStatus)}", failure.HttpDiagnostic);
         Assert.Empty(statuses);
         Assert.Equal(secondStatus == 0 ? 1 : 2, network.Requests.Count(path => path.EndsWith(".argosmodel", StringComparison.Ordinal)));
         Assert.False(File.Exists(files.CachedModel("zh_en")));
@@ -93,56 +108,55 @@ public sealed partial class ModelInstallerTests
         byte[] bytes = ModelArchive("en_zh");
         Directory.CreateDirectory(Path.Combine(files.Root, "downloads"));
         File.WriteAllBytes(files.CachedModel("en_zh") + ".part", bytes[..64]);
-        using var body = new DelayedBody(bytes);
-        var network = new SlowRetryHandler(files.Responses(ModelArchive), body);
-        var installer = files.Installer(network, downloadTimeout: TimeSpan.FromSeconds(2), availableDiskBytes: _ => long.MaxValue);
-        var failure = await Assert.ThrowsAsync<ModelSetupException>(() => installer.PreparePackagesAsync(
-            new(1, ModelPackageOperation.Install, ["argos-en-zh"], ["argos-en-zh"], null), NoProgress, TestContext.Current.CancellationToken));
-        Assert.Equal(SetupFailureCategory.Network, failure.Category);
-        Assert.Equal(ModelSetupStage.ModelDownload, failure.Stage);
-        Assert.Equal(new long?[] { 64, 64, null }, network.RangeStarts);
-        Assert.True(body.CanceledDuringRead);
-        Assert.False(File.Exists(files.CachedModel("en_zh")));
-    }
-
-    private sealed class SlowRetryHandler(HttpMessageHandler inner, DelayedBody body) : DelegatingHandler(inner)
-    {
-        public List<long?> RangeStarts { get; } = [];
-        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        CancellationTokenSource? activeDeadline = null;
+        CancellationTokenSource? firstDeadline = null;
+        int attempts = 0;
+        using var body = new ExpiringBody(bytes, () => firstDeadline!.Cancel());
+        var responses = files.Responses(ModelArchive, intercept: uri =>
         {
-            if (!request.RequestUri!.AbsolutePath.EndsWith(".argosmodel", StringComparison.Ordinal))
-                return await base.SendAsync(request, ct);
-            RangeStarts.Add(request.Headers.Range?.Ranges.Single().From);
-            if (RangeStarts.Count == 1)
+            if (!uri.AbsolutePath.EndsWith(".argosmodel", StringComparison.Ordinal))
+                return null;
+            attempts++;
+            if (attempts == 1)
             {
-                await Task.Delay(1200, ct);
-                return new(HttpStatusCode.BadGateway);
+                firstDeadline = activeDeadline;
+                return new HttpResponseMessage(HttpStatusCode.BadGateway);
             }
-            return RangeStarts.Count == 2 ? new(HttpStatusCode.RequestedRangeNotSatisfiable)
+            return attempts == 2 ? new(HttpStatusCode.RequestedRangeNotSatisfiable)
                 : new(HttpStatusCode.OK)
                 {
                     Content = new StreamContent(body)
                 };
-        }
+        });
+        var progress = new List<SetupProgress>();
+        var installer = files.Installer(responses, scheduleDeadline: (source, budget) =>
+        {
+            Assert.Equal(TimeSpan.FromMinutes(15), budget);
+            activeDeadline = source;
+        }, availableDiskBytes: _ => long.MaxValue);
+        var failure = await Assert.ThrowsAsync<ModelSetupException>(() => installer.PreparePackagesAsync(
+            new(1, ModelPackageOperation.Install, ["argos-en-zh"], ["argos-en-zh"], null), new SetupProgressSink(progress.Add), TestContext.Current.CancellationToken));
+        Assert.Equal(SetupFailureCategory.Network, failure.Category);
+        Assert.Equal(ModelSetupStage.ModelDownload, failure.Stage);
+        Assert.Equal(3, attempts);
+        Assert.Equal(new long[] { 64, 0 }, progress.Where(item => item.Label == "下载 English → 中文" &&
+            item.DownloadPhase == SetupDownloadPhase.Headers).Select(item => item.Downloaded));
+        Assert.True(body.CanceledDuringRead);
+        Assert.False(File.Exists(files.CachedModel("en_zh")));
     }
 
-    private sealed class DelayedBody(byte[] bytes) : MemoryStream(bytes)
+    private sealed class ExpiringBody(byte[] bytes, Action expire) : MemoryStream(bytes)
     {
         public bool CanceledDuringRead
         {
             get; private set;
         }
-        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
         {
-            if (Position == 0)
-            {
-                try
-                {
-                    await Task.Delay(1200, ct);
-                }
-                catch (OperationCanceledException) { CanceledDuringRead = true; throw; }
-            }
-            return await base.ReadAsync(buffer, ct);
+            expire();
+            CanceledDuringRead = ct.IsCancellationRequested;
+            ct.ThrowIfCancellationRequested();
+            return base.ReadAsync(buffer, ct);
         }
     }
 }
