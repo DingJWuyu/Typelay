@@ -19,7 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from eng.fonts import prepare as fonts  # noqa: E402
+from eng.fonts import bundle as fonts  # noqa: E402
 from eng.linux.cooperative.inputs import (  # noqa: E402
     CHINESE_DATA_ARCHIVES,
     CORE_VERSION,
@@ -50,6 +50,8 @@ FONT_SOURCE_FILES = tuple(
     dict.fromkeys(
         (
             "eng/fonts/prepare.py",
+            "eng/fonts/bundle.py",
+            "eng/fonts/requirements.txt",
             "eng/fonts/fonts.lock.json",
             "eng/requirements.txt",
             *(

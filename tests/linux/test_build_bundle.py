@@ -32,7 +32,7 @@ sys.path.insert(0, str(ROOT))
 
 from support.font_bundle_fixture import inert_font_payload  # noqa: E402
 
-from eng.fonts import prepare as fonts  # noqa: E402
+from eng.fonts import bundle as fonts  # noqa: E402
 from eng.linux import build  # noqa: E402
 from eng.linux.cooperative import inputs  # noqa: E402
 
@@ -155,8 +155,11 @@ class BuildSafetyTests(unittest.TestCase):
             "eng/linux/cooperative/archives.py",
             "eng/linux/cooperative/inputs.py",
             "eng/linux/cooperative/third_party.py",
+            "eng/linux/cooperative/third_party_recipe.py",
             "eng/linux/index/prepare_runtime.py",
             "eng/fonts/prepare.py",
+            "eng/fonts/bundle.py",
+            "eng/fonts/requirements.txt",
             "eng/index_profile.py",
             "src/shared/TypeLay.Worker/typelay_worker/index_assets.py",
         ):
@@ -1073,12 +1076,15 @@ class MainBundleTests(unittest.TestCase):
         self.repository = self.directory / "checkout"
         self.repository.mkdir()
         font_sources, font_payload = inert_font_payload()
-        self.font_source_paths = tuple(
-            dict.fromkeys(("eng/fonts/prepare.py", "eng/requirements.txt", *font_sources))
-        )
-        for relative in (
+        font_tools = (
             "eng/fonts/prepare.py",
+            "eng/fonts/bundle.py",
+            "eng/fonts/requirements.txt",
             "eng/requirements.txt",
+        )
+        self.font_source_paths = (*font_tools, *font_sources)
+        for relative in (
+            *font_tools,
             *inputs.FCITX_BUILD_INPUTS,
             *inputs.FCITX_TEST_INPUTS,
             *inputs.QT_BUILD_INPUTS,

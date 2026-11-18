@@ -564,12 +564,26 @@ class FixedBuildPublicationTests(unittest.TestCase):
             "index": "index-model-download",
             "fcitx": "linux/fcitx-cooperative-5.1.22",
         }[kind]
-        payload = root / "artifacts" / folder / "test.bin"
+        directory = root / "artifacts" / folder
         if action == "publish" and prepare:
-            payload.parent.mkdir(parents=True, exist_ok=True)
-            payload.write_text(caller)
+            directory.mkdir(parents=True, exist_ok=True)
+            if kind in ("hy", "index"):
+                name = "assets.lock.json" if kind == "hy" else "model.lock.json"
+                relative = Path("src/shared/TypeLay.Worker/native") / kind / name
+                lock = root / relative
+                if not lock.exists():
+                    lock.parent.mkdir(parents=True)
+                    shutil.copyfile(ROOT / relative, lock)
+                records = json.loads(lock.read_text(encoding="utf-8"))
+                for role in ("model", "model_license", "runtime_archive"):
+                    if role in records:
+                        (directory / records[role]["file"]).write_text(caller)
+                (directory / "unrelated.partial").write_text("unfinished download")
+            else:
+                (directory / "test.bin").write_text(caller)
         return subprocess.run(
-            [sys.executable, str(script), action, kind, "--tag", tag]
+            [sys.executable, str(script), action, kind]
+            + (["--tag", tag] if tag else [])
             + (["--wait-for-job", "fcitx-build"] if wait else []),
             capture_output=True,
             encoding="utf-8",
@@ -635,6 +649,7 @@ class FixedBuildPublicationTests(unittest.TestCase):
             for step in LINUX_TOOLS["runs"]["steps"]
             if "id" in step
         }
+        context["${{ steps.desktop.outputs.result || steps.desktop.outcome }}"] = desktop
         outputs = {name: context[item["value"]] for name, item in LINUX_TOOLS["outputs"].items()}
         return {"linux-tools": {"outcome": outcome, "outputs": outputs}}
 
@@ -689,6 +704,104 @@ class FixedBuildPublicationTests(unittest.TestCase):
         self.assertIn("| 命中已发布 | 命中 | SDK success，桌面 skipped | 不适用 | skipped |", hits)
         for kind in kinds:
             self.assertIn(f"| `{kind}` | `{self.tag(kind)}` | 命中已发布 |", hits)
+
+    def test_each_published_archive_survives_observation_changes_and_misses_after_a_pin_change(
+        self,
+    ):
+        for caller in ("old", "current"):
+            for name in ("eng", ".github/actions/linux-tools", "src/shared/TypeLay.Worker/native"):
+                shutil.copytree(
+                    ROOT / name,
+                    self.root / caller / name,
+                    ignore=shutil.ignore_patterns("__pycache__"),
+                )
+        for kind, observation, recipe in (
+            ("linux-tools", ".github/actions/linux-tools/action.yml", "eng/ci/arch-snapshot"),
+            ("fonts", "eng/fonts/prepare.py", "eng/fonts/requirements.txt"),
+            ("fcitx", "eng/linux/cooperative/third_party.py", "eng/ci/arch-snapshot"),
+            (
+                "hy",
+                "eng/windows/hy/prepare_assets.py",
+                "src/shared/TypeLay.Worker/native/hy/assets.lock.json",
+            ),
+            (
+                "index",
+                "eng/shared/prepare_index_model.py",
+                "src/shared/TypeLay.Worker/native/index/model.lock.json",
+            ),
+        ):
+            with self.subTest(kind=kind):
+
+                def execute(caller, action):
+                    result = self.command(caller, action, kind=kind, tag=None)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    return result
+
+                def query(action, hit):
+                    output = self.root / "current/output"
+                    output.unlink(missing_ok=True)
+                    execute("current", action)
+                    self.assertEqual(output.read_text().strip(), "hit=" + str(hit).lower())
+
+                execute("old", "publish")
+                current = self.root / "current"
+                path = current / observation
+                path.write_bytes(path.read_bytes() + b"\n# New operational note\n")
+                query("lookup", True)
+                query("restore", True)
+                restored = current / "artifacts"
+                payloads = [p for p in restored.rglob("*") if p.is_file()]
+                if kind in ("hy", "index"):
+                    folder = "hy-download" if kind == "hy" else "index-model-download"
+                    lock = json.loads((current / recipe).read_text(encoding="utf-8"))
+                    expected = [
+                        Path(folder) / lock[role]["file"]
+                        for role in ("model", "model_license", "runtime_archive")
+                        if role in lock
+                    ]
+                    self.assertCountEqual([p.relative_to(restored) for p in payloads], expected)
+                self.assertTrue(payloads)
+                for payload in payloads:
+                    self.assertEqual(payload.read_text(), "old")
+                    payload.unlink()
+
+                path = current / recipe
+                original = path.read_bytes()
+                if kind in ("hy", "index"):
+                    data = json.loads(original)
+                    data["model"]["sha256"] = "a" * 64
+                    path.write_text(json.dumps(data), encoding="utf-8")
+                elif kind == "fonts":
+                    path.write_text("fonttools==4.61.2\n", encoding="utf-8")
+                else:
+                    path.write_text("2027/01/01\n", encoding="utf-8")
+                query("lookup", False)
+                query("restore", False)
+                self.assertFalse(any(p.is_file() for p in restored.rglob("*")))
+                path.write_bytes(original)
+
+    def test_linux_tools_publishes_and_restores_the_paths_selected_by_its_new_key(self):
+        root = self.root / "producer"
+        shutil.copytree(ROOT / "eng", root / "eng", ignore=shutil.ignore_patterns("__pycache__"))
+        script = root / "eng/ci/fixed.py"
+        destination = root / "artifacts/alternate-packages"
+        destination.mkdir(parents=True)
+        content = destination / "pinned.pkg.tar.zst"
+        content.write_bytes(b"selected package")
+        old = self.command("producer", "key", kind="linux-tools", tag=None)
+        self.assertEqual(old.returncode, 0, old.stderr)
+        script.write_bytes(
+            script.read_bytes().replace(
+                b'"artifacts/linux-tools-cache"', b'"artifacts/alternate-packages"'
+            )
+        )
+        published = self.command("producer", "publish", kind="linux-tools", tag=None, prepare=False)
+        self.assertEqual(published.returncode, 0, published.stderr)
+        self.assertNotEqual(self.releases()[0]["tag_name"], old.stdout.strip())
+        shutil.rmtree(destination)
+        restored = self.command("producer", "restore", kind="linux-tools", tag=None)
+        self.assertEqual(restored.returncode, 0, restored.stderr)
+        self.assertEqual(content.read_bytes(), b"selected package")
 
     def test_linux_tools_stays_cold_when_a_competitor_publishes_before_it(self):
         for result in (
@@ -1004,88 +1117,3 @@ class FixedBuildPublicationTests(unittest.TestCase):
             (self.root / "consumer/artifacts/ui-fonts/test.bin").read_text(), "replacement"
         )
         self.assertEqual(len([r for r in self.releases() if not r["draft"]]), 1)
-
-
-class FixedBuildKeyTests(unittest.TestCase):
-    def check_download_key(self, kind):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            script = root / "eng/ci/fixed.py"
-            script.parent.mkdir(parents=True)
-            shutil.copyfile(ROOT / "eng/ci/fixed.py", script)
-            filename = "assets.lock.json" if kind == "hy" else "model.lock.json"
-            path = root / "src/shared/TypeLay.Worker/native" / kind / filename
-            path.parent.mkdir(parents=True)
-            lock = {
-                name: {"sha256": "old"} for name in ("model", "model_license", "runtime_archive")
-            }
-            path.write_text(json.dumps(lock))
-
-            def key():
-                return subprocess.check_output(
-                    [sys.executable, str(script), "key", kind], text=True, timeout=10
-                ).strip()
-
-            original = key()
-            lock["source_sha256"] = "different current product implementation"
-            path.write_text(json.dumps(lock))
-            self.assertEqual(key(), original)
-            lock["model"]["sha256"] = "new deliberately pinned download"
-            path.write_text(json.dumps(lock))
-            self.assertNotEqual(key(), original)
-
-    def test_hy_cache_tracks_download_pins_independently_of_product_source_records(self):
-        self.check_download_key("hy")
-
-    def test_index_cache_tracks_download_pins_independently_of_product_source_records(self):
-        self.check_download_key("index")
-
-    def test_native_edits_do_not_rebuild_third_party_dependencies(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for name in ("eng", "src/linux/native", ".github/actions/linux-tools"):
-                shutil.copytree(
-                    ROOT / name, root / name, ignore=shutil.ignore_patterns("__pycache__")
-                )
-
-            def key(kind="fcitx"):
-                return subprocess.check_output(
-                    [sys.executable, str(root / "eng/ci/fixed.py"), "key", kind],
-                    text=True,
-                    timeout=10,
-                ).strip()
-
-            original = key()
-            original_tools = key("linux-tools")
-            for name in (
-                "src/linux/native/gtk4/CMakeLists.txt",
-                "src/linux/native/qt6/CMakeLists.txt",
-                "src/linux/native/common/overlay-design.h",
-                "eng/linux/cooperative/fcitx.py",
-                "eng/linux/cooperative/qt.py",
-            ):
-                with self.subTest(name=name):
-                    path = root / name
-                    contents = path.read_bytes()
-                    path.write_bytes(contents + b"\n/* native edit */\n")
-                    self.assertEqual(key(), original)
-                    self.assertEqual(key("linux-tools"), original_tools)
-                    path.write_bytes(contents)
-            for name in (
-                "eng/ci/arch-snapshot",
-                "eng/linux/cooperative/archives.py",
-                "eng/linux/cooperative/patches/fcitx5.patch",
-            ):
-                with self.subTest(pin=name):
-                    path = root / name
-                    contents = path.read_bytes()
-                    path.write_bytes(contents + b"\n# deliberate pin update\n")
-                    self.assertNotEqual(key(), original)
-                    if name == "eng/ci/arch-snapshot":
-                        self.assertNotEqual(key("linux-tools"), original_tools)
-                    path.write_bytes(contents)
-
-            action = root / ".github/actions/linux-tools/action.yml"
-            action.write_bytes(action.read_bytes() + b"\n# deliberate package recipe edit\n")
-            self.assertNotEqual(key("linux-tools"), original_tools)
-            self.assertEqual(key(), original)

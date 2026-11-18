@@ -40,7 +40,7 @@ jobs:
     - name: Build UI fonts once per input hash
       id: fonts-build
       run: |-
-        python -m pip install -r eng/requirements.txt
+        python -m pip install -r eng/fonts/requirements.txt
         python eng/fonts/prepare.py
       if: steps.restore.outputs.hit != 'true'
     - name: Verify UI font bytes
