@@ -10,6 +10,18 @@ sys.path.insert(0, str(ROOT / "eng/ci"))
 from failure_evidence import observe_step  # noqa: E402
 
 
+def shard_with_steps(steps):
+    return {
+        "name": "Linux / browser",
+        "html_url": "https://example.test/job",
+        "conclusion": "failure",
+        "steps": [
+            dict(number=n, name=name, conclusion=status)
+            for n, (name, status) in enumerate(steps, 1)
+        ],
+    }
+
+
 class FailureReportTests(unittest.TestCase):
     def test_linux_assertion_uses_the_tested_source_without_printing_the_input_field(self):
         sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
@@ -201,7 +213,8 @@ AssertionError: private field contents
             4: [Observation("ordered", "publish", "assert admitted")],
             5: [Observation()],
         }
-        lines = format_job(job, records, None, {}, [], [])
+        base = {**job, "steps": [dict(s, conclusion="success") for s in job["steps"]]}
+        lines = format_job(job, records, base, {}, [], [])
         page, cli = StringIO(), StringIO()
         publish(lines, page, cli)
         self.assertEqual(
@@ -222,6 +235,74 @@ AssertionError: private field contents
             "#step:5:1",
         ):
             self.assertIn(expected, page.getvalue())
+
+    def test_blocked_steps_use_the_same_shard_and_exclude_other_groups_and_runner_cleanup(self):
+        from failure_report import format_job
+
+        current = shard_with_steps(
+            [
+                ("Earlier optional check", "skipped"),
+                ("Prepare models", "timed_out"),
+                ("Desktop journey", "skipped"),
+                ("Desktop journey", "skipped"),
+                ("New check", "skipped"),
+                ("Post Run actions/setup-python", "skipped"),
+            ]
+        )
+        baseline = shard_with_steps(
+            [
+                ("Earlier optional check", "success"),
+                ("Desktop journey", "skipped"),
+                ("Desktop journey", "success"),
+                ("Post Run actions/setup-python", "success"),
+            ]
+        )
+        for base, count, linked in [(baseline, 4, [4]), (None, 5, [])]:
+            with self.subTest(base=bool(base)):
+                lines = format_job(current, {}, base, {}, [], [])
+                self.assertEqual(
+                    [line for line in lines if line.startswith("- [")],
+                    [f"- [Desktop journey](https://example.test/job#step:{n}:1)" for n in linked],
+                )
+                self.assertIn(f"其余 skipped 步骤共 {count} 项。", lines)
+
+    def test_each_skipped_step_is_listed_or_counted_once(self):
+        from itertools import product
+
+        from failure_report import format_job
+
+        for length in range(4):
+            for states in product(("success", "failure", "skipped"), repeat=length):
+                job = shard_with_steps(("Probe", status) for status in states)
+                base = shard_with_steps(("Probe", "success") for _ in states)
+                lines = format_job(job, {}, base, {}, [], [])
+                listed = sum(line.startswith("- [") for line in lines)
+                counted = sum(
+                    int(line.split()[-2]) for line in lines if line.startswith("其余 skipped")
+                )
+                self.assertEqual(listed + counted, states.count("skipped"), states)
+
+    def test_baseline_failure_diagnostics_are_not_blocked_checks(self):
+        from failure_report import format_job
+
+        names = ("Fonts", "Fixture", "Preserve fixture failure diagnostics")
+        current = shard_with_steps(zip(names, ("failure", "success", "skipped"), strict=True))
+        base = shard_with_steps(zip(names, ("success", "failure", "success"), strict=True))
+        lines = format_job(current, {}, base, {}, [], [])
+        self.assertIn("其余 skipped 步骤共 1 项。", lines)
+        self.assertFalse(any(line.startswith("- [") for line in lines))
+
+    def test_interrupted_baseline_step_requires_evidence_of_execution(self):
+        from failure_report import format_job
+
+        current = shard_with_steps([("Setup", "failure"), ("Verify", "skipped")])
+        base = shard_with_steps([("Setup", "success"), ("Verify", "cancelled")])
+        step = base["steps"][-1]
+        step["started_at"] = "2026-10-01T00:00:00Z"
+        for end, expected in [(step["started_at"], 0), ("2026-10-01T00:00:05Z", 1)]:
+            step["completed_at"] = end
+            lines = format_job(current, {}, base, {}, [], [])
+            self.assertEqual(sum(line.startswith("- [Verify]") for line in lines), expected)
 
     def test_setup_failure_and_later_skipped_desktop_use_separate_step_evidence(self):
         from failure_evidence import observe_step

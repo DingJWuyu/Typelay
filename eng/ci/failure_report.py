@@ -112,6 +112,42 @@ def table(job, records, base=None, previous=None):
             yield "| " + " | ".join([*fields, verdict]) + " |"
 
 
+def baseline_execution(base):
+    for key, step in numbered_steps(base):
+        status = step["conclusion"]
+        start, end = step.get("started_at"), step.get("completed_at")
+        if status in ("success", "failure", "timed_out") or (
+            status == "cancelled" and start and end and start < end
+        ):
+            yield key
+        # Steps after a baseline failure may run only to collect that failure's diagnostics.
+        if status in BAD:
+            break
+
+
+def skipped_steps(job, base):
+    ran_on_baseline = set(baseline_execution(base)) if base else set()
+    after_failure = False
+    blocked = []
+    others = 0
+    for key, step in numbered_steps(job):
+        if step["conclusion"] in ("failure", "timed_out"):
+            after_failure = True
+        elif step["conclusion"] == "skipped":
+            if after_failure and key in ran_on_baseline and not step["name"].startswith("Post "):
+                blocked.append(step_link(job, step))
+            else:
+                others += 1
+    if blocked:
+        yield ""
+        yield f"受阻检查（失败后 skipped，同分片基线执行过）：{len(blocked)} 项。"
+        yield ""
+        yield from ("- " + link for link in blocked)
+    if others:
+        yield ""
+        yield f"其余 skipped 步骤共 {others} 项。"
+
+
 def format_job(job, records, base, previous, problems, base_problems):
     lines = ["", f"### [{cell(job['name'])}]({job['html_url']}) · {cell(job['conclusion'])}", ""]
     lines.extend(problems)
@@ -123,18 +159,7 @@ def format_job(job, records, base, previous, problems, base_problems):
         lines.extend(table(job, records, base, previous))
     elif job["conclusion"] != "success":
         lines.append("未取得失败步骤的分项记录。用例、阶段、断言和原因均为未知。")
-    skipped = [step_link(job, s) for s in job["steps"] if s["conclusion"] == "skipped"]
-    if skipped:
-        lines.extend(
-            [
-                "",
-                f"<details><summary>Actions 标为 skipped 的 {len(skipped)} 个步骤</summary>",
-                "",
-                *("- " + link for link in skipped),
-                "",
-                "</details>",
-            ]
-        )
+    lines.extend(skipped_steps(job, base))
     if base:
         lines.extend(["", f"基线分片 [{cell(base['conclusion'])}]({base['html_url']})。"])
         lines.extend(base_problems)
