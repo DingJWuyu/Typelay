@@ -84,7 +84,7 @@ def glossary_gtk3_painted_geometry(control, observed_at):
     )
 
 
-def glossary_painted_geometry(control, observed_at, *, toolkit="gtk4"):
+def glossary_painted_geometry(control, observed_at, *, toolkit="gtk4", changed_since=None):
     """Only the current mapped control's completed frame can supply a click point."""
     if toolkit == "gtk3":
         return glossary_gtk3_painted_geometry(control, observed_at)
@@ -106,12 +106,20 @@ def glossary_painted_geometry(control, observed_at, *, toolkit="gtk4"):
         or paint["paintedMapGeneration"] != paint["mapGeneration"]
         or type(paint.get("paintedFrame")) is not int
         or paint["paintedFrame"] <= paint["requestedFrame"]
+        or type(paint.get("layoutChangedFrame")) is not int
+        or not -1 <= paint["layoutChangedFrame"] < paint["paintedFrame"]
         or paint["paintedFrame"] > paint["frame"]
         or type(paint.get("layoutFrame")) is not int
         or paint["layoutFrame"] != paint["paintedFrame"]
         or type(paint.get("paintFrame")) is not int
         or paint["paintFrame"] != paint["paintedFrame"]
         or paint.get("geometry") != surface
+    ):
+        return False
+    if changed_since is not None and (
+        paint["layoutChangedFrame"] < 0
+        or type(paint.get("layoutChangedAtMonoUs")) is not int
+        or not changed_since <= paint["layoutChangedAtMonoUs"] < (observed_at + 1) * 1000
     ):
         return False
     for key in ("instance", "surfaceInstance", "scale", "width", "height"):
@@ -125,6 +133,82 @@ def glossary_painted_geometry(control, observed_at, *, toolkit="gtk4"):
     if surface["popup"] and any(type(surface.get(key)) is not int for key in ("popupX", "popupY")):
         return False
     return all(control.get(key) == surface[key] for key in ("instance", "width", "height"))
+
+
+def gtk4_click_snapshot(snapshot, name):
+    """Describe the owned list/form and the observed pick, without reading the source field."""
+    controls = snapshot.get("overlayControls", {})
+    item = controls.get(name, {})
+    paint = item.get("paintObservation", {})
+    pointer = item.get("pointerObservation", {})
+    return {
+        "observedAtMs": snapshot.get("observedAtMs"),
+        "query": controls.get("typelay-language-search", {}).get("text"),
+        "visibleControls": [key for key, value in controls.items() if value.get("visible")],
+        "form": {
+            key: controls[key].get("text")
+            for key in (
+                "typelay-glossary-source",
+                "typelay-glossary-target",
+                "fixture-language-feedback",
+                "fixture-glossary-feedback",
+            )
+            if key in controls
+        },
+        "scrollValue": controls.get("typelay-language-menu", {}).get("scrollValue"),
+        "instance": item.get("instance"),
+        "bounds": item.get("surfaceGeometry"),
+        "paintedBounds": paint.get("geometry"),
+        "frames": {
+            key: value for key, value in paint.items() if key not in ("geometry", "mapLifecycle")
+        },
+        "paintedGeometryCurrent": glossary_painted_geometry(item, snapshot.get("observedAtMs")),
+        "pointerInside": item.get("pointerInside"),
+        "device": pointer,
+    }
+
+
+def report_gtk4_unsent_click(name, phase, selected, current, point, pointer, changed_since):
+    before = gtk4_click_snapshot(selected, name) if selected is not None else None
+    after = gtk4_click_snapshot(current, name)
+    frames = after["frames"]
+    changed, painted = frames.get("layoutChangedFrame"), frames.get("paintedFrame")
+    conditions = {
+        "paintAfterLayoutChange": type(changed) is int
+        and type(painted) is int
+        and -1 <= changed < painted,
+        "currentPaintedBounds": after["paintedGeometryCurrent"],
+        "expectedChangeObserved": changed_since is None
+        or (
+            type(frames.get("layoutChangedAtMonoUs")) is int
+            and frames["layoutChangedAtMonoUs"] >= changed_since
+        ),
+    }
+    if before is not None:
+        old_bounds, bounds = before["bounds"] or {}, after["bounds"] or {}
+        conditions.update(
+            sameControl=before["instance"] == after["instance"],
+            sameSurface=old_bounds.get("surfaceInstance") == bounds.get("surfaceInstance"),
+            sameScale=old_bounds.get("scale") == bounds.get("scale"),
+            sameMap=before["frames"].get("mapGeneration") == frames.get("mapGeneration"),
+            pickIncludesControl=any(
+                item.get("isObservedControl") is True
+                for item in after["device"].get("pickedAncestors") or []
+            ),
+        )
+    detail = {
+        "phase": phase,
+        "control": name,
+        "conditions": conditions,
+        "selected": before,
+        "current": after,
+        "fixedPoint": point,
+        "xPointer": pointer,
+        "changeExpectedSinceMonoUs": changed_since,
+        "clickSent": False,
+    }
+    print("GTK4 click: " + json.dumps(detail, ensure_ascii=False), file=sys.stderr, flush=True)
+    return detail
 
 
 def glossary_more_render_observation(candidate, control, observed_at):
@@ -176,12 +260,12 @@ def glossary_more_render_observation(candidate, control, observed_at):
 
 
 def glossary_hover_current(
-    control, observed_at, before, point, moved_at, pointer=None, origin=None, move_started=None
+    control, observed_at, before, point, moved_at, pointer, origin, move_started
 ):
     if not glossary_painted_geometry(control, observed_at) or observed_at < moved_at:
         return False
     surface, original = control["surfaceGeometry"], before["surfaceGeometry"]
-    return (
+    if not (
         control.get("instance") == before.get("instance")
         and surface["surfaceInstance"] == original["surfaceInstance"]
         and surface["scale"] == original["scale"]
@@ -189,23 +273,8 @@ def glossary_hover_current(
         == before["paintObservation"]["mapGeneration"]
         and surface["x"] <= point[0] / surface["scale"] < surface["x"] + surface["width"]
         and surface["y"] <= point[1] / surface["scale"] < surface["y"] + surface["height"]
-        and (
-            (
-                control.get("pointerInside") is True
-                and type(control.get("pointerEnteredAtMonoMs")) is int
-                and control["pointerEnteredAtMonoMs"] > 0
-            )
-            or glossary_motion_at_fixed_point(
-                control, observed_at, before, point, moved_at, pointer, origin, move_started
-            )
-        )
-    )
-
-
-def glossary_motion_at_fixed_point(
-    control, observed_at, before, point, moved_at, pointer, origin, move_started
-):
-    """Real post-move dispatch and current device/pick, not crossing history alone."""
+    ):
+        return False
     if (
         type(move_started) is not int
         or not 0 < move_started <= moved_at <= observed_at
@@ -236,6 +305,27 @@ def glossary_motion_at_fixed_point(
         or device["nativeInstance"] <= 0
     ):
         return False
+    ancestors = device.get("pickedAncestors")
+    if (
+        not isinstance(ancestors, list)
+        or len(ancestors) > 8
+        or not any(
+            item.get("instance") == control["instance"]
+            and item.get("isObservedControl") is True
+            and item.get("visible") is True
+            and item.get("mapped") is True
+            for item in ancestors
+            if isinstance(item, dict)
+        )
+    ):
+        return False
+    if (
+        control.get("pointerInside") is True
+        and type(control.get("pointerEnteredAtMonoMs")) is int
+        and control["pointerEnteredAtMonoMs"] > 0
+    ):
+        return True
+    # Without native crossing history, bind the captured motion dispatch to the pixel.
     # Callback coordinates are widget-local; GDK device coordinates are native
     # surface-local. Both must identify the original one physical pixel.
     local = (point[0] / surface["scale"] - surface["x"], point[1] / surface["scale"] - surface["y"])
@@ -274,20 +364,6 @@ def glossary_motion_at_fixed_point(
         return True
 
     if not same_position(device, native):
-        return False
-    ancestors = device.get("pickedAncestors")
-    if (
-        not isinstance(ancestors, list)
-        or len(ancestors) > 8
-        or not any(
-            item.get("instance") == control["instance"]
-            and item.get("isObservedControl") is True
-            and item.get("visible") is True
-            and item.get("mapped") is True
-            for item in ancestors
-            if isinstance(item, dict)
-        )
-    ):
         return False
     capture, old_capture = (
         control.get("pointerCaptureObservation", {}),
@@ -426,6 +502,15 @@ def glossary_menu_scroll_observation(snapshot, name, instance):
     ):
         return None
     return menu, glossary_menu_scroll_direction(control, menu.get("scrollViewport"))
+
+
+def glossary_overlay_point_ready(snapshot, name, toolkit, changed_since=None):
+    control = snapshot.get("overlayControls", {}).get(name, {})
+    return (
+        toolkit != "gtk4" or glossary_popup_fits(snapshot.get("overlayPopup"))
+    ) and glossary_painted_geometry(
+        control, snapshot.get("observedAtMs"), toolkit=toolkit, changed_since=changed_since
+    )
 
 
 def glossary_popup_fits(popup):
@@ -885,7 +970,9 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                 clicks = []
                 click_path = out / f"{toolkit}-glossary-clicks.json"
 
-                def point_observe(name, *, overlay_control=False, acquired=None, button=1):
+                def point_observe(
+                    name, *, overlay_control=False, acquired=None, button=1, changed_since=None
+                ):
                     started = time.monotonic_ns() // 1000000
                     geometry = dict(
                         line.split("=", 1)
@@ -901,6 +988,7 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
 
                     observations = {}
                     evidence = None
+                    latest = {}
 
                     def layout_observation(snapshot):
                         # Public widget geometry distinguishes a moving popup from
@@ -918,10 +1006,11 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                         }
 
                     def ready():
+                        nonlocal latest
                         renewed = {}
                         if overlay_control:
                             renewed = renew()
-                        actual = state()
+                        actual = latest = state()
                         parent = [actual.get(key) for key in ("width", "height", "scale")]
                         control = (
                             actual.get("overlayControls", {}).get(name)
@@ -999,14 +1088,8 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                             return None
                         if not control or overlay_control and not control.get("visible"):
                             return None
-                        if (
-                            overlay_control
-                            and toolkit == "gtk4"
-                            and not glossary_popup_fits(actual.get("overlayPopup"))
-                        ):
-                            return None
-                        if overlay_control and not glossary_painted_geometry(
-                            control, actual.get("observedAtMs"), toolkit=toolkit
+                        if overlay_control and not glossary_overlay_point_ready(
+                            actual, name, toolkit, changed_since
                         ):
                             return None
                         if (
@@ -1043,11 +1126,24 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                             assert control["enabled"], name
                         return actual, control, (int(x * parent[2]), int(y * parent[2]))
 
+                    def report_unsent(phase, selected=None):
+                        if toolkit == "gtk4" and overlay_control:
+                            report_gtk4_unsent_click(
+                                name,
+                                phase,
+                                selected,
+                                latest,
+                                evidence and evidence["pixelPoint"],
+                                evidence and evidence.get("xPointer"),
+                                changed_since,
+                            )
+
                     try:
                         actual, control, pixel = wait_for(
                             ready, f"{name}: matching parent geometry"
                         )
-                    except AssertionError as error:
+                    except (AssertionError, TimeoutError, subprocess.TimeoutExpired) as error:
+                        report_unsent("point selection failed")
                         raise AssertionError(
                             f"{error}; started={started}; nested={dimensions}; "
                             f"display={display}; readiness={observations}"
@@ -1186,7 +1282,11 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                 else None
                             )
 
-                        wait_for(hovered, f"{name}: real pointer hover on same surface point")
+                        try:
+                            wait_for(hovered, f"{name}: real pointer hover on same surface point")
+                        except (AssertionError, TimeoutError, subprocess.TimeoutExpired):
+                            report_unsent("fixed-point hover failed", actual)
+                            raise
                     evidence["clickStartedAtMonoMs"] = time.monotonic_ns() // 1000000
                     execute("xdotool", "click", str(button))
                     following = state()
@@ -1197,11 +1297,9 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                     )
                     return evidence
 
-                def point(name, *, overlay_control=False, acquired=None, button=1):
+                def point(name, **options):
                     try:
-                        return point_observe(
-                            name, overlay_control=overlay_control, acquired=acquired, button=button
-                        )
+                        return point_observe(name, **options)
                     finally:
                         # Persist success or the first failure once, outside the
                         # pointer/lease-sensitive polling and command sequence.
@@ -1404,7 +1502,7 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
 
                             return wait_for(check, f"{view_state}/{finish}: {label}")
 
-                        def click(name):
+                        def click(name, *, changed_since=None):
                             control = observe(
                                 lambda value: value.get("overlayControls", {}).get(name)
                                 if value.get("overlayControls", {}).get(name, {}).get("visible")
@@ -1453,6 +1551,7 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                 name,
                                 overlay_control=True,
                                 acquired={"instance": control["instance"]},
+                                changed_since=changed_since,
                             )
 
                         def events(operation):
@@ -1984,6 +2083,7 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                 item.get("event") == "accepted" for item in native.events[before:]
                             )
                         else:
+                            source_typed = time.monotonic_ns() // 1000
                             execute("xdotool", "type", "--delay", "0", "PR")
                             observe(
                                 lambda value: value["overlayControls"][
@@ -1994,7 +2094,7 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                 "first term clear",
                             )
                             if finish == "pointer-save":
-                                click("typelay-glossary-target")
+                                click("typelay-glossary-target", changed_since=source_typed)
                             else:
                                 execute("xdotool", "key", "Tab")
                             observe(
@@ -2003,6 +2103,7 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                 ],
                                 "target term focus",
                             )
+                            target_typed = time.monotonic_ns() // 1000
                             execute("xdotool", "type", "--delay", "0", "pull request")
                             observe(
                                 lambda value: value["overlayControls"][
@@ -2014,7 +2115,7 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                             )
                             if finish == "reset":
                                 host("reset-inactive-term")
-                            click("typelay-glossary-save")
+                            click("typelay-glossary-save", changed_since=target_typed)
                             if finish == "reset":
                                 observe(
                                     lambda value: value["overlayControls"][
@@ -2083,6 +2184,24 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                 "captureAdmission": capture_admission,
                             }
                         )
+                        if toolkit == "gtk4" and finish == "pointer-save":
+                            results[-1]["pointerChoices"] = [
+                                {
+                                    "control": click["control"],
+                                    "instance": click["instance"],
+                                    "fixedPoint": click["pixelPoint"],
+                                    "layoutChangedFrame": click["paintObservation"][
+                                        "layoutChangedFrame"
+                                    ],
+                                    "paintedFrame": click["paintObservation"]["paintedFrame"],
+                                    "pick": click["hoverObservation"]["control"][
+                                        "pointerObservation"
+                                    ]["pick"],
+                                    "clickReturnedAtMonoMs": click["clickReturnedAtMonoMs"],
+                                }
+                                for click in clicks
+                                if click["case"] == current_case and "hoverObservation" in click
+                            ]
                 call("overlay-hide")
         except BaseException as error:
             (out / f"{toolkit}-glossary-result.json").write_text(

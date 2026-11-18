@@ -25,10 +25,12 @@ def shard_with_steps(steps):
 class FailureReportTests(unittest.TestCase):
     def test_linux_assertion_uses_the_tested_source_without_printing_the_input_field(self):
         sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-        source = ROOT / "tests/linux/gtk_session_reentry.py"
+        source = subprocess.check_output(
+            ["git", "show", f"{sha}:tests/linux/gtk_session_reentry.py"], cwd=ROOT, text=True
+        )
         at = next(
             i
-            for i, line in enumerate(source.read_text().splitlines(), 1)
+            for i, line in enumerate(source.splitlines(), 1)
             if '"open observation crossed handshake deadline"' in line
         )
         log = f"""Traceback (most recent call last):

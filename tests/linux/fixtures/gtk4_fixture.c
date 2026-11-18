@@ -978,6 +978,43 @@ static void control_paint_unmap(GtkWidget *widget, gpointer unused) {
     control_map_observation(widget, paint, FALSE);
     control_paint_clear(paint);
 }
+/* A surviving row or form button may keep both its map and its allocation
+ * while a sibling has queued a relayout. Mark that edit on the shared native
+ * surface's own clock. These observers never request a frame. */
+typedef struct {
+    guint64 clock;
+    gint64 frame, at_us;
+} LayoutChange;
+
+static void layout_input_changed(GObject *input, GParamSpec *property, gpointer data) {
+    (void)input; (void)property;
+    GtkNative *native = gtk_widget_get_native(GTK_WIDGET(data));
+    GdkFrameClock *clock = native ? gtk_widget_get_frame_clock(GTK_WIDGET(native)) : NULL;
+    if (!clock) return;
+    LayoutChange *change = g_object_get_data(G_OBJECT(native), "fixture-layout-change");
+    if (!change) {
+        change = g_new0(LayoutChange, 1);
+        g_object_set_data_full(G_OBJECT(native), "fixture-layout-change", change, g_free);
+    }
+    change->clock = language_instance(G_OBJECT(clock));
+    change->frame = gdk_frame_clock_get_frame_counter(clock);
+    change->at_us = g_get_monotonic_time();
+}
+
+static void watch_layout_inputs(GtkWidget *widget) {
+    if (g_object_get_data(G_OBJECT(widget), "fixture-layout-watched")) return;
+    g_object_set_data(G_OBJECT(widget), "fixture-layout-watched", GINT_TO_POINTER(1));
+    g_signal_connect(widget, "notify::visible", G_CALLBACK(layout_input_changed), widget);
+    if (GTK_IS_EDITABLE(widget))
+        g_signal_connect(widget, "notify::text", G_CALLBACK(layout_input_changed), widget);
+    if (GTK_IS_LABEL(widget) || GTK_IS_BUTTON(widget))
+        g_signal_connect(widget, "notify::label", G_CALLBACK(layout_input_changed), widget);
+    if (GTK_IS_SCROLLED_WINDOW(widget)) {
+        GtkAdjustment *scroll = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(widget));
+        g_signal_connect_object(scroll, "notify::value", G_CALLBACK(layout_input_changed), widget, 0);
+    }
+}
+
 static void report_control_paint(JsonBuilder *builder, GtkWidget *widget, JsonNode *geometry) {
     ControlPaint *paint = g_object_get_data(G_OBJECT(widget), "fixture-control-paint");
     if (!paint) {
@@ -1009,6 +1046,13 @@ static void report_control_paint(JsonBuilder *builder, GtkWidget *widget, JsonNo
     json_builder_set_member_name(builder, "clockInstance"); json_builder_add_int_value(builder, language_instance(G_OBJECT(paint->clock)));
     json_builder_set_member_name(builder, "mapGeneration"); json_builder_add_int_value(builder, paint->map_generation);
     json_builder_set_member_name(builder, "paintedMapGeneration"); json_builder_add_int_value(builder, paint->painted_map_generation);
+    GtkNative *native = gtk_widget_get_native(widget);
+    LayoutChange *change = native ? g_object_get_data(G_OBJECT(native), "fixture-layout-change") : NULL;
+    gboolean same_clock = change && change->clock == language_instance(G_OBJECT(clock));
+    json_builder_set_member_name(builder, "layoutChangedFrame");
+    json_builder_add_int_value(builder, same_clock ? change->frame : -1);
+    json_builder_set_member_name(builder, "layoutChangedAtMonoUs");
+    json_builder_add_int_value(builder, same_clock ? change->at_us : 0);
     json_builder_set_member_name(builder, "requestedFrame"); json_builder_add_int_value(builder, paint->requested_frame);
     json_builder_set_member_name(builder, "mappedAtMonoMs"); json_builder_add_int_value(builder, paint->mapped_at);
     json_builder_set_member_name(builder, "frame"); json_builder_add_int_value(builder, frame);
@@ -1206,14 +1250,17 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
         json_builder_set_member_name(builder, name);
         json_builder_begin_object(builder);
         const char *stage = g_getenv("TYPELAY_FIXTURE_REENTRY_STAGE");
-        gboolean language_trigger = g_str_equal(name, "typelay-menu-trigger")
-            && stage && (g_str_equal(stage, "language-options") || g_str_has_prefix(stage, "language-retention-")
-                || g_str_has_prefix(stage, "language-configuration-"));
-        gboolean language_menu = stage && (g_str_equal(stage, "language-options")
+        gboolean configuration = stage && (g_str_equal(stage, "language-options")
             || g_str_has_prefix(stage, "language-retention-")
-            || g_str_has_prefix(stage, "language-configuration-")) && language_control(name);
-        if ((g_getenv("TYPELAY_FIXTURE_GLOSSARY_COMMAND") && language_control(name)) || language_trigger || language_menu)
-            report_control_surface(builder, widget);
+            || g_str_has_prefix(stage, "language-configuration-"));
+        if (configuration || g_getenv("TYPELAY_FIXTURE_GLOSSARY_COMMAND")) {
+            if (language_control(name)) {
+                watch_layout_inputs(widget);
+                report_control_surface(builder, widget);
+            } else if (g_str_has_suffix(name, "-feedback")) {
+                watch_layout_inputs(widget);
+            }
+        }
         if (expand) {
             GtkEventControllerMotion *motion = g_object_get_data(G_OBJECT(widget), "fixture-expand-motion");
             json_builder_set_member_name(builder, "pointerInside");

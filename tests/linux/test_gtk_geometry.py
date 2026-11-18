@@ -27,6 +27,7 @@ from gtk_session_reentry import (  # noqa: E402
     clickable_control,
     expand_click_point,
     expand_hover_current,
+    language_configuration_point,
     language_menu_point,
     language_trigger_hover_current,
     language_trigger_point,
@@ -42,6 +43,7 @@ from native_e2e import (  # noqa: E402
     glossary_menu_scroll_direction,
     glossary_menu_scroll_observation,
     glossary_more_render_observation,
+    glossary_overlay_point_ready,
     glossary_painted_geometry,
     glossary_popup_fits,
     glossary_save_outcome,
@@ -586,6 +588,7 @@ class GlossaryPaintGeometryTests(unittest.TestCase):
                 mapGeneration=2,
                 paintedMapGeneration=2,
                 requestedFrame=7,
+                layoutChangedFrame=-1,
                 mappedAtMonoMs=100,
                 paintedAtMonoMs=105,
                 frame=8,
@@ -626,20 +629,100 @@ class GlossaryPaintGeometryTests(unittest.TestCase):
             with self.subTest(control=c):
                 self.assertFalse(glossary_painted_geometry(c, 120))
 
+    def test_current_query_cannot_use_a_row_painted_before_its_siblings_were_hidden(self):
+        row = self.control()
+        paint = row["paintObservation"]
+        # The query and visible rows already changed on frame 144. The same
+        # mapped Korean row still has a valid, painted pre-filter allocation.
+        paint.update(
+            frame=144, layoutFrame=144, paintFrame=144, paintedFrame=144, layoutChangedFrame=144
+        )
+        self.assertFalse(glossary_painted_geometry(row, 120))
+        paint.update(frame=146, layoutFrame=146, paintFrame=146, paintedFrame=146)
+        self.assertTrue(glossary_painted_geometry(row, 120))
+        # A later observation of unchanged content can use that same frame.
+        paint["frame"] = 147
+        self.assertTrue(glossary_painted_geometry(row, 130))
+
+    def test_configuration_and_glossary_points_wait_for_a_sibling_edit(self):
+        for target, sibling, content in (
+            ("typelay-language-choice-ko", "typelay-language-search", "ko"),
+            ("typelay-glossary-target", "typelay-glossary-source", "PR"),
+            ("typelay-glossary-save", "typelay-glossary-target", "pull request"),
+        ):
+            with self.subTest(target=target):
+                control = self.control()
+                actual = dict(
+                    fullscreen=True,
+                    width=1280,
+                    height=800,
+                    scale=1,
+                    observedAtMs=120,
+                    overlayControls={target: control, sibling: {"visible": True, "text": content}},
+                    overlayPopup=dict(
+                        visible=True,
+                        mapped=True,
+                        surfaceMapped=True,
+                        minimumWidth=200,
+                        minimumHeight=120,
+                        surfaceWidth=210,
+                        surfaceHeight=140,
+                    ),
+                )
+
+                def selectable(changed_since=None):
+                    if target.startswith("typelay-language-choice-"):
+                        return language_configuration_point(
+                            actual, target, (1280, 800), changed_since=changed_since
+                        )
+                    return glossary_overlay_point_ready(actual, target, "gtk4", changed_since)
+
+                self.assertTrue(selectable())
+                self.assertFalse(selectable(101000))  # No change observed for this input yet.
+                paint = control["paintObservation"]
+                paint.update(layoutChangedFrame=8, layoutChangedAtMonoUs=101100)
+                self.assertFalse(selectable(101000))
+                # A paint-only frame does not satisfy the change.
+                paint.update(frame=9, paintedFrame=9, paintFrame=9)
+                self.assertFalse(selectable(101000))
+                paint["layoutFrame"] = 9
+                self.assertTrue(selectable(101000))
+                self.assertFalse(
+                    selectable(102000)
+                )  # The previous edit cannot authorize the retry.
+
     def test_fixed_point_must_hit_fresh_bounds_not_equal_new_center(self):
         c = self.control()
         before = self.control()
-        self.assertTrue(glossary_hover_current(c, 120, before, (976, 432), 108))
+
+        def hovered(control, point=(976, 432), at=120):
+            control["pointerObservation"] = {
+                "status": "captured",
+                "surface": "control-native",
+                "surfaceInstance": 216,
+                "nativeInstance": 200,
+                "x": 252,
+                "y": 334,
+                "pickedAncestors": [
+                    {"instance": 224, "isObservedControl": True, "visible": True, "mapped": True}
+                ],
+            }
+            pointer = dict(
+                status="captured", observedAtMonoMs=109, ownedNiri=99, WINDOW=99, X=976, Y=432
+            )
+            return glossary_hover_current(control, at, before, point, 108, pointer, (0, 0), 107)
+
+        self.assertTrue(hovered(c))
         # Actual 8b824cf missed point: after relayout it is above the button.
-        self.assertFalse(glossary_hover_current(c, 120, before, (976, 285), 108))
+        self.assertFalse(hovered(c, (976, 285)))
         for change in (dict(pointerInside=False), dict(pointerEnteredAtMonoMs=0)):
             c = self.control()
             c.update(change)
-            self.assertFalse(glossary_hover_current(c, 120, before, (976, 432), 108))
+            self.assertFalse(hovered(c))
         c = self.control()
         c["paintObservation"].update(mapGeneration=3, paintedMapGeneration=3)
         self.assertTrue(glossary_painted_geometry(c, 120))
-        self.assertFalse(glossary_hover_current(c, 120, before, (976, 432), 108))
+        self.assertFalse(hovered(c))
         for key, value in (("instance", 225), ("surfaceInstance", 217), ("scale", 2)):
             c = self.control()
             c["surfaceGeometry"][key] = value
@@ -647,8 +730,8 @@ class GlossaryPaintGeometryTests(unittest.TestCase):
             if key == "instance":
                 c["instance"] = value
             self.assertTrue(glossary_painted_geometry(c, 120))
-            self.assertFalse(glossary_hover_current(c, 120, before, (976, 432), 108))
-        self.assertFalse(glossary_hover_current(self.control(), 107, before, (976, 432), 108))
+            self.assertFalse(hovered(c))
+        self.assertFalse(hovered(self.control(), at=107))
 
 
 class GlossaryMoreRenderTests(unittest.TestCase):
@@ -813,6 +896,22 @@ class GlossaryMotionGeometryTests(unittest.TestCase):
         return glossary_hover_current(
             self.control, 120, self.before, self.point, 108, self.pointer, self.origin, 107
         )
+
+    def test_crossing_and_owned_pick_identify_button_at_the_measured_xtest_pixel(self):
+        self.control.update(pointerInside=True, pointerEnteredAtMonoMs=110)
+        # The compositor reported a fractional surface coordinate for the physical pixel.
+        self.control["pointerObservation"]["y"] -= 1 / 256
+        self.assertTrue(self.admitted())
+        self.pointer["Y"] += 1
+        self.assertFalse(self.admitted())
+
+    def test_crossing_history_cannot_send_a_click_to_a_sibling_at_the_fixed_point(self):
+        self.control.update(pointerInside=True, pointerEnteredAtMonoMs=110)
+        self.assertTrue(self.admitted())
+        self.control["pointerObservation"]["pickedAncestors"] = [
+            dict(instance=225, isObservedControl=False, visible=True, mapped=True)
+        ]
+        self.assertFalse(self.admitted())
 
     def test_post_move_actual_motion_can_prove_current_point_without_enter_history(self):
         self.assertTrue(self.admitted())
@@ -1010,6 +1109,18 @@ class GlossaryPopupSizeTests(unittest.TestCase):
         self.assertIsNone(glossary_menu_scroll_observation(snapshot, "typelay-glossary-add", 224))
         menu = painted_menu
         snapshot["overlayControls"]["typelay-language-menu"] = menu
+        self.assertEqual(
+            glossary_menu_scroll_observation(snapshot, "typelay-glossary-add", 224), (menu, 1)
+        )
+        # A new scroll adjustment invalidates both the viewport and its retained row.
+        row = snapshot["overlayControls"]["typelay-glossary-add"]
+        for item in (menu, row):
+            item["paintObservation"]["layoutChangedFrame"] = 8
+        for item in (menu, row):
+            self.assertIsNone(
+                glossary_menu_scroll_observation(snapshot, "typelay-glossary-add", 224)
+            )
+            item["paintObservation"].update(frame=9, layoutFrame=9, paintFrame=9, paintedFrame=9)
         self.assertEqual(
             glossary_menu_scroll_observation(snapshot, "typelay-glossary-add", 224), (menu, 1)
         )
