@@ -5,12 +5,14 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import socket
 import subprocess
 import sys
 import tempfile
 import time
 import uuid
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -2765,6 +2767,27 @@ async def capture_language_size_requests(stream, evidence):
         evidence["omittedBytes"] = evidence["bytesRead"] - len(first) - len(last)
 
 
+@contextmanager
+def configuration_fixture_state(artifact):
+    """Publish live GTK4 reports on tmpfs. Archive the last complete report after exit."""
+    with tempfile.TemporaryDirectory(prefix="typelay-gtk4-state-", dir="/dev/shm") as directory:
+        live = Path(directory) / artifact.name
+        try:
+            yield live
+        finally:
+            if live.is_file():
+                original_error = sys.exception()
+                try:
+                    with tempfile.TemporaryDirectory(dir=artifact.parent) as staging:
+                        saved = Path(staging) / artifact.name
+                        shutil.copy(live, saved)
+                        saved.replace(artifact)
+                except OSError as error:
+                    if original_error is None:
+                        raise
+                    original_error.add_note(f"Could not archive GTK4 fixture report: {error}")
+
+
 def run_owned_language_options(
     command, environment, socket_path, state_path, output, nested, *, configuration_stage=None
 ):
@@ -2940,11 +2963,11 @@ def run_owned_language_options(
         fixture = None
         size_requests = None
         size_request_task = None
-        fixture_environment = environment
+        fixture_environment = {**environment, "TYPELAY_FIXTURE_STATE": str(live_state)}
         if configuration_stage == "language-options":
             # One owned configuration-entry diagnosis, not DTO or performance evidence.
             fixture_environment = {
-                **environment,
+                **fixture_environment,
                 "GTK_DEBUG": "size-request",
                 "TYPELAY_FIXTURE_SIZE_REQUEST_DIAGNOSTIC": "1",
             }
@@ -3000,7 +3023,7 @@ def run_owned_language_options(
                     if job.done():
                         job.result()
                 try:
-                    return json.loads(state_path.read_text())
+                    return json.loads(live_state.read_text())
                 except FileNotFoundError:
                     return {}
 
@@ -3343,7 +3366,10 @@ def run_owned_language_options(
             except (OSError, TypeError, ValueError):
                 pass  # Evidence must not replace the original failure or cleanup.
 
-    with patch.dict(os.environ, {"NIRI_SOCKET": environment["NIRI_SOCKET"]}):
+    reports = (
+        configuration_fixture_state(state_path) if configuration_stage else nullcontext(state_path)
+    )
+    with reports as live_state, patch.dict(os.environ, {"NIRI_SOCKET": environment["NIRI_SOCKET"]}):
         loop = GLibEventLoop(GLib.MainContext.default())
         try:
             with loop:

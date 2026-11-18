@@ -51,6 +51,24 @@ from support.gtk_settings_geometry import settings_viewport_from_pane  # noqa: E
 
 
 class GtkLanguageInitialCaptureTests(unittest.IsolatedAsyncioTestCase):
+    def test_configuration_keeps_live_reports_off_artifact_storage_and_saves_last_on_error(self):
+        from gtk_session_reentry import configuration_fixture_state
+
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "source.json"
+            with self.assertRaisesRegex(AssertionError, "original refusal"):
+                with configuration_fixture_state(artifact) as state:
+                    self.assertTrue(state.is_relative_to("/dev/shm"))
+                    self.assertEqual(state.parent.stat().st_mode & 0o777, 0o700)
+                    state.touch(mode=0o600)
+                    state.write_text('{"report": 1}')
+                    state.write_text('{"report": 2}')
+                    self.assertFalse(artifact.exists())
+                    raise AssertionError("original refusal")
+            self.assertEqual(json.loads(artifact.read_text()), {"report": 2})
+            self.assertEqual(artifact.stat().st_mode & 0o777, 0o600)
+            self.assertFalse(state.parent.exists())
+
     async def test_window_change_before_any_snapshot_admits_one_fresh_source(self):
         from gtk_session_reentry import capture_language_source
 
