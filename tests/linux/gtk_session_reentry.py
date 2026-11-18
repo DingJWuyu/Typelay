@@ -20,10 +20,12 @@ from unittest.mock import patch
 from geometry import anchor_geometry
 from native_e2e import (
     Native,
-    glossary_hover_current,
     glossary_painted_geometry,
+    gtk4_click_snapshot,
+    gtk4_hover_rejection,
     key,
     plan,
+    report_gtk4_unsent_click,
     snapshot,
 )
 from niri import contents, request
@@ -1609,6 +1611,42 @@ def language_menu_geometry(actual, name, rendered, dimensions, instances):
     )
 
 
+def language_configuration_point(
+    actual, name, dimensions, *, leading=False, changed_since=None, feedback=None
+):
+    control = actual.get("overlayControls", {}).get(name, {})
+    if (
+        feedback is not None
+        and actual.get("overlayControls", {}).get("fixture-language-feedback", {}).get("text")
+        != feedback
+    ):
+        return None
+    if not parent_geometry_ready(actual, dimensions) or control.get("enabled") is not True:
+        return None
+    if not glossary_painted_geometry(
+        control, actual.get("observedAtMs"), changed_since=changed_since
+    ):
+        return None
+    bounds = control["surfaceGeometry"]
+    if bounds["scale"] != actual["scale"] or bounds["width"] <= 1 or bounds["height"] <= 1:
+        return None
+    if not (
+        0 <= bounds["x"]
+        and bounds["x"] + bounds["width"] <= actual["width"]
+        and 0 <= bounds["y"]
+        and bounds["y"] + bounds["height"] <= actual["height"]
+    ):
+        return None
+    return click_point(
+        actual,
+        (
+            bounds["x"] + (8 if leading else bounds["width"] / 2),
+            bounds["y"] + bounds["height"] / 2,
+        ),
+        dimensions,
+    )
+
+
 async def language_wait_for(predicate, description, timeout=5):
     """The existing observation budget, yielding to the real desktop owner."""
     deadline = time.monotonic() + timeout
@@ -1852,103 +1890,119 @@ async def check_language_configuration(
 
     async def search_type(text):
         input_target(search_name, composing=False)
+        started = time.monotonic_ns() // 1000
         await language_command(
             "xdotool", "type", "--clearmodifiers", "--delay", "0", text, timeout=3
         )
 
-    def geometry(actual, name, *, leading=False):
-        control = actual.get("overlayControls", {}).get(name, {})
-        if not parent_geometry_ready(actual, dimensions) or control.get("enabled") is not True:
-            return None
-        if not glossary_painted_geometry(control, actual.get("observedAtMs")):
-            return None
-        bounds = control["surfaceGeometry"]
-        if bounds["scale"] != actual["scale"] or bounds["width"] <= 1 or bounds["height"] <= 1:
-            return None
-        if not (
-            0 <= bounds["x"]
-            and bounds["x"] + bounds["width"] <= actual["width"]
-            and 0 <= bounds["y"]
-            and bounds["y"] + bounds["height"] <= actual["height"]
-        ):
-            return None
-        return click_point(
-            actual,
-            (
-                bounds["x"] + (8 if leading else bounds["width"] / 2),
-                bounds["y"] + bounds["height"] / 2,
-            ),
-            dimensions,
-        )
+        return started
 
-    async def click(name, *, opening=False, leading=False):
+    async def click(name, *, opening=False, leading=False, changed_since=None, feedback=None):
         # Freeze one painted object and one point. The production owner's normal
         # pre-begin display renewal is not a configuration/source capability.
+        latest = {}
+        selected = point = pointer = hover_rejection = None
+
+        @contextmanager
+        def before_click(description):
+            try:
+                yield
+            except (
+                AssertionError,
+                OSError,
+                ValueError,
+                KeyError,
+                subprocess.SubprocessError,
+            ) as error:
+                evidence["unsentClick"] = report_gtk4_unsent_click(
+                    name,
+                    f"{description}: {error}",
+                    selected,
+                    latest,
+                    point,
+                    pointer,
+                    changed_since,
+                    dimensions,
+                    evidence["nestedOrigin"],
+                    hover_rejection,
+                )
+                raise
+
         def ready():
+            nonlocal latest
             if not opening:
                 config_current()
-            actual = observe()
-            point = geometry(actual, name, leading=leading)
+            actual = latest = observe()
+            point = language_configuration_point(
+                actual,
+                name,
+                dimensions,
+                leading=leading,
+                changed_since=changed_since,
+                feedback=feedback,
+            )
             return (actual, point) if point else None
 
-        actual, point = await language_wait_for(ready, f"{name}: current painted geometry missing")
-        before = actual["overlayControls"][name]
-        if opening:
-            assert overlay.visible and overlay.current_record() is not None
-            assert now_ms() <= evidence["configurationRender"]["expiresAtMs"]
-        else:
-            assert (
-                before["surfaceGeometry"]["surfaceInstance"]
-                == actual["overlayControls"][popup_name]["surfaceGeometry"]["surfaceInstance"]
+        with before_click("select and move to fixed point"):
+            selected, point = await language_wait_for(
+                ready, f"{name}: current painted geometry missing"
             )
-        moved_start = time.monotonic_ns() // 1_000_000
-        await language_command(
-            "xdotool", "mousemove", "--window", nested, *map(str, point), timeout=3
-        )
-        moved = time.monotonic_ns() // 1_000_000
-        location = dict(
-            line.split("=", 1)
-            for line in (
-                await language_command("xdotool", "getmouselocation", "--shell", timeout=3)
-            ).splitlines()
-        )
-        pointer = {
-            "status": "captured",
-            "observedAtMonoMs": time.monotonic_ns() // 1_000_000,
-            "ownedNiri": int(nested),
-            **{key: int(location[key]) for key in ("X", "Y", "WINDOW")},
-        }
+            before = selected["overlayControls"][name]
+            if opening:
+                assert overlay.visible and overlay.current_record() is not None
+                assert now_ms() <= evidence["configurationRender"]["expiresAtMs"]
+            else:
+                assert (
+                    before["surfaceGeometry"]["surfaceInstance"]
+                    == selected["overlayControls"][popup_name]["surfaceGeometry"]["surfaceInstance"]
+                )
+            moved_start = time.monotonic_ns() // 1_000_000
+            await language_command(
+                "xdotool", "mousemove", "--window", nested, *map(str, point), timeout=3
+            )
+            moved = time.monotonic_ns() // 1_000_000
+            location = dict(
+                line.split("=", 1)
+                for line in (
+                    await language_command("xdotool", "getmouselocation", "--shell", timeout=3)
+                ).splitlines()
+            )
+            pointer = {
+                "status": "captured",
+                "observedAtMonoMs": time.monotonic_ns() // 1_000_000,
+                "ownedNiri": int(nested),
+                **{key: int(location[key]) for key in ("X", "Y", "WINDOW")},
+            }
 
         def hovered():
+            nonlocal latest, hover_rejection
             if not opening:
                 config_current()
-            actual = observe()
+            actual = latest = observe()
             control = actual.get("overlayControls", {}).get(name, {})
-            return (
-                actual
-                if glossary_hover_current(
-                    control,
-                    actual.get("observedAtMs", 0),
-                    before,
-                    point,
-                    moved,
-                    pointer,
-                    evidence["nestedOrigin"],
-                    moved_start,
-                )
-                else None
+            hover_rejection = gtk4_hover_rejection(
+                control,
+                actual.get("observedAtMs", 0),
+                before,
+                point,
+                moved,
+                pointer,
+                evidence["nestedOrigin"],
+                moved_start,
             )
+            return actual if hover_rejection is None else None
 
-        actual = await language_wait_for(hovered, f"{name}: fixed-point current hover missing")
-        if opening:
-            assert overlay.visible and overlay.current_record() is not None
-            assert now_ms() <= evidence["configurationRender"]["expiresAtMs"]
-        owned(actual)
-        pre_send = None
-        if opening:
-            assert actual["firstEntry"]["focused"]
-        else:
-            pre_send = input_target(search_name)
+        with before_click("fixed-point hover before click"):
+            actual = await language_wait_for(hovered, f"{name}: fixed-point current hover missing")
+            if opening:
+                assert overlay.visible and overlay.current_record() is not None
+                assert now_ms() <= evidence["configurationRender"]["expiresAtMs"]
+            owned(actual)
+            pre_send = None
+            if opening:
+                assert actual["firstEntry"]["focused"]
+            else:
+                pre_send = input_target(search_name)
         phase = {
             "name": name,
             "instance": before["instance"],
@@ -1958,8 +2012,12 @@ async def check_language_configuration(
         }
         actions.append(phase)
         assert len(actions) <= 4
+        phase["clickStartedAtMonoUs"] = time.monotonic_ns() // 1000
         await language_command("xdotool", "click", "1", timeout=3)
         phase["clickFinishedAtMs"] = now_ms()
+        phase["selected"] = gtk4_click_snapshot(selected, name)
+        phase["hover"] = gtk4_click_snapshot(actual, name)
+        phase["xPointer"] = pointer
         # Retain only the two already-observed states; this is not button delivery.
         return actual, pre_send
 
@@ -2454,7 +2512,7 @@ async def check_language_configuration(
     elif stage == "language-options":
         actual = await language_wait_for(
             lambda: (value := observe())
-            and geometry(value, "typelay-language-choice-en")
+            and language_configuration_point(value, "typelay-language-choice-en", dimensions)
             and value,
             "configuration list not painted",
         )
@@ -2626,7 +2684,7 @@ async def check_language_configuration(
         await language_wait_for(
             lambda: observe().get("focusedImeClear"), "search keyboard context not Clear"
         )
-        await search_type("ko")
+        query_typed = await search_type("ko")
         filtered = await language_wait_for(
             lambda: (value := observe())
             and value["overlayControls"][search_name].get("text") == "ko"
@@ -2639,16 +2697,23 @@ async def check_language_configuration(
         assert filtered["overlayControls"][popup_name]["instance"] == opening_instance
         assert await overlay.input.request("capture", {}) is None
         await image("search")
-        await click("typelay-language-choice-ko")
+        await click("typelay-language-choice-ko", changed_since=query_typed)
+        retry_feedback = "保存未确认，请重新选择语言。"
         await language_wait_for(
             lambda: len(calls["save"]) == 1
             and configuration_open()
-            and observe()["overlayControls"].get("fixture-language-feedback", {}).get("text"),
+            and observe()["overlayControls"].get("fixture-language-feedback", {}).get("text")
+            == retry_feedback,
             "explicit save failure did not return this opening to Open",
         )
         assert observe()["overlayControls"][popup_name]["instance"] == opening_instance
         await image("save-failure")
-        await click("typelay-language-choice-ko")  # An explicit new user retry, never automatic.
+        # The feedback belongs to the first explicit save. Only its new layout can supply this retry.
+        await click(
+            "typelay-language-choice-ko",
+            changed_since=actions[-1]["clickStartedAtMonoUs"],
+            feedback=retry_feedback,
+        )
         await language_wait_for(lambda: len(calls["save"]) == 2, "second real choice was not sent")
         await closed()
         assert [(item["source"], item["target"]) for item in calls["save"]] == [
