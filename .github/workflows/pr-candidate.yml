@@ -23,6 +23,9 @@ jobs:
     if: github.event.action != 'edited' || github.event.changes.base.ref.from != ''
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      tested: ${{ steps.candidate.outputs.tested }}
+      tree: ${{ steps.candidate.outputs.tree }}
     permissions:
       contents: read
     steps:
@@ -48,6 +51,8 @@ jobs:
         commit=$(git -c user.name=TypeLay -c user.email=ci@localhost commit-tree \
           "$tree" -p "$BASE" -p "$HEAD_SHA" -m 'TypeLay PR candidate')
         git checkout --detach "$commit"
+        echo "tree=$tree" >> "$GITHUB_OUTPUT"
+        echo "tested=$commit" >> "$GITHUB_OUTPUT"
         git show -s --format='Tested commit: `%H`%n%nSource tree: `%T`' | tee -a "$GITHUB_STEP_SUMMARY"
     - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
       with:
@@ -69,6 +74,42 @@ jobs:
             python -m pip install -r eng/requirements.txt -r tests/shared/requirements.txt
             pwsh -NoProfile -File ./dev.ps1 shared-check
           '
+  failure-comparison:
+    if: ${{ always() && (needs.shared.result == 'failure' || needs.shared.result == 'cancelled') }}
+    needs: shared
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ inputs.base || github.event.pull_request.base.sha }}
+        persist-credentials: false
+        fetch-depth: 0
+    - name: Reconstruct the tested tree without checking out candidate code
+      id: source
+      if: needs.shared.outputs.tested != ''
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TESTED_TREE: ${{ needs.shared.outputs.tree }}
+      run: |
+        if { git cat-file -e "$HEAD_SHA^{commit}" || git -c 'credential.helper=!gh auth git-credential' fetch --no-tags "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$HEAD_SHA"; } &&
+           tree=$(git merge-tree --write-tree "$BASE" "$HEAD_SHA") && test "$tree" = "$TESTED_TREE"; then
+          echo "CANDIDATE_SOURCE_TREE=$tree" >> "$GITHUB_ENV"
+        fi
+    - name: Publish candidate failure comparison from its trusted base
+      env:
+        GH_TOKEN: ${{ github.token }}
+        CANDIDATE_BASE: ${{ inputs.base || github.event.pull_request.base.sha }}
+        CANDIDATE_JOB: hitl shared / ${{ inputs.base || github.event.pull_request.base.sha }}
+        CANDIDATE_TESTED_COMMIT: ${{ needs.shared.outputs.tested }}
+      run: |
+        if test -f eng/ci/failure_report.py; then
+          python eng/ci/failure_report.py
+        else
+          echo "本次候选的 hitl 基线 \`$CANDIDATE_BASE\` 尚未提供失败对照，无法对照。" | tee -a "$GITHUB_STEP_SUMMARY"
+        fi
   report:
     if: ${{ always() && github.event_name == 'push' }}
     needs: shared

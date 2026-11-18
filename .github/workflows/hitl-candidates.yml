@@ -57,6 +57,7 @@ jobs:
     name: PR ${{ matrix.number }} at ${{ matrix.head }}
     permissions:
       contents: read
+      actions: read
       statuses: write
     uses: ./.github/workflows/pr-candidate.yml
     with:

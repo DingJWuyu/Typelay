@@ -55,7 +55,8 @@ def verify_workflow(path):
     jobs = workflow["jobs"]
     for job_id, job in jobs.items():
         require(isinstance(job.get("steps"), list), f"Unsupported job steps in {job_id}")
-        require("if" not in job, f"Unsupported job if in {job_id}: {job.get('if')}")
+        expected_if = "always()" if job_id == "failure-comparison" else None
+        require(job.get("if") == expected_if, f"Unsupported job if in {job_id}: {job.get('if')}")
     actual_jobs = {
         job_id
         for job_id, job in jobs.items()
