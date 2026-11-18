@@ -5,12 +5,14 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import socket
 import subprocess
 import sys
 import tempfile
 import time
 import uuid
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -409,6 +411,8 @@ def run_case(
                     check_preview_appearance(
                         client, source, generation, state, initial, click_evidence
                     )
+                    if client.hello["backend"] == "gtk4":
+                        check_capture_refusals(client)
                     print(
                         "GTK preview colors: current text and manual drafts retain normal contrast",
                         flush=True,
@@ -1616,6 +1620,26 @@ async def language_wait_for(predicate, description, timeout=5):
     raise AssertionError(description)
 
 
+def check_capture_refusals(client):
+    """Replay stale approvals on the real focused field after the preview checks."""
+    for condition in ("epoch", "max-age-ms"):
+        described = client.describe()
+        approval = described["authority"].copy()
+        if condition == "epoch":
+            approval["contextStamp"] = {**approval["contextStamp"], "epoch": -1}
+        else:
+            approval["observedAtMs"] -= 151
+        reply = client.call(
+            "capture", {"target": described["target"], "authority": approval, "traceRefusal": True}
+        )
+        trace = client.capture_trace
+        assert reply is None and trace, (condition, trace)
+        assert trace["phase"] == "before-read" and trace["condition"] == condition, trace
+        assert trace["expected"] == (-1 if condition == "epoch" else 150), trace
+        assert trace["actual"] > trace["expected"], trace
+        print("GTK4 stale capture refused", client.id, json.dumps(trace), flush=True)
+
+
 async def capture_language_source(input_service, ready, evidence):
     """Admit the first source within the original readiness budget, before any lease."""
     deadline = time.monotonic() + 5
@@ -1626,22 +1650,49 @@ async def capture_language_source(input_service, ready, evidence):
             "language source IME/parent/compositor did not become ready",
             timeout=deadline - time.monotonic(),
         )
-        before = input_service.diagnostics()["windowEpoch"]
-        captured = await input_service.request("capture", {})
-        accepted = bool(captured and captured.get("snapshot"))
-        attempts.append(
-            {
-                "atMs": now_ms(),
-                "windowEpochBefore": before,
-                "windowEpochAfter": input_service.diagnostics()["windowEpoch"],
-                "snapshotAdmitted": accepted,
-                "reason": None if accepted else input_service.capture_status,
-            }
+        attempt = {
+            "scenario": evidence.get("configurationStage"),
+            "windowEpochBefore": input_service.diagnostics()["windowEpoch"],
+            "stage": "select-source",
+        }
+        entry = initial.get("firstEntry", {})
+        ime = entry.get("ime") or {}
+        attempt.update(
+            ready={
+                "observedAtMonoMs": initial.get("observedAtMs"),
+                "imeClear": initial.get("imeClear"),
+                "ime": {
+                    key: ime.get(key)
+                    for key in ("context", "epoch", "input", "flags", "server", "applied")
+                },
+                **{
+                    key: entry.get(key)
+                    for key in ("instance", "topInstance", "focused", "topActive")
+                },
+                **initial.get("readyWindow", {}),
+            },
         )
-        assert time.monotonic() < deadline, "initial source capture exceeded readiness budget"
+        attempts.append(attempt)
+        try:
+            captured = await input_service.capture({}, admission=attempt)
+        except Exception as error:
+            attempt.update(
+                atMs=now_ms(), windowEpochAfter=input_service.diagnostics()["windowEpoch"]
+            )
+            attempt.update(snapshotAdmitted=None, reason=type(error).__name__)
+            error.add_note("GTK4 initial capture " + json.dumps(attempt))
+            raise
+        attempt.update(atMs=now_ms(), windowEpochAfter=input_service.diagnostics()["windowEpoch"])
+        accepted = bool(captured and captured.get("snapshot"))
+        attempt.update(
+            snapshotAdmitted=accepted, reason=None if accepted else input_service.capture_status
+        )
+        assert time.monotonic() < deadline, (
+            "initial source capture exceeded readiness budget: " + json.dumps(attempt)
+        )
         if accepted:
             return initial, captured
-        assert input_service.capture_status == "window-changing", input_service.capture_status
+        assert input_service.capture_status == "window-changing", json.dumps(attempt)
     raise AssertionError("initial source capture did not stabilize within readiness budget")
 
 
@@ -2716,6 +2767,35 @@ async def capture_language_size_requests(stream, evidence):
         evidence["omittedBytes"] = evidence["bytesRead"] - len(first) - len(last)
 
 
+@contextmanager
+def configuration_fixture_state(artifact):
+    """Publish live GTK4 reports on tmpfs. Archive the last complete report after exit."""
+    directory = Path(tempfile.mkdtemp(prefix="typelay-gtk4-state-", dir="/dev/shm"))
+    live = directory / artifact.name
+    try:
+        # An outer timeout can kill this process before its finally runs.
+        # Keep the last atomic fixture publication readable at the normal artifact path.
+        artifact.symlink_to(live)
+        yield live
+    finally:
+        original_error = sys.exception()
+        try:
+            if live.is_file():
+                with tempfile.TemporaryDirectory(dir=artifact.parent) as staging:
+                    saved = Path(staging) / artifact.name
+                    shutil.copy(live, saved)
+                    saved.replace(artifact)
+            elif artifact.is_symlink() and artifact.readlink() == live:
+                artifact.unlink()
+        except OSError as error:
+            owner = original_error if original_error is not None else error
+            owner.add_note(f"GTK4 fixture report retained at {live}. Archive failed: {error}")
+            if original_error is None:
+                raise
+        else:
+            shutil.rmtree(directory)
+
+
 def run_owned_language_options(
     command, environment, socket_path, state_path, output, nested, *, configuration_stage=None
 ):
@@ -2891,11 +2971,11 @@ def run_owned_language_options(
         fixture = None
         size_requests = None
         size_request_task = None
-        fixture_environment = environment
+        fixture_environment = {**environment, "TYPELAY_FIXTURE_STATE": str(live_state)}
         if configuration_stage == "language-options":
             # One owned configuration-entry diagnosis, not DTO or performance evidence.
             fixture_environment = {
-                **environment,
+                **fixture_environment,
                 "GTK_DEBUG": "size-request",
                 "TYPELAY_FIXTURE_SIZE_REQUEST_DIAGNOSTIC": "1",
             }
@@ -2951,7 +3031,7 @@ def run_owned_language_options(
                     if job.done():
                         job.result()
                 try:
-                    return json.loads(state_path.read_text())
+                    return json.loads(live_state.read_text())
                 except FileNotFoundError:
                     return {}
 
@@ -3004,19 +3084,32 @@ def run_owned_language_options(
             def source_ready():
                 nonlocal last_readiness
                 last_readiness = state()
-                return (
-                    last_readiness
-                    and last_readiness.get("focus") == "fixture-first"
+                if not (
+                    last_readiness.get("focus") == "fixture-first"
                     and last_readiness.get("imeClear")
                     and parent_geometry_ready(last_readiness, dimensions)
                     and input_service.focused_peer() is peer
-                    and last_readiness
-                )
+                ):
+                    return None
+                if configuration_stage:
+                    last_readiness["readyWindow"] = {
+                        "expectedWindowId": window["id"],
+                        "focusedWindowId": (input_service.niri.focused or {}).get("id"),
+                        "expectedPeerPid": peer.pid,
+                        "peerFocused": True,
+                        "parentGeometryReady": True,
+                    }
+                return last_readiness
 
             try:
                 if configuration_stage:
                     initial, captured = await capture_language_source(
                         input_service, source_ready, evidence
+                    )
+                    # The real fixture has already published and the source is frozen.
+                    # Writing the artifact directly would have replaced this link on its first report.
+                    assert state_path.is_symlink() and state_path.readlink() == live_state, (
+                        "GTK4 fixture did not publish its live report on tmpfs"
                     )
                 else:
                     initial = await language_wait_for(
@@ -3286,7 +3379,10 @@ def run_owned_language_options(
             except (OSError, TypeError, ValueError):
                 pass  # Evidence must not replace the original failure or cleanup.
 
-    with patch.dict(os.environ, {"NIRI_SOCKET": environment["NIRI_SOCKET"]}):
+    reports = (
+        configuration_fixture_state(state_path) if configuration_stage else nullcontext(state_path)
+    )
+    with reports as live_state, patch.dict(os.environ, {"NIRI_SOCKET": environment["NIRI_SOCKET"]}):
         loop = GLibEventLoop(GLib.MainContext.default())
         try:
             with loop:

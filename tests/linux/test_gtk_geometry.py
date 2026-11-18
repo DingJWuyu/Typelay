@@ -3,6 +3,7 @@
 import asyncio
 import copy
 import json
+import os
 import resource
 import signal
 import subprocess
@@ -51,6 +52,72 @@ from support.gtk_settings_geometry import settings_viewport_from_pane  # noqa: E
 
 
 class GtkLanguageInitialCaptureTests(unittest.IsolatedAsyncioTestCase):
+    def test_configuration_keeps_live_reports_off_artifact_storage_and_saves_last_on_error(self):
+        from gtk_session_reentry import configuration_fixture_state
+
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "source.json"
+            with self.assertRaisesRegex(AssertionError, "original refusal"):
+                with configuration_fixture_state(artifact) as state:
+                    self.assertTrue(state.is_relative_to("/dev/shm"))
+                    self.assertEqual(state.parent.stat().st_mode & 0o777, 0o700)
+                    state.touch(mode=0o600)
+                    state.write_text('{"report": 1}')
+                    state.write_text('{"report": 2}')
+                    self.assertTrue(artifact.is_symlink())
+                    self.assertTrue(artifact.samefile(state))
+                    raise AssertionError("original refusal")
+            self.assertFalse(artifact.is_symlink())
+            self.assertEqual(json.loads(artifact.read_text()), {"report": 2})
+            self.assertEqual(artifact.stat().st_mode & 0o777, 0o600)
+            self.assertFalse(state.parent.exists())
+
+    def test_killed_scenario_leaves_the_last_complete_report_at_the_normal_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "interrupted.json"
+            child = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import os, signal, sys\n"
+                    "from pathlib import Path\n"
+                    "from gtk_session_reentry import configuration_fixture_state\n"
+                    "with configuration_fixture_state(Path(sys.argv[1])) as state:\n"
+                    "    state.write_text('123')\n"
+                    "    os.kill(os.getpid(), signal.SIGTERM)\n",
+                    str(artifact),
+                ],
+                env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+                check=False,
+            )
+            self.assertEqual(child.returncode, -signal.SIGTERM)
+            self.assertTrue(artifact.is_symlink())
+            state = artifact.readlink()
+            self.addCleanup(state.parent.rmdir)
+            self.addCleanup(state.unlink, missing_ok=True)
+            self.assertEqual(json.loads(artifact.read_text()), 123)
+
+    def test_failed_archive_preserves_the_report_and_the_original_failure(self):
+        from gtk_session_reentry import configuration_fixture_state
+
+        with tempfile.TemporaryDirectory() as directory:
+            for refusal in (False, True):
+                with self.subTest(refusal=refusal):
+                    artifact = Path(directory) / f"capture-{refusal}.json"
+                    with self.assertRaises(AssertionError if refusal else OSError) as raised:
+                        with patch("gtk_session_reentry.shutil.copy", side_effect=OSError("full")):
+                            with configuration_fixture_state(artifact) as state:
+                                self.addCleanup(state.parent.rmdir)
+                                self.addCleanup(state.unlink, missing_ok=True)
+                                state.write_text('{"report": 3}')
+                                if refusal:
+                                    raise AssertionError("original refusal")
+                    self.assertEqual(
+                        str(raised.exception), "original refusal" if refusal else "full"
+                    )
+                    self.assertIn(str(state), " ".join(raised.exception.__notes__))
+                    self.assertEqual(json.loads(artifact.read_text()), {"report": 3})
+
     async def test_window_change_before_any_snapshot_admits_one_fresh_source(self):
         from gtk_session_reentry import capture_language_source
 
@@ -61,9 +128,9 @@ class GtkLanguageInitialCaptureTests(unittest.IsolatedAsyncioTestCase):
             def diagnostics(self):
                 return {"windowEpoch": self.calls}
 
-            async def request(self, operation, data):
+            async def capture(self, context, *, admission):
                 self.calls += 1
-                assert (operation, data) == ("capture", {})
+                assert context == {}
                 return None if self.calls == 1 else {"snapshot": {"text": "Fresh source"}}
 
         service, evidence = Input(), {}
@@ -73,6 +140,62 @@ class GtkLanguageInitialCaptureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(initial["first"], captured["snapshot"]["text"])
         self.assertEqual(service.calls, 2)
         self.assertEqual(len(evidence["initialCaptureAdmission"]), 2)
+
+    async def test_first_native_refusal_reports_only_its_own_request_and_ready_field(self):
+        from gtk_session_reentry import capture_language_source
+
+        class Input:
+            capture_status = "native-read-declined"
+
+            def diagnostics(self):
+                return {"windowEpoch": 3}
+
+            async def capture(self, context, *, admission):
+                admission.update(
+                    requestId=17,
+                    stage="capture-reply",
+                    refusal={
+                        "phase": "before-read",
+                        "condition": "epoch",
+                        "expected": 3,
+                        "actual": 4,
+                    },
+                )
+                return None
+
+        initial = {"first": "PRIVATE BODY", "imeClear": True, "firstEntry": {"instance": 9}}
+        evidence = {"configurationStage": "language-configuration-swap"}
+        with self.assertRaisesRegex(AssertionError, "native-read-declined") as error:
+            await capture_language_source(Input(), lambda: initial, evidence)
+        (attempt,) = evidence["initialCaptureAdmission"]
+        self.assertEqual(attempt["ready"]["instance"], 9)
+        self.assertEqual(attempt["requestId"], 17)
+        self.assertEqual(attempt["refusal"]["actual"], 4)
+        for expected in ("language-configuration-swap", "epoch", "before-read", '"requestId": 17'):
+            self.assertIn(expected, str(error.exception))
+        self.assertNotIn("PRIVATE BODY", str(error.exception))
+
+    async def test_transport_timeout_preserves_the_unanswered_attempt(self):
+        from gtk_session_reentry import capture_language_source
+
+        class Input:
+            def diagnostics(self):
+                return {"windowEpoch": 3}
+
+            async def capture(self, context, *, admission):
+                admission.update(stage="await-capture-reply", requestId=11)
+                raise TimeoutError
+
+        evidence = {}
+        with self.assertRaises(TimeoutError) as error:
+            await capture_language_source(Input(), lambda: {"first": "PRIVATE BODY"}, evidence)
+        (attempt,) = evidence["initialCaptureAdmission"]
+        self.assertIsNone(attempt["snapshotAdmitted"])
+        self.assertEqual(attempt["reason"], "TimeoutError")
+        (note,) = error.exception.__notes__
+        self.assertIn("await-capture-reply", note)
+        self.assertIn('"requestId": 11', note)
+        self.assertNotIn("PRIVATE BODY", note)
 
     async def test_other_refusal_never_retries_or_invents_a_snapshot(self):
         from gtk_session_reentry import capture_language_source
@@ -86,7 +209,7 @@ class GtkLanguageInitialCaptureTests(unittest.IsolatedAsyncioTestCase):
                 def diagnostics(self):
                     return {"windowEpoch": 1}
 
-                async def request(self, *_):
+                async def capture(self, context, *, admission):
                     self.calls += 1
                     return None
 
@@ -107,7 +230,7 @@ class GtkLanguageInitialCaptureTests(unittest.IsolatedAsyncioTestCase):
             def diagnostics(self):
                 return {"windowEpoch": self.calls}
 
-            async def request(self, *_):
+            async def capture(self, context, *, admission):
                 self.calls += 1
                 clock[0] = 15.0
                 return None

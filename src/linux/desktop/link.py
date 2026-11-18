@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import re
 
 from wire import Channel, now_ms
 
@@ -16,7 +17,71 @@ class RoutedReply(dict):
 
 def capture_failure_trace(value):
     """Allow diagnostic scalars only; this never supplies an input result."""
-    if not isinstance(value, dict) or value.get("reason") not in (
+    if not isinstance(value, dict):
+        return {}
+    if (
+        value.get("phase") in ("before-read", "after-read")
+        and value.get("condition")
+        in (
+            "target-present",
+            "mutating",
+            "target-dead",
+            "owner-thread",
+            "ime-probing",
+            "main-depth",
+            "ime-bound",
+            "ordered-ime-finish",
+            "ime-capability",
+            "provider-inspect",
+            "widget-destroying",
+            "bound-context-matches",
+            "ime-state-size",
+            "ime-state-version",
+            "ime-context-present",
+            "unexpected-ime-flags",
+            "ime-flags",
+            "ime-applied",
+            "ime-known",
+            "composing",
+            "focused-target",
+            "stamp-present",
+            "ime-observed",
+            "context",
+            "epoch",
+            "input",
+            "server",
+            "applied",
+            "flags",
+            "min-age-ms",
+            "max-age-ms",
+            "authority-present",
+            "supported",
+            "approved-target-matches",
+            "metadata-present",
+            "metadata-key-matches",
+            "sensitive",
+            "editable",
+            "widget-enabled",
+            "text-available",
+            "storage-revision",
+            "input-revision",
+            "focus-revision",
+        )
+        and all(
+            type(value.get(k)) is int and -(2**63) <= value[k] < 2**63
+            for k in ("actual", "expected")
+        )
+    ):
+        refusal = {k: value[k] for k in ("phase", "condition", "expected", "actual")}
+        if refusal["condition"] == "focused-target":
+            for key in ("requestedTarget", "focusedTarget"):
+                identity = value.get(key)
+                if isinstance(identity, str) and re.fullmatch(
+                    r"[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}", identity
+                ):
+                    refusal[key] = identity
+        return {"refusal": refusal}
+    if value.get("reason") not in (
         "ime-unavailable",
         "focus-before",
         "stamp-before",
@@ -98,6 +163,8 @@ class Link:
         self.pending[identity] = future
         if operation == "capture" and type(capture_trace) is dict:
             self.capture_traces[identity] = capture_trace
+            if data and data.get("traceRefusal") is True:
+                capture_trace["requestId"] = identity
         if operation == "capture" and type(capture_continuity) is dict:
             self.capture_continuities[identity] = capture_continuity
         timing = (

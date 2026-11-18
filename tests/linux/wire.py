@@ -3,6 +3,7 @@
 import asyncio
 import fcntl
 import os
+import random
 import socket
 import subprocess
 import sys
@@ -278,13 +279,19 @@ class PipeTransportTests(unittest.TestCase):
         self.addCleanup(link.close)
         trace = {"reason": "stamp-before", "ageBeforeMs": 4, "targetMatchesBefore": True}
         unsafe = {**trace, "text": "private", "target": "private", "beforeInputRevision": True}
+        refusal = {"phase": "after-read", "condition": "epoch", "expected": 12, "actual": 13}
 
         async def exercise():
             context = GLib.MainContext.default()
 
-            async def begin(operation, diagnostics, timeout=1):
+            async def begin(operation, diagnostics, timeout=1, *, traced=False):
                 task = asyncio.create_task(
-                    link.ask(operation, {}, timeout=timeout, capture_trace=diagnostics)
+                    link.ask(
+                        operation,
+                        {"traceRefusal": True} if traced else {},
+                        timeout=timeout,
+                        capture_trace=diagnostics,
+                    )
                 )
                 await asyncio.sleep(0)
                 request = Decoder().feed(os.read(self.output_read, MAX_FRAME))[0]
@@ -299,6 +306,11 @@ class PipeTransportTests(unittest.TestCase):
 
             for operation, data, diagnostic, expected in (
                 ("capture", None, unsafe, trace),
+                ("capture", None, {**refusal, "text": "private"}, {"refusal": refusal}),
+                ("capture", None, {**refusal, "condition": "private"}, {}),
+                ("capture", None, {**refusal, "actual": "private"}, {}),
+                ("capture", None, {**refusal, "actual": -(2**63) - 1}, {}),
+                ("capture", None, {**refusal, "expected": 2**63}, {}),
                 ("describe", None, unsafe, {}),
                 ("capture", {"text": "normal result"}, unsafe, {}),
                 ("capture", None, {"reason": "private exception"}, {}),
@@ -317,12 +329,33 @@ class PipeTransportTests(unittest.TestCase):
                     self.assertEqual(diagnostics, expected)
                     self.assertTrue(link.channel.alive)
 
-            diagnostics = {}
-            task, identity = await begin("capture", diagnostics, timeout=0.001)
+            # Only schema fields survive arbitrary extra data, across signed native values.
+            samples = random.Random(99)
+            for n in (
+                -(2**63),
+                2**63 - 1,
+                *(samples.randrange(-(2**63), 2**63) for _ in range(12)),
+            ):
+                guard = {**refusal, "expected": n}
+                diagnostics = {}
+                task, identity = await begin("capture", diagnostics, traced=True)
+                respond(identity, None, {**guard, f"extra{n}": "private"})
+                self.assertIsNone(await task)
+                self.assertEqual(diagnostics, {"requestId": identity, "refusal": guard})
+
+            diagnostics, current = {}, {}
+            task, identity = await begin("capture", diagnostics, timeout=0.001, traced=True)
+            other, other_id = await begin("capture", current, traced=True)
             with self.assertRaises(TimeoutError):
                 await task
             respond(identity, None, trace)
-            self.assertEqual(diagnostics, {}, "late trace changed a finished request")
+            self.assertEqual(
+                diagnostics, {"requestId": identity}, "late trace changed a finished request"
+            )
+            self.assertEqual(current, {"requestId": other_id})
+            respond(other_id, None, refusal)
+            self.assertIsNone(await other)
+            self.assertEqual(current, {"requestId": other_id, "refusal": refusal})
             self.assertTrue(link.channel.alive)
 
         asyncio.run(exercise())
