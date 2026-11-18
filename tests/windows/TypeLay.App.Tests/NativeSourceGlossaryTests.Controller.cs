@@ -176,7 +176,51 @@ public sealed partial class NativeSourceGlossaryTests
                 .OfType<DependencyObject>().SelectMany(root => Children(root).Prepend(root))
                 .OfType<ContextMenu>().Single(item => item.IsOpen);
             var command = menu.Items.OfType<MenuItem>().Single(item => AutomationProperties.GetAutomationId(item) == "MoreGlossary");
-            Assert.True(command.IsEnabled);
+            try
+            {
+                Assert.True(command.IsEnabled);
+            }
+            catch
+            {
+                stage = "menu-command-availability";
+                try
+                {
+                    // The tooltip belongs to the displayed menu. The controller query below is a later observation.
+                    long sampledAt = WindowsInterruptClock.NowMs;
+                    var snapshot = broker.LastCapture?.Snapshot;
+                    WindowsTarget? captured = snapshot is not null && WindowsTarget.TryDecode(snapshot.Target, out var target) ? target : null;
+                    var focus = N.ReadFocus();
+                    TestContext.Current.TestOutputHelper?.WriteLine("MoreGlossary immediately after the enabled assertion failed: " + JsonSerializer.Serialize(new
+                    {
+                        SampledAtMs = sampledAt,
+                        MenuIsOpen = menu.IsOpen,
+                        CommandIsEnabled = command.IsEnabled,
+                        DisplayedToolTip = command.ToolTip as string,
+                        ExpectedRoot = native.Root.ToInt64(),
+                        ExpectedControl = native.A.ToInt64(),
+                        ActualRoot = focus.Root.ToInt64(),
+                        ActualControl = focus.Control.ToInt64(),
+                        focus.GuiThreadInfoSucceeded,
+                        LastBrokerObservedAtMs = snapshot?.ObservedAtMs,
+                        LastBrokerAgeAtSampleMs = sampledAt - snapshot?.ObservedAtMs,
+                        LastBrokerRoot = captured?.RootHwnd,
+                        LastBrokerControl = captured?.ControlHwnd
+                    }));
+                    long settingsReadAt = WindowsInterruptClock.NowMs;
+                    string? reason = controller.GetGlossarySettingsState().UnavailableReason;
+                    TestContext.Current.TestOutputHelper?.WriteLine("Controller glossary settings reread after the disabled menu sample: " + JsonSerializer.Serialize(new
+                    {
+                        ReadStartedAtMs = settingsReadAt,
+                        ReadCompletedAtMs = WindowsInterruptClock.NowMs,
+                        UnavailableReason = reason
+                    }));
+                }
+                catch (Exception error) when (error is not OutOfMemoryException)
+                {
+                    TestContext.Current.TestOutputHelper?.WriteLine("Disabled glossary menu observation unavailable: " + error.GetType().Name);
+                }
+                throw;
+            }
             condition = "MoreGlossary Click observed and menu closed";
             command.Click += (_, _) =>
             {
