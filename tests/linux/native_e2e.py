@@ -156,6 +156,9 @@ def gtk4_click_snapshot(snapshot, name):
             if key in controls
         },
         "scrollValue": controls.get("typelay-language-menu", {}).get("scrollValue"),
+        "parent": {key: snapshot.get(key) for key in ("fullscreen", "width", "height", "scale")},
+        "visible": item.get("visible"),
+        "enabled": item.get("enabled"),
         "instance": item.get("instance"),
         "bounds": item.get("surfaceGeometry"),
         "paintedBounds": paint.get("geometry"),
@@ -168,12 +171,27 @@ def gtk4_click_snapshot(snapshot, name):
     }
 
 
-def report_gtk4_unsent_click(name, phase, selected, current, point, pointer, changed_since):
+def report_gtk4_unsent_click(
+    name,
+    phase,
+    selected,
+    current,
+    point,
+    pointer,
+    changed_since=None,
+    dimensions=None,
+    origin=None,
+    hover_rejection=None,
+):
     before = gtk4_click_snapshot(selected, name) if selected is not None else None
     after = gtk4_click_snapshot(current, name)
     frames = after["frames"]
     changed, painted = frames.get("layoutChangedFrame"), frames.get("paintedFrame")
+    parent = after["parent"]
     conditions = {
+        "visible": after["visible"] is True,
+        "enabled": after["enabled"] is True,
+        "fullscreen": parent["fullscreen"] is True,
         "paintAfterLayoutChange": type(changed) is int
         and type(painted) is int
         and -1 <= changed < painted,
@@ -184,6 +202,13 @@ def report_gtk4_unsent_click(name, phase, selected, current, point, pointer, cha
             and frames["layoutChangedAtMonoUs"] >= changed_since
         ),
     }
+    if dimensions is not None:
+        conditions["parentMatchesNested"] = all(
+            type(parent[key]) in (int, float) and parent[key] > 0
+            for key in ("width", "height", "scale")
+        ) and tuple(parent[key] * parent["scale"] for key in ("width", "height")) == tuple(
+            dimensions
+        )
     if before is not None:
         old_bounds, bounds = before["bounds"] or {}, after["bounds"] or {}
         conditions.update(
@@ -204,6 +229,9 @@ def report_gtk4_unsent_click(name, phase, selected, current, point, pointer, cha
         "current": after,
         "fixedPoint": point,
         "xPointer": pointer,
+        "nestedSize": dimensions,
+        "nestedOrigin": origin,
+        "hoverRejection": hover_rejection,
         "changeExpectedSinceMonoUs": changed_since,
         "clickSent": False,
     }
@@ -259,11 +287,11 @@ def glossary_more_render_observation(candidate, control, observed_at):
     return observation
 
 
-def glossary_hover_current(
+def gtk4_hover_rejection(
     control, observed_at, before, point, moved_at, pointer, origin, move_started
 ):
     if not glossary_painted_geometry(control, observed_at) or observed_at < moved_at:
-        return False
+        return "no current painted geometry after move"
     surface, original = control["surfaceGeometry"], before["surfaceGeometry"]
     if not (
         control.get("instance") == before.get("instance")
@@ -274,7 +302,7 @@ def glossary_hover_current(
         and surface["x"] <= point[0] / surface["scale"] < surface["x"] + surface["width"]
         and surface["y"] <= point[1] / surface["scale"] < surface["y"] + surface["height"]
     ):
-        return False
+        return "selected identity or fixed point outside current bounds"
     if (
         type(move_started) is not int
         or not 0 < move_started <= moved_at <= observed_at
@@ -294,7 +322,7 @@ def glossary_hover_current(
         or (pointer["X"], pointer["Y"]) != tuple(a + b for a, b in zip(origin, point))
         or control.get("enabled") is not True
     ):
-        return False
+        return "X pointer does not establish the fixed point in the owned window"
     surface, device = control["surfaceGeometry"], control.get("pointerObservation")
     if (
         not isinstance(device, dict)
@@ -304,7 +332,7 @@ def glossary_hover_current(
         or type(device.get("nativeInstance")) is not int
         or device["nativeInstance"] <= 0
     ):
-        return False
+        return "GDK device is not on the selected surface"
     ancestors = device.get("pickedAncestors")
     if (
         not isinstance(ancestors, list)
@@ -318,13 +346,13 @@ def glossary_hover_current(
             if isinstance(item, dict)
         )
     ):
-        return False
+        return "GTK pick is not the target or a descendant"
     if (
         control.get("pointerInside") is True
         and type(control.get("pointerEnteredAtMonoMs")) is int
         and control["pointerEnteredAtMonoMs"] > 0
     ):
-        return True
+        return None
     # Without native crossing history, bind the captured motion dispatch to the pixel.
     # Callback coordinates are widget-local; GDK device coordinates are native
     # surface-local. Both must identify the original one physical pixel.
@@ -364,13 +392,13 @@ def glossary_hover_current(
         return True
 
     if not same_position(device, native):
-        return False
+        return "GDK motion position differs from the fixed point"
     capture, old_capture = (
         control.get("pointerCaptureObservation", {}),
         before.get("pointerCaptureObservation", {}),
     )
     if not isinstance(capture, dict) or not isinstance(old_capture, dict):
-        return False
+        return "GTK motion capture observer unavailable"
     for current, old, attached, old_attached, left, phase in (
         (
             control.get("pointerDispatchObservation", {}),
@@ -390,7 +418,7 @@ def glossary_hover_current(
         ),
     ):
         if not isinstance(current, dict) or not isinstance(old, dict):
-            return False
+            return f"GTK motion dispatch missing for phase {phase}"
         if (
             type(attached) is not int
             or not 0 < attached <= move_started
@@ -420,8 +448,8 @@ def glossary_hover_current(
             or current.get("eventNativeInstance") != device["nativeInstance"]
             or not same_position(current, local, graphene=True)
         ):
-            return False
-    return True
+            return f"GTK motion dispatch does not establish the fixed point for phase {phase}"
+    return None
 
 
 def glossary_gtk3_hover_current(control, observed_at, before, point, moved_at, pointer, origin):
@@ -989,6 +1017,7 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                     observations = {}
                     evidence = None
                     latest = {}
+                    hover_rejection = None
 
                     def layout_observation(snapshot):
                         # Public widget geometry distinguishes a moving popup from
@@ -1136,6 +1165,9 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                 evidence and evidence["pixelPoint"],
                                 evidence and evidence.get("xPointer"),
                                 changed_since,
+                                dimensions,
+                                [int(geometry[key]) for key in ("X", "Y")],
+                                hover_rejection,
                             )
 
                     try:
@@ -1179,17 +1211,21 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                     clicks.append(evidence)
                     # A window may extend past the X screen: XTest would silently
                     # clamp an unreachable point, even when window bounds match GTK.
-                    assert all(
-                        0 <= origin + coordinate < limit
-                        for origin, coordinate, limit in zip(
-                            evidence["nestedOrigin"], pixel, display, strict=True
-                        )
-                    ), f"{name}: point outside actual X display: {evidence}"
                     # One move, then the same mapped control's current hover and
                     # painted bounds must still cover that fixed point. GTK3's
                     # PRELIGHT is a current observation, not a crossing history.
                     # Never search offsets or move again.
-                    execute("xdotool", "mousemove", "--window", window, *pixel)
+                    try:
+                        assert all(
+                            0 <= origin + coordinate < limit
+                            for origin, coordinate, limit in zip(
+                                evidence["nestedOrigin"], pixel, display, strict=True
+                            )
+                        ), f"{name}: point outside actual X display: {evidence}"
+                        execute("xdotool", "mousemove", "--window", window, *pixel)
+                    except (OSError, subprocess.SubprocessError, AssertionError) as error:
+                        report_unsent(f"pointer move failed: {error}", actual)
+                        raise
                     moved_at = time.monotonic_ns() // 1000000
                     evidence["moveFinishedAtMonoMs"] = moved_at
                     try:
@@ -1219,9 +1255,11 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                     if overlay_control:
 
                         def hovered():
+                            nonlocal hover_rejection
                             current = ready()
                             evidence["hoverGeometryReadiness"] = dict(observations)
                             if current is None:
+                                hover_rejection = "point geometry no longer ready"
                                 return None
                             observed, item, current_pixel = current
                             observation = {
@@ -1254,22 +1292,8 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                             }
                             evidence.setdefault("firstHoverObservation", observation)
                             evidence["hoverObservation"] = observation
-                            return (
-                                observed
-                                if (
-                                    toolkit == "gtk3"
-                                    and glossary_gtk3_hover_current(
-                                        item,
-                                        observed.get("observedAtMs"),
-                                        control,
-                                        pixel,
-                                        moved_at,
-                                        evidence["xPointer"],
-                                        evidence["nestedOrigin"],
-                                    )
-                                )
-                                or toolkit == "gtk4"
-                                and glossary_hover_current(
+                            if toolkit == "gtk4":
+                                hover_rejection = gtk4_hover_rejection(
                                     item,
                                     observed.get("observedAtMs"),
                                     control,
@@ -1278,6 +1302,18 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                     evidence["xPointer"],
                                     evidence["nestedOrigin"],
                                     evidence["moveStartedAtMonoMs"],
+                                )
+                                return observed if hover_rejection is None else None
+                            return (
+                                observed
+                                if glossary_gtk3_hover_current(
+                                    item,
+                                    observed.get("observedAtMs"),
+                                    control,
+                                    pixel,
+                                    moved_at,
+                                    evidence["xPointer"],
+                                    evidence["nestedOrigin"],
                                 )
                                 else None
                             )
@@ -1520,13 +1556,39 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                     "typelay-apply-languages",
                                 ):
                                     break
-                                menu, direction = observe(
-                                    lambda value: glossary_menu_scroll_observation(
+                                latest = {}
+
+                                def scroll_geometry(value):
+                                    nonlocal latest
+                                    latest = value
+                                    return glossary_menu_scroll_observation(
                                         value, name, control["instance"]
-                                    ),
-                                    "painted menu scroll geometry",
-                                    require_visible=True,
-                                )
+                                    )
+
+                                try:
+                                    menu, direction = observe(
+                                        scroll_geometry,
+                                        "painted menu scroll geometry",
+                                        require_visible=True,
+                                    )
+                                except (
+                                    AssertionError,
+                                    TimeoutError,
+                                    subprocess.TimeoutExpired,
+                                ) as error:
+                                    report_gtk4_unsent_click(
+                                        name, str(error), None, latest, None, None
+                                    )
+                                    print(
+                                        "GTK4 menu: "
+                                        + json.dumps(
+                                            latest.get("overlayControls", {}).get(
+                                                "typelay-language-menu", {}
+                                            )
+                                        ),
+                                        file=sys.stderr,
+                                    )
+                                    raise
                                 if not direction:
                                     break
                                 previous = menu["scrollValue"]

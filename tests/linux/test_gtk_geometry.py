@@ -37,7 +37,6 @@ from gtk_session_reentry import (  # noqa: E402
 from hy_package_e2e import package_scroll_value, rectangle_contains  # noqa: E402
 from native_e2e import (  # noqa: E402
     glossary_gtk3_hover_current,
-    glossary_hover_current,
     glossary_interaction_loss,
     glossary_menu_scroll_advanced,
     glossary_menu_scroll_direction,
@@ -48,6 +47,7 @@ from native_e2e import (  # noqa: E402
     glossary_popup_fits,
     glossary_save_outcome,
     glossary_source_click_ready,
+    gtk4_hover_rejection,
 )
 from support.gtk_settings_geometry import settings_viewport_from_pane  # noqa: E402
 
@@ -691,6 +691,54 @@ class GlossaryPaintGeometryTests(unittest.TestCase):
                     selectable(102000)
                 )  # The previous edit cannot authorize the retry.
 
+    def test_retry_waits_for_the_failure_feedback_and_its_own_completed_layout(self):
+        row = self.control()
+        name = "typelay-language-choice-ko"
+        label = {"text": "正在保存…"}
+        actual = dict(
+            fullscreen=True,
+            width=1280,
+            height=800,
+            scale=1,
+            observedAtMs=120,
+            overlayControls={name: row, "fixture-language-feedback": label},
+        )
+        paint = row["paintObservation"]
+        paint.update(layoutChangedAtMonoUs=101000, layoutChangedFrame=7)
+        message = "保存未确认，请重新选择语言。"
+
+        def point():
+            return language_configuration_point(
+                actual, name, (1280, 800), changed_since=101000, feedback=message
+            )
+
+        self.assertIsNone(point())
+        label["text"] = message
+        paint.update(layoutChangedAtMonoUs=105000, layoutChangedFrame=8)
+        self.assertIsNone(point())
+        paint.update(frame=9, paintedFrame=9, layoutFrame=9, paintFrame=9)
+        self.assertEqual(point(), (988, 432))
+
+    def test_layout_change_is_bounded_by_input_start_and_observation_time(self):
+        control = self.control()
+        paint = control["paintObservation"]
+        paint["layoutChangedFrame"] = 7
+        for observed in (120, 121, 160):
+            start = observed * 1000 - 37
+            for change in (
+                start - 1,
+                start,
+                start + 1,
+                observed * 1000 + 999,
+                (observed + 1) * 1000,
+            ):
+                with self.subTest(observed=observed, change=change):
+                    paint["layoutChangedAtMonoUs"] = change
+                    self.assertEqual(
+                        glossary_painted_geometry(control, observed, changed_since=start),
+                        start <= change and change // 1000 <= observed,
+                    )
+
     def test_fixed_point_must_hit_fresh_bounds_not_equal_new_center(self):
         c = self.control()
         before = self.control()
@@ -710,7 +758,9 @@ class GlossaryPaintGeometryTests(unittest.TestCase):
             pointer = dict(
                 status="captured", observedAtMonoMs=109, ownedNiri=99, WINDOW=99, X=976, Y=432
             )
-            return glossary_hover_current(control, at, before, point, 108, pointer, (0, 0), 107)
+            return (
+                gtk4_hover_rejection(control, at, before, point, 108, pointer, (0, 0), 107) is None
+            )
 
         self.assertTrue(hovered(c))
         # Actual 8b824cf missed point: after relayout it is above the button.
@@ -893,8 +943,11 @@ class GlossaryMotionGeometryTests(unittest.TestCase):
             )
 
     def admitted(self):
-        return glossary_hover_current(
-            self.control, 120, self.before, self.point, 108, self.pointer, self.origin, 107
+        return (
+            gtk4_hover_rejection(
+                self.control, 120, self.before, self.point, 108, self.pointer, self.origin, 107
+            )
+            is None
         )
 
     def test_crossing_and_owned_pick_identify_button_at_the_measured_xtest_pixel(self):
