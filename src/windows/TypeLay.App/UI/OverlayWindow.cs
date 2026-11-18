@@ -134,7 +134,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView, ISourceInter
     {
         get; set;
     }
-    public Func<SessionViewToken, Task<bool>>? ConfirmGlossarySource { get; set; }
+    public Func<SessionViewToken, Action, Task<bool>>? ConfirmGlossarySource { get; set; }
     public Func<SessionViewToken, SessionGlossaryEntry?>? BeginGlossaryRequested
     {
         get; set;
@@ -1918,9 +1918,16 @@ internal sealed partial class OverlayWindow : Window, ISessionView, ISourceInter
             {
                 if (menuGlossarySource is not { IsUsable: true } basis || _sourceGlossarySnapshot is not { } current
                     || current with { ObservedAtMs = basis.ObservedAtMs, Bounds = basis.Bounds } != basis
-                    || !KeyboardHook.ExactNativeFieldFocused(viewToken.Target.AsWindows())
-                    || !await confirm(viewToken) || !ContextCurrent() || menu.IsOpen || EditingComposition)
+                    || !KeyboardHook.ExactNativeFieldFocused(viewToken.Target.AsWindows()))
                     return;
+                Task opening = Task.CompletedTask;
+                await confirm(viewToken, () =>
+                {
+                    if (ContextCurrent() && !menu.IsOpen && !EditingComposition)
+                        opening = OpenGlossaryAsync(viewToken);
+                });
+                await opening;
+                return;
             }
             await OpenGlossaryAsync(viewToken);
         };

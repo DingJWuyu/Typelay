@@ -320,12 +320,14 @@ internal sealed class SessionScenario : IDisposable
         }
         public bool TryRead(out InputNotice? notice) => Notices.TryDequeue(out notice);
         public List<InputLease> PublishedLeases { get; } = [];
+        public List<AcceptancePermit?> PublishedPermits { get; } = [];
         public List<ShortcutLease> PublishedShortcuts { get; } = [];
         public void Publish(InputLease lease, AcceptancePermit? permit)
         {
             RetireUnusedPublication();
             _publication = lease;
             PublishedLeases.Add(lease);
+            PublishedPermits.Add(permit);
             Permit = permit;
         }
         public void PublishShortcut(ShortcutLease lease)
@@ -585,7 +587,7 @@ internal sealed class SessionScenario : IDisposable
         {
             get; set;
         }
-        public Func<SessionViewToken, Task<bool>>? ConfirmGlossarySource { get; set; }
+        public Func<SessionViewToken, Action, Task<bool>>? ConfirmGlossarySource { get; set; }
         public Func<SessionViewToken, SessionGlossaryEntry?>? BeginGlossaryRequested
         {
             get; set;

@@ -351,13 +351,20 @@ public sealed partial class SessionController
         internal TaskCompletionSource<InputSnapshot?>? PendingSourceObservation { get; private set; }
 
         private long _sourceObservationDeadline;
+        private Func<SessionViewToken, bool>? _confirmedSourceCurrent;
+        private void EndSourceObservation()
+        {
+            PendingSourceObservation?.TrySetResult(null);
+            PendingSourceObservation = null;
+            _confirmedSourceCurrent = null;
+        }
         internal void ExpireSourceObservation(long now)
         {
             if (now > _sourceObservationDeadline)
                 PendingSourceObservation?.TrySetResult(null);
         }
 
-        internal async Task<bool> ConfirmSourceAsync(SessionViewToken token)
+        internal async Task<bool> ConfirmSourceAsync(SessionViewToken token, Action open)
         {
             long clickedAt = owner._loop.NowMs;
             // Mouse edges in the menu advance ContentEpoch. Freeze the admitted click and require
@@ -380,24 +387,36 @@ public sealed partial class SessionController
             var observation = new TaskCompletionSource<InputSnapshot?>(TaskCreationOptions.RunContinuationsAsynchronously);
             _sourceObservationDeadline = clickedAt + Limits.ObservationMaxAgeMs;
             PendingSourceObservation = observation;
+            owner.RevokeInput("glossary-menu");
+            owner._permitUntil = 0;
             try
             {
                 var fresh = await observation.Task;
-                long now = owner._loop.NowMs;
-                return fresh is { IsUsable: true } && fresh.ObservedAtMs >= clickedAt && fresh.ObservedAtMs <= now
-                    && now - clickedAt <= Limits.ObservationMaxAgeMs && owner._session.Current == fresh
-                    && fresh with { ObservedAtMs = basis.ObservedAtMs, Bounds = basis.Bounds } == basis
+                if (fresh is not { IsUsable: true } || fresh.ObservedAtMs < clickedAt
+                    || fresh with { ObservedAtMs = basis.ObservedAtMs, Bounds = basis.Bounds } != basis)
+                    return false;
+                bool Current(SessionViewToken requested) => requested == token && ReferenceEquals(PendingSourceObservation, observation)
+                    && fresh.ObservedAtMs <= owner._loop.NowMs && owner._loop.NowMs <= _sourceObservationDeadline
+                    && owner._session.Current == fresh
                     && sourceVersion == (hook.ConnectionId, hook.CommandGeneration, hook.UserEpoch, hook.SourceUserEpoch,
                         hook.ContentEpoch, hook.ForegroundEpoch, hook.WindowEpoch)
-                    && state == (owner._configurationRevision, owner._settings.Revision, owner._session.Revision, owner._session.State)
-                    && QualifyGlossaryEntry(token) is null;
+                    && state == (owner._configurationRevision, owner._settings.Revision, owner._session.Revision, owner._session.State);
+                if (!Current(token) || QualifyGlossaryEntry(token) is not null)
+                    return false;
+                _confirmedSourceCurrent = Current;
+                open(); // Begin registers the form synchronously, while every capture still withholds permits.
+                return true;
             }
-            finally { PendingSourceObservation = null; }
+            finally
+            {
+                EndSourceObservation();
+            }
         }
 
         internal SessionGlossaryEntry? BeginGlossaryEntry(SessionViewToken token)
         {
-            if (QualifyGlossaryEntry(token) is not null)
+            if (PendingSourceObservation is not null && _confirmedSourceCurrent?.Invoke(token) != true
+                || QualifyGlossaryEntry(token) is not null)
                 return null;
             var directions = ModelCatalog.Packages.Packages.SelectMany(package => package.Directions)
                 .DistinctBy(direction => direction.Id).Select(direction => new GlossaryDirectionChoice(

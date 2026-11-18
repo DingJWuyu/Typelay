@@ -27,9 +27,10 @@ public sealed class InlineGlossaryTests
         Assert.Null(s.View.BeginGlossaryRequested!(token));
         Assert.NotNull(s.View.ConfirmGlossarySource);
         var confirm = s.View.ConfirmGlossarySource;
-        var waiting = confirm(token);
+        SessionGlossaryEntry? entry = null;
+        var waiting = confirm(token, () => entry = s.View.BeginGlossaryRequested!(token));
         Assert.False(waiting.IsCompleted);
-        Assert.False(await confirm(token));
+        Assert.False(await confirm(token, () => Assert.Fail("Duplicate command opened")));
         InputCapture Captured(InputSnapshot source) => new(source, FocusMember.Source, "org.typelay.ControlledApp",
             s.Input.UserEpoch, s.Input.ForegroundEpoch, new(token.Target, s.Input.CommandGeneration, s.Input.SessionBindings, true, true));
         s.CompleteCapture(Captured(s.Fresh)); // Started before this command.
@@ -51,9 +52,40 @@ public sealed class InlineGlossaryTests
         s.CompleteCapture(Captured(fresh));
         Assert.True(waiting.IsCompleted);
         Assert.Equal(allowed, await waiting);
-        if (allowed)
-            Assert.NotNull(s.View.BeginGlossaryRequested!(token));
+        Assert.Equal(allowed, entry is not null);
         Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public async Task ConfirmingTheSourceForAGlossaryMenuCannotPublishAWritePermit()
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: SessionScenario.HyRelease,
+            modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true);
+        s.View.SourceGlossarySupported = true;
+        s.ReadyCandidate();
+        Assert.NotNull(s.Input.Permit);
+        var target = s.View.Token;
+        s.Service.PendingCapture = new();
+        s.Tick();
+        int publications = s.Input.PublishedPermits.Count;
+        SessionGlossaryEntry? entry = null;
+        var waiting = s.View.ConfirmGlossarySource!(target, () =>
+        {
+            Assert.Null(s.Input.Permit);
+            entry = s.View.BeginGlossaryRequested!(target);
+        });
+        Assert.Null(s.Input.Permit);
+        Assert.Null(s.View.BeginGlossaryRequested!(target));
+        s.CompleteCapture(new(s.Fresh, FocusMember.Source, s.Service.Application, s.Input.UserEpoch, s.Input.ForegroundEpoch,
+            new(target.Target, s.Input.CommandGeneration, s.Input.SessionBindings, true, true)));
+        Assert.Null(s.Input.Permit);
+        s.Tick();
+        Assert.True(waiting.IsCompleted);
+        Assert.True(await waiting);
+        Assert.Null(s.Input.Permit);
+        Assert.NotNull(entry);
+        Assert.All(s.Input.PublishedPermits.Skip(publications), Assert.Null);
         Assert.Empty(s.Service.Writes);
     }
 

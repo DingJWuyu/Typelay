@@ -65,9 +65,9 @@ public sealed partial class NativeSourceGlossaryTests
             (nint Root, nint Control)? clickFocus = null;
             bool? sourceConfirmed = null;
             var confirm = view.ConfirmGlossarySource!;
-            view.ConfirmGlossarySource = async token =>
+            view.ConfirmGlossarySource = async (token, open) =>
             {
-                bool confirmed = await confirm(token);
+                bool confirmed = await confirm(token, open);
                 sourceConfirmed = confirmed;
                 return confirmed;
             };

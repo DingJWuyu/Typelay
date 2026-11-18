@@ -1008,7 +1008,7 @@ public sealed partial class SessionController : IDisposable
                 ? (_session.Revision, request.SourceUserEpoch, contentEpoch, request.ForegroundEpoch, windowEpoch)
                 : default;
             var practiceBinding = _ownedSource.AutomaticPracticeFor(snapshot.Target);
-            if (freshWake is null && !_glossary.HasEntry && inputUnchanged && result.Focus == FocusMember.Source && _model.Ready
+            if (freshWake is null && !_glossary.HasEntry && _glossary.PendingSourceObservation is null && inputUnchanged && result.Focus == FocusMember.Source && _model.Ready
                 && !_ownedSource.RetiredAutomaticTarget(snapshot.Target)
                 && (_settings.Value.ExperimentalWriteback || practiceBinding is not null
                     || _sessionShortcuts is { SourceLocalAcceptanceVersion: 1 })
