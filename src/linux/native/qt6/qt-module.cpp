@@ -413,9 +413,13 @@ public:
         connect(&expiry_, &QTimer::timeout, this, [this] {
             refreshLanguageConfiguration();
             advanceShortcut();
-            if (card_ && (now() > overlayUntil_ || !overlayTarget_ || !overlayTarget_->field
+            const qint64 current = card_ ? now() : 0;
+            if (card_ && (current > overlayUntil_ || !overlayTarget_ || !overlayTarget_->field
                 || !overlayTarget_->field->window()->isActiveWindow()
-                || (paused() && !pauseCurrent(overlayTarget_, overlayAuthority_)))) hideOverlay();
+                || (paused() && !pauseCurrent(overlayTarget_, overlayAuthority_)))) {
+                traceExpiredOverlay("timer", current);
+                hideOverlay();
+            }
             refreshHint();
             refreshGlossaryFocus();
         });
@@ -1979,6 +1983,11 @@ private:
         motionSpring_.velocity = 0;
         disconnect(&overlayMotion_, nullptr, this, nullptr);
     }
+    void traceExpiredOverlay(const char *source, qint64 current) const {
+        if (card_ && current > overlayUntil_ && qEnvironmentVariableIsSet("TYPELAY_QT_PROBE"))
+            std::fprintf(stderr, "tlqt-overlay-expired source=%s observedAtMs=%lld expiresAtMs=%lld\n", source,
+                static_cast<long long>(current), static_cast<long long>(overlayUntil_));
+    }
     void hideOverlay() {
         revokeEditorOrdered();
         stopOverlayMotion("hide-stop");
@@ -3108,19 +3117,17 @@ private:
         bool failed = false;
     };
     struct GlossaryTermEvidence {
-        enum Status { Unproven, Inspecting, Clear };
-        Status status = Unproven;
+        bool clear = false;
         const char *reason = "unobserved";
 
-        void revoke(const char *cause) { status = Unproven; reason = cause; }
+        void revoke(const char *cause) { clear = false; reason = cause; }
         void rejectInspection(const char *cause) {
-            // A synchronous provider notification has its own, newer revocation.
-            if (status == Inspecting) revoke(cause);
+            // A synchronous provider notification already supplied a newer reason.
+            if (!reason) reason = cause;
         }
         const char *description() const {
-            if (status == Clear) return "Clear";
-            if (status == Inspecting) return "provider-inspection";
-            return reason;
+            if (clear) return "Clear";
+            return reason ? reason : "provider-inspection";
         }
     };
     struct GlossaryForm {
@@ -3287,7 +3294,7 @@ private:
         const QPointer<QObject> owner = field->property(ProviderProperty).value<QObject *>();
         auto *provider = owner ? qobject_cast<TypeLayFcitxQtV1 *>(owner.data()) : nullptr;
         auto &evidence = form->termEvidence[index];
-        evidence.status = GlossaryTermEvidence::Inspecting;
+        evidence.revoke(nullptr);
         const auto rejected = [&](const char *reason) {
             evidence.rejectInspection(reason);
             return unknown(reason);
@@ -3312,7 +3319,7 @@ private:
         }
         if (!clear(state)) return rejected("provider-not-clear");
         if (!provider->validateLocal(field, &state)) return rejected("local-validation");
-        evidence.status = GlossaryTermEvidence::Clear;
+        evidence.clear = true;
         form->clearText[index] = text;
         return QStringLiteral("Clear");
     }
@@ -3341,19 +3348,19 @@ private:
         // Buttons and scope never manufacture Clear. Both words must have an
         // actual per-field Clear observation for these exact unchanged values.
         for (int index = 0; index < 2; ++index) {
-            const char *reason = nullptr;
-            if (!form->terms[index]) reason = "field-missing";
-            else if (form->termEvidence[index].status != GlossaryTermEvidence::Clear)
-                reason = form->termEvidence[index].description();
-            else if (!form->providers[index]) reason = "provider-missing";
-            else if (form->terms[index]->text() != form->clearText[index]) reason = "text-mismatch";
-            else {
-                // Normal focus departure may remove the provider property.
-                auto *bound = form->terms[index]->property(ProviderProperty).value<QObject *>();
-                if (bound && bound != form->providers[index]) reason = "provider-mismatch";
-            }
-            if (observation) observation->insert(index == 0 ? "source" : "target", QLatin1String(reason ? reason : "Clear"));
-            if (reason) return QStringLiteral("Unknown");
+            const char *word = index == 0 ? "source" : "target";
+            const auto unknown = [&](const char *reason) {
+                if (observation) observation->insert(word, QLatin1String(reason));
+                return QStringLiteral("Unknown");
+            };
+            if (!form->terms[index]) return unknown("field-missing");
+            if (!form->termEvidence[index].clear) return unknown(form->termEvidence[index].description());
+            if (!form->providers[index]) return unknown("provider-missing");
+            if (form->terms[index]->text() != form->clearText[index]) return unknown("text-mismatch");
+            // Normal focus departure may remove the provider property.
+            auto *bound = form->terms[index]->property(ProviderProperty).value<QObject *>();
+            if (bound && bound != form->providers[index]) return unknown("provider-mismatch");
+            if (observation) observation->insert(word, QStringLiteral("Clear"));
         }
         return QStringLiteral("Clear");
     }
@@ -4241,7 +4248,10 @@ private:
                 overlayUntil_ = until;
                 overlayAuthority_ = data.value("authority").toObject();
             }
-            else hideOverlay();
+            else {
+                traceExpiredOverlay("renew", current);
+                hideOverlay();
+            }
         } else if (op == "overlay-edit") {
             if (!overlayCurrent(data)) return {{"visible", overlayActive()}, {"editing", editor_ && !editor_->isReadOnly()}};
             if (!glossary_ && target == overlayTarget_ && overlayActive() && overlayCurrent(data) && pendingEdit_ && data.value("allowed").toBool()

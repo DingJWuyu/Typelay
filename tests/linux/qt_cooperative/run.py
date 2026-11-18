@@ -3122,18 +3122,26 @@ def ordered_controls(
                     )["visible"]
                     original = state()[field]
                     before = len(native.events)
+                    renewal = {}
+                    last_click = {}
 
                     def renew():
-                        native.call(
+                        expires_at = now_ms() + 800
+                        reply = native.call(
                             "overlay-renew",
                             {
                                 "target": target,
                                 "generation": generation,
                                 "revision": 1,
                                 "authority": publication["authority"],
-                                "expiresAtMs": now_ms() + 800,
+                                "expiresAtMs": expires_at,
                             },
                         )
+                        visible = reply.get("visible") if isinstance(reply, dict) else None
+                        if visible is True:
+                            renewal["lastVisibleExpiresAtMs"] = expires_at
+                        elif visible is False and "firstHiddenExpiresAtMs" not in renewal:
+                            renewal["firstHiddenExpiresAtMs"] = expires_at
 
                     def observe(predicate, message):
                         def check():
@@ -3146,6 +3154,17 @@ def ordered_controls(
                         renew()
                         snapshot = state()
                         control = snapshot["overlayControls"][name]
+                        assert control["visible"] and control["enabled"]
+                        bounds, scale = control["geometry"], state()["scale"]
+                        last_click.clear()
+                        last_click.update(
+                            role=name,
+                            snapshotAtMs=snapshot.get("observedAtMs"),
+                            instance=control.get("instance"),
+                            geometry=bounds,
+                            scale=scale,
+                            requestedAtMs=now_ms(),
+                        )
                         if observation is not None:
                             observation["focusBeforeClick"] = next(
                                 (
@@ -3155,9 +3174,6 @@ def ordered_controls(
                                 ),
                                 "unknown",
                             )
-                        assert control["visible"] and control["enabled"]
-                        bounds, scale = control["geometry"], snapshot["scale"]
-                        if observation is not None:
                             observation["clickCommand"] = "requested"
                         run(
                             [
@@ -3172,7 +3188,7 @@ def ordered_controls(
                             ],
                             env=environment,
                         )
-
+                        last_click["returnedAtMs"] = now_ms()
                         if observation is not None:
                             observation["clickCommand"] = "returned"
 
@@ -3234,6 +3250,7 @@ def ordered_controls(
                                 event["value"]["formId"] == entry["formId"]
                                 for event in received("sessionGlossaryAdd")
                             )
+                            observation.update(click=last_click, renewal=renewal)
                             print("qt-glossary-save", json.dumps(observation), flush=True)
 
                     def unchanged():
@@ -3264,7 +3281,16 @@ def ordered_controls(
                                 actual,
                                 original,
                             )
-                        assert state()["editorText"] == "Kept candidate"
+                        preview = state()
+                        assert preview["editorText"] == "Kept candidate", (
+                            field,
+                            view_state,
+                            finish,
+                            preview["observedAtMs"],
+                            preview["overlayVisible"],
+                            last_click,
+                            renewal,
+                        )
                         assert state()["editorReadOnly"] and not state()["editorFocused"]
                         assert not events("beginEdit")
                         assert not [
@@ -3552,7 +3578,9 @@ def ordered_controls(
                                 observe(
                                     lambda value: value.get("glossary", {}).get("feedback")
                                     == "请先完成两个词的输入，确认输入法已结束组合后再保存。",
-                                    f"{finish} refuses Save before the focus handoff",
+                                    "reset revokes the previous word's Clear evidence"
+                                    if finish == "reset"
+                                    else "composing refuses Save before the focus handoff",
                                 )
                                 assert not events("sessionGlossaryAdd")
                             assert observation["clicked"] is True, observation
