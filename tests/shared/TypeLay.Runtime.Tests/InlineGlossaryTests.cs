@@ -77,6 +77,37 @@ public sealed class InlineGlossaryTests
     }
 
     [Fact]
+    public async Task SourceInputDuringTheFinalGlossaryFocusCheckPreventsFormRegistration()
+    {
+        using var s = new SessionScenario(translationRelease: SessionScenario.HyRelease,
+            modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true);
+        s.View.SourceGlossarySupported = true;
+        s.ReadyCandidate();
+        var token = s.View.Token;
+        var confirm = s.View.ReserveGlossarySource!(token);
+        Assert.NotNull(confirm);
+        bool focusChecked = false;
+        SessionGlossaryEntry? entry = null;
+        var waiting = confirm(() =>
+        {
+            s.Input.FocusObservation = _ =>
+            {
+                s.Input.FocusObservation = null;
+                s.Input.UserEpoch++;
+                focusChecked = true;
+                return FocusMember.Source;
+            };
+            entry = s.View.BeginGlossaryRequested!(token);
+        });
+        s.Tick();
+        Assert.True(await waiting);
+        Assert.True(focusChecked);
+        Assert.Null(entry);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
     public async Task ConfirmingTheSourceForAGlossaryMenuCannotPublishAWritePermit()
     {
         using var s = new SessionScenario(experimental: true, translationRelease: SessionScenario.HyRelease,

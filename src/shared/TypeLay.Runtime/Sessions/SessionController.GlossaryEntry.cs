@@ -427,7 +427,9 @@ public sealed partial class SessionController
 
         internal SessionGlossaryEntry? BeginGlossaryEntry(SessionViewToken token)
         {
-            if (PendingSourceObservation is not null && _confirmedSourceCurrent?.Invoke(token) != true
+            var observation = PendingSourceObservation;
+            var confirmed = _confirmedSourceCurrent;
+            if (observation is not null && confirmed is null
                 || QualifyGlossaryEntry(token) is not null)
                 return null;
             var directions = ModelCatalog.Packages.Packages.SelectMany(package => package.Directions)
@@ -435,7 +437,7 @@ public sealed partial class SessionController
                     direction.Source, direction.Target, direction.SourceName, direction.TargetName)).ToArray();
             bool sourceOrigin = owner._session.State is SessionState.ValidTranslation or SessionState.EditedTranslationPending;
             var entry = new SessionGlossaryEntry(Guid.NewGuid(), token, owner._settings.Revision, Array.AsReadOnly(directions), sourceOrigin);
-            _glossaryEntry = new(entry)
+            var form = new GlossaryEntrySession(entry)
             {
                 OriginState = owner._session.State,
                 Source = owner._session.Current,
@@ -449,6 +451,11 @@ public sealed partial class SessionController
                 AppliedGlossary = owner._session.AppliedGlossary,
                 Application = owner._styleObservation?.Application
             };
+            // The final focus query can return the same field after its input epoch advanced.
+            if (_glossaryEntry is not null || !ReferenceEquals(observation, PendingSourceObservation)
+                || confirmed is not null && !confirmed(token))
+                return null;
+            _glossaryEntry = form;
             if (sourceOrigin)
             {
                 _sourceGlossaryReadRevision++;
