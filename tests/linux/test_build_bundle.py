@@ -748,18 +748,50 @@ class QtDesktopAdmissionTests(unittest.TestCase):
         from qt_cooperative.run import session
 
         self.complete_client()
+        previous = self.qt / "ordered-result.json"
+        previous.write_text('{"default_tab_regression":true}')
         # Exercise the real session entry without starting Qt, a daemon or a bus.
         # Its missing executable fails before any client or input can be created.
         with self.assertRaises(FileNotFoundError):
             session(self.qt, self.directory / "missing-fcitx", language_options_only=True)
+        self.assertIs(json.loads(previous.read_text())["default_tab_regression"], True)
         self.assertFalse((self.qt / "async-result.json").exists())
 
     def test_cli_invalidates_previous_full_and_async_results_before_preflight(self):
         full = self.qt / "result.json"
         screenshot = self.qt / "language-configuration-interrupted.png"
-        for diagnostic in ("versions.json", screenshot.name, full.name):
+        full_scenes = {
+            "font-order-result.json": {
+                "diagnosticOnly": True,
+                "scenes": [{"displayExperimentPassed": True}],
+            },
+            "ordered-result.json": {"default_tab_regression": True},
+            "ordered-delayed-result.json": {"queued_fn_original_deadline_passes_pair": True},
+            "unmodified-reentry-result.json": {
+                "direct_selection_reentry_unknown_replied_and_quarantined": True
+            },
+            "rapid-control-result.json": {"status": "passed"},
+        }
+        sync_scenes = {
+            name: {
+                "status": "diagnostic-unsupported",
+                "supported": False,
+                "first_field_length_matches": True,
+            }
+            for name in ("stock-sync-result.json", "sync-result.json")
+        }
+        scenes = full_scenes | sync_scenes
+        for diagnostic, options, preserved in (
+            ("versions.json", [], sync_scenes),
+            ("versions.json", ["--forced-sync-diagnostic"], {}),
+            ("versions.json", ["--language-options-only", "--forced-sync-diagnostic"], scenes),
+            (screenshot.name, [], sync_scenes),
+            (full.name, [], sync_scenes),
+        ):
             for session in (False, True):
-                with self.subTest(diagnostic=diagnostic, session=session):
+                with self.subTest(diagnostic=diagnostic, session=session, options=options):
+                    for name, record in scenes.items():
+                        (self.qt / name).write_text(json.dumps(record))
                     self.complete_client()
                     self.admission.verify_qt_desktop_inputs(self.qt, self.fcitx)
                     if diagnostic == full.name:
@@ -781,6 +813,7 @@ class QtDesktopAdmissionTests(unittest.TestCase):
                             "--reuse-build",
                             "--verify-fcitx-build",
                             *(["--session"] if session else []),
+                            *options,
                         ],
                         env={"HOME": str(self.directory), "PATH": os.defpath},
                         capture_output=True,
@@ -789,13 +822,15 @@ class QtDesktopAdmissionTests(unittest.TestCase):
                     )
                     self.assertEqual(result.returncode, 1, result.stderr)
                     self.assertIn(diagnostic, result.stderr)
+                    self.assertFalse(full.is_file())
+                    self.assertFalse((self.qt / "async-result.json").exists())
                     self.assertEqual(
-                        [
-                            path.name
-                            for path in (full, self.qt / "async-result.json")
-                            if path.is_file()
-                        ],
-                        [],
+                        {
+                            name: json.loads((self.qt / name).read_text())
+                            for name in scenes
+                            if (self.qt / name).exists()
+                        },
+                        preserved,
                     )
 
     def test_each_build_record_and_compiled_binary_remains_bound(self):

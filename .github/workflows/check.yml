@@ -1134,15 +1134,23 @@ jobs:
         fcitx=artifacts/linux/fcitx-cooperative-5.1.22
         scratch=$(mktemp -d)
         trap 'rm -rf -- "$scratch"' EXIT
-        cp -a --reflink=auto "$qt/." "$scratch/"
+        for file in versions.json async-runtime.json qt-runtime-probe fixture qpa_ack font-order \
+          plugins/platforminputcontexts/libfcitx5platforminputcontextplugin.so \
+          native/qt6/generic/libtypelay-qt6.so native/qt-native-fixture; do
+          mkdir -p "$(dirname "$scratch/$file")"
+          ln -s "$PWD/$qt/$file" "$scratch/$file"
+        done
         mkdir "$scratch/language-configuration-interrupted.png"
         admission=(python tests/linux/qt_cooperative/desktop_admission.py --qt-output "$scratch"
           --fcitx-root "$fcitx" --probe-outcome failure --output "$scratch/admission.json")
         for entry in outer session; do
           cp "$qt/result.json" "$qt/async-result.json" "$scratch/"
-          "${admission[@]}"
           args=()
-          if [[ $entry == session ]]; then args+=(--session); fi
+          if [[ $entry == outer ]]; then
+            "${admission[@]}"
+          else
+            args+=(--session)
+          fi
           code=0
           python tests/linux/qt_cooperative/run.py --out "$scratch" --fcitx-root "$fcitx" \
             --reuse-build --verify-fcitx-build "${args[@]}" 2>"$scratch/preflight.log" || code=$?

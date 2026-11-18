@@ -277,6 +277,48 @@ class NativeCliEvidenceTests(unittest.TestCase):
                 self.assertEqual(exit_record.exists(), inside)
                 self.assertEqual(json.loads(scope.read_text())["scope"], "settings-ui")
 
+    def test_index_journey_preflight_preserves_an_independent_desktop_summary(self):
+        for scope in ("browser-index", "browser-undo-index", "gtk-index"):
+            with self.subTest(scope=scope):
+                prior = {"scope": "settings-ui", "shortcuts": "passed"}
+                summary = self.write("desktop-result.json", prior)
+                if scope == "gtk-index":
+                    missing = self.root / "missing-cooperation"
+                    inputs = ("--model-cache", str(self.root), "--fcitx-cooperative", str(missing))
+                else:
+                    missing = self.root / "missing-index-cache"
+                    inputs = ("--index-cache", str(missing), "--editor-bundle", str(self.root))
+                self.early_failure(
+                    "--inside",
+                    "--desktop",
+                    "--desktop-scope",
+                    scope,
+                    "--package",
+                    str(self.root),
+                    *inputs,
+                    diagnostic=str(missing),
+                )
+                self.assertEqual(json.loads(summary.read_text()), prior)
+
+    def test_conflicting_capability_scopes_preserve_both_sets_of_receipts(self):
+        prior = {
+            "desktop-result.json": {"scope": "settings-ui", "shortcuts": "passed"},
+            "scope-result.json": {"schema": 1, "scope": "settings-ui", "status": "passed"},
+            "inside-exit.json": {"exitCode": 0},
+            "native-result.json": {"scope": "gtk-unknown-ime-refusal-only", "passed": ["refusal"]},
+        }
+        for name, record in prior.items():
+            self.write(name, record)
+        self.early_failure(
+            "--gtk-refusal",
+            "--desktop",
+            "--desktop-scope",
+            "settings-ui",
+            diagnostic="--gtk-refusal and --desktop verify different capability scopes",
+            exit_code=2,
+        )
+        self.assertEqual({p.name: json.loads(p.read_text()) for p in self.output.iterdir()}, prior)
+
     def test_known_qt_scope_without_cooperation_invalidates_previous_receipts(self):
         summary = self.write(
             "desktop-result.json", {"scope": "qt-desktop-and-lifecycle", "passed": ["qt"]}

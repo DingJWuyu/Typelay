@@ -2870,11 +2870,13 @@ def publishes_scope_result(arguments):
 
 
 def invalidate_run_results(arguments):
-    # Quality capture refuses a reused directory and must preserve it for diagnosis.
-    if arguments.collect_translation_quality:
+    # Quality capture and the Index journeys use fresh, independently owned directories.
+    if arguments.collect_translation_quality or (arguments.desktop and arguments.gtk_refusal):
         return
     reports = []
     if arguments.desktop:
+        if arguments.desktop_scope in ("browser-index", "browser-undo-index", "gtk-index"):
+            return
         reports.append("desktop-result.json")
         if arguments.desktop_scope == "ordinary-gimp":
             reports.append("ordinary-gimp-result.json")

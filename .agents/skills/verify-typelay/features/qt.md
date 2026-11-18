@@ -44,7 +44,7 @@ TMPDIR=/tmp /usr/bin/python3 tests/linux/qt_cooperative/run.py \
   2>&1 | tee "$TYPELAY_VERIFY_OUTPUT/qt-cooperative.log"
 ```
 
-该入口在私有会话内再建 Xvfb、D-Bus 和 HOME，运行真实异步 Fcitx 输入。`TMPDIR=/tmp` 让内部随机临时目录保持短路径，避免语言入口的 Unix socket 超长；正式包与模型仍留在外层私有安装目录。它使用 XCB 与受控源字段，不证明 Wayland 或模型交互。保留 `versions.json`、`async-*.json`、`ordered-*.json`、各模式日志和命令退出码。`rapid-control-result.json` 记录首个快速接受的原许可、投递时刻及动作后的 fixture，不补发输入。整条链成功后，`result.json` 记录 `passed=true`。
+该入口在私有会话内再建 Xvfb、D-Bus 和 HOME，运行真实异步 Fcitx 输入。`TMPDIR=/tmp` 让内部随机临时目录保持短路径，避免语言入口的 Unix socket 超长；正式包与模型仍留在外层私有安装目录。它使用 XCB 与受控源字段，不证明 Wayland 或模型交互。保留 `versions.json`、`async-*.json`、`ordered-*.json`、各模式日志和命令退出码。`rapid-control-result.json` 记录首个快速接受的原许可、投递时刻及动作后的 fixture，不补发输入。完整 probe 复用目录时，先清除字体、按键重入、按序投递、延迟投递和快速接受的旧分项回执。开启 `--forced-sync-diagnostic` 时也清除两项同步诊断回执。整条链成功后，`result.json` 记录 `passed=true`。
 
 async fixture 在首次窗口查询发出时可能仍在进行 X11 握手。私有 Xvfb 使用 `-noreset`，首个查询退出后仍保留同一代显示服务。就绪客户端在原 15 秒映射期限内完成实际 XCB 握手并创建本次特有的 atom，Qt fixture 用自己的连接核对该 atom 后才建窗。两步共用原期限。
 
