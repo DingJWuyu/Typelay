@@ -456,6 +456,10 @@ static void respond_capture(gint64 id, JsonObject *data, const CaptureFailure *f
         json_object_set_string_member(trace, "condition", failure->condition);
         json_object_set_int_member(trace, "expected", failure->expected);
         json_object_set_int_member(trace, "actual", failure->actual);
+        if (failure->requested_target[0])
+            json_object_set_string_member(trace, "requestedTarget", failure->requested_target);
+        if (failure->focused_target[0])
+            json_object_set_string_member(trace, "focusedTarget", failure->focused_target);
         json_object_set_object_member(frame, "captureTrace", trace);
     }
     send_frame(frame);

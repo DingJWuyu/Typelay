@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import re
 
 from wire import Channel, now_ms
 
@@ -24,7 +25,20 @@ def capture_failure_trace(value):
         in (
             "target-present",
             "mutating",
-            "ime-inspection",
+            "target-dead",
+            "owner-thread",
+            "ime-probing",
+            "main-depth",
+            "ime-bound",
+            "ordered-ime-finish",
+            "ime-capability",
+            "provider-inspect",
+            "widget-destroying",
+            "bound-context-matches",
+            "ime-state-size",
+            "ime-state-version",
+            "ime-context-present",
+            "unexpected-ime-flags",
             "ime-flags",
             "ime-applied",
             "ime-known",
@@ -49,14 +63,24 @@ def capture_failure_trace(value):
             "editable",
             "widget-enabled",
             "text-available",
-            "description-present",
             "storage-revision",
             "input-revision",
             "focus-revision",
         )
-        and all(type(value.get(k)) is int and abs(value[k]) < 2**63 for k in ("actual", "expected"))
+        and all(
+            type(value.get(k)) is int and -(2**63) <= value[k] < 2**63
+            for k in ("actual", "expected")
+        )
     ):
-        return {"refusal": {k: value[k] for k in ("phase", "condition", "expected", "actual")}}
+        refusal = {k: value[k] for k in ("phase", "condition", "expected", "actual")}
+        if refusal["condition"] == "focused-target":
+            for key in ("requestedTarget", "focusedTarget"):
+                identity = value.get(key)
+                if isinstance(identity, str) and re.fullmatch(
+                    r"[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}", identity
+                ):
+                    refusal[key] = identity
+        return {"refusal": refusal}
     if value.get("reason") not in (
         "ime-unavailable",
         "focus-before",

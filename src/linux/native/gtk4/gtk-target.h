@@ -48,6 +48,7 @@ JsonObject *tl_describe(Target *target);
 typedef struct {
     const char *phase, *condition;
     gint64 expected, actual;
+    char requested_target[37], focused_target[37]; /* opaque native UUIDs, only on focus mismatch */
 } CaptureFailure;
 JsonObject *tl_capture(Target *target, JsonObject *authority, CaptureFailure *failure);
 JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct);

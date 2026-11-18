@@ -108,6 +108,28 @@ class GtkLanguageInitialCaptureTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(expected, str(error.exception))
         self.assertNotIn("PRIVATE BODY", str(error.exception))
 
+    async def test_transport_timeout_preserves_the_unanswered_attempt(self):
+        from gtk_session_reentry import capture_language_source
+
+        class Input:
+            def diagnostics(self):
+                return {"windowEpoch": 3}
+
+            async def capture(self, context, *, admission):
+                admission.update(stage="await-capture-reply", requestId=11)
+                raise TimeoutError
+
+        evidence = {}
+        with self.assertRaises(TimeoutError) as error:
+            await capture_language_source(Input(), lambda: {"first": "PRIVATE BODY"}, evidence)
+        (attempt,) = evidence["initialCaptureAdmission"]
+        self.assertIsNone(attempt["snapshotAdmitted"])
+        self.assertEqual(attempt["reason"], "TimeoutError")
+        (note,) = error.exception.__notes__
+        self.assertIn("await-capture-reply", note)
+        self.assertIn('"requestId": 11', note)
+        self.assertNotIn("PRIVATE BODY", note)
+
     async def test_other_refusal_never_retries_or_invents_a_snapshot(self):
         from gtk_session_reentry import capture_language_source
 

@@ -202,6 +202,7 @@ static void report_entry(JsonBuilder *builder, const char *name, GtkWidget *widg
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "flags"); json_builder_add_int_value(builder, state.flags);
         json_builder_set_member_name(builder, "context"); json_builder_add_int_value(builder, state.context_generation);
+        json_builder_set_member_name(builder, "epoch"); json_builder_add_int_value(builder, state.epoch);
         json_builder_set_member_name(builder, "input"); json_builder_add_int_value(builder, state.input_epoch);
         json_builder_set_member_name(builder, "server"); json_builder_add_int_value(builder, state.server_serial);
         json_builder_set_member_name(builder, "applied"); json_builder_add_int_value(builder, state.applied_serial);

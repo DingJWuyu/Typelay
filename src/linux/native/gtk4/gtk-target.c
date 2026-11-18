@@ -196,15 +196,33 @@ static gboolean same_state(const TlFcitxStateV1 *a, const TlFcitxStateV1 *b) {
         && a->input_epoch == b->input_epoch && a->server_serial == b->server_serial
         && a->applied_serial == b->applied_serial && a->flags == b->flags;
 }
-static gboolean read_ime(GtkWidget *widget, GtkIMContext *context, TlFcitxStateV1 *state) {
+static gboolean capture_equal(CaptureFailure *failure, const char *condition, gint64 expected, gint64 actual) {
+    if (actual == expected) return TRUE;
+    if (failure) {
+        failure->condition = condition;
+        failure->expected = expected;
+        failure->actual = actual;
+    }
+    return FALSE;
+}
+static gboolean observed_ime_known(const TlFcitxStateV1 *state, CaptureFailure *failure) {
+    guint32 mask = TL_FCITX_KNOWN | TL_FCITX_FOCUSED | TL_FCITX_PENDING;
+    return capture_equal(failure, "ime-flags", TL_FCITX_KNOWN | TL_FCITX_FOCUSED, state->flags & mask)
+        && capture_equal(failure, "ime-applied", (gint64)state->server_serial, (gint64)state->applied_serial);
+}
+static gboolean read_ime(GtkWidget *widget, GtkIMContext *context, TlFcitxStateV1 *state, CaptureFailure *failure) {
     const TlFcitxCapabilityV1 *capability = im_capability(context);
-    return g_main_depth() == 1 && capability && capability->inspect(context, widget, state)
-        && !gtk_widget_in_destruction(widget)
-        && g_object_get_data(G_OBJECT(widget), TL_FCITX_CONTEXT_V1) == context
-        && state->size == sizeof *state && state->version == TL_FCITX_ABI_V1
-        && state->context_generation != 0
-        && !(state->flags & (guint32)~(TL_FCITX_KNOWN | TL_FCITX_FOCUSED | TL_FCITX_PENDING
-            | TL_FCITX_COMPOSING | TL_FCITX_DETACHED));
+    guint32 known_flags = TL_FCITX_KNOWN | TL_FCITX_FOCUSED | TL_FCITX_PENDING | TL_FCITX_COMPOSING | TL_FCITX_DETACHED;
+    return capture_equal(failure, "main-depth", 1, g_main_depth())
+        && capture_equal(failure, "ime-capability", TRUE, capability != NULL)
+        && capture_equal(failure, "provider-inspect", TRUE, !!capability->inspect(context, widget, state))
+        && capture_equal(failure, "widget-destroying", FALSE, gtk_widget_in_destruction(widget))
+        && capture_equal(failure, "bound-context-matches", TRUE,
+            g_object_get_data(G_OBJECT(widget), TL_FCITX_CONTEXT_V1) == context)
+        && capture_equal(failure, "ime-state-size", sizeof *state, state->size)
+        && capture_equal(failure, "ime-state-version", TL_FCITX_ABI_V1, state->version)
+        && capture_equal(failure, "ime-context-present", TRUE, state->context_generation != 0)
+        && capture_equal(failure, "unexpected-ime-flags", 0, state->flags & ~known_flags);
 }
 static gboolean state_clear(const TlFcitxStateV1 *state) {
     return state->flags == (TL_FCITX_KNOWN | TL_FCITX_FOCUSED)
@@ -222,19 +240,23 @@ gboolean tl_widget_ime_clear(GtkWidget *widget) {
     if (!im_capability(context)) return FALSE;
     g_object_ref(widget); g_object_ref(context);
     TlFcitxStateV1 state = {.size = sizeof state, .version = TL_FCITX_ABI_V1};
-    gboolean clear = read_ime(widget, context, &state) && state_clear(&state);
+    gboolean clear = read_ime(widget, context, &state, NULL) && state_clear(&state);
     g_object_unref(context);
     clear = clear && gtk_widget_has_focus(widget)
         && g_object_get_data(G_OBJECT(widget), TL_FCITX_CONTEXT_V1) == context;
     g_object_unref(widget);
     return clear;
 }
-static gboolean inspect_ime(Target *target) {
+static gboolean inspect_capture_ime(Target *target, CaptureFailure *failure) {
     /* Select once before bind/probe callbacks. A lost ticket cannot turn this
        call into an ordinary new observation or acquire replacement authority. */
     guint64 pending = tl_ordered_pending_id(target);
-    if (!target || target->dead || target->thread != g_thread_self() || target->im_probing
-        || g_main_depth() != 1 || !bind_context(target)) {
+    if (!capture_equal(failure, "target-present", TRUE, target != NULL)
+        || !capture_equal(failure, "target-dead", FALSE, target->dead)
+        || !capture_equal(failure, "owner-thread", TRUE, target->thread == g_thread_self())
+        || !capture_equal(failure, "ime-probing", FALSE, target->im_probing)
+        || !capture_equal(failure, "main-depth", 1, g_main_depth())
+        || !capture_equal(failure, "ime-bound", TRUE, bind_context(target))) {
         if (pending) { if (target) target->ime_known = FALSE; tl_clear_permit(); }
         return FALSE;
     }
@@ -242,11 +264,15 @@ static gboolean inspect_ime(Target *target) {
     GtkIMContext *context = g_object_ref(target->im_context);
     target->im_probing = TRUE;
     GtkWidget *widget = g_object_ref(target->client);
-    gboolean valid = pending ? tl_ordered_finish(target, pending, &state) : read_ime(widget, context, &state);
+    gboolean valid = pending
+        ? capture_equal(failure, "ordered-ime-finish", TRUE, !!tl_ordered_finish(target, pending, &state))
+        : read_ime(widget, context, &state, failure);
     target->im_probing = FALSE;
-    valid = valid && !target->dead && target->im_context == context;
+    valid = valid && capture_equal(failure, "target-dead", FALSE, target->dead)
+        && capture_equal(failure, "bound-context-matches", TRUE, target->im_context == context);
     g_object_unref(context);
-    valid = valid && !target->dead && target->im_context == context;
+    valid = valid && capture_equal(failure, "target-dead", FALSE, target->dead)
+        && capture_equal(failure, "bound-context-matches", TRUE, target->im_context == context);
     g_object_unref(widget);
     if (!valid) {
         im_invalidated(target, 0);
@@ -263,28 +289,16 @@ static gboolean inspect_ime(Target *target) {
     }
     target->im_state = state;
     target->im_observed = TRUE;
-    target->ime_known = (state.flags & (TL_FCITX_KNOWN | TL_FCITX_FOCUSED | TL_FCITX_PENDING))
-        == (TL_FCITX_KNOWN | TL_FCITX_FOCUSED) && state.server_serial == state.applied_serial;
+    target->ime_known = observed_ime_known(&state, failure);
     target->composing = (state.flags & TL_FCITX_COMPOSING) != 0;
     return TRUE;
 }
-static gboolean capture_equal(CaptureFailure *failure, const char *condition, gint64 expected, gint64 actual) {
-    if (actual == expected) return TRUE;
-    if (failure) {
-        failure->condition = condition;
-        failure->expected = expected;
-        failure->actual = actual;
-    }
-    return FALSE;
+static gboolean inspect_ime(Target *target) {
+    return inspect_capture_ime(target, NULL);
 }
 static gboolean capture_ime_known(Target *target, CaptureFailure *failure) {
     if (!target->ime_known) {
-        if (failure && target->im_observed) {
-            guint32 mask = TL_FCITX_KNOWN | TL_FCITX_FOCUSED | TL_FCITX_PENDING;
-            if (!capture_equal(failure, "ime-flags", TL_FCITX_KNOWN | TL_FCITX_FOCUSED, target->im_state.flags & mask)
-                || !capture_equal(failure, "ime-applied", (gint64)target->im_state.server_serial,
-                    (gint64)target->im_state.applied_serial)) return FALSE;
-        }
+        if (failure && failure->condition) return FALSE;
         return capture_equal(failure, "ime-known", TRUE, FALSE);
     }
     return capture_equal(failure, "composing", FALSE, target->composing);
@@ -292,7 +306,7 @@ static gboolean capture_ime_known(Target *target, CaptureFailure *failure) {
 static gboolean capture_ime_clear(Target *target, CaptureFailure *failure) {
     return capture_equal(failure, "target-present", TRUE, target != NULL)
         && capture_equal(failure, "mutating", FALSE, target->mutating)
-        && capture_equal(failure, "ime-inspection", TRUE, !!inspect_ime(target))
+        && inspect_capture_ime(target, failure)
         && capture_ime_known(target, failure);
 }
 gboolean tl_ime_clear(Target *target) {
@@ -611,11 +625,14 @@ static JsonObject *authority(Target *target, const char *key) {
     if (bindings) json_object_set_object_member(value, "sessionBindings", bindings);
     return value;
 }
-JsonObject *tl_describe(Target *target) {
-    if (!target || target->mutating || target->im_probing || target->thread != g_thread_self()) return NULL;
-    (void)inspect_ime(target);
+static JsonObject *describe(Target *target, CaptureFailure *failure) {
+    if (!capture_equal(failure, "target-present", TRUE, target != NULL)
+        || !capture_equal(failure, "mutating", FALSE, target->mutating)
+        || !capture_equal(failure, "ime-probing", FALSE, target->im_probing)
+        || !capture_equal(failure, "owner-thread", TRUE, target->thread == g_thread_self())) return NULL;
+    (void)inspect_capture_ime(target, failure);
     JsonObject *fields = metadata(target);
-    if (!fields) return NULL;
+    if (!capture_equal(failure, "metadata-present", TRUE, fields != NULL)) return NULL;
     char *key = metadata_key(fields);
     JsonObject *value = json_object_new(), *bounds = tl_geometry(target);
     json_object_set_string_member(value, "target", target->id);
@@ -631,6 +648,9 @@ JsonObject *tl_describe(Target *target) {
     if (glossary) json_object_set_object_member(value, "glossarySource", glossary);
     g_free(key);
     return value;
+}
+JsonObject *tl_describe(Target *target) {
+    return describe(target, NULL);
 }
 static gboolean metadata_matches(Target *target, JsonObject *approved, CaptureFailure *failure) {
     if (!capture_equal(failure, "authority-present", TRUE, approved != NULL)
@@ -714,6 +734,10 @@ static gboolean capture_age(gint64 age, CaptureFailure *failure) {
 }
 static gboolean capture_focused(Target *target, CaptureFailure *failure) {
     Target *focused = tl_focused();
+    if (failure && focused != target) {
+        g_strlcpy(failure->requested_target, target->id, sizeof failure->requested_target);
+        if (focused) g_strlcpy(failure->focused_target, focused->id, sizeof failure->focused_target);
+    }
     /* 1 = the requested field, 0 = no field, 2 = another field. */
     return capture_equal(failure, "focused-target", 1, focused == target ? 1 : focused ? 2 : 0);
 }
@@ -728,9 +752,9 @@ JsonObject *tl_capture(Target *target, JsonObject *approved, CaptureFailure *fai
     char *text = read_text(target, &start, &end);
     if (!capture_equal(failure, "text-available", TRUE, text != NULL)) return NULL;
     if (failure) failure->phase = "after-read";
-    JsonObject *description = tl_describe(target);
+    JsonObject *description = describe(target, failure);
     age = tl_now() - tl_integer(approved, "observedAtMs", 0);
-    if (!capture_equal(failure, "description-present", TRUE, description != NULL)
+    if (!description
         || !capture_ime_known(target, failure) || !capture_stamp_matches(target, approved, failure)
         || !capture_age(age, failure) || !capture_focused(target, failure)
         || !capture_equal(failure, "storage-revision", (gint64)storage, (gint64)target->storage_revision)

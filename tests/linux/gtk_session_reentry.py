@@ -1657,10 +1657,11 @@ async def capture_language_source(input_service, ready, evidence):
         ime = entry.get("ime") or {}
         attempt.update(
             ready={
-                "observedAtMs": initial.get("observedAtMs"),
+                "observedAtMonoMs": initial.get("observedAtMs"),
                 "imeClear": initial.get("imeClear"),
                 "ime": {
-                    key: ime.get(key) for key in ("context", "input", "flags", "server", "applied")
+                    key: ime.get(key)
+                    for key in ("context", "epoch", "input", "flags", "server", "applied")
                 },
                 **{
                     key: entry.get(key)
@@ -1676,6 +1677,7 @@ async def capture_language_source(input_service, ready, evidence):
             attempt.update(
                 atMs=now_ms(), windowEpochAfter=input_service.diagnostics()["windowEpoch"]
             )
+            attempt.update(snapshotAdmitted=None, reason=type(error).__name__)
             error.add_note("GTK4 initial capture " + json.dumps(attempt))
             raise
         attempt.update(atMs=now_ms(), windowEpochAfter=input_service.diagnostics()["windowEpoch"])
@@ -3051,23 +3053,22 @@ def run_owned_language_options(
             def source_ready():
                 nonlocal last_readiness
                 last_readiness = state()
-                return (
-                    last_readiness
-                    and last_readiness.get("focus") == "fixture-first"
+                if not (
+                    last_readiness.get("focus") == "fixture-first"
                     and last_readiness.get("imeClear")
                     and parent_geometry_ready(last_readiness, dimensions)
                     and input_service.focused_peer() is peer
-                    and {
-                        **last_readiness,
-                        "readyWindow": {
-                            "expectedWindowId": window["id"],
-                            "focusedWindowId": (input_service.niri.focused or {}).get("id"),
-                            "expectedPeerPid": peer.pid,
-                            "peerFocused": True,
-                            "parentGeometryReady": True,
-                        },
+                ):
+                    return None
+                if configuration_stage:
+                    last_readiness["readyWindow"] = {
+                        "expectedWindowId": window["id"],
+                        "focusedWindowId": (input_service.niri.focused or {}).get("id"),
+                        "expectedPeerPid": peer.pid,
+                        "peerFocused": True,
+                        "parentGeometryReady": True,
                     }
-                )
+                return last_readiness
 
             try:
                 if configuration_stage:
