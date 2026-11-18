@@ -634,17 +634,25 @@ public sealed class ModelInstallerTests
     }
 
     [Fact]
-    public async Task UserCancellationDuringAnArchiveBodyIsNotReportedAsNetworkTimeout()
+    public async Task StalledArchiveReportsTheLastWrittenChunkAndStillHonorsUserCancellation()
     {
         using var files = new SetupFiles();
         byte[] archive = ModelArchive("en_zh");
-        var body = new StallingBody(archive[..64]);
+        var body = new StallingBody(archive[..64], maxRead: 32);
         var network = new BodyHandler(files.Responses(ModelArchive), "/v1/translate-en_zh-1_9.argosmodel", body, archive.Length);
         using var cancel = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        var prepare = files.Installer(network).PrepareAsync(NoProgress, cancel.Token, ["en_zh"]);
+        var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var progress = new SetupProgressSink(update =>
+        {
+            if (update.Label == "下载English → 中文 模型" && update.DownloadPhase == SetupDownloadPhase.Body
+                && update.Downloaded == 64 && update.Total == archive.Length)
+                received.TrySetResult();
+        });
+        var prepare = files.Installer(network).PrepareAsync(progress, cancel.Token, ["en_zh"]);
         try
         {
             await body.ReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+            await received.Task.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
             cancel.Cancel();
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => prepare);
             Assert.True(body.Disposed);
@@ -1058,7 +1066,7 @@ public sealed class ModelInstallerTests
         }
     }
 
-    private sealed class StallingBody(byte[] prefix) : MemoryStream(prefix)
+    private sealed class StallingBody(byte[] prefix, int maxRead = int.MaxValue) : MemoryStream(prefix)
     {
         public TaskCompletionSource ReadStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int ReadAttempts
@@ -1094,7 +1102,7 @@ public sealed class ModelInstallerTests
             {
                 if (Position < Length)
                 {
-                    int read = await base.ReadAsync(buffer, ct);
+                    int read = await base.ReadAsync(buffer[..Math.Min(buffer.Length, maxRead)], ct);
                     PrefixBytesRead += read;
                     return read;
                 }

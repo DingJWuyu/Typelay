@@ -825,22 +825,48 @@ internal sealed class ModelInstaller
                          FileShare.None, 65536, true))
         {
             byte[] buffer = new byte[65536];
-            int read;
-            long lastProgress = 0;
-            while ((read = await source.ReadAsync(buffer, ct)) > 0)
+            PeriodicTimer? timer = null;
+            Task reports = Task.CompletedTask;
+            try
             {
-                if (read > limit - offset)
-                    throw new InvalidDataException("download-size");
-                await file.WriteAsync(buffer.AsMemory(0, read), ct);
-                offset += read;
-                if (Environment.TickCount64 - lastProgress >= 80)
+                int read;
+                while ((read = await source.ReadAsync(buffer, ct)) > 0)
                 {
-                    lastProgress = Environment.TickCount64;
-                    progress.Report(new(label, offset, total, SetupDownloadPhase.Body));
+                    if (read > limit - offset)
+                        throw new InvalidDataException("download-size");
+                    await file.WriteAsync(buffer.AsMemory(0, read), ct);
+                    Volatile.Write(ref offset, offset + read);
+                    if (timer is null)
+                    {
+                        progress.Report(new(label, offset, total, SetupDownloadPhase.Body));
+                        timer = new PeriodicTimer(TimeSpan.FromMilliseconds(80));
+                        reports = ReportWrittenBytes(timer, offset);
+                    }
                 }
+            }
+            finally
+            {
+                timer?.Dispose();
+                await reports;
             }
             await file.FlushAsync(ct);
             progress.Report(new(label, offset, total, SetupDownloadPhase.Body));
+
+            // A stalled read must not strand bytes written since the last report.
+            async Task ReportWrittenBytes(PeriodicTimer cadence, long reported)
+            {
+                while (await cadence.WaitForNextTickAsync().ConfigureAwait(false))
+                {
+                    if (ct.IsCancellationRequested)
+                        return;
+                    long downloaded = Volatile.Read(ref offset);
+                    if (downloaded != reported)
+                    {
+                        progress.Report(new(label, downloaded, total, SetupDownloadPhase.Body));
+                        reported = downloaded;
+                    }
+                }
+            }
         }
         if (exactBytes is { } pinnedLength && offset != pinnedLength)
             throw new InvalidDataException("download-size");
