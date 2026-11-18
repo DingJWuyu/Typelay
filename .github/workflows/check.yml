@@ -1515,3 +1515,20 @@ jobs:
         - native-qt
     env: *linux-sdk
     steps: *linux-steps
+  failure-comparison:
+    name: Failure comparison
+    needs: [fonts, fcitx-build, shared, windows-contracts, windows-tools, windows-desktop, index-windows, index-linux, linux, linux-native]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+        fetch-depth: 0
+    - name: Publish failure comparison
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python eng/ci/failure_report.py

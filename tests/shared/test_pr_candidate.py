@@ -74,6 +74,7 @@ class CandidateTests(unittest.TestCase):
                 "BASE": base,
                 "HEAD_SHA": head,
                 "GITHUB_STEP_SUMMARY": summary.as_posix(),
+                "GITHUB_OUTPUT": (self.root / ".git/output").as_posix(),
                 "GITHUB_SERVER_URL": "https://example.test",
                 "GITHUB_REPOSITORY": "owner/repository",
                 "GITHUB_WORKFLOW_REF": "owner/repository/.github/workflows/pr-candidate.yml@refs/pull/7/merge",
@@ -140,6 +141,10 @@ class CandidateTests(unittest.TestCase):
                 result, summary = self.checkout(base, head)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(self.git("show", "-s", "--format=%P"), f"{base} {head}")
+                self.assertEqual(
+                    (self.root / ".git/output").read_text().splitlines()[-1],
+                    "tested=" + self.git("rev-parse", "HEAD"),
+                )
                 self.assertEqual((self.root / "base.txt").read_text(), base_text)
                 self.assertEqual((self.root / "feature.txt").read_text(), head_text)
                 for identity in (
