@@ -930,7 +930,7 @@ public sealed partial class SessionController : IDisposable
                 }
                 _permitUntil = 0;
                 _hook.Publish(new(snapshot, request.UserEpoch, request.ForegroundEpoch, false, _hook.CommandGeneration, _generation), null);
-                if (result.Focus == FocusMember.Source)
+                if (result.Focus == FocusMember.Source && _glossary.PendingSourceObservation is null)
                 {
                     _hook.PublishShortcut(new(snapshot, contentEpoch, request.ForegroundEpoch, styleApplication));
                     captureExit = "shortcut-publish-called";
@@ -938,7 +938,7 @@ public sealed partial class SessionController : IDisposable
                         _practiceCaptureTracePublished = true;
                 }
                 else
-                    captureExit = "inactive-non-source";
+                    captureExit = result.Focus == FocusMember.Source ? "glossary-menu-pending" : "inactive-non-source";
                 _overlay.HideQuietly();
                 return;
             }
@@ -1030,7 +1030,7 @@ public sealed partial class SessionController : IDisposable
             _ownedSource.RememberAutomaticPermit(practiceBinding, permit);
             _hook.Publish(new(snapshot, request.UserEpoch, request.ForegroundEpoch, escape, _hook.CommandGeneration, _generation,
                 practiceBinding?.RunId, practiceBinding?.ConnectionId), permit);
-            if (result.Focus == FocusMember.Source)
+            if (result.Focus == FocusMember.Source && _glossary.PendingSourceObservation is null)
             {
                 _hook.PublishShortcut(new(snapshot, contentEpoch, request.ForegroundEpoch, styleApplication));
                 captureExit = "shortcut-publish-called";
@@ -1038,7 +1038,7 @@ public sealed partial class SessionController : IDisposable
                     _practiceCaptureTracePublished = true;
             }
             else
-                captureExit = "active-non-source";
+                captureExit = result.Focus == FocusMember.Source ? "glossary-menu-pending" : "active-non-source";
             Render();
             menuConfirmation?.TrySetResult(inputUnchanged && !result.ForegroundExpired && result.Focus == FocusMember.Source ? snapshot : null);
             Trace(inputUnchanged ? "capture" : "capture-input-changed");

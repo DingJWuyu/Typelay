@@ -87,7 +87,7 @@ public sealed class InlineGlossaryTests
         var target = s.View.Token;
         s.Service.PendingCapture = new();
         s.Tick();
-        int publications = s.Input.PublishedPermits.Count;
+        int publications = s.Input.PublishedPermits.Count, shortcuts = s.Input.PublishedShortcuts.Count;
         SessionGlossaryEntry? entry = null;
         var confirm = s.View.ReserveGlossarySource!(target);
         Assert.NotNull(confirm);
@@ -108,6 +108,7 @@ public sealed class InlineGlossaryTests
         Assert.Null(s.Input.Permit);
         Assert.NotNull(entry);
         Assert.All(s.Input.PublishedPermits.Skip(publications), Assert.Null);
+        Assert.Equal(shortcuts, s.Input.PublishedShortcuts.Count);
         Assert.Empty(s.Service.Writes);
     }
 
