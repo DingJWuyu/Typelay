@@ -82,11 +82,13 @@ public sealed partial class NativeSourceControllerTests
             Assert.Equal(draft, editor.Text);
             Assert.True(editor.CanUndo);
             nint cookieBeforeTab = N.GetProp(native.A, "TypeLay.NativeInput.Lifetime.v2");
+            uint threadBeforeTab = N.GetWindowThreadProcessId(native.A, out uint processBeforeTab);
             Tab(false);
             initialTabHeld = true;
             Tab(true);
             initialTabHeld = false;
-            await WaitForFirstTabReturn(native, editor, () => Volatile.Read(ref returns), cookieBeforeTab);
+            await WaitForFirstTabReturn(native, editor, () => Volatile.Read(ref returns),
+                (processBeforeTab, threadBeforeTab, cookieBeforeTab));
             await Until(() => AutomationProperties.GetItemStatus(editor) == "当前译文" && captures.TryPeek(out _), native.Token);
             int requests = translation.Calls;
             // Freeze the original native identity before entering the confirmation.
@@ -400,21 +402,24 @@ public sealed partial class NativeSourceControllerTests
     });
 
     private static async Task WaitForFirstTabReturn(ProductionForegroundWriteTests.Desktop native,
-        TextBox editor, Func<int> returns, nint cookieBeforeTab)
+        TextBox editor, Func<int> returns, (uint Process, uint Thread, nint Cookie) source)
     {
         var expected = (Returns: 1, Root: native.Root, Control: native.A, ReadOnly: true);
         (int Returns, nint Root, nint Control, bool ReadOnly) actual = default;
         N.FocusObservation focus = default;
-        nint sourceCookie = 0;
+        bool sameLifetime = false;
         try
         {
             await Until(() =>
             {
                 int count = returns();
                 focus = N.ReadFocus();
-                actual = (count, focus.Root, focus.Control, editor.IsReadOnly);
-                sourceCookie = N.GetProp(native.A, "TypeLay.NativeInput.Lifetime.v2");
-                return actual == expected;
+                // UIA can return to the original Edit with that child as the raw foreground HWND.
+                actual = (count, N.GetAncestor(focus.Root, 2), focus.Control, editor.IsReadOnly);
+                sameLifetime = source.Cookie != 0 && N.GetProp(native.A, "TypeLay.NativeInput.Lifetime.v2") == source.Cookie;
+                return actual == expected && focus.GuiThreadInfoSucceeded == true && sameLifetime
+                    && source.Process != 0 && focus.ProcessId == source.Process
+                    && source.Thread != 0 && focus.ThreadId == source.Thread;
             }, native.Token);
         }
         catch (OperationCanceledException) when (native.Token.IsCancellationRequested)
@@ -427,9 +432,12 @@ public sealed partial class NativeSourceControllerTests
                 + Condition("Broker return count", expected.Returns, actual.Returns) + ", "
                 + Condition("foreground root HWND", expected.Root, actual.Root) + ", "
                 + Condition("focused control HWND", expected.Control, actual.Control) + ", "
-                + Condition("editor IsReadOnly", expected.ReadOnly, actual.ReadOnly)
-                + $", foreground PID={focus.ProcessId}, TID={focus.ThreadId}, GUI thread query={focus.GuiThreadInfoSucceeded}"
-                + $", original source cookie present={cookieBeforeTab != 0}, same source lifetime={cookieBeforeTab != 0 && sourceCookie == cookieBeforeTab}");
+                + Condition("editor IsReadOnly", expected.ReadOnly, actual.ReadOnly) + ", "
+                + Condition("foreground PID", source.Process, focus.ProcessId) + ", "
+                + Condition("foreground TID", source.Thread, focus.ThreadId) + ", "
+                + Condition("GUI thread query succeeded", true, focus.GuiThreadInfoSucceeded == true) + ", "
+                + Condition("same source lifetime", true, sameLifetime)
+                + $", raw foreground HWND={focus.Root}, original source cookie present={source.Cookie != 0}");
             throw;
         }
     }
