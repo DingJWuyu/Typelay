@@ -52,6 +52,8 @@ async fixture 在首次窗口查询发出时可能仍在进行 X11 握手。私�
 
 完整 probe 也覆盖单行与多行字段的术语表取消、回源及来源失效。核对源版本、选区或文档变化后零写入。该入口使用受控 Host，不证明正式词条持久化或真实模型的术语质量。
 
+术语保存超时时，按表单 `formId` 查看命令日志中的 `qt-glossary-save`。记录列出源字段、视图、场景结束方式和单击回执。`beforeHandoff` 和 `afterHandoff` 给出两次检查时的焦点、每个词的检查结果和缓存的 Clear 证据。未观察到的动作或检查保留为未知。`stage` 指出保存停在哪一步。`addQueued=true` 表示原生组件已将事件放入出站队列，`hostAddCount` 是受控 Host 在原等待中观察到的该表单事件数。
+
 **独立语言搜索。** 完整 probe 成功时，其中的语言入口已经完成。CI 将本次 `language-options-*.json`、日志、配置截图和 `versions.json` 复制到独立证据目录，不再构建或重复输入。完整 probe 失败时仍执行下列独立入口。新目录只复制本轮生产源码和二进制，`--reuse-build` 复验身份后重建 fixture。普通入口和 `--session` 都在预检前使复用目录中的完整与异步成功失效。只有本轮完整通过的 `result.json` 可以用于打包。若本轮异步客户端正常退出后其它场景失败，桌面准入仍可验证这份 `async-result.json` 的构建身份。
 
 检查文字省略时，对照 `language-options-paint.json` 和同主题、同状态的 `language-configuration-*.png`。结果文件按场景写入，同时列出明暗主题的 `normal`、`disabled` 和 `selectable` 才覆盖完整。可选行和禁用行都应完整显示“韩语”和 `한국어`。夹具将截图中的两列文字、列间留白和右侧内边距与同字体绘制的参考行逐像素比较。`selectable` 截图中，葡语两列均完整，德语仅右列省略，塞尔维亚语两列均保留可见前缀和省略号。

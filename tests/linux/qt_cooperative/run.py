@@ -18,7 +18,7 @@ import sys
 import tarfile
 import tempfile
 import time
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -2088,11 +2088,11 @@ def ordered_controls(
                 command += ["keyup", "--delay", "0", "Control_L", "keyup", "--delay", "0", symbol]
                 run(command, env=environment)
 
-            def prepare(text="Original source"):
-                fixture("focus", field="first")
-                fixture("set", field="first", text=text)
+            def prepare(text="Original source", field="first"):
+                fixture("focus", field=field)
+                fixture("set", field=field, text=text)
                 wait(
-                    lambda: state().get("first", {}).get("focused") and settled(),
+                    lambda: state().get(field, {}).get("focused") and settled(),
                     "original source focus",
                 )
 
@@ -3081,7 +3081,7 @@ def ordered_controls(
                             for item in state()["providerEvents"]
                         ), "fixture must observe the real multiline provider before form transfer"
                     else:
-                        prepare()
+                        prepare(field=field)
                     publication = publish(
                         source_field=field,
                         case={
@@ -3141,11 +3141,23 @@ def ordered_controls(
 
                         return wait(check, message)
 
-                    def click(name):
+                    def click(name, observation=None):
                         renew()
-                        control = state()["overlayControls"][name]
+                        snapshot = state()
+                        control = snapshot["overlayControls"][name]
+                        if observation is not None:
+                            observation["focusBeforeClick"] = next(
+                                (
+                                    role
+                                    for role in ("source", "target")
+                                    if snapshot.get("glossary", {}).get(role, {}).get("focused")
+                                ),
+                                "unknown",
+                            )
                         assert control["visible"] and control["enabled"]
                         bounds, scale = control["geometry"], state()["scale"]
+                        if observation is not None:
+                            observation["clickCommand"] = "requested"
                         run(
                             [
                                 "xdotool",
@@ -3160,14 +3172,56 @@ def ordered_controls(
                             env=environment,
                         )
 
-                    def events(operation):
-                        renew()
+                        if observation is not None:
+                            observation["clickCommand"] = "returned"
+
+                    def received(operation):
                         return [
                             item["data"]
                             for item in native.events[before:]
                             if item.get("event") == "ui"
                             and item["data"].get("operation") == operation
                         ]
+
+                    def events(operation):
+                        renew()
+                        return received(operation)
+
+                    @contextmanager
+                    def observe_save():
+                        # Consume only records from this original click and its existing wait.
+                        # Term values aren't needed to identify a missing Clear receipt.
+                        checkpoint = Path(log.name).stat().st_size
+                        observation = {
+                            "field": field,
+                            "state": view_state,
+                            "finish": finish,
+                            "formId": entry["formId"],
+                            "clickCommand": "not-requested",
+                            "focusBeforeClick": "unknown",
+                            "clicked": "unknown",
+                            "beforeHandoff": None,
+                            "afterHandoff": None,
+                            "stage": "unknown",
+                            "addQueued": None,
+                        }
+                        try:
+                            yield observation
+                        finally:
+                            with open(log.name) as stream:
+                                stream.seek(checkpoint)
+                                for line in stream:
+                                    if line.startswith("tlqt-glossary-save "):
+                                        decision = json.loads(
+                                            line.removeprefix("tlqt-glossary-save ")
+                                        )
+                                        if decision["formId"] == entry["formId"]:
+                                            observation.update(decision, clicked=True)
+                            observation["hostAddCount"] = sum(
+                                event["value"]["formId"] == entry["formId"]
+                                for event in received("sessionGlossaryAdd")
+                            )
+                            print("qt-glossary-save", json.dumps(observation), flush=True)
 
                     def unchanged():
                         actual = state()[field]
@@ -3180,7 +3234,7 @@ def ordered_controls(
                             "undoAvailable",
                         ) + (
                             ("edits",)
-                            if field == "first"
+                            if field != "plain"
                             else (
                                 "redoAvailable",
                                 "contentsChanges",
@@ -3408,9 +3462,9 @@ def ordered_controls(
                             "second glossary word IM retirement",
                         )
 
-                        def save_with_term_retirement():
+                        def save_with_term_retirement(observation):
                             save_departure = state()["providerSequence"]
-                            click("typelay-glossary-save")
+                            click("typelay-glossary-save", observation)
                             if (
                                 field == "plain"
                                 and state()["overlayControls"]["typelay-glossary-save"]["focused"]
@@ -3434,24 +3488,40 @@ def ordered_controls(
                             focus = events("sessionGlossaryFocus")[-1]["value"]
                             assert focus["ime"] in ("Clear", "Unknown"), focus
                             clear_before_save = focus["ime"] == "Clear"
-                            save_with_term_retirement()
-                            refusal = (
-                                "输入法状态尚未确认，请完成输入后再保存。"
-                                if clear_before_save
-                                else "请先完成两个词的输入，确认输入法已结束组合后再保存。"
-                            )
-                            observe(
-                                lambda value: value.get("glossary", {}).get("feedback") == refusal
-                                and value["overlayControls"]["typelay-glossary-save"]["focused"]
-                                == clear_before_save,
-                                "absent or invalid opt-in remains Unknown and refuses Save",
-                            )
-                            assert not events("sessionGlossaryAdd")
+                            with observe_save() as observation:
+                                save_with_term_retirement(observation)
+                                refusal = (
+                                    "输入法状态尚未确认，请完成输入后再保存。"
+                                    if clear_before_save
+                                    else "请先完成两个词的输入，确认输入法已结束组合后再保存。"
+                                )
+                                observe(
+                                    lambda value: value.get("glossary", {}).get("feedback")
+                                    == refusal
+                                    and value["overlayControls"]["typelay-glossary-save"]["focused"]
+                                    == clear_before_save,
+                                    "absent or invalid opt-in remains Unknown and refuses Save",
+                                )
+                                assert not events("sessionGlossaryAdd")
                             unchanged()
                             native.call("overlay-hide")
                             fixture("consumer-retirement-opt-in", value=True)
                             return
-                        if finish == "reset":
+                        if finish == "composing":
+                            run(["fcitx5-remote", "-s", "pinyin"], env=environment)
+                            observe(
+                                lambda value: value.get("tlqtEngine") == "pinyin" and settled(),
+                                "target word uses real pinyin",
+                            )
+                            run(["xdotool", "type", "--delay", "10", "nihao"], env=environment)
+                            observe(
+                                lambda value: value["glossary"]["target"]["focused"]
+                                and (received("sessionGlossaryFocus")[-1]["value"] or {}).get("ime")
+                                == "Composing"
+                                and settled(),
+                                "target word is composing",
+                            )
+                        elif finish == "reset":
                             reset_before = state()["providerSequence"]
                             fixture("reset-ime")
                             observe(
@@ -3463,21 +3533,55 @@ def ordered_controls(
                                 ),
                                 "actual unknown/reset notification",
                             )
-                            click("typelay-glossary-save")
-                            observe(
-                                lambda value: value.get("glossary", {}).get("feedback")
-                                == "请先完成两个词的输入，确认输入法已结束组合后再保存。",
-                                "reset revokes the previous word's Clear evidence",
-                            )
-                            assert not events("sessionGlossaryAdd")
+                        if finish in ("composing", "reset"):
+                            with observe_save() as observation:
+                                click("typelay-glossary-save", observation)
+                                observe(
+                                    lambda value: value.get("glossary", {}).get("feedback")
+                                    == "请先完成两个词的输入，确认输入法已结束组合后再保存。",
+                                    f"{finish} refuses Save before the focus handoff",
+                                )
+                                assert not events("sessionGlossaryAdd")
+                            assert observation["clicked"] is True, observation
+                            assert observation["stage"] == "before-handoff-ime", observation
+                            before_handoff = observation["beforeHandoff"]
+                            assert before_handoff["focus"] == "target", observation
+                            if finish == "reset":
+                                assert before_handoff["sourceCached"] == "provider-unknown", (
+                                    observation
+                                )
+                            else:
+                                assert before_handoff["target"] == "Composing", observation
+                            assert (
+                                observation["afterHandoff"] is None
+                                and observation["addQueued"] is False
+                            ), observation
+                            if finish == "composing":
+                                run(["xdotool", "key", "space"], env=environment)
+                                observe(
+                                    lambda value: value["glossary"]["target"]["focused"]
+                                    and value["glossary"]["target"]["text"] != "pull request"
+                                    and settled(),
+                                    "commit the original target word composition",
+                                )
+                                run(["fcitx5-remote", "-s", "keyboard-us"], env=environment)
+                                observe(
+                                    lambda value: value["glossary"]["target"]["focused"]
+                                    and value.get("tlqtEngine") == "keyboard-us"
+                                    and settled(),
+                                    "restore keyboard on the composing target word",
+                                )
                             unchanged()
                             native.call("overlay-hide")
                             return
-                        save_with_term_retirement()
-                        saved = wait(
-                            lambda: events("sessionGlossaryAdd"),
-                            "explicit Save with both words Clear",
-                        )[-1]["value"]
+                        with observe_save() as observation:
+                            save_with_term_retirement(observation)
+                            added = wait(
+                                lambda: events("sessionGlossaryAdd"),
+                                "explicit Save with both words Clear",
+                            )
+                        assert len(added) == 1, added
+                        saved = added[0]["value"]
                         assert saved["formId"] == entry["formId"] and saved["token"] == token
                         receipt = {"formId": entry["formId"], "token": token}
                         renew()
@@ -3516,6 +3620,8 @@ def ordered_controls(
                             assert captured["text"] == "A😀\nSecond\nThird"
                     unchanged()
                     native.call("overlay-hide")
+                    if finish == "return":
+                        assert received("sessionGlossaryAdd") == added and len(added) == 1
 
                 for glossary_state in ("ValidTranslation", "EditedTranslationPending"):
                     for glossary_finish in (
@@ -4185,6 +4291,9 @@ def ordered_controls(
                 result["qplaintextedit_background_reentrant_document_unknown_and_quarantined"] = (
                     True
                 )
+                # The direct-write cases have quarantined first and plain. The second
+                # line edit retains its own identity for this final pinyin case.
+                glossary_source("ValidTranslation", "composing", "second")
             fixture("quit")
             assert client.wait(timeout=10) == 0
     path.unlink(missing_ok=True)
