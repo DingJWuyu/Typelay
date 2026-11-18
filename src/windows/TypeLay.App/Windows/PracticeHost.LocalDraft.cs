@@ -120,7 +120,7 @@ internal sealed partial class PracticeHost
             CancelOwnedLocalDraft(opening);
             return null;
         }
-        _monitor.BeginLocalDraftAnchor(opening.Id, (nint)control.OverlayHwnd, (nint)control.Descriptor.RootHwnd, id =>
+        _monitor.BeginLocalDraftAnchor(opening.Id, (nint)control.OverlayHwnd, (nint)control.Descriptor.RootHwnd, (id, _) =>
         {
             if (!_dispatcher.HasShutdownStarted && !_dispatcher.HasShutdownFinished)
                 _dispatcher.BeginInvoke(new Action(() =>
