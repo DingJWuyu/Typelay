@@ -1572,7 +1572,7 @@ public sealed partial class SessionController : IDisposable
         return special && !ReferenceEquals(identity, _model.VerifiedIdentity) ? new(0, "error", Code: "not-ready") : result;
     }
 
-    private bool StyleSourceCurrent(SessionViewToken token) => _styleObservation is { } observation
+    private bool StyleSourceCurrent(SessionViewToken token, bool requireFreshObservation = true) => _styleObservation is { } observation
         && token.Revision == _generation && token.CommandGeneration == _hook.CommandGeneration
         && observation.CommandGeneration == _hook.CommandGeneration && observation.Target == token.Target
         && _session.Current is { IsUsable: true } source && source.Target == token.Target
@@ -1580,7 +1580,8 @@ public sealed partial class SessionController : IDisposable
         && observation.SourceEpoch == _hook.SourceUserEpoch && observation.ContentEpoch == _hook.ContentEpoch
         && observation.ForegroundEpoch == _hook.ForegroundEpoch && observation.WindowEpoch == _hook.WindowEpoch
         && _hook.GetFocus(token.Target) != FocusMember.Other
-        && _loop.NowMs >= source.ObservedAtMs && _loop.NowMs - source.ObservedAtMs <= Limits.ObservationMaxAgeMs;
+        && _loop.NowMs >= source.ObservedAtMs
+        && (!requireFreshObservation || _loop.NowMs - source.ObservedAtMs <= Limits.ObservationMaxAgeMs);
 
     private (SessionViewToken? Token, long Revision) ApplyStyleSettings()
     {

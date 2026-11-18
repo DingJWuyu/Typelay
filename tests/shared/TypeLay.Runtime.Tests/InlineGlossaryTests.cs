@@ -5,6 +5,69 @@ namespace TypeLay.Runtime.Tests;
 
 public sealed class InlineGlossaryTests
 {
+    [Fact]
+    public void SourceMenuCanRequestAFreshObservationWhenOnlyTheObservationAgeExpired()
+    {
+        using var s = new SessionScenario();
+        s.View.SourceGlossarySupported = true;
+        s.ReadyCandidate();
+        var token = s.View.Token;
+        s.Service.PendingCapture = new();
+        s.Tick(Limits.ObservationMaxAgeMs);
+        s.Controller.RefreshAcceptancePresentation();
+        Assert.True(s.View.Context!.TranslationActions!.CanOpenGlossary);
+        Assert.Null(s.Controller.GetGlossarySettingsState().UnavailableReason);
+
+        s.Tick(1); // The same source, epochs and blocked Broker read, one millisecond later.
+        s.Controller.RefreshAcceptancePresentation();
+        Assert.Equal(token, s.View.Token);
+        Assert.Equal("glossary-stale", s.Controller.GetGlossarySettingsState().UnavailableReason);
+        Assert.Null(s.View.BeginGlossaryRequested!(token));
+        Assert.True(s.View.Context.TranslationActions!.CanOpenGlossary);
+        Assert.NotNull(s.View.ReserveGlossarySource!(token));
+        Assert.Null(s.View.ReserveGlossarySource(token));
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData("source-epoch")]
+    [InlineData("content-epoch")]
+    [InlineData("foreground-epoch")]
+    [InlineData("window-epoch")]
+    [InlineData("foreign-focus")]
+    [InlineData("composition")]
+    [InlineData("unsupported-source")]
+    [InlineData("no-recheck")]
+    [InlineData("uncommitted-settings")]
+    public void ExpiredSourceMenuRequiresTheOriginalFieldAndARecheck(string change)
+    {
+        using var s = new SessionScenario();
+        if (change == "uncommitted-settings")
+            s.Settings.Update(s.Settings.Value with { ExcludedApplications = ["private-app"] });
+        s.View.SourceGlossarySupported = true;
+        s.ReadyCandidate();
+        s.Service.PendingCapture = new();
+        s.Tick(Limits.ObservationMaxAgeMs + 1);
+        switch (change)
+        {
+            case "source-epoch": s.Input.SourceUserEpoch++; break;
+            case "content-epoch": s.Input.ContentEpoch++; break;
+            case "foreground-epoch": s.Input.ForegroundEpoch++; break;
+            case "window-epoch": s.Input.WindowEpoch++; break;
+            case "foreign-focus": s.Input.FocusedTarget = s.Source.Target with { Lifetime = Guid.NewGuid() }; break;
+            case "composition": s.View.EditingComposition = true; break;
+            case "unsupported-source": s.View.SourceGlossarySupported = false; break;
+            case "no-recheck": s.View.ReserveGlossarySource = null; break;
+            case "uncommitted-settings": s.Settings.Value.ExcludedApplications![0] = "uncommitted-app"; break;
+        }
+        s.Controller.RefreshAcceptancePresentation();
+        Assert.False(s.View.Context!.TranslationActions!.CanOpenGlossary);
+        Assert.Null(s.View.BeginGlossaryRequested!(s.View.Token));
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+    }
+
     [Theory]
     [InlineData("unchanged", true)]
     [InlineData("before-dispatch", false)]

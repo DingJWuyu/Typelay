@@ -36,13 +36,12 @@ public sealed partial class SessionController
     private (SessionViewToken Token, long Revision, string Text)? _translationMenuFeedback;
     private (SessionViewToken Token, long Revision)? _alternativeMenuRequest;
 
-    // Read-only projection of the same qualification used by each actual command.
     private TranslationMenuState GetTranslationMenuState()
     {
         var style = GetStyleSettingsState(StyleScope.CurrentApplication, TranslationStyle.Natural);
         var inherit = GetStyleSettingsState(StyleScope.CurrentApplication, null);
         var alternative = GetAlternativeState();
-        string? glossaryReason = _glossary.QualifyGlossaryEntry(style.Session);
+        string? glossaryReason = _glossary.QualifyGlossaryEntry(style.Session, presentingMenu: true);
         TranslationStyle? applicationStyle = style.Application is { } application
             && style.SavedPreferences?.Applications?.TryGetValue(application, out var selected) == true ? selected : null;
         string? feedback = _translationMenuFeedback is { } current && current.Token == CurrentTranslationToken()

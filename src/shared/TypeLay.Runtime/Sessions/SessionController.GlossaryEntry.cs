@@ -293,7 +293,7 @@ public sealed partial class SessionController
             finally { owner._capturing = false; }
         }
 
-        internal string? QualifyGlossaryEntry(SessionViewToken? token, bool existing = false)
+        internal string? QualifyGlossaryEntry(SessionViewToken? token, bool existing = false, bool presentingMenu = false)
         {
             if (owner._disposed || token is null || !GlossaryEntryTokenCurrent(token))
                 return "glossary-stale";
@@ -310,7 +310,11 @@ public sealed partial class SessionController
             if (!existing && _glossaryEntry is not null)
                 return "glossary-entry-open";
             if (!existing)
-                return owner.GetGlossarySettingsState().UnavailableReason;
+            {
+                // A native source menu can request a new observation. Opening the form still requires it.
+                bool canReobserve = presentingMenu && sourceOrigin && owner._overlay.ReserveGlossarySource is not null;
+                return owner.GetGlossarySettingsState(null, canReobserve).UnavailableReason;
+            }
             return null;
         }
 
@@ -454,7 +458,10 @@ public sealed partial class SessionController
             // The final focus query can return the same field after its input epoch advanced.
             if (_glossaryEntry is not null || !ReferenceEquals(observation, PendingSourceObservation)
                 || confirmed is not null && !confirmed(token))
+            {
+                form.Cancellation.Dispose();
                 return null;
+            }
             _glossaryEntry = form;
             if (sourceOrigin)
             {
