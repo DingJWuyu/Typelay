@@ -413,9 +413,13 @@ public:
         connect(&expiry_, &QTimer::timeout, this, [this] {
             refreshLanguageConfiguration();
             advanceShortcut();
-            if (card_ && (now() > overlayUntil_ || !overlayTarget_ || !overlayTarget_->field
+            const qint64 current = card_ ? now() : 0;
+            if (card_ && (current > overlayUntil_ || !overlayTarget_ || !overlayTarget_->field
                 || !overlayTarget_->field->window()->isActiveWindow()
-                || (paused() && !pauseCurrent(overlayTarget_, overlayAuthority_)))) hideOverlay();
+                || (paused() && !pauseCurrent(overlayTarget_, overlayAuthority_)))) {
+                traceExpiredOverlay("timer", current);
+                hideOverlay();
+            }
             refreshHint();
             refreshGlossaryFocus();
         });
@@ -750,7 +754,8 @@ private slots:
             for (int index = 0; index < 2; ++index) {
                 if ((glossary_->terms[index] == field && (causes & TlQtInput))
                     || (glossary_->providers[index] == sender() && (unknown || (causes & TlQtBinding))))
-                    glossary_->clearTerms[index] = false;
+                    glossary_->termEvidence[index].revoke(unknown ? "provider-unknown"
+                        : (causes & TlQtBinding) ? "provider-binding" : "provider-input");
             }
         }
         auto *target = targets_.value(field, nullptr);
@@ -1954,9 +1959,12 @@ private:
         return inspect(target) && clear(target->state) && authorityMatches(target, basis, true)
             && local(target, target->state) && !geometry(target).isEmpty();
     }
-    bool overlayActive() const {
-        return card_ && card_->isVisible() && overlayTarget_ && overlayTarget_->field
-            && overlayTarget_->field->window()->isActiveWindow() && now() <= overlayUntil_;
+    bool overlayActive(qint64 *observedAt = nullptr) const {
+        if (!card_ || !card_->isVisible() || !overlayTarget_ || !overlayTarget_->field
+            || !overlayTarget_->field->window()->isActiveWindow()) return false;
+        const auto current = now();
+        if (observedAt) *observedAt = current;
+        return current <= overlayUntil_;
     }
     void syncOverlay() {
         const bool focusedEditor = overlayActive() && insideOverlay(QApplication::focusWidget());
@@ -1977,6 +1985,11 @@ private:
         overlayMotion_.stop();
         motionSpring_.velocity = 0;
         disconnect(&overlayMotion_, nullptr, this, nullptr);
+    }
+    void traceExpiredOverlay(const char *source, qint64 current) const {
+        if (card_ && current > overlayUntil_ && qEnvironmentVariableIsSet("TYPELAY_QT_PROBE"))
+            std::fprintf(stderr, "tlqt-overlay-expired source=%s observedAtMs=%lld expiresAtMs=%lld\n", source,
+                static_cast<long long>(current), static_cast<long long>(overlayUntil_));
     }
     void hideOverlay() {
         revokeEditorOrdered();
@@ -3106,6 +3119,21 @@ private:
         int focusChanges = 0;
         bool failed = false;
     };
+    struct GlossaryTermEvidence {
+        bool clear = false;
+        const char *reason = "unobserved";
+
+        void revoke(const char *cause) { clear = false; reason = cause; }
+        void beginInspection() { clear = false; reason = nullptr; }
+        void rejectInspection(const char *cause) {
+            // A synchronous provider notification already supplied a newer reason.
+            if (!reason) reason = cause;
+        }
+        const char *description() const {
+            if (clear) return "Clear";
+            return reason ? reason : "provider-inspection";
+        }
+    };
     struct GlossaryForm {
         TranslationActionMenu context;
         std::optional<GlossarySource> source;
@@ -3118,7 +3146,7 @@ private:
         QPointer<QObject> providers[2];
         QString clearText[2];
         QString submittedText[2];
-        bool clearTerms[2] = {false, false};
+        GlossaryTermEvidence termEvidence[2];
         QPointer<QComboBox> scope;
         QPointer<QPushButton> save, cancel;
         QPointer<QLabel> feedback;
@@ -3246,39 +3274,77 @@ private:
             || (form->scope && form->scope->view()->isVisible()
                 && (object == form->scope->view() || object == form->scope->view()->viewport()));
     }
-    void glossaryEvent(const TranslationActionMenu &context, const char *operation, const QJsonValue &value = QJsonValue()) {
-        sendEvent("ui", {{"target", context.target}, {"generation", context.generation}, {"revision", context.revision},
+    static const char *glossaryFocusRole(const GlossaryForm &form, QWidget *focus) {
+        if (!focus) return "unknown";
+        if (focus == form.terms[0]) return "source";
+        if (focus == form.terms[1]) return "target";
+        if (focus == form.save) return "save";
+        if (focus == form.scope) return "scope";
+        if (focus == form.cancel) return "cancel";
+        return "unknown";
+    }
+    bool glossaryEvent(const TranslationActionMenu &context, const char *operation, const QJsonValue &value = QJsonValue()) {
+        return sendEvent("ui", {{"target", context.target}, {"generation", context.generation}, {"revision", context.revision},
             {"operation", QLatin1String(operation)}, {"value", value}});
     }
-    QString probeGlossaryTerm(const std::shared_ptr<GlossaryForm> &form, int index) {
-        if (!glossaryCurrent(form) || !form->terms[index]) return QStringLiteral("Unknown");
+    QString probeGlossaryTerm(const std::shared_ptr<GlossaryForm> &form, int index, QJsonObject *observation = nullptr) {
+        const auto unknown = [observation](const char *reason) {
+            if (observation) observation->insert("focusedCheck", QLatin1String(reason));
+            return QStringLiteral("Unknown");
+        };
+        if (!glossaryCurrent(form) || !form->terms[index]) return unknown("form-or-field");
         const auto field = form->terms[index];
-        if (QApplication::focusWidget() != field || QGuiApplication::focusObject() != field) return QStringLiteral("Unknown");
+        if (QApplication::focusWidget() != field || QGuiApplication::focusObject() != field) return unknown("focus");
         const QPointer<QObject> owner = field->property(ProviderProperty).value<QObject *>();
         auto *provider = owner ? qobject_cast<TypeLayFcitxQtV1 *>(owner.data()) : nullptr;
-        form->clearTerms[index] = false;
+        auto &evidence = form->termEvidence[index];
+        evidence.beginInspection();
+        const auto rejected = [&](const char *reason) {
+            evidence.rejectInspection(reason);
+            return unknown(reason);
+        };
         TypeLayFcitxQtStateV1 state{};
         const auto text = field->text();
-        if (!provider || owner != overlaySourceProvider_ || owner->thread() != thread() || !provider->inspect(field, &state)
-            || !glossaryCurrent(form) || !field || !owner || field != form->terms[index]
-            || QApplication::focusWidget() != field || QGuiApplication::focusObject() != field
-            || field->property(ProviderProperty).value<QObject *>() != owner || field->text() != text
-            || state.size != sizeof state || state.version != 1u
+        if (!provider || owner != overlaySourceProvider_ || owner->thread() != thread()) return rejected("provider-binding");
+        if (!provider->inspect(field, &state)) return rejected("provider-inspect");
+        if (!glossaryCurrent(form) || !field || !owner || field != form->terms[index]) return rejected("form-or-field-changed");
+        if (QApplication::focusWidget() != field || QGuiApplication::focusObject() != field) return rejected("focus-changed");
+        if (field->property(ProviderProperty).value<QObject *>() != owner || field->text() != text) return rejected("binding-or-text-changed");
+        if (state.size != sizeof state || state.version != 1u
             || (state.flags & ~(TlQtKnown | TlQtFocused | TlQtPending | TlQtComposing | TlQtDetached)) != 0)
-            return QStringLiteral("Unknown");
+            return rejected("provider-state-shape");
         form->providers[index] = owner;
-        if ((state.flags & (TlQtKnown | TlQtFocused | TlQtComposing)) == (TlQtKnown | TlQtFocused | TlQtComposing))
+        if (observation) observation->insert("focusedProvider", QJsonObject{{"flags", qint64(state.flags)},
+            {"serverSerial", qint64(state.serverSerial)}, {"appliedSerial", qint64(state.appliedSerial)},
+            {"contextGeneration", qint64(state.contextGeneration)}, {"fieldGeneration", qint64(state.fieldGeneration)}});
+        if ((state.flags & (TlQtKnown | TlQtFocused | TlQtComposing)) == (TlQtKnown | TlQtFocused | TlQtComposing)) {
+            evidence.rejectInspection("Composing");
             return QStringLiteral("Composing");
-        if (!clear(state) || !provider->validateLocal(field, &state)) return QStringLiteral("Unknown");
-        form->clearTerms[index] = true;
+        }
+        if (!clear(state)) return rejected("provider-not-clear");
+        if (!provider->validateLocal(field, &state)) return rejected("local-validation");
+        evidence.clear = true;
         form->clearText[index] = text;
         return QStringLiteral("Clear");
     }
-    QString glossaryIme(const std::shared_ptr<GlossaryForm> &form) {
-        if (!glossaryCurrent(form) || !insideGlossary(QApplication::focusWidget())) return QStringLiteral("Unknown");
+    QString glossaryIme(const std::shared_ptr<GlossaryForm> &form, QJsonObject *observation = nullptr) {
+        // Read the cached reasons at this check's exit. A focused provider's inspect
+        // can synchronously invalidate the other word. Never probe it for the log.
+        const auto recordCache = qScopeGuard([&] {
+            if (observation && form) {
+                observation->insert("sourceCached", QLatin1String(form->termEvidence[0].description()));
+                observation->insert("targetCached", QLatin1String(form->termEvidence[1].description()));
+            }
+        });
+        if (observation) *observation = {{"focus", "unknown"}, {"source", "unobserved"}, {"target", "unobserved"}};
+        if (!glossaryCurrent(form)) return QStringLiteral("Unknown");
+        const auto focus = QApplication::focusWidget();
+        if (observation) observation->insert("focus", QLatin1String(glossaryFocusRole(*form, focus)));
+        if (!insideGlossary(focus)) return QStringLiteral("Unknown");
         for (int index = 0; index < 2; ++index) {
             if (QApplication::focusWidget() == form->terms[index]) {
-                const auto ime = probeGlossaryTerm(form, index);
+                const auto ime = probeGlossaryTerm(form, index, observation);
+                if (observation) observation->insert(index == 0 ? "source" : "target", ime);
                 if (ime != QStringLiteral("Clear")) return ime;
             }
         }
@@ -3286,12 +3352,19 @@ private:
         // Buttons and scope never manufacture Clear. Both words must have an
         // actual per-field Clear observation for these exact unchanged values.
         for (int index = 0; index < 2; ++index) {
-            if (!form->terms[index] || !form->clearTerms[index] || !form->providers[index]
-                || form->terms[index]->text() != form->clearText[index]) return QStringLiteral("Unknown");
-            // Normal focus departure may remove the provider property. Retain
-            // only the historical observation, not a live write/IME ticket.
+            const char *word = index == 0 ? "source" : "target";
+            const auto unknown = [&](const char *reason) {
+                if (observation) observation->insert(word, QLatin1String(reason));
+                return QStringLiteral("Unknown");
+            };
+            if (!form->terms[index]) return unknown("field-missing");
+            if (!form->termEvidence[index].clear) return unknown(form->termEvidence[index].description());
+            if (!form->providers[index]) return unknown("provider-missing");
+            if (form->terms[index]->text() != form->clearText[index]) return unknown("text-mismatch");
+            // Normal focus departure may remove the provider property.
             auto *bound = form->terms[index]->property(ProviderProperty).value<QObject *>();
-            if (bound && bound != form->providers[index]) return QStringLiteral("Unknown");
+            if (bound && bound != form->providers[index]) return unknown("provider-mismatch");
+            if (observation) observation->insert(word, QStringLiteral("Clear"));
         }
         return QStringLiteral("Clear");
     }
@@ -3403,14 +3476,39 @@ private:
         if (card_ == context.card) arrangeOverlay();
     }
     void saveGlossary(const std::shared_ptr<GlossaryForm> &form) {
-        if (!glossaryCurrent(form) || !form->current || form->pending || form->finished || probingGlossary_) return;
+        const bool trace = qEnvironmentVariableIsSet("TYPELAY_QT_PROBE");
+        const char *stage = "form-retired";
+        const char *lastCheckedFocus = "unknown";
+        QJsonObject before, after;
+        bool addQueued = false;
+        const auto record = qScopeGuard([&] {
+            if (!trace) return;
+            const QJsonObject observation{{"formId", form ? form->entry.value("formId") : QJsonValue()},
+                {"stage", QLatin1String(stage)}, {"lastCheckedFocus", QLatin1String(lastCheckedFocus)},
+                {"beforeHandoff", before.isEmpty() ? QJsonValue() : QJsonValue(before)},
+                {"afterHandoff", after.isEmpty() ? QJsonValue() : QJsonValue(after)}, {"addQueued", addQueued}};
+            std::fprintf(stderr, "tlqt-glossary-save %s\n", QJsonDocument(observation).toJson(QJsonDocument::Compact).constData());
+        });
+        if (!glossaryCurrent(form)) return;
+        if (!form->current) { stage = "form-no-longer-current"; return; }
+        if (form->pending) { stage = "form-pending"; return; }
+        if (form->finished) { stage = "form-finished"; return; }
+        if (probingGlossary_) { stage = "form-probing"; return; }
+        const auto checkedFocus = [&] {
+            auto *focus = QApplication::focusWidget();
+            if (trace) lastCheckedFocus = glossaryFocusRole(*form, focus);
+            return focus;
+        };
         QScopedValueRollback<bool> probing(probingGlossary_, true);
-        const auto ime = glossaryIme(form);
+        const auto ime = glossaryIme(form, trace ? &before : nullptr);
+        stage = "before-handoff-form";
         if (!glossaryCurrent(form)) return;
         if (ime != QStringLiteral("Clear")) {
+            stage = "before-handoff-ime";
             form->feedback->setText(QStringLiteral("请先完成两个词的输入，确认输入法已结束组合后再保存。"));
             return;
         }
+        stage = "word-validation";
         for (const auto &field : form->terms) {
             const auto value = field->text();
             if (value.isEmpty() || value.trimmed() != value || !validText(value) || value.toUtf8().size() > 128
@@ -3421,6 +3519,7 @@ private:
         }
         const int selected = form->scope->currentIndex();
         const auto directions = form->entry.value("directions").toArray();
+        stage = "scope-validation";
         if (selected < 0 || selected > directions.size()) return;
         const auto direction = selected ? directions[selected - 1].toObject() : QJsonObject{};
         const QJsonObject rule{{"sourceTerm", form->terms[0]->text()}, {"targetTerm", form->terms[1]->text()},
@@ -3430,7 +3529,11 @@ private:
         // control while both words are proven Clear. Freeze through the input
         // filter, never by changing readOnly/enabled or other IM attributes.
         form->save->setFocus(Qt::OtherFocusReason);
-        if (!glossaryCurrent(form) || QApplication::focusWidget() != form->save) return;
+        stage = "focus-handoff-form";
+        if (!glossaryCurrent(form)) return;
+        stage = "focus-handoff-focus";
+        if (checkedFocus() != form->save) return;
+        stage = "after-handoff-values";
         if (form->scope->currentIndex() != selected || form->terms[0]->text() != rule.value("sourceTerm").toString()
             || form->terms[1]->text() != rule.value("targetTerm").toString()) return;
         form->pending = true;
@@ -3439,18 +3542,26 @@ private:
         form->submittedText[1] = rule.value("targetTerm").toString();
         // The real focus transition can still invalidate evidence. Never
         // suppress that invalidation merely to allow the Save operation.
-        if (glossaryIme(form) != QStringLiteral("Clear")) {
-            if (!glossaryCurrent(form)) return;
+        stage = "after-handoff-ime";
+        if (glossaryIme(form, trace ? &after : nullptr) != QStringLiteral("Clear")) {
+            if (!glossaryCurrent(form)) { stage = "after-handoff-form"; return; }
             form->pending = false;
             form->feedback->setText(QStringLiteral("输入法状态尚未确认，请完成输入后再保存。"));
             return;
         }
-        if (!glossaryCurrent(form) || !insideGlossary(QApplication::focusWidget())) return;
+        stage = "after-handoff-form";
+        if (!glossaryCurrent(form)) return;
+        stage = "after-handoff-focus";
+        if (!insideGlossary(checkedFocus())) return;
         const QJsonObject focus{{"formId", form->entry.value("formId")}, {"token", form->context.token}, {"ime", "Clear"}};
         form->reportedFocus = focus;
         glossaryEvent(form->context, "sessionGlossaryFocus", focus);
-        if (!glossaryCurrent(form) || !insideGlossary(QApplication::focusWidget())) return;
-        glossaryEvent(form->context, "sessionGlossaryAdd", QJsonObject{{"formId", form->entry.value("formId")},
+        stage = "after-focus-event-form";
+        if (!glossaryCurrent(form)) return;
+        stage = "after-focus-event-focus";
+        if (!insideGlossary(checkedFocus())) return;
+        stage = "queue-add";
+        addQueued = glossaryEvent(form->context, "sessionGlossaryAdd", QJsonObject{{"formId", form->entry.value("formId")},
             {"token", form->context.token}, {"settingsRevision", form->entry.value("settingsRevision")}, {"rule", rule}});
         if (!glossaryCurrent(form)) return;
         form->save->setText(QStringLiteral("正在保存…"));
@@ -3498,7 +3609,7 @@ private:
             connect(field, &QLineEdit::textChanged, this, [this, weak = std::weak_ptr<GlossaryForm>(form), index] {
                 const auto current = weak.lock();
                 if (!current || glossary_ != current) return;
-                current->clearTerms[index] = false;
+                current->termEvidence[index].revoke("text-changed");
                 // Accessibility/programmatic edits can bypass widget input
                 // events. Preserve the submitted display, but revoke Clear
                 // normally; restoring text does not mint new IM evidence.
@@ -4131,7 +4242,8 @@ private:
             if (!sessionApplied() || data.value("generation") != shortcutConfiguration_.value("generation"))
                 return {{"visible", false}, {"editing", false}};
             const qint64 until = integer(data, "expiresAtMs", 0), current = now();
-            if (target == overlayTarget_ && overlayActive() && sessionApplied()
+            qint64 activeCheckedAt = -1;
+            if (target == overlayTarget_ && overlayActive(&activeCheckedAt) && sessionApplied()
                 && data.value("generation") == shortcutConfiguration_.value("generation")
                 && data.value("generation") == overlayGeneration_ && until >= current && until - current <= 1000
                 && metadataMatches(target, data.value("authority").toObject()) && !geometry(target).isEmpty()
@@ -4141,7 +4253,10 @@ private:
                 overlayUntil_ = until;
                 overlayAuthority_ = data.value("authority").toObject();
             }
-            else hideOverlay();
+            else {
+                traceExpiredOverlay("renew", activeCheckedAt);
+                hideOverlay();
+            }
         } else if (op == "overlay-edit") {
             if (!overlayCurrent(data)) return {{"visible", overlayActive()}, {"editing", editor_ && !editor_->isReadOnly()}};
             if (!glossary_ && target == overlayTarget_ && overlayActive() && overlayCurrent(data) && pendingEdit_ && data.value("allowed").toBool()
@@ -4210,11 +4325,11 @@ private:
             for (int index = 0; index < 2; ++index) {
                 if (form->terms[index] != object) continue;
                 if (event->type() == QEvent::InputMethod || event->type() == QEvent::KeyPress)
-                    form->clearTerms[index] = false;
+                    form->termEvidence[index].revoke(event->type() == QEvent::InputMethod ? "input-method" : "key-press");
                 else if (event->type() == QEvent::DynamicPropertyChange
                     && static_cast<QDynamicPropertyChangeEvent *>(event)->propertyName() == ProviderProperty) {
                     auto *owner = form->terms[index]->property(ProviderProperty).value<QObject *>();
-                    if (owner && owner != form->providers[index]) form->clearTerms[index] = false;
+                    if (owner && owner != form->providers[index]) form->termEvidence[index].revoke("provider-replaced");
                 }
             }
             if (lockedInput) {
@@ -4468,30 +4583,31 @@ private:
     void respondObject(qint64 id, const QJsonObject &value) {
         respond(id, value.isEmpty() ? QJsonValue() : QJsonValue(value));
     }
-    void sendEvent(const char *event, const QJsonObject &data) {
+    bool sendEvent(const char *event, const QJsonObject &data) {
         if (qstrcmp(event, "accepted") == 0) writeSettlements_.remove(data.value("planId").toString());
         const QJsonObject frame{{"event", QLatin1String(event)}, {"data", data}};
-        if (qstrcmp(event, "writeRetired") == 0) { sendFrame(frame); return; }
+        if (qstrcmp(event, "writeRetired") == 0) return sendFrame(frame);
         if (glossaryTransfer_ && !glossaryTransfer_->failed) {
             auto &transfer = *glossaryTransfer_;
             if (qstrcmp(event, "input") == 0 && transfer.frames.size() < 8
                 && data.value("target") == transfer.target && data.value("focusChanged") == true
-                && data.value("textChanged") == false) { transfer.frames.append(frame); return; }
+                && data.value("textChanged") == false) { transfer.frames.append(frame); return true; }
             transfer.failed = true;
             flushGlossaryTransfer(transfer, false);
         }
-        sendFrame(frame);
+        return sendFrame(frame);
     }
-    void sendFrame(const QJsonObject &frame) {
-        if (fd_ < 0) return;
+    bool sendFrame(const QJsonObject &frame) {
+        if (fd_ < 0) return false;
         const auto bytes = QJsonDocument(frame).toJson(QJsonDocument::Compact);
         if (bytes.isEmpty() || bytes.size() > MaxFrame || outgoing_.size() + bytes.size() + 4 > 4 * MaxFrame) {
-            disconnectPeer(); return;
+            disconnectPeer(); return false;
         }
         char prefix[4];
         qToLittleEndian<quint32>(quint32(bytes.size()), prefix);
         outgoing_.append(prefix, 4); outgoing_.append(bytes);
         if (writer_) writer_->setEnabled(true);
+        return true;
     }
     void disconnectPeer() {
         writeSettlements_.clear(); writeSettlementTimer_.stop();

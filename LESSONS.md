@@ -88,3 +88,11 @@
 - **Why**：T13 的生命周期与浏览器分别打包。两份结果虽来自同一提交，ZIP 与 Index 原生库摘要仍不同，不能满足同包串联要求。
 - **Evidence**：[#17 的负责人验收要求](https://github.com/DingJWuyu/Typelay/issues/17#issuecomment-6868644052)；`5c0bf79d` 的两份 Windows 结果记录了不同的 `packageSha256` 和 `typelay_index.dll` 摘要。
 - **Seen**：1，2026-11-14。
+
+### 按首次失败的断言核对基线
+
+- **Rule**：PR 的检查在本次修改的流程失败时，按具体场景、首个失败断言和环境对照基线。只有基线出现相同失败，或在 PR 中定位并验证了原因，才能判定该红项与改动的关系。
+- **Kind**：judgement。
+- **Why**：#112 将单行重置和取消的失败描述为早于原多行保存。该次序说明原场景没有执行，无法解释修改后的保存流程是否导致这两次失败。
+- **Evidence**：[PR #112 的负责人审查](https://github.com/DingJWuyu/Typelay/pull/112#pullrequestreview-5949428480)。
+- **Seen**：1 次，2026-11-17。
