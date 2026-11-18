@@ -70,10 +70,10 @@ internal sealed class WindowsSessionView : ISessionView, ISourceInteraction
     {
         get; set;
     }
-    public Func<SessionViewToken, Action, Task<bool>>? ConfirmGlossarySource
+    public Func<SessionViewToken, ConfirmGlossarySource?>? ReserveGlossarySource
     {
-        get => _native.ConfirmGlossarySource;
-        set => _native.ConfirmGlossarySource = value;
+        get => _native.ReserveGlossarySource;
+        set => _native.ReserveGlossarySource = value;
     }
     public Func<SessionViewToken, SessionGlossaryEntry?>? BeginGlossaryRequested
     {

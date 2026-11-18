@@ -119,7 +119,7 @@ public sealed partial class SessionController : IDisposable
         overlay.EscapeRequested = token => { if (ViewCommandIsCurrent(token, false)) _ = Escape(); };
         overlay.AlternativeRequested = token => RequestAlternative(token, fromView: true);
         overlay.StyleRequested = ChangeViewStyleAsync;
-        overlay.ConfirmGlossarySource = _glossary.ConfirmSourceAsync;
+        overlay.ReserveGlossarySource = _glossary.ReserveSource;
         overlay.BeginGlossaryRequested = _glossary.BeginGlossaryEntry;
         overlay.AddGlossaryRequested = _glossary.AddGlossaryEntryAsync;
         overlay.CloseGlossaryRequested = _glossary.CloseGlossaryEntry;
@@ -653,7 +653,7 @@ public sealed partial class SessionController : IDisposable
         long windowEpoch = _hook.WindowEpoch;
         long contentEpoch = _hook.ContentEpoch;
         var glossaryRead = _glossary.BeginRead();
-        var menuConfirmation = _glossary.PendingSourceObservation;
+        var menuConfirmation = _glossary.SourceObservationForRead;
         var request = Context();
         var freshWake = _pendingWakeCapture is { Intent: not null } intent ? intent : null;
         bool traceCapture = false;

@@ -134,7 +134,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView, ISourceInter
     {
         get; set;
     }
-    public Func<SessionViewToken, Action, Task<bool>>? ConfirmGlossarySource { get; set; }
+    public Func<SessionViewToken, ConfirmGlossarySource?>? ReserveGlossarySource { get; set; }
     public Func<SessionViewToken, SessionGlossaryEntry?>? BeginGlossaryRequested
     {
         get; set;
@@ -1908,20 +1908,29 @@ internal sealed partial class OverlayWindow : Window, ISessionView, ISourceInter
                 && _ownedEditor is null && _glossary is null && !EditingComposition,
             translation?.GlossaryUnavailableReason is { } glossaryReason ? LocalizedStatus(glossaryReason)
                 : translation?.CanOpenGlossary == true ? null : unavailable);
+        ConfirmGlossarySource? confirmSource = null;
+        bool sourceMenu = menuState is SessionState.ValidTranslation or SessionState.EditedTranslationPending
+            && ReserveGlossarySource is not null;
+        if (sourceMenu)
+            ((MoreMenuItem)glossary).Admitted = () =>
+            {
+                if (viewToken is not null && menuGlossarySource is { IsUsable: true } basis
+                    && _sourceGlossarySnapshot is { } current
+                    && current with { ObservedAtMs = basis.ObservedAtMs, Bounds = basis.Bounds } == basis
+                    && KeyboardHook.ExactNativeFieldFocused(viewToken.Target.AsWindows()))
+                    confirmSource = ReserveGlossarySource!(viewToken);
+            };
         glossary.Click += async (_, _) =>
         {
             if (!Dispatch((MoreMenuItem)glossary) || viewToken is null)
                 return;
             menu.IsOpen = false;
-            if (menuState is SessionState.ValidTranslation or SessionState.EditedTranslationPending
-                && ConfirmGlossarySource is { } confirm)
+            if (sourceMenu)
             {
-                if (menuGlossarySource is not { IsUsable: true } basis || _sourceGlossarySnapshot is not { } current
-                    || current with { ObservedAtMs = basis.ObservedAtMs, Bounds = basis.Bounds } != basis
-                    || !KeyboardHook.ExactNativeFieldFocused(viewToken.Target.AsWindows()))
+                if (confirmSource is null)
                     return;
                 Task opening = Task.CompletedTask;
-                await confirm(viewToken, () =>
+                await confirmSource(() =>
                 {
                     if (ContextCurrent() && !menu.IsOpen && !EditingComposition)
                         opening = OpenGlossaryAsync(viewToken);

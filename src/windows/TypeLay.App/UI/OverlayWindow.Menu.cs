@@ -74,6 +74,7 @@ internal sealed partial class OverlayWindow
     private sealed class MoreMenuItem(Func<bool> current) : MenuItem
     {
         private bool _clickPending;
+        internal Action? Admitted { get; set; }
         protected override void OnClick()
         {
             if (!IsEnabled || !current())
@@ -84,6 +85,7 @@ internal sealed partial class OverlayWindow
             _clickPending = true;
             try
             {
+                Admitted?.Invoke();
                 base.OnClick();
             }
             catch { _clickPending = false; throw; }

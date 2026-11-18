@@ -22,6 +22,8 @@ public sealed record SessionViewContext(SessionViewToken Token, SessionShortcutB
     TranslationMenuState? TranslationActions = null, PresentationIdentity? Identity = null,
     SessionFormPresentation? GlossaryForm = null);
 
+public delegate Task<bool> ConfirmGlossarySource(Action open);
+
 public interface ISessionView
 {
     Func<SessionViewToken, bool>? BeginEditing
@@ -61,7 +63,7 @@ public interface ISessionView
         }
     }
     // Native source menus confirm a post-click observation before moving focus.
-    Func<SessionViewToken, Action, Task<bool>>? ConfirmGlossarySource
+    Func<SessionViewToken, ConfirmGlossarySource?>? ReserveGlossarySource
     {
         get => null;
         set { }

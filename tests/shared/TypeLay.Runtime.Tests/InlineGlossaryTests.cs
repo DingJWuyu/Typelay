@@ -7,13 +7,18 @@ public sealed class InlineGlossaryTests
 {
     [Theory]
     [InlineData("unchanged", true)]
+    [InlineData("before-dispatch", false)]
     [InlineData("content-edge", false)]
     [InlineData("focus-edge", false)]
     [InlineData("text", false)]
     [InlineData("selection", false)]
     [InlineData("unknown-ime", false)]
     [InlineData("wrong-field", false)]
+    [InlineData("deadline", true)]
     [InlineData("expired", false)]
+    [InlineData("missing", false)]
+    [InlineData("broker-error", false)]
+    [InlineData("composition", false)]
     public async Task SourceGlossaryMenuConfirmsOnlyTheUnchangedFieldObservedAfterItsClick(string change, bool allowed)
     {
         using var s = new SessionScenario(translationRelease: SessionScenario.HyRelease,
@@ -25,22 +30,33 @@ public sealed class InlineGlossaryTests
         s.Tick(Limits.ObservationMaxAgeMs + 1);
         s.Input.ContentEpoch++; // The admitted menu click has already reached the hook.
         Assert.Null(s.View.BeginGlossaryRequested!(token));
-        Assert.NotNull(s.View.ConfirmGlossarySource);
-        var confirm = s.View.ConfirmGlossarySource;
+        Assert.NotNull(s.View.ReserveGlossarySource);
+        var confirm = s.View.ReserveGlossarySource(token);
+        Assert.NotNull(confirm);
         SessionGlossaryEntry? entry = null;
-        var waiting = confirm(token, () => entry = s.View.BeginGlossaryRequested!(token));
+        if (change == "before-dispatch")
+            s.Input.ContentEpoch++;
+        var waiting = confirm(() => entry = s.View.BeginGlossaryRequested!(token));
         Assert.False(waiting.IsCompleted);
-        Assert.False(await confirm(token, () => Assert.Fail("Duplicate command opened")));
+        Assert.Null(s.View.ReserveGlossarySource(token));
+        Assert.False(await confirm(() => Assert.Fail("Duplicate command opened")));
         InputCapture Captured(InputSnapshot source) => new(source, FocusMember.Source, "org.typelay.ControlledApp",
             s.Input.UserEpoch, s.Input.ForegroundEpoch, new(token.Target, s.Input.CommandGeneration, s.Input.SessionBindings, true, true));
         s.CompleteCapture(Captured(s.Fresh)); // Started before this command.
         Assert.False(waiting.IsCompleted);
         s.Service.PendingCapture = new();
-        s.Tick(change == "expired" ? Limits.ObservationMaxAgeMs + 1 : 60);
+        s.Tick(change switch
+        {
+            "deadline" => Limits.ObservationMaxAgeMs,
+            "expired" => Limits.ObservationMaxAgeMs + 1,
+            _ => 60
+        });
         if (change == "content-edge")
             s.Input.ContentEpoch++;
         if (change == "focus-edge")
             s.Input.WindowEpoch++;
+        if (change == "composition")
+            s.View.EditingComposition = true;
         var fresh = change switch
         {
             "text" => s.Fresh with { Text = "different" },
@@ -49,7 +65,10 @@ public sealed class InlineGlossaryTests
             "wrong-field" => s.Fresh with { Target = s.Fresh.Target with { Lifetime = Guid.NewGuid() } },
             _ => s.Fresh
         };
-        s.CompleteCapture(Captured(fresh));
+        if (change == "broker-error")
+            s.FailCapture();
+        else
+            s.CompleteCapture(change == "missing" ? Captured(fresh) with { Snapshot = null } : Captured(fresh));
         Assert.True(waiting.IsCompleted);
         Assert.Equal(allowed, await waiting);
         Assert.Equal(allowed, entry is not null);
@@ -70,7 +89,10 @@ public sealed class InlineGlossaryTests
         s.Tick();
         int publications = s.Input.PublishedPermits.Count;
         SessionGlossaryEntry? entry = null;
-        var waiting = s.View.ConfirmGlossarySource!(target, () =>
+        var confirm = s.View.ReserveGlossarySource!(target);
+        Assert.NotNull(confirm);
+        Assert.Null(s.Input.Permit);
+        var waiting = confirm(() =>
         {
             Assert.Null(s.Input.Permit);
             entry = s.View.BeginGlossaryRequested!(target);

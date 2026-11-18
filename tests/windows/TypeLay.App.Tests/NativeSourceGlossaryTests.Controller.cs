@@ -63,13 +63,43 @@ public sealed partial class NativeSourceGlossaryTests
             long? brokerCaptureAgeAtBegin = null;
             string? settingsReasonAfterRejection = null;
             (nint Root, nint Control)? clickFocus = null;
+            bool sourceConfirmationRequested = false, sourceReserved = false;
             bool? sourceConfirmed = null;
-            var confirm = view.ConfirmGlossarySource!;
-            view.ConfirmGlossarySource = async (token, open) =>
+            object? declinedObservation = null;
+            var reserve = view.ReserveGlossarySource!;
+            view.ReserveGlossarySource = token =>
             {
-                bool confirmed = await confirm(token, open);
-                sourceConfirmed = confirmed;
-                return confirmed;
+                sourceConfirmationRequested = true;
+                long clickedAt = WindowsInterruptClock.NowMs;
+                var before = broker.LastCapture?.Snapshot;
+                var initial = (monitor.ContentEpoch, monitor.SourceUserEpoch, monitor.WindowEpoch, monitor.ForegroundEpoch);
+                var confirm = reserve(token);
+                if (confirm is null)
+                    return null;
+                sourceReserved = true;
+                return async open =>
+                {
+                    bool confirmed = await confirm(open);
+                    sourceConfirmed = confirmed;
+                    if (!confirmed)
+                    {
+                        var last = broker.LastCapture?.Snapshot;
+                        declinedObservation = new
+                        {
+                            ElapsedMs = WindowsInterruptClock.NowMs - clickedAt,
+                            LatestBrokerObservationAfterClick = last?.ObservedAtMs >= clickedAt,
+                            BrokerTargetUnchanged = before is not null && before.Target == last?.Target,
+                            BrokerTextUnchanged = before is not null && before.Text == last?.Text,
+                            BrokerSelectionUnchanged = before is not null && before.Selection == last?.Selection,
+                            BrokerInputEpochUnchanged = before is not null && before.InputEpoch == last?.InputEpoch,
+                            BrokerIme = last?.Ime.ToString(), ContentEpochBefore = initial.ContentEpoch, monitor.ContentEpoch,
+                            SourceEpochBefore = initial.SourceUserEpoch, monitor.SourceUserEpoch,
+                            WindowEpochBefore = initial.WindowEpoch, monitor.WindowEpoch,
+                            ForegroundEpochBefore = initial.ForegroundEpoch, monitor.ForegroundEpoch
+                        };
+                    }
+                    return confirmed;
+                };
             };
             var begin = view.BeginGlossaryRequested!;
             view.BeginGlossaryRequested = token =>
@@ -105,9 +135,14 @@ public sealed partial class NativeSourceGlossaryTests
                     ? target : null;
                 TestContext.Current.TestOutputHelper?.WriteLine("Glossary controller before cleanup: " + JsonSerializer.Serialize(new
                 {
-                    Stage = stage == "open-form" && (field is not null || sourceFocused) ? "confirm-focus" : stage,
+                    Stage = stage != "open-form" ? stage
+                        : !commandClicked || !sourceReserved ? "menu-command-admission"
+                        : sourceConfirmed != true ? "confirm-source-observation"
+                        : !beginRequested ? "open-form" : expectedForm is null ? "begin-form-refused"
+                        : field is not null || sourceFocused ? "confirm-focus" : "mount-form",
                     Expected = condition, CommandClicked = commandClicked, MenuOpen = menu?.IsOpen,
-                    SourceConfirmed = sourceConfirmed, BeginRequested = beginRequested, ExpectedFormId = expectedForm, ClosedFormId = closedForm,
+                    SourceConfirmationRequested = sourceConfirmationRequested, SourceReserved = sourceReserved, SourceConfirmed = sourceConfirmed,
+                    DeclinedObservation = declinedObservation, BeginRequested = beginRequested, ExpectedFormId = expectedForm, ClosedFormId = closedForm,
                     BrokerCaptureAgeAtBeginMs = brokerCaptureAgeAtBegin, FreshnessLimitMs = Limits.ObservationMaxAgeMs,
                     SettingsReasonAfterRejection = settingsReasonAfterRejection,
                     RootAfterClick = clickFocus?.Root.ToInt64(), ControlAfterClick = clickFocus?.Control.ToInt64(),
