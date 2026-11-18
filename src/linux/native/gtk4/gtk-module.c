@@ -444,13 +444,28 @@ void tl_forget(Target *target) {
     json_object_set_string_member(event, "target", target->id);
     tl_send_event("destroy", event);
 }
-static void respond(gint64 id, JsonObject *data) {
+static void respond_capture(gint64 id, JsonObject *data, const CaptureFailure *failure) {
     if (id <= 0) { if (data) json_object_unref(data); return; }
     JsonObject *frame = json_object_new();
     json_object_set_int_member(frame, "id", id);
     if (data) json_object_set_object_member(frame, "data", data);
     else json_object_set_null_member(frame, "data");
+    if (!data && failure && failure->condition) {
+        JsonObject *trace = json_object_new();
+        json_object_set_string_member(trace, "phase", failure->phase);
+        json_object_set_string_member(trace, "condition", failure->condition);
+        json_object_set_int_member(trace, "expected", failure->expected);
+        json_object_set_int_member(trace, "actual", failure->actual);
+        if (failure->requested_target[0])
+            json_object_set_string_member(trace, "requestedTarget", failure->requested_target);
+        if (failure->focused_target[0])
+            json_object_set_string_member(trace, "focusedTarget", failure->focused_target);
+        json_object_set_object_member(frame, "captureTrace", trace);
+    }
     send_frame(frame);
+}
+static void respond(gint64 id, JsonObject *data) {
+    respond_capture(id, data, NULL);
 }
 typedef struct {
     Target *target;
@@ -868,9 +883,12 @@ static void command(JsonObject *frame) {
         JsonObject *description = tl_describe(target);
         if (description) json_object_set_object_member(description, "publication", publication_state(target));
         respond(id, description);
-    } else if (strcmp(operation, "capture") == 0)
-        respond(id, tl_capture(target, tl_object(data, "authority")));
-    else if (strcmp(operation, "direct") == 0) {
+    } else if (strcmp(operation, "capture") == 0) {
+        CaptureFailure failure = {0};
+        CaptureFailure *trace = boolean(data, "traceRefusal") && g_getenv("TYPELAY_TRACE") ? &failure : NULL;
+        JsonObject *result = tl_capture(target, tl_object(data, "authority"), trace);
+        respond_capture(id, result, trace);
+    } else if (strcmp(operation, "direct") == 0) {
         tl_overlay_control_cancel();
         JsonObject *reply = tl_write(target, data, TRUE);
         /* Diagnostics never alter the default public write receipt contract. */
@@ -1193,7 +1211,7 @@ static gboolean trigger_shortcut(const char *kind, Target *target, JsonObject *a
     if (failure) goto rejected;
     if (!description) { failure = "description"; reason = "Unsupported"; goto rejected; }
     phase = "capture";
-    read = tl_capture(target, tl_object(description, "authority"));
+    read = tl_capture(target, tl_object(description, "authority"), NULL);
     failure = shortcut_failure(&attempt, TRUE, &reason);
     if (failure) goto rejected;
     if (!read) { failure = "capture"; reason = "Unsupported"; goto rejected; }

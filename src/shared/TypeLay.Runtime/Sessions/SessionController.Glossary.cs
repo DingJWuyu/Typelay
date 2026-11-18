@@ -6,11 +6,15 @@ public sealed partial class SessionController
 {
     private bool _glossaryChangeRunning;
     private GlossarySnapshot? _configuredGlossary;
-    public GlossarySettingsState GetGlossarySettingsState(IEnumerable<GlossaryRule>? proposedRules = null)
+    public GlossarySettingsState GetGlossarySettingsState(IEnumerable<GlossaryRule>? proposedRules = null) =>
+        GetGlossarySettingsState(proposedRules, sourceMenuCanReobserve: false);
+
+    private GlossarySettingsState GetGlossarySettingsState(IEnumerable<GlossaryRule>? proposedRules, bool sourceMenuCanReobserve)
     {
         var token = CurrentTranslationToken();
         var next = CreateGlossary(proposedRules ?? _settings.Value.Glossary?.Rules ?? [], out string? invalid);
-        string? reason = invalid ?? QualifyGlossaryChange(next!, _settings.Revision, token, default);
+        string? reason = invalid ?? QualifyGlossaryChange(next!, _settings.Revision, token, default,
+            sourceMenuCanReobserve: sourceMenuCanReobserve);
         string? applicationReason = next?.CouldApply(_settings.Value.Direction) != true ? "glossary-not-applicable"
             : reason ?? GlossaryApplicationProblem(next) ?? (_session.ManualStyleLocked ? "manual-glossary-deferred"
                 : _session.Current is null ? "glossary-source-unavailable" : null);
@@ -48,7 +52,7 @@ public sealed partial class SessionController
             ? saved : null;
 
     private string? QualifyGlossaryChange(GlossarySnapshot next, long expectedRevision, SessionViewToken? token,
-        CancellationToken cancellationToken, bool ownsChange = false)
+        CancellationToken cancellationToken, bool ownsChange = false, bool sourceMenuCanReobserve = false)
     {
         if (_disposed || cancellationToken.IsCancellationRequested)
             return "glossary-canceled";
@@ -65,7 +69,7 @@ public sealed partial class SessionController
                 && token.CommandGeneration == _hook.CommandGeneration && _session.ManualSourceCurrent
                 && _styleObservation is { } observation && observation.Target == _session.Current.Target
                 && observation.SourceEpoch == _hook.SourceUserEpoch ? null : "glossary-stale";
-        return token is not null && StyleSourceCurrent(token) ? null : "glossary-stale";
+        return token is not null && StyleSourceCurrent(token, requireFreshObservation: !sourceMenuCanReobserve) ? null : "glossary-stale";
     }
 
     // An explicit edit may be stored offline or during a draft for the next machine

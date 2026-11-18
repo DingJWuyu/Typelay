@@ -22,6 +22,8 @@ public sealed record SessionViewContext(SessionViewToken Token, SessionShortcutB
     TranslationMenuState? TranslationActions = null, PresentationIdentity? Identity = null,
     SessionFormPresentation? GlossaryForm = null);
 
+public delegate Task<bool> ConfirmGlossarySource(Action open);
+
 public interface ISessionView
 {
     Func<SessionViewToken, bool>? BeginEditing
@@ -54,6 +56,14 @@ public interface ISessionView
     }
     // Optional browser-editing path. Legacy/native Regenerate keeps its existing contract.
     Func<EditorRegenerateRequest, Task<bool>>? EditorRegenerateRequested
+    {
+        get => null;
+        set
+        {
+        }
+    }
+    // Native source menus confirm a post-click observation before moving focus.
+    Func<SessionViewToken, ConfirmGlossarySource?>? ReserveGlossarySource
     {
         get => null;
         set

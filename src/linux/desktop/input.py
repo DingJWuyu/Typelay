@@ -2704,7 +2704,7 @@ class Input:
             return {"snapshot": None, "foregroundExpired": True}
         return None
 
-    async def capture(self, context):
+    async def capture(self, context, *, admission=None):
         self.check_practice()
         self.capture_started_at = now_ms()
         self.native_capture_timing = None
@@ -2802,6 +2802,8 @@ class Input:
         if peer.backend == "gtk3" and os.environ.get("TYPELAY_TRACE"):
             native_timing = {"startedMs": self.capture_started_at, "describeStartedMs": now_ms()}
             self.native_capture_timing = native_timing
+        if admission is not None:
+            admission["stage"] = "describe"
         description = (
             cached["description"]
             if reuse
@@ -2848,6 +2850,8 @@ class Input:
             self.practice_approval_trace_run = practice["runId"]
             approval_timing = {}
             native_timing["ownedApproval"] = approval_timing
+        if admission is not None:
+            admission["stage"] = "allow-field"
         approved = await self.approve(peer, description, owned_approval_timing=approval_timing)
         if native_timing is not None:
             native_timing["approvalReturnedMs"] = now_ms()
@@ -2915,6 +2919,11 @@ class Input:
         if round_timing is not None and os.environ.get("TYPELAY_TRACE"):
             capture_data["traceRound"] = round_timing["round"]
         native_failure = {} if peer.backend == "gtk3" and os.environ.get("TYPELAY_TRACE") else None
+        trace = native_failure
+        if admission is not None and peer.backend == "gtk4":
+            capture_data["traceRefusal"] = True
+            admission["stage"] = "await-capture-reply"
+            trace = admission
         continuity = (
             {}
             if practice is not None
@@ -2940,8 +2949,10 @@ class Input:
             else None
         )
         native = await peer.link.ask(
-            "capture", capture_data, capture_trace=native_failure, capture_continuity=continuity
+            "capture", capture_data, capture_trace=trace, capture_continuity=continuity
         )
+        if admission is not None:
+            admission["stage"] = "capture-reply"
         if native_timing is not None:
             native_timing["captureReturnedMs"] = now_ms()
         if peer.browser_retired:

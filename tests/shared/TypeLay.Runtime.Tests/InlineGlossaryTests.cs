@@ -6,6 +6,234 @@ namespace TypeLay.Runtime.Tests;
 public sealed class InlineGlossaryTests
 {
     [Fact]
+    public void SourceMenuCanRequestAFreshObservationWhenOnlyTheObservationAgeExpired()
+    {
+        using var s = new SessionScenario();
+        s.View.SourceGlossarySupported = true;
+        s.ReadyCandidate();
+        var token = s.View.Token;
+        s.Service.PendingCapture = new();
+        s.Tick(Limits.ObservationMaxAgeMs);
+        s.Controller.RefreshAcceptancePresentation();
+        Assert.True(s.View.Context!.TranslationActions!.CanOpenGlossary);
+        Assert.Null(s.Controller.GetGlossarySettingsState().UnavailableReason);
+
+        s.Tick(1); // The same source, epochs and blocked Broker read, one millisecond later.
+        s.Controller.RefreshAcceptancePresentation();
+        Assert.Equal(token, s.View.Token);
+        Assert.Equal("glossary-stale", s.Controller.GetGlossarySettingsState().UnavailableReason);
+        Assert.Null(s.View.BeginGlossaryRequested!(token));
+        Assert.True(s.View.Context.TranslationActions!.CanOpenGlossary);
+        Assert.NotNull(s.View.ReserveGlossarySource!(token));
+        Assert.Null(s.View.ReserveGlossarySource(token));
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData("source-epoch")]
+    [InlineData("content-epoch")]
+    [InlineData("foreground-epoch")]
+    [InlineData("window-epoch")]
+    [InlineData("foreign-focus")]
+    [InlineData("composition")]
+    [InlineData("unsupported-source")]
+    [InlineData("no-recheck")]
+    [InlineData("uncommitted-settings")]
+    public void ExpiredSourceMenuRequiresTheOriginalFieldAndARecheck(string change)
+    {
+        using var s = new SessionScenario();
+        if (change == "uncommitted-settings")
+            s.Settings.Update(s.Settings.Value with
+            {
+                ExcludedApplications = ["private-app"]
+            });
+        s.View.SourceGlossarySupported = true;
+        s.ReadyCandidate();
+        s.Service.PendingCapture = new();
+        s.Tick(Limits.ObservationMaxAgeMs + 1);
+        switch (change)
+        {
+            case "source-epoch":
+                s.Input.SourceUserEpoch++;
+                break;
+            case "content-epoch":
+                s.Input.ContentEpoch++;
+                break;
+            case "foreground-epoch":
+                s.Input.ForegroundEpoch++;
+                break;
+            case "window-epoch":
+                s.Input.WindowEpoch++;
+                break;
+            case "foreign-focus":
+                s.Input.FocusedTarget = s.Source.Target with
+                {
+                    Lifetime = Guid.NewGuid()
+                };
+                break;
+            case "composition":
+                s.View.EditingComposition = true;
+                break;
+            case "unsupported-source":
+                s.View.SourceGlossarySupported = false;
+                break;
+            case "no-recheck":
+                s.View.ReserveGlossarySource = null;
+                break;
+            case "uncommitted-settings":
+                s.Settings.Value.ExcludedApplications![0] = "uncommitted-app";
+                break;
+        }
+        s.Controller.RefreshAcceptancePresentation();
+        Assert.False(s.View.Context!.TranslationActions!.CanOpenGlossary);
+        Assert.Null(s.View.BeginGlossaryRequested!(s.View.Token));
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData("unchanged", true)]
+    [InlineData("before-dispatch", false)]
+    [InlineData("content-edge", false)]
+    [InlineData("focus-edge", false)]
+    [InlineData("text", false)]
+    [InlineData("selection", false)]
+    [InlineData("unknown-ime", false)]
+    [InlineData("wrong-field", false)]
+    [InlineData("deadline", true)]
+    [InlineData("expired", false)]
+    [InlineData("missing", false)]
+    [InlineData("broker-error", false)]
+    [InlineData("composition", false)]
+    public async Task SourceGlossaryMenuConfirmsOnlyTheUnchangedFieldObservedAfterItsClick(string change, bool allowed)
+    {
+        using var s = new SessionScenario(translationRelease: SessionScenario.HyRelease,
+            modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true);
+        s.View.SourceGlossarySupported = true;
+        s.ReadyCandidate();
+        var token = s.View.Token;
+        s.Service.PendingCapture = new();
+        s.Tick(Limits.ObservationMaxAgeMs + 1);
+        s.Input.ContentEpoch++; // The admitted menu click has already reached the hook.
+        Assert.Null(s.View.BeginGlossaryRequested!(token));
+        Assert.NotNull(s.View.ReserveGlossarySource);
+        var confirm = s.View.ReserveGlossarySource(token);
+        Assert.NotNull(confirm);
+        SessionGlossaryEntry? entry = null;
+        if (change == "before-dispatch")
+            s.Input.ContentEpoch++;
+        var waiting = confirm(() => entry = s.View.BeginGlossaryRequested!(token));
+        Assert.False(waiting.IsCompleted);
+        Assert.Null(s.View.ReserveGlossarySource(token));
+        Assert.False(await confirm(() => Assert.Fail("Duplicate command opened")));
+        InputCapture Captured(InputSnapshot source) => new(source, FocusMember.Source, "org.typelay.ControlledApp",
+            s.Input.UserEpoch, s.Input.ForegroundEpoch, new(token.Target, s.Input.CommandGeneration, s.Input.SessionBindings, true, true));
+        s.CompleteCapture(Captured(s.Fresh)); // Started before this command.
+        Assert.False(waiting.IsCompleted);
+        s.Service.PendingCapture = new();
+        s.Tick(change switch
+        {
+            "deadline" => Limits.ObservationMaxAgeMs,
+            "expired" => Limits.ObservationMaxAgeMs + 1,
+            _ => 60
+        });
+        if (change == "content-edge")
+            s.Input.ContentEpoch++;
+        if (change == "focus-edge")
+            s.Input.WindowEpoch++;
+        if (change == "composition")
+            s.View.EditingComposition = true;
+        var fresh = change switch
+        {
+            "text" => s.Fresh with { Text = "different" },
+            "selection" => s.Fresh with { Selection = new(1, 2) },
+            "unknown-ime" => s.Fresh with { Ime = ImeState.Unknown },
+            "wrong-field" => s.Fresh with { Target = s.Fresh.Target with { Lifetime = Guid.NewGuid() } },
+            _ => s.Fresh
+        };
+        if (change == "broker-error")
+            s.FailCapture();
+        else
+            s.CompleteCapture(change == "missing" ? Captured(fresh) with
+            {
+                Snapshot = null
+            } : Captured(fresh));
+        Assert.True(waiting.IsCompleted);
+        Assert.Equal(allowed, await waiting);
+        Assert.Equal(allowed, entry is not null);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public async Task SourceInputDuringTheFinalGlossaryFocusCheckPreventsFormRegistration()
+    {
+        using var s = new SessionScenario(translationRelease: SessionScenario.HyRelease,
+            modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true);
+        s.View.SourceGlossarySupported = true;
+        s.ReadyCandidate();
+        var token = s.View.Token;
+        var confirm = s.View.ReserveGlossarySource!(token);
+        Assert.NotNull(confirm);
+        bool focusChecked = false;
+        SessionGlossaryEntry? entry = null;
+        var waiting = confirm(() =>
+        {
+            s.Input.FocusObservation = _ =>
+            {
+                s.Input.FocusObservation = null;
+                s.Input.UserEpoch++;
+                focusChecked = true;
+                return FocusMember.Source;
+            };
+            entry = s.View.BeginGlossaryRequested!(token);
+        });
+        s.Tick();
+        Assert.True(await waiting);
+        Assert.True(focusChecked);
+        Assert.Null(entry);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public async Task ConfirmingTheSourceForAGlossaryMenuCannotPublishAWritePermit()
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: SessionScenario.HyRelease,
+            modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true);
+        s.View.SourceGlossarySupported = true;
+        s.ReadyCandidate();
+        Assert.NotNull(s.Input.Permit);
+        var target = s.View.Token;
+        s.Service.PendingCapture = new();
+        s.Tick();
+        int publications = s.Input.PublishedPermits.Count, shortcuts = s.Input.PublishedShortcuts.Count;
+        SessionGlossaryEntry? entry = null;
+        var confirm = s.View.ReserveGlossarySource!(target);
+        Assert.NotNull(confirm);
+        Assert.Null(s.Input.Permit);
+        var waiting = confirm(() =>
+        {
+            Assert.Null(s.Input.Permit);
+            entry = s.View.BeginGlossaryRequested!(target);
+        });
+        Assert.Null(s.Input.Permit);
+        Assert.Null(s.View.BeginGlossaryRequested!(target));
+        s.CompleteCapture(new(s.Fresh, FocusMember.Source, s.Service.Application, s.Input.UserEpoch, s.Input.ForegroundEpoch,
+            new(target.Target, s.Input.CommandGeneration, s.Input.SessionBindings, true, true)));
+        Assert.Null(s.Input.Permit);
+        s.Tick();
+        Assert.True(waiting.IsCompleted);
+        Assert.True(await waiting);
+        Assert.Null(s.Input.Permit);
+        Assert.NotNull(entry);
+        Assert.All(s.Input.PublishedPermits.Skip(publications), Assert.Null);
+        Assert.Equal(shortcuts, s.Input.PublishedShortcuts.Count);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
     public void AcknowledgedEditorHandoffRechecksUnchangedSourceForGlossaryManagement()
     {
         using var s = new SessionScenario(experimental: true, translationRelease: new([]));

@@ -5,11 +5,13 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Threading;
 using TypeLay.Core;
 using TypeLay.Runtime;
 using TypeLay.Windows;
+using TypeLay.Windows.Contracts;
 using Xunit;
 using N = TypeLay.Platform.Windows.NativeMethods;
 
@@ -28,6 +30,7 @@ public sealed partial class NativeSourceGlossaryTests
         var overlay = new OverlayWindow(clientAreaAnimation: () => false);
         var monitor = new KeyboardHook(allowInjectedInput: true, editorHwnd: overlay.Handle);
         SessionController? controller = null;
+        Action? reportFailure = null;
         try
         {
             while (!monitor.ShortcutsReady)
@@ -53,33 +56,222 @@ public sealed partial class NativeSourceGlossaryTests
                 : []);
             controller = new(settings, model.Client, view, monitor, input, new DesktopLoop(), translationRelease: release,
                 sourceInteraction: view);
+            var expected = new GlossaryRule("你好", "こんにちは");
+            ContextMenu? menu = null;
+            bool commandClicked = false, sourceFocused = false, beginRequested = false, saveClicked = false;
+            Guid? expectedForm = null, closedForm = null;
+            long? brokerCaptureAgeAtBegin = null;
+            string? settingsReasonAfterRejection = null;
+            (nint Root, nint Control)? clickFocus = null;
+            bool sourceConfirmationRequested = false, sourceReserved = false;
+            bool? sourceConfirmed = null;
+            object? declinedObservation = null;
+            var reserve = view.ReserveGlossarySource!;
+            view.ReserveGlossarySource = token =>
+            {
+                sourceConfirmationRequested = true;
+                long clickedAt = WindowsInterruptClock.NowMs;
+                var before = broker.LastCapture?.Snapshot;
+                var initial = (monitor.ContentEpoch, monitor.SourceUserEpoch, monitor.WindowEpoch, monitor.ForegroundEpoch);
+                var confirm = reserve(token);
+                if (confirm is null)
+                    return null;
+                sourceReserved = true;
+                return async open =>
+                {
+                    bool confirmed = await confirm(open);
+                    sourceConfirmed = confirmed;
+                    if (!confirmed)
+                    {
+                        var last = broker.LastCapture?.Snapshot;
+                        declinedObservation = new
+                        {
+                            ElapsedMs = WindowsInterruptClock.NowMs - clickedAt,
+                            LatestBrokerObservationAfterClick = last?.ObservedAtMs >= clickedAt,
+                            BrokerTargetUnchanged = before is not null && before.Target == last?.Target,
+                            BrokerTextUnchanged = before is not null && before.Text == last?.Text,
+                            BrokerSelectionUnchanged = before is not null && before.Selection == last?.Selection,
+                            BrokerInputEpochUnchanged = before is not null && before.InputEpoch == last?.InputEpoch,
+                            BrokerIme = last?.Ime.ToString(),
+                            ContentEpochBefore = initial.ContentEpoch,
+                            monitor.ContentEpoch,
+                            SourceEpochBefore = initial.SourceUserEpoch,
+                            monitor.SourceUserEpoch,
+                            WindowEpochBefore = initial.WindowEpoch,
+                            monitor.WindowEpoch,
+                            ForegroundEpochBefore = initial.ForegroundEpoch,
+                            monitor.ForegroundEpoch
+                        };
+                    }
+                    return confirmed;
+                };
+            };
+            var begin = view.BeginGlossaryRequested!;
+            view.BeginGlossaryRequested = token =>
+            {
+                beginRequested = true;
+                brokerCaptureAgeAtBegin = WindowsInterruptClock.NowMs - broker.LastCapture?.Snapshot?.ObservedAtMs;
+                var entry = begin(token);
+                expectedForm = entry?.FormId;
+                if (entry is null)
+                    settingsReasonAfterRejection = controller.GetGlossarySettingsState().UnavailableReason;
+                return entry;
+            };
+            var close = view.CloseGlossaryRequested!;
+            view.CloseGlossaryRequested = form =>
+            {
+                closedForm = form;
+                close(form);
+            };
+            overlay.AddHandler(Keyboard.GotKeyboardFocusEvent, new KeyboardFocusChangedEventHandler((_, e) =>
+            {
+                if (e.NewFocus is TextBox field && AutomationProperties.GetName(field) == "术语源词")
+                    sourceFocused = true;
+            }), true);
+            string stage = "prepare-source", condition = "controller started and source field prepared";
+            reportFailure = () =>
+            {
+                var actual = N.ReadFocus();
+                var focus = view.GlossaryEntryFocus;
+                var field = Children(overlay).OfType<TextBox>().FirstOrDefault(item => AutomationProperties.GetName(item) == "术语源词");
+                var focused = Keyboard.FocusedElement as DependencyObject;
+                var capture = broker.LastCapture;
+                WindowsTarget? captured = capture?.Snapshot is { } snapshot && WindowsTarget.TryDecode(snapshot.Target, out var target)
+                    ? target : null;
+                TestContext.Current.TestOutputHelper?.WriteLine("Glossary controller before cleanup: " + JsonSerializer.Serialize(new
+                {
+                    Stage = stage != "open-form" ? stage
+                        : !commandClicked || !sourceReserved ? "menu-command-admission"
+                        : sourceConfirmed != true ? "confirm-source-observation"
+                        : !beginRequested ? "open-form" : expectedForm is null ? "begin-form-refused"
+                        : field is not null || sourceFocused ? "confirm-focus" : "mount-form",
+                    Expected = condition,
+                    CommandClicked = commandClicked,
+                    MenuOpen = menu?.IsOpen,
+                    SourceConfirmationRequested = sourceConfirmationRequested,
+                    SourceReserved = sourceReserved,
+                    SourceConfirmed = sourceConfirmed,
+                    DeclinedObservation = declinedObservation,
+                    BeginRequested = beginRequested,
+                    ExpectedFormId = expectedForm,
+                    ClosedFormId = closedForm,
+                    BrokerCaptureAgeAtBeginMs = brokerCaptureAgeAtBegin,
+                    FreshnessLimitMs = Limits.ObservationMaxAgeMs,
+                    SettingsReasonAfterRejection = settingsReasonAfterRejection,
+                    RootAfterClick = clickFocus?.Root.ToInt64(),
+                    ControlAfterClick = clickFocus?.Control.ToInt64(),
+                    SourceFieldPresent = field is not null,
+                    SourceFieldEverFocused = sourceFocused,
+                    GlossaryEntryFocus = focus is not null,
+                    ActualFormId = focus?.FormId,
+                    ActualIme = focus?.Ime.ToString(),
+                    SourceRoot = native.Root.ToInt64(),
+                    SourceField = native.A.ToInt64(),
+                    OverlayRoot = overlay.Handle.ToInt64(),
+                    ActualRoot = actual.Root.ToInt64(),
+                    ActualControl = actual.Control.ToInt64(),
+                    actual.GuiThreadInfoSucceeded,
+                    ActualWpfControl = focused?.GetType().Name,
+                    SourceFieldHasFocus = field is not null && ReferenceEquals(field, focused),
+                    LastCaptureStatus = capture?.Status,
+                    LastCaptureFocus = capture?.Focus.ToString(),
+                    LastCaptureRoot = captured?.RootHwnd,
+                    LastCaptureField = captured?.ControlHwnd,
+                    SaveClicked = saveClicked,
+                    RuleInSettings = settings.Value.Glossary?.Rules.Contains(expected) == true,
+                    BrokerReturn = broker.ReturnStatus,
+                    broker.SourceWrites
+                }));
+            };
             await controller.StartAsync();
             await native.Prepare(native.A, "你好", new(0, 2));
+            condition = "controller has observed the fixture application";
             while (controller.LastApplication is null)
                 await Task.Delay(10, native.Token);
+            condition = "visible overlay contains the translated preview after the wake shortcut";
             SendKeys(0x11, 0x10, 0x78); // Actual configured Ctrl+Shift+F9 through the real hook.
             while (!overlay.IsVisible || !Children(overlay).OfType<TextBox>().Any(item => item.Text == "こんにちは"))
                 await Task.Delay(10, native.Token);
+            stage = "open-form";
+            condition = "original native field focused before opening MoreGlossary";
             Assert.Equal((native.Root, native.A), N.Focused());
+            condition = "MoreGlossary present and enabled in the open menu";
             Button(overlay, "更多翻译操作").RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
-            var menu = PresentationSource.CurrentSources.OfType<HwndSource>().Select(item => item.RootVisual)
+            menu = PresentationSource.CurrentSources.OfType<HwndSource>().Select(item => item.RootVisual)
                 .OfType<DependencyObject>().SelectMany(root => Children(root).Prepend(root))
                 .OfType<ContextMenu>().Single(item => item.IsOpen);
             var command = menu.Items.OfType<MenuItem>().Single(item => AutomationProperties.GetAutomationId(item) == "MoreGlossary");
-            Assert.True(command.IsEnabled);
+            try
+            {
+                Assert.True(command.IsEnabled);
+            }
+            catch
+            {
+                stage = "menu-command-availability";
+                try
+                {
+                    // The tooltip belongs to the displayed menu. The controller query below is a later observation.
+                    long sampledAt = WindowsInterruptClock.NowMs;
+                    var snapshot = broker.LastCapture?.Snapshot;
+                    WindowsTarget? captured = snapshot is not null && WindowsTarget.TryDecode(snapshot.Target, out var target) ? target : null;
+                    var focus = N.ReadFocus();
+                    TestContext.Current.TestOutputHelper?.WriteLine("MoreGlossary immediately after the enabled assertion failed: " + JsonSerializer.Serialize(new
+                    {
+                        SampledAtMs = sampledAt,
+                        MenuIsOpen = menu.IsOpen,
+                        CommandIsEnabled = command.IsEnabled,
+                        DisplayedToolTip = command.ToolTip as string,
+                        ExpectedRoot = native.Root.ToInt64(),
+                        ExpectedControl = native.A.ToInt64(),
+                        ActualRoot = focus.Root.ToInt64(),
+                        ActualControl = focus.Control.ToInt64(),
+                        focus.GuiThreadInfoSucceeded,
+                        LastBrokerObservedAtMs = snapshot?.ObservedAtMs,
+                        LastBrokerAgeAtSampleMs = sampledAt - snapshot?.ObservedAtMs,
+                        LastBrokerRoot = captured?.RootHwnd,
+                        LastBrokerControl = captured?.ControlHwnd
+                    }));
+                    long settingsReadAt = WindowsInterruptClock.NowMs;
+                    string? reason = controller.GetGlossarySettingsState().UnavailableReason;
+                    TestContext.Current.TestOutputHelper?.WriteLine("Controller glossary settings reread after the disabled menu sample: " + JsonSerializer.Serialize(new
+                    {
+                        ReadStartedAtMs = settingsReadAt,
+                        ReadCompletedAtMs = WindowsInterruptClock.NowMs,
+                        UnavailableReason = reason
+                    }));
+                }
+                catch (Exception error) when (error is not OutOfMemoryException)
+                {
+                    TestContext.Current.TestOutputHelper?.WriteLine("Disabled glossary menu observation unavailable: " + error.GetType().Name);
+                }
+                throw;
+            }
+            condition = "MoreGlossary Click observed and menu closed";
+            command.Click += (_, _) =>
+            {
+                commandClicked = true;
+                clickFocus = N.Focused();
+            };
             await InvokeGlossaryCommandAsync(command, native.Token);
             Assert.False(menu.IsOpen);
+            condition = "GlossaryEntryFocus present with overlay foreground and glossary source field focused";
             while (view.GlossaryEntryFocus is null)
                 await Task.Delay(10, native.Token);
+            stage = "save-rule";
+            condition = "explicit save button focused and invoked";
             Children(overlay).OfType<TextBox>().Single(item => AutomationProperties.GetName(item) == "术语源词").Text = "你好";
             Children(overlay).OfType<TextBox>().Single(item => AutomationProperties.GetName(item) == "术语译词").Text = "こんにちは";
             var save = Button(overlay, "保存术语");
             Assert.True(save.Focus());
+            save.Click += (_, _) => saveClicked = true;
             save.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
-            var expected = new GlossaryRule("你好", "こんにちは");
+            condition = "expected rule present in settings after explicit save";
             while (settings.Value.Glossary?.Rules.Contains(expected) != true)
                 await Task.Delay(10, native.Token);
+            condition = "saved rule reread from disk";
             Assert.Contains(expected, new SettingsStore(Path.Combine(directory, "settings.json")).Value.Glossary!.Rules);
+            stage = "verify-source-after-save";
+            condition = "release policy preserved, original source focused and unchanged, zero writes and submits";
             Assert.Equal(applicationReleased, controller.GetGlossarySettingsState().IsReleased);
             if (!applicationReleased)
                 Assert.False(controller.GetGlossarySettingsState().CanApply);
@@ -89,6 +281,18 @@ public sealed partial class NativeSourceGlossaryTests
             Assert.False(settings.Value.ExperimentalWriteback);
             native.AssertZeroSubmits();
             Assert.Equal(0, broker.SourceWrites);
+        }
+        catch
+        {
+            try
+            {
+                reportFailure?.Invoke();
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                TestContext.Current.TestOutputHelper?.WriteLine("Glossary failure observation unavailable: " + error.GetType().Name);
+            }
+            throw;
         }
         finally
         {
