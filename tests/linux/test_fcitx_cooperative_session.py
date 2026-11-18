@@ -57,6 +57,91 @@ class CooperativeSessionScopeTests(unittest.TestCase):
             )
             return [call["scope"] for call in calls]
 
+    def failed_preflight(self, out, scope, diagnostic):
+        failed = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                cooperative.__file__,
+                "--reuse-build",
+                "--scope",
+                scope,
+                "--output",
+                str(out),
+            ],
+            env={"HOME": str(out), "PATH": os.defpath},
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual(failed.returncode, 1, failed.stderr)
+        self.assertIn(diagnostic, failed.stderr)
+        return failed.stderr
+
+    def test_failed_reuse_preflight_invalidates_only_selected_glossary_evidence(self):
+        for scope, selected in (
+            ("all", ("gtk3", "gtk4")),
+            ("gtk3", ("gtk3",)),
+            ("gtk4", ("gtk4",)),
+            ("core", ()),
+        ):
+            with self.subTest(scope=scope), tempfile.TemporaryDirectory() as directory:
+                out = Path(directory)
+                reports = {}
+                for toolkit in ("gtk3", "gtk4"):
+                    session = out / f"{toolkit}-glossary-session"
+                    session.mkdir()
+                    reports[toolkit] = {
+                        out / f"{toolkit}-glossary-result.json": {
+                            "passed": True,
+                            "cases": [
+                                {"source": source, "state": state, "finish": finish, "passed": True}
+                                for source in ("entry", "textview")
+                                for state in ("ValidTranslation", "EditedTranslationPending")
+                                for finish in (
+                                    "save",
+                                    "pointer-save",
+                                    "cancel",
+                                    "changed-source",
+                                    "replaced-buffer",
+                                    "reset",
+                                    "external-focus",
+                                    "no-click-replay",
+                                    "changed-selection",
+                                    "expired",
+                                )
+                            ],
+                        },
+                        out / f"{toolkit}-glossary-startup.json": {
+                            "status": "passed",
+                            "cleanup": True,
+                        },
+                        session / "cleanup.json": {"childrenExited": True},
+                    }
+                    for path, record in reports[toolkit].items():
+                        path.write_text(json.dumps(record))
+                core_cleanup = out / "cleanup.json"
+                core_cleanup.write_text('{"childrenExited":true}')
+                self.failed_preflight(out, scope, "versions.json")
+                for toolkit, records in reports.items():
+                    for path, record in records.items():
+                        if toolkit in selected:
+                            self.assertFalse(path.exists(), path)
+                        else:
+                            self.assertEqual(json.loads(path.read_text()), record)
+                self.assertFalse(core_cleanup.exists())
+
+    def test_malformed_core_receipt_does_not_leave_selected_glossaries_qualified(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            (out / "cleanup.json").mkdir()
+            results = [out / f"{toolkit}-glossary-result.json" for toolkit in ("gtk3", "gtk4")]
+            for report in results:
+                report.write_text('{"passed":true}')
+            self.assertIn("IsADirectoryError", self.failed_preflight(out, "all", "cleanup.json"))
+            self.assertEqual([path.name for path in results if path.exists()], [])
+
     def test_default_runs_every_existing_session(self):
         self.assertEqual(self.run_scope(), ["core", "gtk4", "gtk3"])
 

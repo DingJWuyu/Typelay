@@ -754,30 +754,49 @@ class QtDesktopAdmissionTests(unittest.TestCase):
             session(self.qt, self.directory / "missing-fcitx", language_options_only=True)
         self.assertFalse((self.qt / "async-result.json").exists())
 
-    def test_cli_invalidates_previous_async_before_verifying_or_building(self):
-        for session in (False, True):
-            with self.subTest(session=session):
-                self.complete_client()
-                result = subprocess.run(
-                    [
-                        sys.executable,
-                        "-I",
-                        "-B",
-                        str(ROOT / "tests/linux/qt_cooperative/run.py"),
-                        "--out",
-                        str(self.qt),
-                        "--fcitx-root",
-                        str(self.directory / "missing-fcitx"),
-                        "--verify-fcitx-build",
-                        *(["--session"] if session else []),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("versions.json", result.stderr)
-                self.assertFalse((self.qt / "async-result.json").exists())
+    def test_cli_invalidates_previous_full_and_async_results_before_preflight(self):
+        full = self.qt / "result.json"
+        screenshot = self.qt / "language-configuration-interrupted.png"
+        for diagnostic in ("versions.json", screenshot.name, full.name):
+            for session in (False, True):
+                with self.subTest(diagnostic=diagnostic, session=session):
+                    self.complete_client()
+                    self.admission.verify_qt_desktop_inputs(self.qt, self.fcitx)
+                    if diagnostic == full.name:
+                        full.mkdir(exist_ok=True)
+                    else:
+                        full.write_text('{"passed":true,"default_async_required":true}')
+                    if diagnostic == screenshot.name:
+                        screenshot.mkdir(exist_ok=True)
+                    result = subprocess.run(
+                        [
+                            sys.executable,
+                            "-I",
+                            "-B",
+                            str(ROOT / "tests/linux/qt_cooperative/run.py"),
+                            "--out",
+                            str(self.qt),
+                            "--fcitx-root",
+                            str(self.directory / "missing-fcitx"),
+                            "--reuse-build",
+                            "--verify-fcitx-build",
+                            *(["--session"] if session else []),
+                        ],
+                        env={"HOME": str(self.directory), "PATH": os.defpath},
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn(diagnostic, result.stderr)
+                    self.assertEqual(
+                        [
+                            path.name
+                            for path in (full, self.qt / "async-result.json")
+                            if path.is_file()
+                        ],
+                        [],
+                    )
 
     def test_each_build_record_and_compiled_binary_remains_bound(self):
         self.complete_client()

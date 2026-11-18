@@ -217,6 +217,191 @@ class DesktopScopeProcessTests(unittest.TestCase):
         )
 
 
+class NativeCliEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(dir="/tmp")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.output = self.root / "output"
+        self.output.mkdir()
+
+    def write(self, name, record):
+        path = self.output / name
+        path.write_text(json.dumps(record))
+        return path
+
+    def early_failure(self, *args, diagnostic, exit_code=1):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                str(Path(__file__).with_name("native_e2e.py")),
+                "--output",
+                str(self.output),
+                "--native",
+                str(self.root / "missing-native"),
+                *args,
+            ],
+            env={"HOME": str(self.root), "XDG_RUNTIME_DIR": str(self.root), "PATH": os.defpath},
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        log = self.output / "inside.log"
+        message = result.stderr + (log.read_text() if log.exists() else "")
+        self.assertEqual(result.returncode, exit_code, message)
+        self.assertIn(diagnostic, message)
+
+    def test_browser_preflight_invalidates_only_receipts_owned_by_the_entry(self):
+        for inside in (False, True):
+            with self.subTest(inside=inside):
+                summary = self.write("desktop-result.json", {"passed": ["previous browser run"]})
+                exit_record = self.write("inside-exit.json", {"exitCode": 0})
+                scope = self.write(
+                    "scope-result.json", {"schema": 1, "scope": "settings-ui", "status": "passed"}
+                )
+                self.early_failure(
+                    *(["--inside"] if inside else []),
+                    "--desktop",
+                    "--desktop-scope",
+                    "browser",
+                    "--package",
+                    str(self.root),
+                    "--editor-bundle",
+                    str(self.root / "missing-editor.js"),
+                    diagnostic="missing-editor.js",
+                )
+                self.assertFalse(summary.exists())
+                # The inside process does not publish its supervisor's receipt.
+                self.assertEqual(exit_record.exists(), inside)
+                self.assertEqual(json.loads(scope.read_text())["scope"], "settings-ui")
+
+    def test_known_qt_scope_without_cooperation_invalidates_previous_receipts(self):
+        summary = self.write(
+            "desktop-result.json", {"scope": "qt-desktop-and-lifecycle", "passed": ["qt"]}
+        )
+        receipt = self.write("inside-exit.json", {"exitCode": 0})
+        self.early_failure(
+            "--desktop",
+            "--desktop-scope",
+            "qt",
+            "--package",
+            str(self.root),
+            diagnostic="Qt research requires --fcitx-cooperative and --qt-cooperative",
+            exit_code=2,
+        )
+        self.assertFalse(summary.exists())
+        self.assertFalse(receipt.exists())
+
+    def test_first_scope_publication_failure_invalidates_previous_success(self):
+        report = self.write(
+            "scope-result.json", {"schema": 1, "scope": "settings-ui", "status": "passed"}
+        )
+        desktop = self.write("desktop-result.json", {"scope": "settings-ui", "shortcuts": "passed"})
+        receipt = self.write("inside-exit.json", {"exitCode": 0})
+        (self.output / "scope-result.json.tmp").mkdir()
+        self.early_failure(
+            "--desktop",
+            "--desktop-scope",
+            "settings-ui",
+            "--package",
+            str(self.root),
+            diagnostic="scope-result.json.tmp",
+        )
+        self.assertFalse(report.exists())
+        self.assertFalse(desktop.exists())
+        self.assertFalse(receipt.exists())
+
+    def test_gtk_refusal_without_fixture_invalidates_prior_aggregate_and_each_scene(self):
+        unknown = {"scope": "gtk-unknown-ime-refusal-only", "passed": ["previous refusal"]}
+        notifications = [
+            {"scope": "controlled-notification-contract", "mode": mode, "passed": True}
+            for mode in (
+                "notified",
+                "nested-complete",
+                "during",
+                "during-zero",
+                "missing",
+                "context",
+                "rollback",
+                "unknown",
+            )
+        ]
+        direct = {
+            "scope": "controlled-textview-direct-epoch",
+            "cases": [{"mode": "epoch", "status": "Verified"}],
+            "controlRejectsUnknownAndRepeated": True,
+            "nativeUndoTested": False,
+        }
+        reports = [
+            self.write(
+                "native-result.json",
+                dict(unknown, controlledNotifications=notifications, controlledDirectEpoch=direct),
+            ),
+            self.write("native-unknown-result.json", unknown),
+            self.write("direct-epoch-result.json", direct),
+            *(
+                self.write(f"notification-{scene['mode']}-result.json", scene)
+                for scene in notifications
+            ),
+        ]
+        desktop = self.write("desktop-result.json", {"passed": ["previous independent desktop"]})
+        self.early_failure(
+            "--inside", "--gtk-refusal", diagnostic=str(self.root / "missing-native/gtk-fixture")
+        )
+        self.assertEqual([path.name for path in reports if path.exists()], [])
+        self.assertTrue((self.output / "inside.failed").exists())
+        self.assertTrue(desktop.exists())
+
+    def test_malformed_desktop_summary_does_not_leave_gimp_or_outer_success(self):
+        (self.output / "desktop-result.json").mkdir()
+        scene = self.write(
+            "ordinary-gimp-result.json", {"status": "passed", "cleanupConfirmed": True}
+        )
+        scope = self.write(
+            "scope-result.json", {"schema": 1, "scope": "ordinary-gimp", "status": "passed"}
+        )
+        receipt = self.write("inside-exit.json", {"exitCode": 0})
+        self.early_failure(
+            "--desktop",
+            "--desktop-scope",
+            "ordinary-gimp",
+            "--package",
+            str(self.root),
+            diagnostic="desktop-result.json",
+        )
+        self.assertEqual([path.name for path in (scene, scope, receipt) if path.exists()], [])
+
+    def test_gimp_without_display_invalidates_previous_cleaned_up_scene_and_desktop(self):
+        summary = self.write(
+            "desktop-result.json",
+            {
+                "scope": "ordinary-gimp-desktop-and-lifecycle",
+                "passed": ["previous GIMP acceptance"],
+            },
+        )
+        scene = self.write(
+            "ordinary-gimp-result.json", {"status": "passed", "cleanupConfirmed": True}
+        )
+        scope = self.write(
+            "scope-result.json", {"schema": 1, "scope": "ordinary-gimp", "status": "not-run"}
+        )
+        self.early_failure(
+            "--inside",
+            "--desktop",
+            "--desktop-scope",
+            "ordinary-gimp",
+            "--package",
+            str(self.root),
+            diagnostic="KeyError: 'TYPELAY_TEST_DISPLAY'",
+        )
+        self.assertFalse(scene.exists())
+        self.assertFalse(summary.exists())
+        self.assertTrue((self.output / "inside.failed").exists())
+        self.assertEqual(json.loads(scope.read_text())["status"], "not-run")
+
+
 class DesktopScopeResultTests(unittest.TestCase):
     def exercise(
         self,

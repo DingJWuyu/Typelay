@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 import uuid
+from contextlib import ExitStack
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -2115,6 +2116,18 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
     return results
 
 
+GTK_REFUSAL_NOTIFICATIONS = (
+    "notified",
+    "nested-complete",
+    "during",
+    "during-zero",
+    "missing",
+    "context",
+    "rollback",
+    "unknown",
+)
+
+
 def inside(arguments, notifications=None):
     # niri may detach spawned programs from its own diagnostic stream.
     log = "inside.log" if notifications is None else f"inside-notifications-{notifications}.log"
@@ -2846,14 +2859,42 @@ def quality_exit(arguments, compositor, work_deadline, result, failure):
             signal.signal(signum, handler)
 
 
-def outer(arguments, script=None):
-    if not arguments.desktop or arguments.desktop_scope not in (
+def publishes_scope_result(arguments):
+    return arguments.desktop and arguments.desktop_scope in (
         "setup",
         "setup-settings",
         "setup-tutorial",
         "ordinary-gimp",
         "settings-ui",
-    ):
+    )
+
+
+def invalidate_run_results(arguments):
+    # Quality capture refuses a reused directory and must preserve it for diagnosis.
+    if arguments.collect_translation_quality:
+        return
+    reports = []
+    if arguments.desktop:
+        reports.append("desktop-result.json")
+        if arguments.desktop_scope == "ordinary-gimp":
+            reports.append("ordinary-gimp-result.json")
+        if not arguments.inside and publishes_scope_result(arguments):
+            reports.append("scope-result.json")
+    elif arguments.gtk_refusal:
+        reports.extend(
+            ("native-result.json", "native-unknown-result.json", "direct-epoch-result.json")
+        )
+        reports.extend(f"notification-{mode}-result.json" for mode in GTK_REFUSAL_NOTIFICATIONS)
+    if reports and not arguments.inside:
+        reports.append("inside-exit.json")
+    # Finish every independent invalidation even if a malformed path fails to unlink.
+    with ExitStack() as cleanup:
+        for name in reports:
+            cleanup.callback((arguments.output / name).unlink, missing_ok=True)
+
+
+def outer(arguments, script=None):
+    if not publishes_scope_result(arguments):
         return run_outer(arguments, script)
     arguments.output.mkdir(parents=True, exist_ok=True)
     report = arguments.output / "scope-result.json"
@@ -3163,6 +3204,8 @@ if __name__ == "__main__":
     parser.add_argument("--native", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    args.output = args.output.resolve()
+    invalidate_run_results(args)
     if args.combination_only and (
         not args.collect_translation_quality
         or args.fixed_model_diagnostics
@@ -3188,7 +3231,6 @@ if __name__ == "__main__":
     ):
         parser.error("--quality-work-deadline is private to the quality inside process")
     args.native = args.native.resolve()
-    args.output = args.output.resolve()
     if not args.desktop and not args.gtk_refusal:
         parser.error(
             "GTK translation is unsupported; use --gtk-refusal for safety refusal or --desktop for the browser path"
@@ -3232,6 +3274,8 @@ if __name__ == "__main__":
         args.editor_bundle = args.editor_bundle.resolve(strict=True)
     if args.inside:
         try:
+            if not args.collect_translation_quality:
+                (args.output / "inside.failed").unlink(missing_ok=True)
             if args.desktop:
                 sys.path.insert(0, str(Path(__file__).parent))
                 if args.desktop_scope == "settings-ui":
@@ -3248,22 +3292,13 @@ if __name__ == "__main__":
                 run(args)
             else:
                 inside(args)
-                for mode in (
-                    "notified",
-                    "nested-complete",
-                    "during",
-                    "during-zero",
-                    "missing",
-                    "context",
-                    "rollback",
-                    "unknown",
-                ):
+                for mode in GTK_REFUSAL_NOTIFICATIONS:
                     inside(args, notifications=mode)
                 inside(args, notifications="direct")
                 result = json.loads((args.output / "native-unknown-result.json").read_text())
                 result["controlledNotifications"] = [
-                    json.loads(path.read_text())
-                    for path in sorted(args.output.glob("notification-*-result.json"))
+                    json.loads((args.output / f"notification-{mode}-result.json").read_text())
+                    for mode in sorted(GTK_REFUSAL_NOTIFICATIONS)
                 ]
                 assert len(result["controlledNotifications"]) == 8
                 result["controlledDirectEpoch"] = json.loads(

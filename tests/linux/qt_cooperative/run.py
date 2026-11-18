@@ -4831,14 +4831,18 @@ if __name__ == "__main__":
     parser.add_argument("--forced-sync-diagnostic", action="store_true")
     parser.add_argument("--language-options-only", action="store_true")
     args = parser.parse_args()
-    out, fcitx = args.out.resolve(), args.fcitx_root.resolve()
+    out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
-    # Invalidate previous evidence even if this run fails during build/validation.
+    # Even a malformed packaging receipt must not leave desktop admission qualified.
+    try:
+        (out / "result.json").unlink(missing_ok=True)
+    finally:
+        (out / "async-result.json").unlink(missing_ok=True)
     (out / "language-options-paint.json").unlink(missing_ok=True)
     (out / "language-options-result.json").unlink(missing_ok=True)
     for screenshot in out.glob("language-configuration-*.png"):
         screenshot.unlink()
-    (out / "async-result.json").unlink(missing_ok=True)
+    fcitx = args.fcitx_root.resolve()
     if args.verify_fcitx_build:
         verify_fcitx_inputs(fcitx)
     if args.session:
