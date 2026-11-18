@@ -63,6 +63,7 @@ internal static class IndexPackageCheck
         var cleanup = new List<string>();
         string stage = stages[0], failure = "none";
         string? failureReason = null;
+        ModelSetupException? setupFailure = null;
         string? packageSha256 = null;
         JsonElement? nativeIdentity = null;
         string data = Path.Combine(directory, "data"), worker = Path.Combine(distribution, "worker", "run_worker.py");
@@ -243,6 +244,7 @@ internal static class IndexPackageCheck
         catch (Exception error) when (error is not OutOfMemoryException)
         {
             outcomes[stage] = "failed";
+            setupFailure = error as ModelSetupException;
             failure = error is OperationCanceledException ? "deadline" : error.GetType().Name;
             // Only fixed activation assertions are safe diagnostic categories.
             // Never copy arbitrary exception text, paths, or nested messages.
@@ -269,6 +271,8 @@ internal static class IndexPackageCheck
                 outcomes,
                 failure,
                 failureReason,
+                setupStage = setupFailure?.Stage.ToString(),
+                setupCategory = setupFailure?.Category.ToString(),
                 responses,
                 payloadHashes,
                 inferenceProfiles,

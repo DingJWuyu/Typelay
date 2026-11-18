@@ -137,7 +137,7 @@ gh api --paginate "repos/{owner}/{repo}/commits/$head/statuses?per_page=100" \
 | tree | 用 `git rev-parse '<提交>^{tree}'` 核对源码树。tree 相同只能说明源码内容相同，不能证明某次检查实际执行。 |
 | 最终 `hitl` 提交 | 合入后的集成提交。最终综合验收须来自同一实际集成提交，不能拼接各层的旧结果。 |
 
-完整 push 检查使用以下固定名称。矩阵展开后共 19 个 job，各组保留现役测试命令、断言和产品期限。工作流没有按事件添加前缀，自动 push 与手动取证使用相同 job 名称。保护配置仍须核对最终候选的实际 check name 和来源 app。
+完整 push 检查使用以下固定名称。矩阵展开后共 19 个必过 job，各组保留现役测试命令、断言和产品期限。工作流没有按事件添加前缀，自动 push 与手动取证使用相同 job 名称。保护配置仍须核对最终候选的实际 check name 和来源 app。
 
 | 检查名 | 执行范围 |
 | --- | --- |
@@ -157,7 +157,7 @@ gh api --paginate "repos/{owner}/{repo}/commits/$head/statuses?per_page=100" \
 | `Linux / native-gtk4` | 本组 core 合作事务、GTK4 术语会话和 GTK4 桌面。 |
 | `Linux / native-qt` | 本组 core 合作事务、Qt probe 和 Qt 桌面。 |
 
-每轮最多有 19 个 job，字体准备后最多并行 18 个，低于免费 runner 的 20 个并发上限。不同 runner 不共享桌面、模型安装代或消费者进程。每个 Windows 桌面组各自完成正式 Argos 安装与 continuous。Hy 只消费自己 runner 中该次调用的安装和内核退出证明；普通组校验自己 runner 中 continuous 与 Notepad 的原始退出证明。Index 生命周期和浏览器各自执行正式准备，并保留本次安装代和退出证明。同一包不表示同一安装代，也不授予其它 runner 通过资格。完整 solution 构建留在合同与工具组，桌面组只构建它实际消费的 fixture。job 内独立检查在失败后继续，依赖失败的场景保持 skipped。Actions 原始 step 和 job 状态就是结果；失败、取消和 skipped 都不能表述为通过。当前没有负责人批准的历史失败例外。以后获批的例外仍须放在独立非必需 job，保留真实失败。
+每轮有 19 个必过 job，字体准备后最多并行 18 个，低于免费 runner 的 20 个并发上限。不同 runner 不共享桌面、模型安装代或消费者进程。每个 Windows 桌面组各自完成正式 Argos 安装与 continuous。Hy 只消费自己 runner 中该次调用的安装和内核退出证明；普通组校验自己 runner 中 continuous 与 Notepad 的原始退出证明。Index 生命周期和浏览器各自执行正式准备，并保留本次安装代和退出证明。同一包不表示同一安装代，也不授予其它 runner 通过资格。完整 solution 构建留在合同与工具组，桌面组只构建它实际消费的 fixture。job 内独立检查在失败后继续，依赖失败的场景保持 skipped。Actions 原始 step 和 job 状态就是结果；失败、取消和 skipped 都不能表述为通过。当前没有负责人批准的历史失败例外。以后获批的例外仍须放在独立非必需 job，保留真实失败。
 
 结果 artifact 的名称或内含源码记录带有 SHA、run ID 和 attempt。`artifacts/ci/source.json` 记录实际 `git rev-parse HEAD`。push 测试的是 head，不是 GitHub 临时合并提交。墙钟时间统一按 `max(必过 job.completed_at) - run.created_at` 计算，包含排队、准备和诊断上传。
 
@@ -166,6 +166,28 @@ Linux / native 与 Linux / native-qt 的 `qt-language-options` 步骤独立记�
 GTK3 桌面的源码与包身份、日志、JSON 和截图另存 `typelay-linux-gtk3-desktop-events-*`，成功或失败均保留。该小型工件直接收集原 `gtk-desktop` 步骤的结果，不重新执行场景。语言续显的焦点与期限判据见 [GTK3 语言菜单](../../.agents/skills/verify-typelay/features/settings.md#driving-it-with-private-niri)。
 
 GTK4 的术语 probe 和完整桌面诊断另存 `typelay-linux-gtk4-events-*`，成功或失败均收集既有结果。该工件仅包含源码与构建身份、术语 probe 和 `gtk4-desktop` 的顶层 JSON、日志与截图，另保留术语会话的顶层状态与清理日志。续租和接受失败的判据见 [GTK4 功能地图](../../.agents/skills/verify-typelay/features/settings.md#driving-it-with-private-niri)。
+
+### 在终端查看某次 push 的失败对照
+
+将 `RUN_ID` 设为完整 push 的 Actions 运行编号，将 `ATTEMPT` 设为尝试次数（首次为 1）。等本次运行结束后执行下面的命令。
+
+```bash
+gh run view "$RUN_ID" --attempt "$ATTEMPT" --repo DingJWuyu/Typelay --log | sed -n '/^Failure comparison[[:space:]]/s/^.*Z TYPELAY_REPORT //p'
+```
+
+这条命令读取整次运行的日志，再提取报告 job 发布的摘要原文。已知报告 job 编号时，只需读取该 job 的日志。在本次 attempt 的运行页打开 `Failure comparison`，链接末尾的数字就是 `JOB_ID`。
+
+```bash
+gh api --allow-escape-sequences "repos/DingJWuyu/Typelay/actions/jobs/$JOB_ID/logs" | sed -n 's/^[^ ]*Z TYPELAY_REPORT //p'
+```
+
+两条命令都无需下载 artifact。每行指向该分片的原始步骤。断言、异常和生产者分类分别列出，原因取自生产者明确记录的原因字段。分项结果中的未运行用例单列为 `not-run`。
+
+报告单列本次失败或超时后跳过、同分片基线执行过的检查，并链接到本次跳过的步骤。同名步骤按出现次序配对。基线只采信截至首次失败或中断的执行记录，避免把为基线失败收集诊断的步骤列为受阻检查。runner 的 `Post` 收尾步骤、两次均跳过的步骤及其他证据不足的 `skipped` 步骤只计总数。没有同分片基线时，所有跳过的步骤只计总数。旧工作流没有发布这份摘要时，命令没有输出。
+
+普通分支 push 以运行创建时最近一次 `hitl` push 的提交与被测提交求共同基点。`hitl` push 使用事件的 `before`，PR 合并候选使用事件的 base。候选工作流仅执行合并树，报告会注明这次缺少独立的基线运行。报告在同一工作流中按完整 job 名匹配矩阵分片。指定 SHA 缺少历史运行时，报告沿基线第一父链回溯，并列出实际 SHA、run 和 attempt。同分片通过但缺少该用例的执行记录时，报告区分分片结论与用例能否对照。缺少可比用例、阶段或断言时显示「无法对照」。基线曾出现相同失败或通过，只说明那一次的观察结果。
+
+`Failure comparison` 在上述 19 个必过 job 结束后读取既有日志和分项结果。W 仍以这 19 个 job 的最晚完成时间计算。基线、报告或日志过期时，保留可读字段和原有检查结论。
 
 ### 固定产物的复用与更新
 

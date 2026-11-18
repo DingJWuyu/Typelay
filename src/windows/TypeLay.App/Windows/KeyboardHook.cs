@@ -229,7 +229,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
         _ownedGate = new(allowInjectedInput);
         _callback = OnKey;
         _mouseCallback = OnMouse;
-        _focusCallback = (_, ev, window, _, _, _, eventTime) =>
+        _focusCallback = (_, ev, window, _, _, eventThread, eventTime) =>
         {
             _editorForegroundDelivery?.Enter(ev, window);
             bool handled = false;
@@ -253,7 +253,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 {
                     ObserveSourceReturnForeground(window);
                     ObserveEditorForeground(window);
-                    ObserveLocalDraftForeground(window);
+                    ObserveLocalDraftForeground(new(ev, window, eventThread, eventTime));
                 }
                 handled = true;
             }
